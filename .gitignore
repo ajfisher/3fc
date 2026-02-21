@@ -36,6 +36,10 @@ coverage
 # TypeScript cache
 *.tsbuildinfo
 
+# Node workspace artifacts
+node_modules/
+dist/
+
 # Optional npm cache directory
 .npm
 
@@ -52,4 +56,3 @@ coverage
 
 # DynamoDB Local files
 .dynamodb/
-

@@ -23,7 +23,7 @@ The project is in the delivery setup phase:
 
 - Milestone backlog is defined and ready to seed into GitHub issues.
 - Infrastructure skeleton exists under `infra/`.
-- `app/` and `api/` runtime implementation is still to be built.
+- Monorepo runtime bootstrap is in place for `app`, `api`, and shared contracts.
 
 ## Architecture Direction (v0)
 
@@ -36,11 +36,27 @@ The project is in the delivery setup phase:
 
 ## Repository Layout
 
-- `app/`: frontend application (to be implemented)
-- `api/`: backend application (to be implemented)
+- `app/`: frontend package scaffold (TypeScript)
+- `api/`: backend package scaffold (TypeScript)
+- `packages/contracts/`: shared TypeScript contracts and core domain types
 - `infra/`: Terraform modules and environment wrappers (`qa`, `prod`)
 - `docs/`: product, spec, and backlog artifacts
 - `scripts/github/`: backlog validation/export/sync helpers
+
+## Tooling Requirements
+
+- Node.js `>=22.0.0`
+- npm `>=10.0.0`
+
+## Local Setup
+
+```bash
+make install
+make build
+make test
+```
+
+These run against npm workspaces at the repository root.
 
 ## Workflow Conventions
 
@@ -80,7 +96,7 @@ Notes:
 
 ## Make Targets
 
-`Makefile` includes placeholders for future build/test/deploy automation and currently provides working backlog targets plus deploy env guardrails.
+`Makefile` provides working install/build/test targets for the npm workspace, backlog automation targets, and deploy env guardrails.
 
 Run help:
 
