@@ -56,3 +56,9 @@ dist/
 
 # DynamoDB Local files
 .dynamodb/
+
+# Local docker-compose persisted data
+local/dynamodb/*
+local/fake-ses/*
+!local/dynamodb/.gitkeep
+!local/fake-ses/.gitkeep

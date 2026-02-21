@@ -1,0 +1,75 @@
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:2.5.2
+    command:
+      - -jar
+      - DynamoDBLocal.jar
+      - -sharedDb
+      - -dbPath
+      - /home/dynamodblocal/data
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./local/dynamodb:/home/dynamodblocal/data
+
+  fake-ses:
+    image: node:22-alpine
+    working_dir: /workspace
+    command: ["node", "scripts/local/fake-ses-server.mjs"]
+    environment:
+      FAKE_SES_PORT: "4025"
+      FAKE_SES_LOG_FILE: "/data/emails.jsonl"
+    volumes:
+      - ./:/workspace
+      - ./local/fake-ses:/data
+    ports:
+      - "4025:4025"
+
+  api:
+    image: node:22-alpine
+    working_dir: /workspace
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --no-audit --no-fund &&
+        npm run build -w @3fc/contracts &&
+        npm run build -w @3fc/api &&
+        npm run start -w @3fc/api
+    environment:
+      PORT: "3001"
+      AWS_REGION: "ap-southeast-2"
+      AWS_ACCESS_KEY_ID: "local"
+      AWS_SECRET_ACCESS_KEY: "local"
+      DYNAMODB_ENDPOINT: "http://dynamodb:8000"
+      DYNAMODB_TABLE: "threefc_local"
+      FAKE_SES_URL: "http://fake-ses:4025/send-email"
+      FAKE_SES_FROM: "dev@3fc.football"
+    depends_on:
+      - dynamodb
+      - fake-ses
+    volumes:
+      - ./:/workspace
+    ports:
+      - "3001:3001"
+
+  app:
+    image: node:22-alpine
+    working_dir: /workspace
+    command:
+      - sh
+      - -c
+      - >-
+        npm install --no-audit --no-fund &&
+        npm run build -w @3fc/contracts &&
+        npm run build -w @3fc/app &&
+        npm run start -w @3fc/app
+    environment:
+      PORT: "3000"
+      API_BASE_URL: "http://localhost:3001"
+    depends_on:
+      - api
+    volumes:
+      - ./:/workspace
+    ports:
+      - "3000:3000"

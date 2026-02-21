@@ -7,11 +7,13 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run typecheck",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.822.0",
     "@3fc/contracts": "0.1.0"
   }
 }

@@ -41,6 +41,7 @@ The project is in the delivery setup phase:
 - `packages/contracts/`: shared TypeScript contracts and core domain types
 - `infra/`: Terraform modules and environment wrappers (`qa`, `prod`)
 - `docs/`: product, spec, and backlog artifacts
+- `docs/local-development.md`: local stack usage and smoke checks
 - `scripts/github/`: backlog validation/export/sync helpers
 
 ## Tooling Requirements
@@ -57,6 +58,24 @@ make test
 ```
 
 These run against npm workspaces at the repository root.
+
+## Local Stack (Docker Compose)
+
+Start the full local stack (app + api + DynamoDB Local + fake SES):
+
+```bash
+make dev
+```
+
+Stop it:
+
+```bash
+make dev-down
+```
+
+Detailed local stack smoke tests are documented in:
+
+- `docs/local-development.md`
 
 ## Workflow Conventions
 
