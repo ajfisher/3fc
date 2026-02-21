@@ -1,0 +1,1231 @@
+{
+  "version": "2026-02-21",
+  "labels": [
+    {
+      "name": "area:infra",
+      "color": "1D76DB",
+      "description": "Infrastructure, platform, and environment setup"
+    },
+    {
+      "name": "area:api",
+      "color": "0E8A16",
+      "description": "Backend API and Lambda functionality"
+    },
+    {
+      "name": "area:app",
+      "color": "FBCA04",
+      "description": "Frontend web application and UX"
+    },
+    {
+      "name": "area:auth",
+      "color": "B60205",
+      "description": "Authentication, identity, and access control"
+    },
+    {
+      "name": "area:data",
+      "color": "5319E7",
+      "description": "Data model, persistence, and aggregation"
+    },
+    {
+      "name": "area:ops",
+      "color": "006B75",
+      "description": "Operations, deployment, and observability"
+    },
+    {
+      "name": "area:qa",
+      "color": "C2E0C6",
+      "description": "Testing, contracts, and quality gates"
+    },
+    {
+      "name": "type:feature",
+      "color": "0366D6",
+      "description": "Net-new product capability"
+    },
+    {
+      "name": "type:chore",
+      "color": "D4C5F9",
+      "description": "Engineering maintenance and scaffolding"
+    },
+    {
+      "name": "type:test",
+      "color": "F9D0C4",
+      "description": "Test coverage, fixtures, and CI quality work"
+    },
+    {
+      "name": "type:security",
+      "color": "EE0701",
+      "description": "Security hardening and controls"
+    },
+    {
+      "name": "milestone:M0",
+      "color": "5319E7",
+      "description": "M0 Platform Foundation"
+    },
+    {
+      "name": "milestone:M1",
+      "color": "6F42C1",
+      "description": "M1 Auth, ACL, Core Entities"
+    },
+    {
+      "name": "milestone:M2",
+      "color": "8250DF",
+      "description": "M2 Live Match Operations"
+    },
+    {
+      "name": "milestone:M3",
+      "color": "A371F7",
+      "description": "M3 Public Results and Season Stats"
+    },
+    {
+      "name": "milestone:M4",
+      "color": "B392F0",
+      "description": "M4 Notifications and Product Polish"
+    },
+    {
+      "name": "priority:P0",
+      "color": "B60205",
+      "description": "Critical path for MVP delivery"
+    },
+    {
+      "name": "priority:P1",
+      "color": "D93F0B",
+      "description": "Important but not initial critical path"
+    },
+    {
+      "name": "priority:P2",
+      "color": "FBCA04",
+      "description": "Later-wave and optimization work"
+    }
+  ],
+  "milestones": [
+    {
+      "name": "M0 Platform Foundation",
+      "description": "Bootstrap repo, tooling, local runtime, Terraform skeleton, and CI/deploy foundations."
+    },
+    {
+      "name": "M1 Auth, ACL, Core Entities",
+      "description": "Deliver auth, access control, core domain entities, and create/setup flows."
+    },
+    {
+      "name": "M2 Live Match Operations",
+      "description": "Deliver live scoring workflow with timer, goals CRUD, undo, timeline, and finish game logic."
+    },
+    {
+      "name": "M3 Public Results and Season Stats",
+      "description": "Deliver public results pages, standings, leaderboards, and player claim/profile workflows."
+    },
+    {
+      "name": "M4 Notifications and Product Polish",
+      "description": "Deliver async notifications, email templates, UX polish, observability, and security hardening."
+    }
+  ],
+  "epics": [
+    {
+      "id": "EPIC-M0",
+      "title": "Platform Foundation",
+      "milestone": "M0 Platform Foundation",
+      "labels": [
+        "area:infra",
+        "type:feature",
+        "milestone:M0",
+        "priority:P0"
+      ],
+      "summary": "Establish runtime, local development, infrastructure skeleton, and CI/CD baseline required for all subsequent implementation.",
+      "outcomes": [
+        "Developers and agents can run app+api locally with deterministic tooling.",
+        "QA/prod infrastructure wrappers are present and validated through Terraform plan.",
+        "CI checks and deployment triggers are operational and enforce merge gates."
+      ],
+      "childIssues": [
+        "M0-01",
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-05",
+        "M0-06"
+      ]
+    },
+    {
+      "id": "EPIC-M1",
+      "title": "Auth, ACL, Core Entities",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": [
+        "area:auth",
+        "type:feature",
+        "milestone:M1",
+        "priority:P0"
+      ],
+      "summary": "Implement identity, sessions, authorization, core domain persistence, and setup creation flows.",
+      "outcomes": [
+        "Social and magic-link sign-in are functional with secure cookie sessions.",
+        "League creator receives admin access and ACL is enforced for write operations.",
+        "Leagues, seasons, sessions, and games can be created end-to-end from API and UI."
+      ],
+      "childIssues": [
+        "M1-01",
+        "M1-02",
+        "M1-03",
+        "M1-04",
+        "M1-05",
+        "M1-06",
+        "M1-07"
+      ]
+    },
+    {
+      "id": "EPIC-M2",
+      "title": "Live Match Operations",
+      "milestone": "M2 Live Match Operations",
+      "labels": [
+        "area:api",
+        "type:feature",
+        "milestone:M2",
+        "priority:P0"
+      ],
+      "summary": "Deliver the phone-first live game workflow: rostering, timer/third control, scoring events, timeline edits, and game completion.",
+      "outcomes": [
+        "Scorekeeper can manage teams/players and log goals quickly while match is in progress.",
+        "Goal validation enforces agreed own-goal and assist rules, including any-team assists up to 3.",
+        "Game finish computes deterministic result with immutable locked state and audit trail."
+      ],
+      "childIssues": [
+        "M2-01",
+        "M2-02",
+        "M2-03",
+        "M2-04",
+        "M2-05",
+        "M2-06",
+        "M2-07",
+        "M2-08",
+        "M2-09"
+      ]
+    },
+    {
+      "id": "EPIC-M3",
+      "title": "Public Results and Season Stats",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "summary": "Publish game and season outcomes publicly while preserving privacy boundaries and claimable player identities.",
+      "outcomes": [
+        "Public game URLs resolve by slug/id and render canonical results and timeline.",
+        "Season standings and leaderboards are computed with deterministic ranking comparator.",
+        "Claim flow links user identity to quick-created players with conflict-safe behavior."
+      ],
+      "childIssues": [
+        "M3-01",
+        "M3-02",
+        "M3-03",
+        "M3-04",
+        "M3-05",
+        "M3-06"
+      ]
+    },
+    {
+      "id": "EPIC-M4",
+      "title": "Notifications and Product Polish",
+      "milestone": "M4 Notifications and Product Polish",
+      "labels": [
+        "area:ops",
+        "type:feature",
+        "milestone:M4",
+        "priority:P2"
+      ],
+      "summary": "Add asynchronous notifications, improve join UX, and complete observability and security hardening for production readiness.",
+      "outcomes": [
+        "Game finish triggers reliable email jobs with retries and visibility.",
+        "Players receive personalized email summaries and links to game outcomes.",
+        "Operational dashboards/alerts and final security controls are in place."
+      ],
+      "childIssues": [
+        "M4-01",
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05"
+      ]
+    }
+  ],
+  "issues": [
+    {
+      "id": "M0-01",
+      "title": "Monorepo runtime/tooling bootstrap (app, api, shared contracts)",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M0",
+      "milestone": "M0 Platform Foundation",
+      "labels": ["area:infra", "type:chore", "milestone:M0", "priority:P0"],
+      "dependsOn": [],
+      "summary": "Establish baseline Node/npm workspace structure for `app`, `api`, and shared contracts/types with deterministic scripts.",
+      "scope": [
+        "Create root workspace configuration and package manifests.",
+        "Add shared TypeScript config and base lint/test/build scripts.",
+        "Set up contracts package for API schemas/types consumed by app+api."
+      ],
+      "outOfScope": [
+        "Feature implementation beyond health-check scaffolding.",
+        "Production deployment logic."
+      ],
+      "acceptanceCriteria": [
+        "`make install`, `make build`, and `make test` execute without missing scripts.",
+        "`app`, `api`, and shared contracts compile via a single workspace command.",
+        "Repository docs describe expected local runtime/tool versions."
+      ],
+      "testScenarios": [
+        "Fresh clone install succeeds.",
+        "Type-check catches invalid shared contract changes in both app and api.",
+        "CI runner can execute workspace scripts non-interactively."
+      ]
+    },
+    {
+      "id": "M0-02",
+      "title": "Docker Compose local stack (DynamoDB Local + fake SES + app + api)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M0",
+      "milestone": "M0 Platform Foundation",
+      "labels": ["area:infra", "type:feature", "milestone:M0", "priority:P0"],
+      "dependsOn": ["M0-01"],
+      "summary": "Provide a reproducible local stack for app/api and stubbed cloud dependencies.",
+      "scope": [
+        "Define Docker Compose services for DynamoDB Local, fake SES sink, api, and app.",
+        "Wire env vars and network dependencies between services.",
+        "Persist fake SES output locally for magic-link retrieval in development."
+      ],
+      "outOfScope": [
+        "High-fidelity AWS emulation beyond required behavior.",
+        "Performance tuning of local containers."
+      ],
+      "acceptanceCriteria": [
+        "`make dev` starts all required services and exposes app/api ports.",
+        "API writes/reads use DynamoDB Local successfully.",
+        "Magic-link and notification emails are captured to local fake SES output."
+      ],
+      "testScenarios": [
+        "Kill/restart api container without losing Dynamo data.",
+        "Trigger fake email and verify persisted output artifact.",
+        "Run app and api in local stack from clean environment variables."
+      ]
+    },
+    {
+      "id": "M0-03",
+      "title": "Makefile implementation (install/build/test/dev/deploy, ENV guard)",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M0",
+      "milestone": "M0 Platform Foundation",
+      "labels": ["area:infra", "type:chore", "milestone:M0", "priority:P0"],
+      "dependsOn": ["M0-01"],
+      "summary": "Replace placeholder Makefile commands with deterministic developer workflow commands.",
+      "scope": [
+        "Implement `install`, `build`, `test`, `dev`, and `deploy` make targets.",
+        "Validate `ENV` for deploy target and fail when absent or invalid.",
+        "Document command expectations in README."
+      ],
+      "outOfScope": [
+        "Cloud deployment internals beyond command invocation scaffolding.",
+        "Feature-specific scripts."
+      ],
+      "acceptanceCriteria": [
+        "Each make target performs meaningful work instead of placeholder echo output.",
+        "`make deploy` returns non-zero for missing/invalid `ENV` values.",
+        "`make help` documents target usage clearly."
+      ],
+      "testScenarios": [
+        "`make deploy` with `ENV=qa` invokes expected deployment path.",
+        "`make deploy` with `ENV=foo` fails with explicit message.",
+        "`make test` aggregates app+api test execution."
+      ]
+    },
+    {
+      "id": "M0-04",
+      "title": "Terraform application module skeleton for required AWS resources",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M0",
+      "milestone": "M0 Platform Foundation",
+      "labels": ["area:infra", "type:feature", "milestone:M0", "priority:P0"],
+      "dependsOn": [],
+      "summary": "Establish Terraform module/resource scaffolding for app infrastructure in QA and production.",
+      "scope": [
+        "Add required resource placeholders/modules for S3, CloudFront, API Gateway, Lambda, DynamoDB, Cognito, SES.",
+        "Connect QA/prod wrappers to shared module with env-specific inputs.",
+        "Ensure backend state and locking usage remains consistent with existing setup."
+      ],
+      "outOfScope": [
+        "Final domain/certificate cutover.",
+        "Complete IAM least-privilege tuning."
+      ],
+      "acceptanceCriteria": [
+        "`terraform validate` passes for application, qa, and prod directories.",
+        "`terraform plan` succeeds in qa/prod wrappers with module wiring.",
+        "Module inputs cover environment, region, and naming requirements."
+      ],
+      "testScenarios": [
+        "Plan output includes expected baseline resources.",
+        "QA and prod generate separate names/state paths.",
+        "Module can be extended without breaking wrapper contracts."
+      ]
+    },
+    {
+      "id": "M0-05",
+      "title": "Hello API lambda + API Gateway /v1/health + JSON structured logging",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M0",
+      "milestone": "M0 Platform Foundation",
+      "labels": ["area:api", "type:feature", "milestone:M0", "priority:P0"],
+      "dependsOn": ["M0-01", "M0-04"],
+      "summary": "Deploy a minimal API endpoint to validate runtime, infrastructure, and logging conventions.",
+      "scope": [
+        "Implement `GET /v1/health` Lambda handler and route wiring.",
+        "Emit structured JSON logs including request metadata.",
+        "Expose health endpoint through local and QA environments."
+      ],
+      "outOfScope": [
+        "Domain endpoint business logic.",
+        "Authentication middleware."
+      ],
+      "acceptanceCriteria": [
+        "`/v1/health` returns 200 with service and version metadata.",
+        "Logs include request id, route, method, and status fields.",
+        "Endpoint is reachable in local stack and deployed QA environment."
+      ],
+      "testScenarios": [
+        "Unit test for handler response shape.",
+        "Integration test for API Gateway route mapping.",
+        "Log snapshot/contract test for structured fields."
+      ]
+    },
+    {
+      "id": "M0-06",
+      "title": "CI/CD workflows (PR checks, QA-ready deploy, main->prod deploy)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M0",
+      "milestone": "M0 Platform Foundation",
+      "labels": ["area:ops", "type:feature", "milestone:M0", "priority:P0"],
+      "dependsOn": ["M0-03", "M0-05"],
+      "summary": "Create GitHub Actions pipelines for test gating and environment-specific application deployments.",
+      "scope": [
+        "PR workflow enforcing lint + unit + API contract checks.",
+        "QA deployment workflow triggered by `QA-ready` label.",
+        "Production deployment workflow triggered on merge to `main`."
+      ],
+      "outOfScope": [
+        "Terraform apply automation via GitHub workflows.",
+        "Post-deploy synthetic monitoring."
+      ],
+      "acceptanceCriteria": [
+        "PR merges are blocked when required checks fail.",
+        "Applying `QA-ready` label triggers QA app deploy workflow.",
+        "Main branch merges trigger production app deploy workflow with status feedback."
+      ],
+      "testScenarios": [
+        "Fail lint check and verify merge gate behavior.",
+        "Dry-run QA label trigger in test PR.",
+        "Verify production workflow path conditions on merge event."
+      ]
+    },
+    {
+      "id": "M1-01",
+      "title": "DynamoDB single-table schema + access pattern doc + repository layer",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:data", "type:feature", "milestone:M1", "priority:P0"],
+      "dependsOn": ["M0-05"],
+      "summary": "Implement single-table key patterns and repository functions for core entities and timeline operations.",
+      "scope": [
+        "Encode PK/SK models for leagues, seasons, sessions, games, teams, rosters, players, ACL, and goal events.",
+        "Implement repository APIs for CRUD/query access patterns documented in technical spec.",
+        "Document item schemas and read/write patterns for future contributors."
+      ],
+      "outOfScope": [
+        "Final leaderboards and standings aggregators.",
+        "Cross-game analytics optimization."
+      ],
+      "acceptanceCriteria": [
+        "Repository supports create/read for all M1 core entities.",
+        "Key patterns match specified table design in docs/spec.",
+        "Access-pattern documentation is checked into repo and reviewed."
+      ],
+      "testScenarios": [
+        "Round-trip CRUD tests for each entity family.",
+        "Query tests for session->games and game timeline ordering.",
+        "Negative tests for missing/invalid partition keys."
+      ]
+    },
+    {
+      "id": "M1-02",
+      "title": "Cognito User Pool + Hosted UI + Google/Facebook provider setup",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:auth", "type:feature", "milestone:M1", "priority:P0"],
+      "dependsOn": ["M0-04"],
+      "summary": "Provision social sign-in foundations in Cognito and validate callback flow integration.",
+      "scope": [
+        "Terraform Cognito user pool/client setup.",
+        "Google and Facebook IdP wiring and redirect URIs.",
+        "Callback endpoint integration with app session handling path."
+      ],
+      "outOfScope": [
+        "Magic-link flow implementation.",
+        "Profile claim conflict resolution."
+      ],
+      "acceptanceCriteria": [
+        "Google and Facebook sign-in round-trip succeeds in QA.",
+        "Hosted UI config is environment-aware for qa/prod callback URLs.",
+        "Failed social auth attempts surface actionable errors in app."
+      ],
+      "testScenarios": [
+        "Manual QA provider login smoke tests.",
+        "Callback route handles missing `code` parameter safely.",
+        "Config validation test for required provider secrets."
+      ]
+    },
+    {
+      "id": "M1-03",
+      "title": "Magic-link auth flow (start/complete) with TTL tokens and SES",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:auth", "type:feature", "milestone:M1", "priority:P0"],
+      "dependsOn": ["M1-01", "M0-02"],
+      "summary": "Implement true email magic-link authentication with secure single-use token semantics.",
+      "scope": [
+        "Implement `/v1/auth/magic/start` and `/v1/auth/magic/complete` endpoints.",
+        "Store TTL-bound, single-use auth tokens in DynamoDB.",
+        "Send magic-link emails via SES/fake SES integration."
+      ],
+      "outOfScope": [
+        "Social provider login logic.",
+        "MFA or advanced fraud controls."
+      ],
+      "acceptanceCriteria": [
+        "Valid magic-link click creates authenticated session.",
+        "Expired and replayed links are rejected with safe error responses.",
+        "Local fake SES captures full link for testing workflows."
+      ],
+      "testScenarios": [
+        "Happy-path auth start->complete flow integration test.",
+        "Token replay test verifies single-use invalidation.",
+        "TTL expiry boundary-condition tests."
+      ]
+    },
+    {
+      "id": "M1-04",
+      "title": "httpOnly cookie session integration across app+api",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:auth", "type:security", "milestone:M1", "priority:P0"],
+      "dependsOn": ["M1-02", "M1-03"],
+      "summary": "Adopt secure cookie-based token handling and baseline web security controls.",
+      "scope": [
+        "Set and validate httpOnly secure auth cookies across environments.",
+        "Implement CSRF/CORS controls aligned to app domains.",
+        "Apply baseline CSP and related security headers."
+      ],
+      "outOfScope": [
+        "Final security hardening pass in M4.",
+        "Device/session management UI."
+      ],
+      "acceptanceCriteria": [
+        "Authenticated API routes require valid session cookies.",
+        "Cookie attributes enforce secure, httpOnly, same-site policy per environment.",
+        "CSP and security headers are present on app responses."
+      ],
+      "testScenarios": [
+        "Unauthorized access denied without cookies.",
+        "Cross-site request attempt blocked by policy.",
+        "Security header snapshot tests across app routes."
+      ]
+    },
+    {
+      "id": "M1-05",
+      "title": "ACL model + middleware + creator-is-league-admin bootstrap",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:auth", "type:feature", "milestone:M1", "priority:P0"],
+      "dependsOn": ["M1-01", "M1-04"],
+      "summary": "Implement scoped admin authorization with automatic grant to initial league creator.",
+      "scope": [
+        "Create ACL item model for league/season/game scopes.",
+        "Build authorization middleware for write endpoints.",
+        "Grant creator admin role on league creation."
+      ],
+      "outOfScope": [
+        "Delegation UX for managing admins.",
+        "Fine-grained role matrices beyond admin vs non-admin."
+      ],
+      "acceptanceCriteria": [
+        "League creator receives admin ACL grant at creation time.",
+        "Non-admin users cannot mutate protected resources.",
+        "Authorization failures return stable, documented error responses."
+      ],
+      "testScenarios": [
+        "Admin user can create season/session/game.",
+        "Non-admin blocked from league mutation endpoints.",
+        "ACL lookup handles missing scope gracefully."
+      ]
+    },
+    {
+      "id": "M1-06",
+      "title": "Core write endpoints: leagues, seasons, sessions, games",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:api", "type:feature", "milestone:M1", "priority:P0"],
+      "dependsOn": ["M1-01", "M1-05"],
+      "summary": "Deliver core domain write endpoints with schema validation and idempotency controls.",
+      "scope": [
+        "Implement create/update APIs for leagues, seasons, sessions, and games.",
+        "Define Zod request/response contracts and OpenAPI coverage.",
+        "Support idempotency keys on write operations."
+      ],
+      "outOfScope": [
+        "Roster/timer/goal operations (M2).",
+        "Public read routes and season stats (M3)."
+      ],
+      "acceptanceCriteria": [
+        "All core entity endpoints pass contract validation tests.",
+        "Duplicate writes with same idempotency key are safely deduplicated.",
+        "OpenAPI docs are generated/updated for implemented routes."
+      ],
+      "testScenarios": [
+        "Create flow test league->season->session->game.",
+        "Malformed payload rejected with validation errors.",
+        "Idempotency replay returns stable response without duplicate writes."
+      ]
+    },
+    {
+      "id": "M1-07",
+      "title": "Setup UI flow for league/season/session/game creation",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": ["area:app", "type:feature", "milestone:M1", "priority:P1"],
+      "dependsOn": ["M1-06"],
+      "summary": "Build mobile-first setup journey to create and enter a new game quickly.",
+      "scope": [
+        "Create setup screens/forms for league, season, session, and game metadata.",
+        "Use API endpoints for persistence with optimistic mobile UX.",
+        "Navigate user directly into created game context."
+      ],
+      "outOfScope": [
+        "Roster assignment and live game controls.",
+        "Public results pages."
+      ],
+      "acceptanceCriteria": [
+        "User can complete setup from blank state to created game in one flow.",
+        "Validation errors are surfaced inline in mobile form UX.",
+        "Successful setup routes into game setup/live context."
+      ],
+      "testScenarios": [
+        "E2E setup happy-path from login to game creation.",
+        "Client-side validation for required fields.",
+        "API failure displays recoverable error state."
+      ]
+    },
+    {
+      "id": "M2-01",
+      "title": "Team defaults at season level + per-game override",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:data", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M1-06"],
+      "summary": "Model and persist team definitions as season defaults with optional game-level override.",
+      "scope": [
+        "Create season team template persistence and retrieval.",
+        "Implement per-game team override persistence.",
+        "Ensure existing game records remain stable when season defaults change."
+      ],
+      "outOfScope": [
+        "Advanced historical team versioning.",
+        "Cross-season template sharing."
+      ],
+      "acceptanceCriteria": [
+        "Season default teams can be created and queried.",
+        "Game-specific overrides can be applied and edited.",
+        "Game override takes precedence over season template in runtime reads."
+      ],
+      "testScenarios": [
+        "Create game with no override uses season defaults.",
+        "Apply override and verify independent persistence.",
+        "Change season defaults after game creation does not mutate prior override."
+      ]
+    },
+    {
+      "id": "M2-02",
+      "title": "Player quick-create + QR join registration path into active game",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:api", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M1-06", "M2-01"],
+      "summary": "Support fast organizer-created nickname players and player self-registration into games via join flow.",
+      "scope": [
+        "Implement quick nickname-first player creation endpoint.",
+        "Implement join code/QR registration endpoint attaching player to active game.",
+        "Persist player-game linkage for roster selection and later claim flow."
+      ],
+      "outOfScope": [
+        "Account claim conflict resolution UI.",
+        "Rich player profile management."
+      ],
+      "acceptanceCriteria": [
+        "Organizer can create player with nickname only in setup flow.",
+        "Player can register via join code and appear in game player pool.",
+        "Both pathways result in consistent player entity format for downstream use."
+      ],
+      "testScenarios": [
+        "Quick-create then roster assignment in same session.",
+        "Join code registration against active game.",
+        "Duplicate nickname handling does not break player lookup."
+      ]
+    },
+    {
+      "id": "M2-03",
+      "title": "Roster assignment endpoints + mobile setup UI (recent players + search)",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:app", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M2-02"],
+      "summary": "Enable rapid assignment/reassignment of players to teams before and during games.",
+      "scope": [
+        "Implement roster assignment APIs for team/player tuples.",
+        "Build mobile UI for quick assignment, late joins, and team rebalancing.",
+        "Surface recent players and search to reduce setup friction."
+      ],
+      "outOfScope": [
+        "Lineup tracking by time-on-pitch.",
+        "Substitution history analytics."
+      ],
+      "acceptanceCriteria": [
+        "Scorekeeper can assign and reassign players across teams quickly.",
+        "Late-joining players can be added and assigned without leaving game flow.",
+        "Roster API and UI stay in sync under concurrent local interactions."
+      ],
+      "testScenarios": [
+        "Assign full roster then reassign a player mid-setup.",
+        "Search and select from recent player list.",
+        "API rejects invalid team/player combinations cleanly."
+      ]
+    },
+    {
+      "id": "M2-04",
+      "title": "Third timer state machine (start/finish, stoppage display, server checks)",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:app", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M1-06"],
+      "summary": "Implement three-period timer control with stoppage behavior and server-side transition validation.",
+      "scope": [
+        "Build timer state machine for thirds 1..3 with explicit start/finish actions.",
+        "Display nominal time and stoppage progression in live UI.",
+        "Enforce valid transition sequence in API state checks."
+      ],
+      "outOfScope": [
+        "Authoritative real-time synchronization across multiple scorekeepers.",
+        "Background timer continuation with offline support."
+      ],
+      "acceptanceCriteria": [
+        "Third timer transitions are deterministic and reject invalid transitions.",
+        "Stoppage formatting is displayed correctly after nominal third length.",
+        "Goal events are timestamped with active third and display time data."
+      ],
+      "testScenarios": [
+        "Start/finish each third in order.",
+        "Attempt to finish unstarted third and verify rejection.",
+        "Stoppage rendering snapshots at boundary conditions."
+      ]
+    },
+    {
+      "id": "M2-05",
+      "title": "Goal create API + scoring engine + rules validation",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:api", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M2-03", "M2-04"],
+      "summary": "Implement goal event creation and game scoring logic according to locked 3FC rules.",
+      "scope": [
+        "Create goal endpoint with idempotency support.",
+        "Validate own-goal and assist rules (max 3, unique assists, scorer excluded, any-team assists).",
+        "Compute and persist conceded/scored tallies and timeline sort fields."
+      ],
+      "outOfScope": [
+        "Goal edit/delete/undo operations.",
+        "Season-level aggregation."
+      ],
+      "acceptanceCriteria": [
+        "Own goals increment conceding tally only; scoring tally unchanged.",
+        "Assist validation enforces max 3 and disallows scorer/duplicates.",
+        "Created goal events include third/time metadata from timer state."
+      ],
+      "testScenarios": [
+        "Standard goal with assists from mixed teams.",
+        "Own goal submission with `scoringTeamId=null`.",
+        "Invalid assist payload rejected with schema/business validation errors."
+      ]
+    },
+    {
+      "id": "M2-06",
+      "title": "Goal edit/delete/undo-last + minimal admin audit entries",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:api", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M2-05"],
+      "summary": "Allow correction workflows for timeline events while preserving minimal audit trace.",
+      "scope": [
+        "Implement goal update and delete endpoints.",
+        "Implement one-tap undo-last behavior as deletion of most recent event.",
+        "Record admin-visible audit entries for change actions."
+      ],
+      "outOfScope": [
+        "Full immutable event sourcing.",
+        "Complex diff visualization for edits."
+      ],
+      "acceptanceCriteria": [
+        "Undo operation removes only current most-recent goal event.",
+        "Edits/deletes correctly recompute game tallies and timeline ordering.",
+        "Audit records include who, when, and what action metadata."
+      ],
+      "testScenarios": [
+        "Undo after sequence of multiple goals.",
+        "Edit own-goal event into standard goal and verify recalculation.",
+        "Unauthorized user cannot edit/delete events."
+      ]
+    },
+    {
+      "id": "M2-07",
+      "title": "Live game UI: add-goal flow, mini scoreboard, timeline editing",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:app", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M2-05", "M2-06"],
+      "summary": "Deliver mobile-first in-game UX for rapid goal entry, score visibility, and timeline corrections.",
+      "scope": [
+        "Implement add-goal modal/screen flow with team/scorer/assist selection.",
+        "Render live mini-scoreboard (conceded and scored tallies).",
+        "Provide timeline list with edit/remove and one-tap undo."
+      ],
+      "outOfScope": [
+        "Desktop-optimized complex layouts.",
+        "Advanced analytics visualizations."
+      ],
+      "acceptanceCriteria": [
+        "Scorekeeper can log and correct goals quickly on a phone viewport.",
+        "Timeline and scoreboard update immediately after goal mutations.",
+        "Undo control is clearly accessible and performs latest-event removal."
+      ],
+      "testScenarios": [
+        "Mobile interaction smoke for repeated rapid goal entries.",
+        "Timeline edit/delete from historical event.",
+        "UI state remains consistent after API rejection of invalid payload."
+      ]
+    },
+    {
+      "id": "M2-08",
+      "title": "Finish game computation + winner resolution + status lock",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:api", "type:feature", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M2-05"],
+      "summary": "Finalize game state with deterministic winner/draw logic and lock-down semantics.",
+      "scope": [
+        "Implement `/v1/games/{gameId}/finish` endpoint with idempotency.",
+        "Apply winner resolution comparator: fewest conceded, then most scored, else draw.",
+        "Lock finished games from non-admin modifications."
+      ],
+      "outOfScope": [
+        "Notification dispatch pipeline.",
+        "Season standings aggregation."
+      ],
+      "acceptanceCriteria": [
+        "Finish endpoint computes and stores game result deterministically.",
+        "Finished status prevents standard mutation endpoints from updating game state.",
+        "Admin override path remains possible for corrective workflows."
+      ],
+      "testScenarios": [
+        "Finish game with clear winner.",
+        "Finish game with full draw case.",
+        "Attempt post-finish goal creation as non-admin and verify rejection."
+      ]
+    },
+    {
+      "id": "M2-09",
+      "title": "M2 quality pack (unit + contract + Playwright smoke)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M2",
+      "milestone": "M2 Live Match Operations",
+      "labels": ["area:qa", "type:test", "milestone:M2", "priority:P0"],
+      "dependsOn": ["M2-08"],
+      "summary": "Establish robust automated coverage for MVP scoring, timeline, and setup flows.",
+      "scope": [
+        "Add unit tests for scoring rules, own-goal behavior, timer formatting, and standings comparator dependencies.",
+        "Add API contract tests for implemented M1/M2 routes.",
+        "Add Playwright smoke path from setup through finish game."
+      ],
+      "outOfScope": [
+        "Full cross-browser E2E matrix.",
+        "Load/performance testing."
+      ],
+      "acceptanceCriteria": [
+        "CI-required test suite passes for lint + unit + contract checks.",
+        "Playwright smoke test validates end-to-end MVP happy path.",
+        "Regression tests cover locked edge cases from product rules."
+      ],
+      "testScenarios": [
+        "Own-goal and assist rule edge-case unit tests.",
+        "Contract mismatch fails CI.",
+        "E2E setup->roster->goal->finish execution in local stack."
+      ]
+    },
+    {
+      "id": "M3-01",
+      "title": "Public route resolution /{league}/{season}/{game} (slug/id support)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": ["area:app", "type:feature", "milestone:M3", "priority:P1"],
+      "dependsOn": ["M2-08"],
+      "summary": "Support canonical public route resolution for game pages using human-friendly or ID-based segments.",
+      "scope": [
+        "Implement route parser/resolver for league, season, and game segments.",
+        "Support lookup by slug or id for league/season and by gameId for games.",
+        "Emit canonical URL behavior to avoid duplicate content paths."
+      ],
+      "outOfScope": [
+        "Public standings and leaderboards rendering.",
+        "SEO optimization beyond canonical linking."
+      ],
+      "acceptanceCriteria": [
+        "Public game URLs resolve correctly for slug and id forms.",
+        "Invalid route combinations return clean not-found behavior.",
+        "Canonical URL output is deterministic for resolved pages."
+      ],
+      "testScenarios": [
+        "Slug-based route lookup.",
+        "ID-based route lookup.",
+        "Mixed valid/invalid segment combinations."
+      ]
+    },
+    {
+      "id": "M3-02",
+      "title": "Public game results page (totals, thirds breakdown, timeline)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": ["area:app", "type:feature", "milestone:M3", "priority:P1"],
+      "dependsOn": ["M3-01"],
+      "summary": "Render complete public game outcomes with team and player-visible context while preserving privacy.",
+      "scope": [
+        "Build public results UI including winner banner, totals, third-by-third stats, and timeline.",
+        "Show player nicknames and optional avatars only.",
+        "Integrate with public game read endpoints."
+      ],
+      "outOfScope": [
+        "Authenticated private profile stats.",
+        "Season-level pages."
+      ],
+      "acceptanceCriteria": [
+        "Public results page shows conceded/scored per third and total.",
+        "Timeline displays goal details with own-goal and assist context.",
+        "No private email or sensitive identity fields are exposed."
+      ],
+      "testScenarios": [
+        "Render normal win scenario.",
+        "Render draw scenario.",
+        "Privacy regression test ensures email fields absent."
+      ]
+    },
+    {
+      "id": "M3-03",
+      "title": "Season standings aggregation + API (wins/draws/losses ranking rule)",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": ["area:data", "type:feature", "milestone:M3", "priority:P1"],
+      "dependsOn": ["M2-08"],
+      "summary": "Compute and expose season standings using locked ranking rules and deterministic ordering.",
+      "scope": [
+        "Implement aggregation of played, wins, draws, losses, conceded, scored from completed games.",
+        "Implement `GET /v1/public/seasons/{seasonId}/standings` endpoint.",
+        "Apply comparator: wins DESC, draws DESC, conceded ASC, scored DESC."
+      ],
+      "outOfScope": [
+        "Points-based ladders.",
+        "Historical recalculation optimization for very large datasets."
+      ],
+      "acceptanceCriteria": [
+        "Standings endpoint returns all required fields and rank ordering.",
+        "Tie-break ordering is deterministic for equal wins/draws cases.",
+        "Only finished games contribute to standings."
+      ],
+      "testScenarios": [
+        "Multi-team comparator ordering edge cases.",
+        "Season with no completed games returns empty/zero-safe output.",
+        "Recompute standings after corrected finished game."
+      ]
+    },
+    {
+      "id": "M3-04",
+      "title": "Player leaderboards (total goals, goals-per-match, own-goals separate)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": ["area:api", "type:feature", "milestone:M3", "priority:P1"],
+      "dependsOn": ["M3-03"],
+      "summary": "Provide player leaderboard endpoints with own-goals tracked separately from goals-scored metrics.",
+      "scope": [
+        "Implement player scoring aggregation for total goals and goals-per-match.",
+        "Track and expose own-goal count as separate statistic.",
+        "Implement `GET /v1/public/seasons/{seasonId}/leaderboards/players` endpoint."
+      ],
+      "outOfScope": [
+        "Advanced assist network analytics.",
+        "Player reputation/rating systems."
+      ],
+      "acceptanceCriteria": [
+        "Leaderboard excludes own goals from goals-scored totals.",
+        "Goals-per-match calculation handles low sample sizes safely.",
+        "Endpoint returns sortable data for at least total and per-match metrics."
+      ],
+      "testScenarios": [
+        "Player with only own goals appears with zero goals-scored and own-goal count.",
+        "Players tied on goals with differing match counts.",
+        "Season reset behavior for new season id."
+      ]
+    },
+    {
+      "id": "M3-05",
+      "title": "Player claim flow and conflict handling",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": ["area:auth", "type:feature", "milestone:M3", "priority:P1"],
+      "dependsOn": ["M2-02", "M1-04"],
+      "summary": "Allow authenticated users to claim quick-created player records with safe conflict handling.",
+      "scope": [
+        "Implement claim endpoint and claim record persistence.",
+        "Add collision handling rules for already-claimed players.",
+        "Support linking current user identity to existing player profile."
+      ],
+      "outOfScope": [
+        "Manual admin merge tools for duplicate players.",
+        "Self-service unclaim/transfer flows."
+      ],
+      "acceptanceCriteria": [
+        "Authenticated user can claim eligible player profile.",
+        "Already-claimed profiles return clear conflict response.",
+        "Claim linkage enables private stats retrieval for claimant only."
+      ],
+      "testScenarios": [
+        "Claim happy-path from quick-created nickname profile.",
+        "Attempt double-claim from different user.",
+        "Unauthorized claim request denied."
+      ]
+    },
+    {
+      "id": "M3-06",
+      "title": "Personal profile page (private stats, claimed identity context)",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": ["area:app", "type:feature", "milestone:M3", "priority:P2"],
+      "dependsOn": ["M3-05", "M3-04"],
+      "summary": "Provide authenticated users a private view of their own performance metrics.",
+      "scope": [
+        "Build private profile page with claim-aware identity context.",
+        "Display personal goals, assists, and match counts from aggregated stats.",
+        "Enforce owner-only access for private fields."
+      ],
+      "outOfScope": [
+        "Editable profile settings.",
+        "Social/following features."
+      ],
+      "acceptanceCriteria": [
+        "Claimed users can view personal stats when authenticated.",
+        "Non-owners cannot access another player's private profile endpoint/page.",
+        "Profile view uses same leaderboard aggregation source of truth."
+      ],
+      "testScenarios": [
+        "Authenticated owner profile load.",
+        "Anonymous/private page access redirect or deny.",
+        "Profile reflects updated stats after completed game."
+      ]
+    },
+    {
+      "id": "M4-01",
+      "title": "Async game-finish notification pipeline (queue + worker)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M4",
+      "milestone": "M4 Notifications and Product Polish",
+      "labels": ["area:ops", "type:feature", "milestone:M4", "priority:P2"],
+      "dependsOn": ["M2-08"],
+      "summary": "Move notification dispatch to async pipeline with retries and failure visibility.",
+      "scope": [
+        "Publish game-finish events to queue/event bus.",
+        "Implement worker Lambda consuming events and orchestrating notification jobs.",
+        "Add retry and dead-letter strategy for failed sends."
+      ],
+      "outOfScope": [
+        "SMS/push notification channels.",
+        "Cross-game digest batching."
+      ],
+      "acceptanceCriteria": [
+        "Finishing a game enqueues notification work instead of blocking request.",
+        "Worker retries transient failures and captures terminal failures.",
+        "Operational logs provide traceability from game finish to send outcome."
+      ],
+      "testScenarios": [
+        "Queue message produced on finish endpoint success.",
+        "Worker retry behavior under simulated SES failure.",
+        "Dead-letter behavior after max retries reached."
+      ]
+    },
+    {
+      "id": "M4-02",
+      "title": "SES email templates (summary + personal callouts + result link)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M4",
+      "milestone": "M4 Notifications and Product Polish",
+      "labels": ["area:api", "type:feature", "milestone:M4", "priority:P2"],
+      "dependsOn": ["M4-01"],
+      "summary": "Implement personalized game-finish email rendering and delivery for claimed players.",
+      "scope": [
+        "Create templating for game summary and personal scorer/assist callouts.",
+        "Send only to claimed players with valid email ownership.",
+        "Ensure local fake SES parity for test and preview."
+      ],
+      "outOfScope": [
+        "Transactional email preference center.",
+        "Localization/i18n email variants."
+      ],
+      "acceptanceCriteria": [
+        "Email body includes game summary, personal callouts, and result link.",
+        "Delivery targets only eligible claimed players.",
+        "Fake SES captures rendered content for local verification."
+      ],
+      "testScenarios": [
+        "Player with goals+assists receives personalized copy.",
+        "Claimed player with no contributions still receives summary email.",
+        "Unclaimed player does not receive email."
+      ]
+    },
+    {
+      "id": "M4-03",
+      "title": "QR join UX polish and onboarding latency optimization",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M4",
+      "milestone": "M4 Notifications and Product Polish",
+      "labels": ["area:app", "type:feature", "milestone:M4", "priority:P2"],
+      "dependsOn": ["M2-02"],
+      "summary": "Refine QR join flow UX to hit target onboarding duration for most players.",
+      "scope": [
+        "Improve join screen interaction model for mobile speed.",
+        "Reduce required steps and keystrokes for first-time join.",
+        "Instrument and measure time-to-join metrics."
+      ],
+      "outOfScope": [
+        "Native app deep-linking.",
+        "Offline join mode."
+      ],
+      "acceptanceCriteria": [
+        "Median join completion time trends toward 20-30s target in QA sampling.",
+        "Flow supports both pre-existing and first-time users without dead-ends.",
+        "Join errors provide clear recovery messaging."
+      ],
+      "testScenarios": [
+        "Time-boxed usability run for new player onboarding.",
+        "Join link opened on different mobile browsers.",
+        "Invalid/expired join code handling."
+      ]
+    },
+    {
+      "id": "M4-04",
+      "title": "Observability pack (dashboards, alerts, failure drilldowns)",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M4",
+      "milestone": "M4 Notifications and Product Polish",
+      "labels": ["area:ops", "type:feature", "milestone:M4", "priority:P2"],
+      "dependsOn": ["M4-01", "M4-02"],
+      "summary": "Introduce operations visibility for runtime health, auth failures, and notification reliability.",
+      "scope": [
+        "Create dashboards for API latency/error rates, auth failures, and email job outcomes.",
+        "Define alert thresholds and routing for critical failure classes.",
+        "Document drilldown runbooks for common incidents."
+      ],
+      "outOfScope": [
+        "24/7 on-call process definition.",
+        "Third-party observability platform migration."
+      ],
+      "acceptanceCriteria": [
+        "Dashboards show key health metrics for app/api/auth/notification paths.",
+        "Alerts fire for configured failure thresholds and are testable.",
+        "Runbook docs exist for top incident categories."
+      ],
+      "testScenarios": [
+        "Force API 5xx spike and verify alert trigger.",
+        "Simulate notification failure and inspect dashboard drilldown.",
+        "Auth failure rate anomaly alert validation."
+      ]
+    },
+    {
+      "id": "M4-05",
+      "title": "Final security hardening (CSP, headers, cookie flags, permission review)",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M4",
+      "milestone": "M4 Notifications and Product Polish",
+      "labels": ["area:auth", "type:security", "milestone:M4", "priority:P1"],
+      "dependsOn": ["M3-06"],
+      "summary": "Perform final security review pass and enforce production-ready defaults.",
+      "scope": [
+        "Harden CSP and security headers for app routes.",
+        "Review and enforce cookie/session security attributes across environments.",
+        "Audit permission boundaries for app and API access paths."
+      ],
+      "outOfScope": [
+        "External penetration testing engagement.",
+        "Compliance certification workflows."
+      ],
+      "acceptanceCriteria": [
+        "Security checklist items are complete and documented.",
+        "Header and cookie policies are enforced in QA/prod deploys.",
+        "Permission review closes known over-broad access paths."
+      ],
+      "testScenarios": [
+        "Automated security header assertions.",
+        "Session cookie policy verification in browser devtools checks.",
+        "Authorization regression test sweep across privileged routes."
+      ]
+    }
+  ],
+  "globalTestScenarios": [
+    "Winner computation across all tie patterns, including full draw.",
+    "Own goal behavior increments conceding only and never any team scored.",
+    "Assist validation enforces max 3, unique IDs, scorer excluded, any-team allowed.",
+    "Undo last goal removes only latest event and preserves audit record.",
+    "Timer transitions enforce start/finish semantics and stoppage formatting.",
+    "Idempotency key behavior on goal writes and finish endpoint.",
+    "ACL blocks non-admin mutation attempts.",
+    "Magic-link lifecycle covers valid/expired/replayed/tampered links.",
+    "QR join registration makes player immediately selectable in roster flow.",
+    "Standings comparator ordering is deterministic for tied records."
+  ],
+  "assumptions": [
+    "Runtime defaults to current Node LTS + npm workspace tooling.",
+    "AWS primary region remains ap-southeast-2.",
+    "Single scorekeeper editing model in v0 (no multi-editor conflict support).",
+    "Offline support remains out of scope for v0.",
+    "Terraform state continues in existing S3+Dynamo locking backend.",
+    "E2E tests are implemented during MVP but not required merge-gate checks initially."
+  ]
+}
