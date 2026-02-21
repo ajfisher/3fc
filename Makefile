@@ -6,6 +6,13 @@ REPO ?=
 help:
 	@echo "Usage: make [target]"
 	@echo ""
+	@echo "Core targets:"
+	@echo "  make install                            Install workspace dependencies"
+	@echo "  make build                              Build all workspaces"
+	@echo "  make test                               Run tests for all workspaces"
+	@echo "  make clean                              Remove workspace build artifacts"
+	@echo "  make deploy ENV=qa|prod                 Guarded deploy entrypoint"
+	@echo ""
 	@echo "Backlog targets:"
 	@echo "  make backlog-validate                   Validate backlog JSON"
 	@echo "  make backlog-export                     Generate docs/backlog/backlog.md from backlog JSON"
@@ -13,13 +20,13 @@ help:
 	@echo "  make backlog-sync REPO=owner/repo      Create labels/milestones/issues in GitHub"
 
 clean:
-	@echo "Not implemented yet"
+	npm run clean
 
 build:
-	@echo "Not implemented yet"
+	npm run build
 
 test:
-	@echo "Not implemented yet"
+	npm run test
 
 deploy:
 	@if [ -z "$(ENV)" ] || { [ "$(ENV)" != "qa" ] && [ "$(ENV)" != "prod" ]; }; then \
@@ -29,7 +36,7 @@ deploy:
 	@echo "Not implemented yet"
 
 install:
-	@echo "Not implemented yet"
+	npm install
 
 backlog-validate:
 	./scripts/github/validate_backlog.sh $(BACKLOG_FILE)
@@ -50,4 +57,3 @@ backlog-sync:
 		exit 1; \
 	fi
 	./scripts/github/create_backlog_issues.sh --repo $(REPO) --backlog-file $(BACKLOG_FILE)
-
