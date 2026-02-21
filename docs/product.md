@@ -84,7 +84,7 @@ team.
 10. Finish game → compute winner + stats → send email summaries to claimed
 players.
 11. Share results via public game URL (suggested: /league/season/game, each as
-ID or human-friendly slug e.g. /melbourne-3fc/2025-26/20260222/).
+ID or human-friendly slug e.g. https://3fc.football/melbourne-3fc/2025-26/20260222/).
 
 ## Screens (v0)
 
@@ -135,4 +135,4 @@ ID or human-friendly slug e.g. /melbourne-3fc/2025-26/20260222/).
   only)?
     - /league/season/game
     - Each of these to be an ID or human friendly identifier eg
-      /Melbourne-3fc/2025-26/20260222/
+      https://3fc.football/melbourne-3fc/2025-26/20260222/

@@ -36,6 +36,12 @@ For conflicts, resolve in this order:
 2. `docs/spec.md` (technical architecture and platform constraints)
 3. `docs/product.md` (user and product intent)
 
+## Domain Defaults
+
+- Production domain is `https://3fc.football`.
+- When documenting or implementing public URLs, use this domain as the canonical host.
+- If QA hostnames are needed, define them explicitly in docs/infra rather than assuming.
+
 ## Implementation Defaults
 
 ### API and Contracts

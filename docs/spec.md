@@ -25,12 +25,12 @@ Clean, consolidated version of the technical spec. Canonical going forward.
 ## 3. Terraform resources (minimum set)
 
 - S3 (site + optional logs)
-- CloudFront + OAC; ACM; Route53 (if custom domain)
+- CloudFront + OAC; ACM; Route53 for `3fc.football`
 - Cognito User Pool, clients, IdPs (Google/Facebook)
 - API Gateway HTTP API + JWT authorizer
 - Lambda functions + IAM
 - DynamoDB PAY_PER_REQUEST + PITR
-- SES verified domain/from-address (+ optional SNS bounces)
+- SES verified domain/from-address for `3fc.football` (+ optional SNS bounces)
 - EventBridge/SQS optional for async notifications
 
 ## 4. ID + URL strategy
@@ -38,6 +38,7 @@ Clean, consolidated version of the technical spec. Canonical going forward.
 - IDs: ULID.
 - Public URLs: /{league}/{season}/{game} (league+season can be slug or id; game
   always accessible by gameId).
+- Production base URL: `https://3fc.football`.
 
 ## 5. Data model (DynamoDB single table)
 
@@ -154,6 +155,7 @@ POST  /v1/players/{playerId}/claim
 - The `production` environment application will be deployed to via github
   workflows and will reside in AWS. It will be automatically deployed to when a
   branch is merged to the `main` branch and will be fully automated.
+- Production site host/domain: `https://3fc.football`.
 - Infrastructure will be deployed via terraform from local shells to apply
   updates using AWS Developer accounts. State will be managed using S3 based
   state management in a bucket that will be used explicitly for this purpose

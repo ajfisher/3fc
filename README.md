@@ -6,6 +6,11 @@ Phone-first web application for managing and scoring Three Sided Football Club (
 
 This repository contains the product, technical, infrastructure, and delivery assets for the 3FC v0 build.
 
+## Domain
+
+- Production web domain: `https://3fc.football`
+- Public game URLs should resolve under this domain using `/{league}/{season}/{game}` paths.
+
 Primary source docs:
 
 - `docs/product.md`: product brief, UX flows, and game rules
