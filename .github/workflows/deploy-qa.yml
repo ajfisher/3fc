@@ -52,6 +52,37 @@ jobs:
       - name: Deploy API health service to QA
         run: make deploy ENV=qa SERVICE=api-health
 
+      - name: Smoke test deployed QA health endpoint
+        run: |
+          MANIFEST_PATH="out/deploy/qa/api-health-deploy-manifest.json"
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "Expected deploy manifest at $MANIFEST_PATH"
+            exit 1
+          fi
+
+          API_ID="$(jq -r '.httpApiId // empty' "$MANIFEST_PATH")"
+          if [ -z "$API_ID" ]; then
+            echo "Deploy manifest did not include httpApiId."
+            exit 1
+          fi
+
+          ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/health"
+          HTTP_CODE="$(curl -sS -o /tmp/qa-health.json -w '%{http_code}' "$ENDPOINT")"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${ENDPOINT} (HTTP ${HTTP_CODE})"
+            cat /tmp/qa-health.json
+            exit 1
+          fi
+
+          jq -e '.status == "ok"' /tmp/qa-health.json >/dev/null
+
+          {
+            echo "SMOKE_ENDPOINT=${ENDPOINT}"
+            echo "SMOKE_HTTP_CODE=${HTTP_CODE}"
+          } >> "$GITHUB_ENV"
+
       - name: Write deployment summary
         run: |
           {
@@ -59,4 +90,6 @@ jobs:
             echo "- PR: #${{ github.event.pull_request.number }}"
             echo "- Commit: ${{ github.event.pull_request.head.sha }}"
             echo "- Service: api-health"
+            echo "- Smoke endpoint: ${SMOKE_ENDPOINT}"
+            echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
           } >> "$GITHUB_STEP_SUMMARY"

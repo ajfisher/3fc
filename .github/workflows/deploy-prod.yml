@@ -50,6 +50,37 @@ jobs:
       - name: Deploy API health service to production
         run: make deploy ENV=prod SERVICE=api-health
 
+      - name: Smoke test deployed production health endpoint
+        run: |
+          MANIFEST_PATH="out/deploy/prod/api-health-deploy-manifest.json"
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "Expected deploy manifest at $MANIFEST_PATH"
+            exit 1
+          fi
+
+          API_ID="$(jq -r '.httpApiId // empty' "$MANIFEST_PATH")"
+          if [ -z "$API_ID" ]; then
+            echo "Deploy manifest did not include httpApiId."
+            exit 1
+          fi
+
+          ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/health"
+          HTTP_CODE="$(curl -sS -o /tmp/prod-health.json -w '%{http_code}' "$ENDPOINT")"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${ENDPOINT} (HTTP ${HTTP_CODE})"
+            cat /tmp/prod-health.json
+            exit 1
+          fi
+
+          jq -e '.status == "ok"' /tmp/prod-health.json >/dev/null
+
+          {
+            echo "SMOKE_ENDPOINT=${ENDPOINT}"
+            echo "SMOKE_HTTP_CODE=${HTTP_CODE}"
+          } >> "$GITHUB_ENV"
+
       - name: Write deployment summary
         run: |
           {
@@ -57,4 +88,6 @@ jobs:
             echo "- Branch: main"
             echo "- Commit: ${{ github.sha }}"
             echo "- Service: api-health"
+            echo "- Smoke endpoint: ${SMOKE_ENDPOINT}"
+            echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
           } >> "$GITHUB_STEP_SUMMARY"
