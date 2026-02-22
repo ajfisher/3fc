@@ -117,6 +117,15 @@ Notes:
 
 `Makefile` provides working install/build/test targets for the npm workspace, backlog automation targets, and deploy env guardrails.
 
+Deploy scaffold examples:
+
+```bash
+make deploy ENV=qa
+make deploy ENV=prod
+```
+
+`make deploy` currently prepares a versioned application artifact bundle and manifest under `out/deploy/<env>/` (without creating cloud resources directly).
+
 Run help:
 
 ```bash
