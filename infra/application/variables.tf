@@ -68,6 +68,35 @@ variable "ses_from_email" {
   default     = "noreply@3fc.football"
 }
 
+variable "github_repository" {
+  description = "GitHub repository allowed to assume deploy role (owner/repo)"
+  type        = string
+  default     = "ajfisher/3fc"
+}
+
+variable "github_environment_name" {
+  description = "GitHub Actions environment name allowed to assume deploy role"
+  type        = string
+}
+
+variable "create_github_oidc_provider" {
+  description = "When true, create the GitHub OIDC provider in this environment stack"
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_client_id_list" {
+  description = "OIDC client IDs for the GitHub provider"
+  type        = list(string)
+  default     = ["sts.amazonaws.com"]
+}
+
+variable "github_oidc_thumbprint_list" {
+  description = "Thumbprints used when creating the GitHub OIDC provider"
+  type        = list(string)
+  default     = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+}
+
 variable "tags" {
   description = "Additional resource tags"
   type        = map(string)

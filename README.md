@@ -154,6 +154,12 @@ make help
 
 Required GitHub repo configuration:
 
-- Add secret `AWS_ROLE_TO_ASSUME_QA` for QA deploy role assumption.
-- Add secret `AWS_ROLE_TO_ASSUME_PROD` for production deploy role assumption.
+- Add secret `AWS_ROLE_TO_ASSUME_QA` using `terraform -chdir=infra/qa output -raw github_actions_deploy_role_arn`.
+- Add secret `AWS_ROLE_TO_ASSUME_PROD` using `terraform -chdir=infra/prod output -raw github_actions_deploy_role_arn`.
 - Configure branch protection on `main` to require `PR checks / merge-gate` before merge.
+
+Notes:
+
+- `github_actions_deploy_role_arn` is the CI deploy role (OIDC-assumable by GitHub Actions).
+- `lambda_execution_role_arn` is the runtime role used by Lambda functions and should not be used as the GitHub secret.
+- The GitHub OIDC provider is account-scoped and is created from `infra/qa`; run QA Terraform apply once before the first prod apply.

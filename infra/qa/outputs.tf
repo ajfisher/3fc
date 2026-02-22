@@ -37,3 +37,8 @@ output "lambda_execution_role_arn" {
   description = "Execution role ARN used by deployed Lambda functions"
   value       = module.app.lambda_execution_role_arn
 }
+
+output "github_actions_deploy_role_arn" {
+  description = "OIDC-assumable IAM role ARN for GitHub Actions deployments"
+  value       = module.app.github_actions_deploy_role_arn
+}
