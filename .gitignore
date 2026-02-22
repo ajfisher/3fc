@@ -39,6 +39,7 @@ coverage
 # Node workspace artifacts
 node_modules/
 dist/
+dist-tests/
 
 # Optional npm cache directory
 .npm

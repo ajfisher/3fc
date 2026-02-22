@@ -2,6 +2,7 @@
 
 BACKLOG_FILE ?= docs/backlog/backlog.json
 REPO ?=
+SERVICE ?= api-health
 
 help:
 	@echo "Usage: make [target]"
@@ -14,7 +15,7 @@ help:
 	@echo "  make dev                                Start local Docker Compose stack"
 	@echo "  make dev-down                           Stop local Docker Compose stack"
 	@echo "  make dev-logs                           Follow local Docker Compose logs"
-	@echo "  make deploy ENV=qa|prod                 Guarded deploy entrypoint"
+	@echo "  make deploy ENV=qa|prod [SERVICE=name]   Build and deploy a Serverless endpoint service"
 	@echo ""
 	@echo "Backlog targets:"
 	@echo "  make backlog-validate                   Validate backlog JSON"
@@ -37,7 +38,7 @@ deploy:
 		echo "ENV must be set to qa or prod"; \
 		exit 1; \
 	fi
-	./scripts/deploy/deploy-app.sh $(ENV)
+	./scripts/deploy/deploy-app.sh $(ENV) $(SERVICE)
 
 install:
 	npm install

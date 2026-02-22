@@ -8,8 +8,10 @@ This repository contains the product, technical, infrastructure, and delivery as
 
 ## Domain
 
-- Production web domain: `https://3fc.football`
-- Public game URLs should resolve under this domain using `/{league}/{season}/{game}` paths.
+- Primary domain: `https://3fc.football`
+- Production app domain: `https://app.3fc.football`
+- QA app domain: `https://qa.3fc.football`
+- Public game URLs should resolve under the production app domain using `/{league}/{season}/{game}` paths.
 
 Primary source docs:
 
@@ -117,14 +119,26 @@ Notes:
 
 `Makefile` provides working install/build/test targets for the npm workspace, backlog automation targets, and deploy env guardrails.
 
-Deploy scaffold examples:
+Build and deploy examples:
 
 ```bash
-make deploy ENV=qa
-make deploy ENV=prod
+make build
+AWS_PROFILE=3fc-agent make deploy ENV=qa
+AWS_PROFILE=3fc-agent make deploy ENV=prod
+AWS_PROFILE=3fc-agent make deploy ENV=qa SERVICE=api-health
 ```
 
-`make deploy` currently prepares a versioned application artifact bundle and manifest under `out/deploy/<env>/` (without creating cloud resources directly).
+`make build` compiles workspace artifacts (`dist/` outputs) without deployment.
+
+`make deploy ENV=<qa|prod> [SERVICE=<name>]` builds and deploys the selected Serverless endpoint service.
+
+Serverless definitions live in `serverless.<service>.yml` (for example `serverless.api-health.yml`). This allows endpoint services to be split and deployed independently.
+
+Serverless manages API/Lambda provisioning through CloudFormation stacks per service and stage.
+
+The deploy script reads API and IAM role outputs from `infra/<env>` Terraform state, so the environment infrastructure must be provisioned first.
+
+Scale note: as endpoint count grows, keep adding discrete `serverless.<service>.yml` services and group deployments by domain area.
 
 Run help:
 

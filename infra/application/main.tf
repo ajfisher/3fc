@@ -196,18 +196,11 @@ resource "aws_iam_role" "lambda_exec" {
   tags = local.app_tags
 }
 
-resource "aws_lambda_function" "placeholder" {
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   count = var.create_baseline_resources ? 1 : 0
 
-  function_name = "${local.name_prefix}-placeholder"
-  role          = aws_iam_role.lambda_exec[0].arn
-  handler       = "index.handler"
-  runtime       = "nodejs22.x"
-
-  s3_bucket = aws_s3_bucket.site[0].id
-  s3_key    = var.lambda_placeholder_s3_key
-
-  tags = local.app_tags
+  role       = aws_iam_role.lambda_exec[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
 resource "aws_ses_email_identity" "from_address" {
@@ -239,4 +232,19 @@ output "api_id" {
 output "cognito_user_pool_id" {
   description = "Cognito user pool ID"
   value       = try(aws_cognito_user_pool.app[0].id, null)
+}
+
+output "api_invoke_url" {
+  description = "Base invoke URL for the HTTP API"
+  value       = try(aws_apigatewayv2_stage.default[0].invoke_url, null)
+}
+
+output "api_execution_arn" {
+  description = "Execution ARN for the HTTP API"
+  value       = try(aws_apigatewayv2_api.http[0].execution_arn, null)
+}
+
+output "lambda_execution_role_arn" {
+  description = "Execution role ARN used by deployed Lambda functions"
+  value       = try(aws_iam_role.lambda_exec[0].arn, null)
 }

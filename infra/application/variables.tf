@@ -62,12 +62,6 @@ variable "logs_bucket_name" {
   default     = null
 }
 
-variable "lambda_placeholder_s3_key" {
-  description = "S3 key for placeholder Lambda deployment package"
-  type        = string
-  default     = "lambda/placeholder.zip"
-}
-
 variable "ses_from_email" {
   description = "SES sender email identity used by the app"
   type        = string
