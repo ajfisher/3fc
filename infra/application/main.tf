@@ -277,10 +277,18 @@ data "aws_iam_policy_document" "github_actions_deploy_permissions" {
   }
 
   statement {
-    sid    = "PassLambdaExecutionRole"
+    sid    = "ReadLambdaExecutionRole"
     effect = "Allow"
     actions = [
       "iam:GetRole",
+    ]
+    resources = [aws_iam_role.lambda_exec[0].arn]
+  }
+
+  statement {
+    sid    = "PassLambdaExecutionRole"
+    effect = "Allow"
+    actions = [
       "iam:PassRole",
     ]
     resources = [aws_iam_role.lambda_exec[0].arn]

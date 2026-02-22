@@ -52,7 +52,7 @@ if [[ -z "$HTTP_API_ID" ]]; then
   HTTP_API_ID="$(aws apigatewayv2 get-apis \
     --region "$AWS_REGION" \
     --query "Items[?Name=='${API_NAME}'].ApiId | [0]" \
-    --output text 2>/dev/null || true)"
+    --output text || true)"
 fi
 
 if [[ "$HTTP_API_ID" == "None" ]]; then
@@ -64,7 +64,7 @@ if [[ -z "$LAMBDA_EXECUTION_ROLE_ARN" ]]; then
   LAMBDA_EXECUTION_ROLE_ARN="$(aws iam get-role \
     --role-name "$LAMBDA_EXEC_ROLE_NAME" \
     --query 'Role.Arn' \
-    --output text 2>/dev/null || true)"
+    --output text || true)"
 fi
 
 if [[ "$LAMBDA_EXECUTION_ROLE_ARN" == "None" ]]; then
