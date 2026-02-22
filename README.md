@@ -136,7 +136,7 @@ Serverless definitions live in `serverless.<service>.yml` (for example `serverle
 
 Serverless manages API/Lambda provisioning through CloudFormation stacks per service and stage.
 
-The deploy script reads API and IAM role outputs from `infra/<env>` Terraform state, so the environment infrastructure must be provisioned first.
+The deploy script requires `HTTP_API_ID` and `LAMBDA_EXECUTION_ROLE_ARN` and resolves them from env vars first, then from AWS by convention (`3fc-<env>-http-api`, `3fc-<env>-lambda-exec`). Infrastructure must be provisioned first.
 
 Scale note: as endpoint count grows, keep adding discrete `serverless.<service>.yml` services and group deployments by domain area.
 
@@ -145,3 +145,21 @@ Run help:
 ```bash
 make help
 ```
+
+## CI/CD Workflows
+
+- `.github/workflows/pr-checks.yml` runs lint, unit, and contracts checks on PRs.
+- `.github/workflows/deploy-qa.yml` deploys to QA when a PR is labeled `QA-ready`.
+- `.github/workflows/deploy-prod.yml` deploys to production on `main` pushes (with path filters).
+
+Required GitHub repo configuration:
+
+- Add secret `AWS_ROLE_TO_ASSUME_QA` using `terraform -chdir=infra/qa output -raw github_actions_deploy_role_arn`.
+- Add secret `AWS_ROLE_TO_ASSUME_PROD` using `terraform -chdir=infra/prod output -raw github_actions_deploy_role_arn`.
+- Configure branch protection on `main` to require `PR checks / merge-gate` before merge.
+
+Notes:
+
+- `github_actions_deploy_role_arn` is the CI deploy role (OIDC-assumable by GitHub Actions).
+- `lambda_execution_role_arn` is the runtime role used by Lambda functions and should not be used as the GitHub secret.
+- The GitHub OIDC provider is account-scoped and is created from `infra/qa`; run QA Terraform apply once before the first prod apply.

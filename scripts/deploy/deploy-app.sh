@@ -23,7 +23,7 @@ require_command() {
 }
 
 require_command make
-require_command terraform
+require_command aws
 require_command npx
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -36,14 +36,46 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 AWS_REGION="${AWS_REGION:-ap-southeast-2}"
-TF_DIR="infra/$ENV"
+PROJECT_NAME="${PROJECT_NAME:-3fc}"
+
+API_NAME="${PROJECT_NAME}-${ENV}-http-api"
+LAMBDA_EXEC_ROLE_NAME="${PROJECT_NAME}-${ENV}-lambda-exec"
 
 echo "[deploy] Building workspaces"
 make build >/dev/null
 
-echo "[deploy] Reading Terraform infra outputs from ${TF_DIR}"
-HTTP_API_ID="$(terraform -chdir="$TF_DIR" output -raw api_id)"
-LAMBDA_EXECUTION_ROLE_ARN="$(terraform -chdir="$TF_DIR" output -raw lambda_execution_role_arn)"
+HTTP_API_ID="${HTTP_API_ID:-}"
+LAMBDA_EXECUTION_ROLE_ARN="${LAMBDA_EXECUTION_ROLE_ARN:-}"
+
+if [[ -z "$HTTP_API_ID" ]]; then
+  echo "[deploy] Resolving API ID for ${API_NAME}"
+  HTTP_API_ID="$(aws apigatewayv2 get-apis \
+    --region "$AWS_REGION" \
+    --query "Items[?Name=='${API_NAME}'].ApiId | [0]" \
+    --output text || true)"
+fi
+
+if [[ "$HTTP_API_ID" == "None" ]]; then
+  HTTP_API_ID=""
+fi
+
+if [[ -z "$LAMBDA_EXECUTION_ROLE_ARN" ]]; then
+  echo "[deploy] Resolving Lambda execution role ARN for ${LAMBDA_EXEC_ROLE_NAME}"
+  LAMBDA_EXECUTION_ROLE_ARN="$(aws iam get-role \
+    --role-name "$LAMBDA_EXEC_ROLE_NAME" \
+    --query 'Role.Arn' \
+    --output text || true)"
+fi
+
+if [[ "$LAMBDA_EXECUTION_ROLE_ARN" == "None" ]]; then
+  LAMBDA_EXECUTION_ROLE_ARN=""
+fi
+
+if [[ -z "$HTTP_API_ID" || -z "$LAMBDA_EXECUTION_ROLE_ARN" ]]; then
+  echo "Missing required deploy inputs." >&2
+  echo "Expected HTTP_API_ID and LAMBDA_EXECUTION_ROLE_ARN (provided via env or discoverable in AWS)." >&2
+  exit 1
+fi
 
 export HTTP_API_ID
 export LAMBDA_EXECUTION_ROLE_ARN
