@@ -13,11 +13,11 @@
     "app"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build -w @3fc/contracts && npm run build -w @3fc/api && npm run build -w @3fc/app",
     "lint": "npm run typecheck",
-    "test": "npm run test --workspaces",
+    "test": "npm run build -w @3fc/contracts && npm run test --workspaces",
     "contracts:check": "npm run build -w @3fc/contracts && npm run test -w @3fc/contracts",
-    "typecheck": "npm run typecheck --workspaces",
+    "typecheck": "npm run build -w @3fc/contracts && npm run typecheck --workspaces",
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
