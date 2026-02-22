@@ -1,0 +1,48 @@
+service: threefc-api-health
+frameworkVersion: "3"
+
+plugins:
+  - serverless-esbuild
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ${opt:region, env:AWS_REGION, 'ap-southeast-2'}
+  stage: ${opt:stage, 'qa'}
+  architecture: arm64
+  logRetentionInDays: 14
+  versionFunctions: false
+  httpApi:
+    id: ${env:HTTP_API_ID}
+  iam:
+    role: ${env:LAMBDA_EXECUTION_ROLE_ARN}
+  tags:
+    Project: 3fc
+    Environment: ${sls:stage}
+    ManagedBy: serverless
+
+custom:
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: false
+    keepNames: true
+    platform: node
+    target: node22
+    format: cjs
+    tsconfig: ./api/tsconfig.json
+
+package:
+  individually: true
+
+functions:
+  health:
+    name: 3fc-${sls:stage}-api-health
+    description: 3FC API health endpoint
+    handler: api/src/lambda.handler
+    memorySize: 128
+    timeout: 3
+    events:
+      - httpApi:
+          method: GET
+          path: /v1/health

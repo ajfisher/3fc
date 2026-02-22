@@ -1,7 +1,8 @@
-.PHONY: help clean build build-artifacts test deploy install dev dev-down dev-logs backlog-validate backlog-export backlog-sync-dry backlog-sync
+.PHONY: help clean build test deploy install dev dev-down dev-logs backlog-validate backlog-export backlog-sync-dry backlog-sync
 
 BACKLOG_FILE ?= docs/backlog/backlog.json
 REPO ?=
+SERVICE ?= api-health
 
 help:
 	@echo "Usage: make [target]"
@@ -14,8 +15,7 @@ help:
 	@echo "  make dev                                Start local Docker Compose stack"
 	@echo "  make dev-down                           Stop local Docker Compose stack"
 	@echo "  make dev-logs                           Follow local Docker Compose logs"
-	@echo "  make build-artifacts ENV=qa|prod         Build deployable artifacts without deploying"
-	@echo "  make deploy ENV=qa|prod                  Build artifacts and deploy API/Lambda resources"
+	@echo "  make deploy ENV=qa|prod [SERVICE=name]   Build and deploy a Serverless endpoint service"
 	@echo ""
 	@echo "Backlog targets:"
 	@echo "  make backlog-validate                   Validate backlog JSON"
@@ -33,19 +33,12 @@ build:
 test:
 	npm run test
 
-build-artifacts:
-	@if [ -z "$(ENV)" ] || { [ "$(ENV)" != "qa" ] && [ "$(ENV)" != "prod" ]; }; then \
-		echo "ENV must be set to qa or prod"; \
-		exit 1; \
-	fi
-	./scripts/deploy/build-artifacts.sh $(ENV)
-
 deploy:
 	@if [ -z "$(ENV)" ] || { [ "$(ENV)" != "qa" ] && [ "$(ENV)" != "prod" ]; }; then \
 		echo "ENV must be set to qa or prod"; \
 		exit 1; \
 	fi
-	./scripts/deploy/deploy-app.sh $(ENV)
+	./scripts/deploy/deploy-app.sh $(ENV) $(SERVICE)
 
 install:
 	npm install
