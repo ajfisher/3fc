@@ -1,0 +1,62 @@
+name: Deploy QA
+
+on:
+  pull_request:
+    types:
+      - labeled
+      - synchronize
+      - reopened
+
+concurrency:
+  group: deploy-qa-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy-qa
+    runs-on: ubuntu-latest
+    environment: qa
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'QA-ready') ||
+        (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'QA-ready'))
+      )
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME_QA }}
+          role-session-name: gha-qa-deploy
+          aws-region: ap-southeast-2
+
+      - name: Deploy API health service to QA
+        run: make deploy ENV=qa SERVICE=api-health
+
+      - name: Write deployment summary
+        run: |
+          {
+            echo "## QA deploy complete"
+            echo "- PR: #${{ github.event.pull_request.number }}"
+            echo "- Commit: ${{ github.event.pull_request.head.sha }}"
+            echo "- Service: api-health"
+          } >> "$GITHUB_STEP_SUMMARY"

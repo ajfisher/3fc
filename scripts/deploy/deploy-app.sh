@@ -41,9 +41,17 @@ TF_DIR="infra/$ENV"
 echo "[deploy] Building workspaces"
 make build >/dev/null
 
+echo "[deploy] Initializing Terraform in ${TF_DIR}"
+terraform -chdir="$TF_DIR" init -input=false -reconfigure >/dev/null
+
 echo "[deploy] Reading Terraform infra outputs from ${TF_DIR}"
-HTTP_API_ID="$(terraform -chdir="$TF_DIR" output -raw api_id)"
-LAMBDA_EXECUTION_ROLE_ARN="$(terraform -chdir="$TF_DIR" output -raw lambda_execution_role_arn)"
+HTTP_API_ID="$(terraform -chdir="$TF_DIR" output -raw api_id 2>/dev/null || true)"
+LAMBDA_EXECUTION_ROLE_ARN="$(terraform -chdir="$TF_DIR" output -raw lambda_execution_role_arn 2>/dev/null || true)"
+
+if [[ -z "$HTTP_API_ID" || -z "$LAMBDA_EXECUTION_ROLE_ARN" ]]; then
+  echo "Missing required Terraform outputs in ${TF_DIR}. Expected api_id and lambda_execution_role_arn." >&2
+  exit 1
+fi
 
 export HTTP_API_ID
 export LAMBDA_EXECUTION_ROLE_ARN

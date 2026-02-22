@@ -145,3 +145,15 @@ Run help:
 ```bash
 make help
 ```
+
+## CI/CD Workflows
+
+- `.github/workflows/pr-checks.yml` runs lint, unit, and contracts checks on PRs.
+- `.github/workflows/deploy-qa.yml` deploys to QA when a PR is labeled `QA-ready`.
+- `.github/workflows/deploy-prod.yml` deploys to production on `main` pushes (with path filters).
+
+Required GitHub repo configuration:
+
+- Add secret `AWS_ROLE_TO_ASSUME_QA` for QA deploy role assumption.
+- Add secret `AWS_ROLE_TO_ASSUME_PROD` for production deploy role assumption.
+- Configure branch protection on `main` to require `PR checks / merge-gate` before merge.
