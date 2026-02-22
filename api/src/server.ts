@@ -19,6 +19,7 @@ const TABLE_NAME = process.env.DYNAMODB_TABLE ?? "threefc_local";
 const DYNAMODB_ENDPOINT = process.env.DYNAMODB_ENDPOINT ?? "http://localhost:8000";
 const FAKE_SES_URL = process.env.FAKE_SES_URL ?? "http://localhost:4025/send-email";
 const FAKE_SES_FROM = process.env.FAKE_SES_FROM ?? "noreply@3fc.football";
+const DEV_ITEM_SK = "METADATA";
 
 const ddbClient = new DynamoDBClient({
   region: REGION,
@@ -35,8 +36,14 @@ async function ensureTable(): Promise<void> {
       new CreateTableCommand({
         TableName: TABLE_NAME,
         BillingMode: "PAY_PER_REQUEST",
-        AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
-        KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+        AttributeDefinitions: [
+          { AttributeName: "pk", AttributeType: "S" },
+          { AttributeName: "sk", AttributeType: "S" },
+        ],
+        KeySchema: [
+          { AttributeName: "pk", KeyType: "HASH" },
+          { AttributeName: "sk", KeyType: "RANGE" },
+        ],
       }),
     );
   } catch (error) {
@@ -95,6 +102,7 @@ async function handleCreateDevItem(
       TableName: TABLE_NAME,
       Item: {
         pk: { S: body.id },
+        sk: { S: DEV_ITEM_SK },
         data: { S: JSON.stringify(record) },
       },
     }),
@@ -110,6 +118,7 @@ async function handleGetDevItem(itemId: string, response: ServerResponse): Promi
       TableName: TABLE_NAME,
       Key: {
         pk: { S: itemId },
+        sk: { S: DEV_ITEM_SK },
       },
     }),
   );

@@ -44,6 +44,7 @@ The project is in the delivery setup phase:
 - `infra/`: Terraform modules and environment wrappers (`qa`, `prod`)
 - `docs/`: product, spec, and backlog artifacts
 - `docs/local-development.md`: local stack usage and smoke checks
+- `docs/dynamodb-single-table.md`: key schema and repository access patterns
 - `scripts/github/`: backlog validation/export/sync helpers
 
 ## Tooling Requirements
