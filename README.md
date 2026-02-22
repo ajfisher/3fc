@@ -137,6 +137,8 @@ AWS_PROFILE=3fc-agent make deploy ENV=prod
 
 The deploy script reads API and IAM role outputs from `infra/<env>` Terraform state, so the environment infrastructure must be provisioned first.
 
+Scale note: as endpoint count grows, move function/route definitions into a deployment manifest and use CloudFormation/SAM orchestration to keep deploy logic maintainable.
+
 Run help:
 
 ```bash
