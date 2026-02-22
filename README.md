@@ -136,7 +136,7 @@ Serverless definitions live in `serverless.<service>.yml` (for example `serverle
 
 Serverless manages API/Lambda provisioning through CloudFormation stacks per service and stage.
 
-The deploy script reads API and IAM role outputs from `infra/<env>` Terraform state, so the environment infrastructure must be provisioned first.
+The deploy script requires `HTTP_API_ID` and `LAMBDA_EXECUTION_ROLE_ARN` and resolves them from env vars first, then from AWS by convention (`3fc-<env>-http-api`, `3fc-<env>-lambda-exec`). Infrastructure must be provisioned first.
 
 Scale note: as endpoint count grows, keep adding discrete `serverless.<service>.yml` services and group deployments by domain area.
 
