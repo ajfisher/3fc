@@ -164,3 +164,4 @@ Notes:
 - `github_actions_deploy_role_arn` is the CI deploy role (OIDC-assumable by GitHub Actions).
 - `lambda_execution_role_arn` is the runtime role used by Lambda functions and should not be used as the GitHub secret.
 - The GitHub OIDC provider is account-scoped and is created from `infra/qa`; run QA Terraform apply once before the first prod apply.
+- The GitHub OIDC provider resource is lifecycle-protected (`prevent_destroy`) to avoid accidental auth breakage across environments.
