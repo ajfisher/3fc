@@ -9,5 +9,7 @@ module "app" {
   github_repository           = "ajfisher/3fc"
   github_environment_name     = "qa"
   site_domain                 = "qa.3fc.football"
+  api_domain                  = "qa-api.3fc.football"
+  hosted_zone_name            = "3fc.football"
   ses_from_email              = "noreply@3fc.football"
 }

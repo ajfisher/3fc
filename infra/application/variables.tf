@@ -32,6 +32,25 @@ variable "site_domain" {
   default     = "3fc.football"
 }
 
+variable "api_domain" {
+  description = "Optional API custom domain (for example api.3fc.football)"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "hosted_zone_name" {
+  description = "Route53 public hosted zone name used for DNS validation and alias records"
+  type        = string
+  default     = "3fc.football"
+}
+
+variable "enable_custom_domains" {
+  description = "When true, provision ACM + Route53 + API/CloudFront custom domain wiring"
+  type        = bool
+  default     = true
+}
+
 variable "site_bucket_suffix" {
   description = "Suffix used when deriving the static site bucket name"
   type        = string

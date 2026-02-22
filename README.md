@@ -11,6 +11,8 @@ This repository contains the product, technical, infrastructure, and delivery as
 - Primary domain: `https://3fc.football`
 - Production app domain: `https://app.3fc.football`
 - QA app domain: `https://qa.3fc.football`
+- Production API domain: `https://api.3fc.football`
+- QA API domain: `https://qa-api.3fc.football`
 - Public game URLs should resolve under the production app domain using `/{league}/{season}/{game}` paths.
 
 Primary source docs:
@@ -165,3 +167,17 @@ Notes:
 - `lambda_execution_role_arn` is the runtime role used by Lambda functions and should not be used as the GitHub secret.
 - The GitHub OIDC provider is account-scoped and is created from `infra/qa`; run QA Terraform apply once before the first prod apply.
 - The GitHub OIDC provider resource is lifecycle-protected (`prevent_destroy`) to avoid accidental auth breakage across environments.
+
+## Domain Validation Checks
+
+After Terraform apply in both environments, validate DNS and API routing:
+
+```bash
+curl -i https://qa-api.3fc.football/v1/health
+curl -i https://api.3fc.football/v1/health
+```
+
+Expected result for both commands:
+
+- HTTP `200` response
+- JSON body from the health handler

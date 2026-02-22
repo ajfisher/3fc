@@ -28,6 +28,16 @@ output "api_execution_arn" {
   value       = module.app.api_execution_arn
 }
 
+output "site_custom_domain_url" {
+  description = "HTTPS URL for the site custom domain"
+  value       = module.app.site_custom_domain_url
+}
+
+output "api_custom_domain_url" {
+  description = "HTTPS URL for the API custom domain"
+  value       = module.app.api_custom_domain_url
+}
+
 output "cognito_user_pool_id" {
   description = "Cognito user pool ID"
   value       = module.app.cognito_user_pool_id
