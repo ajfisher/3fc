@@ -8,9 +8,9 @@
     "npm": ">=10.0.0"
   },
   "workspaces": [
-    "app",
+    "packages/contracts",
     "api",
-    "packages/contracts"
+    "app"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

@@ -13,6 +13,7 @@ export interface GoalEventInput {
 export interface GameHealth {
   status: "ok";
   service: "api";
+  version: string;
   timestamp: string;
 }
 

@@ -14,7 +14,7 @@ help:
 	@echo "  make dev                                Start local Docker Compose stack"
 	@echo "  make dev-down                           Stop local Docker Compose stack"
 	@echo "  make dev-logs                           Follow local Docker Compose logs"
-	@echo "  make deploy ENV=qa|prod                 Guarded deploy entrypoint"
+	@echo "  make deploy ENV=qa|prod [DEPLOY=1]      Build artifacts and optionally deploy Lambda code"
 	@echo ""
 	@echo "Backlog targets:"
 	@echo "  make backlog-validate                   Validate backlog JSON"

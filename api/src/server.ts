@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { URL } from "node:url";
@@ -10,6 +11,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 
 import { buildHealthResponse } from "./index.js";
+import { logRequest, logRequestError } from "./logging.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const REGION = process.env.AWS_REGION ?? "ap-southeast-2";
@@ -67,19 +69,19 @@ async function parseJsonBody(request: IncomingMessage): Promise<Record<string, u
   return JSON.parse(raw) as Record<string, unknown>;
 }
 
-function badRequest(response: ServerResponse, message: string): void {
+function badRequest(response: ServerResponse, message: string): number {
   sendJson(response, 400, { error: message });
+  return 400;
 }
 
 async function handleCreateDevItem(
   request: IncomingMessage,
   response: ServerResponse,
-): Promise<void> {
+): Promise<number> {
   const body = await parseJsonBody(request);
 
   if (typeof body.id !== "string" || body.id.length === 0) {
-    badRequest(response, "Field `id` is required and must be a non-empty string.");
-    return;
+    return badRequest(response, "Field `id` is required and must be a non-empty string.");
   }
 
   const record = {
@@ -99,12 +101,10 @@ async function handleCreateDevItem(
   );
 
   sendJson(response, 201, record);
+  return 201;
 }
 
-async function handleGetDevItem(
-  itemId: string,
-  response: ServerResponse,
-): Promise<void> {
+async function handleGetDevItem(itemId: string, response: ServerResponse): Promise<number> {
   const output = await ddbClient.send(
     new GetItemCommand({
       TableName: TABLE_NAME,
@@ -116,31 +116,29 @@ async function handleGetDevItem(
 
   if (!output.Item?.data?.S) {
     sendJson(response, 404, { error: "Not found" });
-    return;
+    return 404;
   }
 
   sendJson(response, 200, JSON.parse(output.Item.data.S));
+  return 200;
 }
 
 async function handleSendDevEmail(
   request: IncomingMessage,
   response: ServerResponse,
-): Promise<void> {
+): Promise<number> {
   const body = await parseJsonBody(request);
 
   if (typeof body.to !== "string" || body.to.length === 0) {
-    badRequest(response, "Field `to` is required.");
-    return;
+    return badRequest(response, "Field `to` is required.");
   }
 
   if (typeof body.subject !== "string" || body.subject.length === 0) {
-    badRequest(response, "Field `subject` is required.");
-    return;
+    return badRequest(response, "Field `subject` is required.");
   }
 
   if (typeof body.body !== "string") {
-    badRequest(response, "Field `body` must be a string.");
-    return;
+    return badRequest(response, "Field `body` must be a string.");
   }
 
   const sendResponse = await fetch(FAKE_SES_URL, {
@@ -161,7 +159,7 @@ async function handleSendDevEmail(
       error: "Failed to hand off to fake SES",
       statusCode: sendResponse.status,
     });
-    return;
+    return 502;
   }
 
   const payload = (await sendResponse.json()) as Record<string, unknown>;
@@ -169,6 +167,21 @@ async function handleSendDevEmail(
     status: "queued",
     messageId: payload.messageId,
   });
+  return 202;
+}
+
+function getRequestId(request: IncomingMessage): string {
+  const header = request.headers["x-request-id"];
+
+  if (Array.isArray(header) && header.length > 0 && header[0].length > 0) {
+    return header[0];
+  }
+
+  if (typeof header === "string" && header.length > 0) {
+    return header;
+  }
+
+  return randomUUID();
 }
 
 async function start(): Promise<void> {
@@ -176,42 +189,62 @@ async function start(): Promise<void> {
 
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
-    const path = requestUrl.pathname;
+    const route = requestUrl.pathname;
     const method = request.method ?? "GET";
+    const requestId = getRequestId(request);
+    let status = 500;
 
     try {
-      if (method === "GET" && path === "/v1/health") {
-        sendJson(response, 200, buildHealthResponse());
+      if (method === "GET" && route === "/v1/health") {
+        status = 200;
+        sendJson(response, status, buildHealthResponse());
         return;
       }
 
-      if (method === "POST" && path === "/v1/dev/items") {
-        await handleCreateDevItem(request, response);
+      if (method === "POST" && route === "/v1/dev/items") {
+        status = await handleCreateDevItem(request, response);
         return;
       }
 
-      if (method === "GET" && path.startsWith("/v1/dev/items/")) {
-        const itemId = path.replace("/v1/dev/items/", "");
-        await handleGetDevItem(itemId, response);
+      if (method === "GET" && route.startsWith("/v1/dev/items/")) {
+        const itemId = route.replace("/v1/dev/items/", "");
+        status = await handleGetDevItem(itemId, response);
         return;
       }
 
-      if (method === "POST" && path === "/v1/dev/send-email") {
-        await handleSendDevEmail(request, response);
+      if (method === "POST" && route === "/v1/dev/send-email") {
+        status = await handleSendDevEmail(request, response);
         return;
       }
 
-      sendJson(response, 404, { error: "Not found" });
+      status = 404;
+      sendJson(response, status, { error: "Not found" });
     } catch (error) {
-      sendJson(response, 500, {
+      status = 500;
+
+      logRequestError({
+        requestId,
+        route,
+        method,
+        status,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+
+      sendJson(response, status, {
         error: "Internal server error",
         detail: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      logRequest({
+        requestId,
+        route,
+        method,
+        status,
       });
     }
   });
 
   server.listen(PORT, () => {
-    // JSON logging baseline for local and future cloud environments.
     console.log(
       JSON.stringify({
         level: "info",

@@ -196,18 +196,66 @@ resource "aws_iam_role" "lambda_exec" {
   tags = local.app_tags
 }
 
-resource "aws_lambda_function" "placeholder" {
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   count = var.create_baseline_resources ? 1 : 0
 
-  function_name = "${local.name_prefix}-placeholder"
+  role       = aws_iam_role.lambda_exec[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_cloudwatch_log_group" "health_api" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  name              = "/aws/lambda/${local.name_prefix}-api-health"
+  retention_in_days = 14
+  tags              = local.app_tags
+}
+
+resource "aws_lambda_function" "health_api" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  function_name = "${local.name_prefix}-api-health"
   role          = aws_iam_role.lambda_exec[0].arn
-  handler       = "index.handler"
+  handler       = "lambda.handler"
   runtime       = "nodejs22.x"
 
   s3_bucket = aws_s3_bucket.site[0].id
-  s3_key    = var.lambda_placeholder_s3_key
+  s3_key    = var.lambda_deployment_s3_key
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_basic_execution,
+  ]
 
   tags = local.app_tags
+}
+
+resource "aws_apigatewayv2_integration" "health" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  api_id                 = aws_apigatewayv2_api.http[0].id
+  integration_type       = "AWS_PROXY"
+  integration_method     = "POST"
+  integration_uri        = aws_lambda_function.health_api[0].invoke_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 30000
+}
+
+resource "aws_apigatewayv2_route" "health" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  api_id    = aws_apigatewayv2_api.http[0].id
+  route_key = "GET /v1/health"
+  target    = "integrations/${aws_apigatewayv2_integration.health[0].id}"
+}
+
+resource "aws_lambda_permission" "allow_apigateway" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  statement_id  = "AllowApiGatewayInvokeHealth"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.health_api[0].function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http[0].execution_arn}/*/*/v1/health"
 }
 
 resource "aws_ses_email_identity" "from_address" {
@@ -239,4 +287,19 @@ output "api_id" {
 output "cognito_user_pool_id" {
   description = "Cognito user pool ID"
   value       = try(aws_cognito_user_pool.app[0].id, null)
+}
+
+output "health_lambda_function_name" {
+  description = "Health API Lambda function name"
+  value       = try(aws_lambda_function.health_api[0].function_name, null)
+}
+
+output "api_invoke_url" {
+  description = "Base invoke URL for the HTTP API"
+  value       = try(aws_apigatewayv2_stage.default[0].invoke_url, null)
+}
+
+output "health_endpoint_url" {
+  description = "Health endpoint URL for the HTTP API"
+  value       = try(format("%s/v1/health", aws_apigatewayv2_stage.default[0].invoke_url), null)
 }

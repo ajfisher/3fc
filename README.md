@@ -8,8 +8,10 @@ This repository contains the product, technical, infrastructure, and delivery as
 
 ## Domain
 
-- Production web domain: `https://3fc.football`
-- Public game URLs should resolve under this domain using `/{league}/{season}/{game}` paths.
+- Primary domain: `https://3fc.football`
+- Production app domain: `https://app.3fc.football`
+- QA app domain: `https://qa.3fc.football`
+- Public game URLs should resolve under the production app domain using `/{league}/{season}/{game}` paths.
 
 Primary source docs:
 
@@ -117,14 +119,17 @@ Notes:
 
 `Makefile` provides working install/build/test targets for the npm workspace, backlog automation targets, and deploy env guardrails.
 
-Deploy scaffold examples:
+Deploy examples:
 
 ```bash
 make deploy ENV=qa
-make deploy ENV=prod
+make deploy ENV=qa DEPLOY=1 AWS_PROFILE=3fc-agent
+make deploy ENV=prod DEPLOY=1 AWS_PROFILE=3fc-agent
 ```
 
-`make deploy` currently prepares a versioned application artifact bundle and manifest under `out/deploy/<env>/` (without creating cloud resources directly).
+`make deploy` prepares a versioned application bundle, Lambda zip, and manifest under `out/deploy/<env>/`.
+
+Set `DEPLOY=1` to upload the Lambda artifact and update function code via AWS CLI (infrastructure remains Terraform-managed).
 
 Run help:
 
