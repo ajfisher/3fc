@@ -2,6 +2,11 @@ provider "aws" {
   region = var.region
 }
 
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}
@@ -17,6 +22,9 @@ locals {
   github_oidc_provider_arn_from_account = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.github_oidc_provider_host}"
   github_oidc_provider_arn              = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github_actions[0].arn : local.github_oidc_provider_arn_from_account
   github_oidc_subject                   = "repo:${var.github_repository}:environment:${var.github_environment_name}"
+  hosted_zone_name                      = endswith(var.hosted_zone_name, ".") ? var.hosted_zone_name : "${var.hosted_zone_name}."
+  site_custom_domain_enabled            = var.create_baseline_resources && var.enable_custom_domains
+  api_custom_domain_enabled             = var.create_baseline_resources && var.enable_custom_domains && var.api_domain != null
 
   app_tags = merge(
     {
@@ -26,6 +34,13 @@ locals {
     },
     var.tags,
   )
+}
+
+data "aws_route53_zone" "primary" {
+  count = local.site_custom_domain_enabled || local.api_custom_domain_enabled ? 1 : 0
+
+  name         = local.hosted_zone_name
+  private_zone = false
 }
 
 resource "aws_s3_bucket" "site" {
@@ -70,6 +85,7 @@ resource "aws_cloudfront_distribution" "site" {
   is_ipv6_enabled     = true
   comment             = "${local.name_prefix} site"
   default_root_object = "index.html"
+  aliases             = local.site_custom_domain_enabled ? [var.site_domain] : []
 
   origin {
     domain_name              = aws_s3_bucket.site[0].bucket_regional_domain_name
@@ -99,10 +115,80 @@ resource "aws_cloudfront_distribution" "site" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    acm_certificate_arn            = local.site_custom_domain_enabled ? aws_acm_certificate_validation.site[0].certificate_arn : null
+    cloudfront_default_certificate = local.site_custom_domain_enabled ? false : true
+    minimum_protocol_version       = local.site_custom_domain_enabled ? "TLSv1.2_2021" : null
+    ssl_support_method             = local.site_custom_domain_enabled ? "sni-only" : null
   }
 
   tags = local.app_tags
+}
+
+resource "aws_acm_certificate" "site" {
+  count    = local.site_custom_domain_enabled ? 1 : 0
+  provider = aws.us_east_1
+
+  domain_name       = var.site_domain
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = local.app_tags
+}
+
+resource "aws_route53_record" "site_certificate_validation" {
+  for_each = local.site_custom_domain_enabled ? {
+    for option in aws_acm_certificate.site[0].domain_validation_options :
+    option.domain_name => {
+      name   = option.resource_record_name
+      record = option.resource_record_value
+      type   = option.resource_record_type
+    }
+  } : {}
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "site" {
+  count    = local.site_custom_domain_enabled ? 1 : 0
+  provider = aws.us_east_1
+
+  certificate_arn         = aws_acm_certificate.site[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.site_certificate_validation : record.fqdn]
+}
+
+resource "aws_route53_record" "site_alias_ipv4" {
+  count = local.site_custom_domain_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = var.site_domain
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.site[0].domain_name
+    zone_id                = aws_cloudfront_distribution.site[0].hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "site_alias_ipv6" {
+  count = local.site_custom_domain_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = var.site_domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.site[0].domain_name
+    zone_id                = aws_cloudfront_distribution.site[0].hosted_zone_id
+    evaluate_target_health = false
+  }
 }
 
 resource "aws_dynamodb_table" "app" {
@@ -183,6 +269,93 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 
   tags = local.app_tags
+}
+
+resource "aws_acm_certificate" "api" {
+  count = local.api_custom_domain_enabled ? 1 : 0
+
+  domain_name       = var.api_domain
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = local.app_tags
+}
+
+resource "aws_route53_record" "api_certificate_validation" {
+  for_each = local.api_custom_domain_enabled ? {
+    for option in aws_acm_certificate.api[0].domain_validation_options :
+    option.domain_name => {
+      name   = option.resource_record_name
+      record = option.resource_record_value
+      type   = option.resource_record_type
+    }
+  } : {}
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "api" {
+  count = local.api_custom_domain_enabled ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.api[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.api_certificate_validation : record.fqdn]
+}
+
+resource "aws_apigatewayv2_domain_name" "http_custom" {
+  count = local.api_custom_domain_enabled ? 1 : 0
+
+  domain_name = var.api_domain
+
+  domain_name_configuration {
+    certificate_arn = aws_acm_certificate_validation.api[0].certificate_arn
+    endpoint_type   = "REGIONAL"
+    security_policy = "TLS_1_2"
+  }
+
+  tags = local.app_tags
+}
+
+resource "aws_apigatewayv2_api_mapping" "http_custom_default" {
+  count = local.api_custom_domain_enabled ? 1 : 0
+
+  api_id      = aws_apigatewayv2_api.http[0].id
+  domain_name = aws_apigatewayv2_domain_name.http_custom[0].id
+  stage       = aws_apigatewayv2_stage.default[0].id
+}
+
+resource "aws_route53_record" "api_alias_ipv4" {
+  count = local.api_custom_domain_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = var.api_domain
+  type    = "A"
+
+  alias {
+    name                   = aws_apigatewayv2_domain_name.http_custom[0].domain_name_configuration[0].target_domain_name
+    zone_id                = aws_apigatewayv2_domain_name.http_custom[0].domain_name_configuration[0].hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "api_alias_ipv6" {
+  count = local.api_custom_domain_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = var.api_domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_apigatewayv2_domain_name.http_custom[0].domain_name_configuration[0].target_domain_name
+    zone_id                = aws_apigatewayv2_domain_name.http_custom[0].domain_name_configuration[0].hosted_zone_id
+    evaluate_target_health = false
+  }
 }
 
 resource "aws_iam_role" "lambda_exec" {
@@ -352,6 +525,16 @@ output "api_invoke_url" {
 output "api_execution_arn" {
   description = "Execution ARN for the HTTP API"
   value       = try(aws_apigatewayv2_api.http[0].execution_arn, null)
+}
+
+output "site_custom_domain_url" {
+  description = "HTTPS URL for the site custom domain"
+  value       = local.site_custom_domain_enabled ? "https://${var.site_domain}" : null
+}
+
+output "api_custom_domain_url" {
+  description = "HTTPS URL for the API custom domain"
+  value       = local.api_custom_domain_enabled ? "https://${var.api_domain}" : null
 }
 
 output "lambda_execution_role_arn" {

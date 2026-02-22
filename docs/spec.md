@@ -155,7 +155,10 @@ POST  /v1/players/{playerId}/claim
 - The `production` environment application will be deployed to via github
   workflows and will reside in AWS. It will be automatically deployed to when a
   branch is merged to the `main` branch and will be fully automated.
-- Production site host/domain: `https://3fc.football`.
+- Production app host/domain: `https://app.3fc.football`.
+- QA app host/domain: `https://qa.3fc.football`.
+- Production API host/domain: `https://api.3fc.football`.
+- QA API host/domain: `https://qa-api.3fc.football`.
 - Infrastructure will be deployed via terraform from local shells to apply
   updates using AWS Developer accounts. State will be managed using S3 based
   state management in a bucket that will be used explicitly for this purpose
