@@ -28,6 +28,17 @@ When in doubt, prefer the backlog and specs over assumptions.
   - validation steps executed
   - known risks or follow-up items
 
+## GitHub Issue Hygiene
+
+- If a PR fully resolves an issue, include explicit close keywords in the PR body:
+  - `Fixes #<issue>` or `Closes #<issue>`
+- Use one line per issue when multiple issues are resolved.
+- After merge, verify linked issues auto-closed.
+- If an issue did not auto-close, add a comment referencing the merged PR that completed it, then close the issue manually.
+- Keep issue label and milestone assignment consistent:
+  - include milestone label (for taxonomy)
+  - attach the actual GitHub milestone object
+
 ## Source-of-Truth Order
 
 For conflicts, resolve in this order:
