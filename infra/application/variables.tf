@@ -62,12 +62,6 @@ variable "logs_bucket_name" {
   default     = null
 }
 
-variable "lambda_deployment_s3_key" {
-  description = "S3 key used for Lambda deployment package bootstrap"
-  type        = string
-  default     = "lambda/api-health.zip"
-}
-
 variable "ses_from_email" {
   description = "SES sender email identity used by the app"
   type        = string

@@ -119,17 +119,23 @@ Notes:
 
 `Makefile` provides working install/build/test targets for the npm workspace, backlog automation targets, and deploy env guardrails.
 
-Deploy examples:
+Build and deploy examples:
 
 ```bash
+make build
+make build-artifacts ENV=qa
 make deploy ENV=qa
-make deploy ENV=qa DEPLOY=1 AWS_PROFILE=3fc-agent
-make deploy ENV=prod DEPLOY=1 AWS_PROFILE=3fc-agent
+AWS_PROFILE=3fc-agent make deploy ENV=qa
+AWS_PROFILE=3fc-agent make deploy ENV=prod
 ```
 
-`make deploy` prepares a versioned application bundle, Lambda zip, and manifest under `out/deploy/<env>/`.
+`make build` compiles workspace artifacts (`dist/` outputs) without deployment.
 
-Set `DEPLOY=1` to upload the Lambda artifact and update function code via AWS CLI (infrastructure remains Terraform-managed).
+`make build-artifacts ENV=<qa|prod>` packages deployable bundles under `out/deploy/<env>/` without touching AWS.
+
+`make deploy ENV=<qa|prod>` runs the build-artifact step and then deploys Lambda/API updates via AWS CLI. Terraform remains infra-only (foundational resources such as API Gateway, roles, and buckets).
+
+The deploy script reads API and IAM role outputs from `infra/<env>` Terraform state, so the environment infrastructure must be provisioned first.
 
 Run help:
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildHealthResponse } from "./index.js";
+import { buildHealthResponse } from "../index.js";
 
 test("buildHealthResponse includes service and version metadata", () => {
   const now = new Date("2026-02-22T00:00:00.000Z");

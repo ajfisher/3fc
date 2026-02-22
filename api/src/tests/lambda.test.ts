@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { handler, isHealthRoute } from "./lambda.js";
+import { handler, isHealthRoute } from "../lambda.js";
 
 interface CapturedLogs {
   logs: string[];

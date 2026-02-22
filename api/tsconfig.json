@@ -11,6 +11,9 @@
   "include": [
     "src/**/*.ts"
   ],
+  "exclude": [
+    "src/tests/**/*.ts"
+  ],
   "references": [
     { "path": "../packages/contracts" }
   ]
