@@ -98,6 +98,7 @@ resource "aws_cloudfront_distribution" "site" {
 resource "aws_dynamodb_table" "app" {
   count = var.create_baseline_resources ? 1 : 0
 
+  # Baseline datastore scaffold for the single-table model introduced in M1.
   name         = "${local.name_prefix}-${var.dynamodb_table_suffix}"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "pk"
