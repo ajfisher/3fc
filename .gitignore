@@ -66,3 +66,6 @@ local/fake-ses/*
 
 # Local deploy artifacts
 out/
+
+# Local Codex config (machine/user specific)
+.codex/
