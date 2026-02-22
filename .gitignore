@@ -62,3 +62,6 @@ local/dynamodb/*
 local/fake-ses/*
 !local/dynamodb/.gitkeep
 !local/fake-ses/.gitkeep
+
+# Local deploy artifacts
+out/

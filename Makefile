@@ -24,6 +24,7 @@ help:
 
 clean:
 	npm run clean
+	rm -rf out
 
 build:
 	npm run build
@@ -36,7 +37,7 @@ deploy:
 		echo "ENV must be set to qa or prod"; \
 		exit 1; \
 	fi
-	@echo "Not implemented yet"
+	./scripts/deploy/deploy-app.sh $(ENV)
 
 install:
 	npm install
