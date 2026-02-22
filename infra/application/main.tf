@@ -219,6 +219,10 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   url             = local.github_oidc_provider_url
   client_id_list  = var.github_oidc_client_id_list
   thumbprint_list = var.github_oidc_thumbprint_list
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 data "aws_iam_policy_document" "github_actions_deploy_assume" {
