@@ -1,4 +1,4 @@
-.PHONY: help clean build test deploy install backlog-validate backlog-export backlog-sync-dry backlog-sync
+.PHONY: help clean build test deploy install dev dev-down dev-logs backlog-validate backlog-export backlog-sync-dry backlog-sync
 
 BACKLOG_FILE ?= docs/backlog/backlog.json
 REPO ?=
@@ -11,6 +11,9 @@ help:
 	@echo "  make build                              Build all workspaces"
 	@echo "  make test                               Run tests for all workspaces"
 	@echo "  make clean                              Remove workspace build artifacts"
+	@echo "  make dev                                Start local Docker Compose stack"
+	@echo "  make dev-down                           Stop local Docker Compose stack"
+	@echo "  make dev-logs                           Follow local Docker Compose logs"
 	@echo "  make deploy ENV=qa|prod                 Guarded deploy entrypoint"
 	@echo ""
 	@echo "Backlog targets:"
@@ -37,6 +40,15 @@ deploy:
 
 install:
 	npm install
+
+dev:
+	docker compose up --build
+
+dev-down:
+	docker compose down
+
+dev-logs:
+	docker compose logs -f
 
 backlog-validate:
 	./scripts/github/validate_backlog.sh $(BACKLOG_FILE)
