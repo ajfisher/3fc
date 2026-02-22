@@ -7,7 +7,7 @@ Generated from `docs/backlog/backlog.json`.
 | ID | Title | Milestone | Child Count |
 |---|---|---|---:|
 | `EPIC-M0` | Platform Foundation | M0 Platform Foundation | 6 |
-| `EPIC-M1` | Auth, ACL, Core Entities | M1 Auth, ACL, Core Entities | 7 |
+| `EPIC-M1` | Auth, ACL, Core Entities | M1 Auth, ACL, Core Entities | 8 |
 | `EPIC-M2` | Live Match Operations | M2 Live Match Operations | 9 |
 | `EPIC-M3` | Public Results and Season Stats | M3 Public Results and Season Stats | 6 |
 | `EPIC-M4` | Notifications and Product Polish | M4 Notifications and Product Polish | 5 |
@@ -28,7 +28,8 @@ Generated from `docs/backlog/backlog.json`.
 | `M1-04` | httpOnly cookie session integration across app+api | 5 | `EPIC-M1` | M1 Auth, ACL, Core Entities | `M1-02`, `M1-03` |
 | `M1-05` | ACL model + middleware + creator-is-league-admin bootstrap | 5 | `EPIC-M1` | M1 Auth, ACL, Core Entities | `M1-01`, `M1-04` |
 | `M1-06` | Core write endpoints: leagues, seasons, sessions, games | 8 | `EPIC-M1` | M1 Auth, ACL, Core Entities | `M1-01`, `M1-05` |
-| `M1-07` | Setup UI flow for league/season/session/game creation | 5 | `EPIC-M1` | M1 Auth, ACL, Core Entities | `M1-06` |
+| `M1-07` | Setup UI flow for league/season/session/game creation | 5 | `EPIC-M1` | M1 Auth, ACL, Core Entities | `M1-06`, `M1-08` |
+| `M1-08` | Create base UI structure and system | 5 | `EPIC-M1` | M1 Auth, ACL, Core Entities | `M0-01` |
 | `M2-01` | Team defaults at season level + per-game override | 3 | `EPIC-M2` | M2 Live Match Operations | `M1-06` |
 | `M2-02` | Player quick-create + QR join registration path into active game | 8 | `EPIC-M2` | M2 Live Match Operations | `M1-06`, `M2-01` |
 | `M2-03` | Roster assignment endpoints + mobile setup UI (recent players + search) | 8 | `EPIC-M2` | M2 Live Match Operations | `M2-02` |
