@@ -21,6 +21,7 @@ import {
   rosterSk,
   seasonPk,
   seasonSk,
+  sessionPk,
   sessionSk,
   teamSk,
 } from "./keys.js";
@@ -169,6 +170,18 @@ export class ThreeFcRepository {
     };
 
     await this.putEntity(leaguePk(input.leagueId), metadataSk(), ENTITY_TYPE.league, payload, now);
+    await this.putEntity(
+      leaguePk(input.leagueId),
+      aclSk(input.createdByUserId),
+      ENTITY_TYPE.acl,
+      {
+        leagueId: input.leagueId,
+        userId: input.createdByUserId,
+        role: "admin",
+        grantedByUserId: input.createdByUserId,
+      },
+      now,
+    );
     return withTimestamps(payload, now, now);
   }
 
@@ -199,7 +212,23 @@ export class ThreeFcRepository {
     };
 
     await this.putEntity(leaguePk(input.leagueId), seasonSk(input.seasonId), ENTITY_TYPE.season, payload, now);
+    await this.putEntity(seasonPk(input.seasonId), metadataSk(), ENTITY_TYPE.season, payload, now);
     return withTimestamps(payload, now, now);
+  }
+
+  async getSeason(seasonId: string): Promise<SeasonRecord | null> {
+    requireNonEmpty("seasonId", seasonId);
+    const item = await this.getEntity(seasonPk(seasonId), metadataSk());
+
+    if (!item || item.entityType !== ENTITY_TYPE.season) {
+      return null;
+    }
+
+    return withTimestamps(
+      item.data as Omit<SeasonRecord, "createdAt" | "updatedAt">,
+      item.createdAt,
+      item.updatedAt,
+    );
   }
 
   async listSeasonsForLeague(leagueId: string): Promise<SeasonRecord[]> {
@@ -267,7 +296,23 @@ export class ThreeFcRepository {
       payload,
       now,
     );
+    await this.putEntity(sessionPk(input.sessionId), metadataSk(), ENTITY_TYPE.session, payload, now);
     return withTimestamps(payload, now, now);
+  }
+
+  async getSession(sessionId: string): Promise<SessionRecord | null> {
+    requireNonEmpty("sessionId", sessionId);
+    const item = await this.getEntity(sessionPk(sessionId), metadataSk());
+
+    if (!item || item.entityType !== ENTITY_TYPE.session) {
+      return null;
+    }
+
+    return withTimestamps(
+      item.data as Omit<SessionRecord, "createdAt" | "updatedAt">,
+      item.createdAt,
+      item.updatedAt,
+    );
   }
 
   async listSessionsForSeason(seasonId: string): Promise<SessionRecord[]> {
@@ -415,6 +460,22 @@ export class ThreeFcRepository {
           item.updatedAt,
         ),
       );
+  }
+
+  async getLeagueAccess(leagueId: string, userId: string): Promise<LeagueAclRecord | null> {
+    requireNonEmpty("leagueId", leagueId);
+    requireNonEmpty("userId", userId);
+    const item = await this.getEntity(leaguePk(leagueId), aclSk(userId));
+
+    if (!item || item.entityType !== ENTITY_TYPE.acl) {
+      return null;
+    }
+
+    return withTimestamps(
+      item.data as Omit<LeagueAclRecord, "createdAt" | "updatedAt">,
+      item.createdAt,
+      item.updatedAt,
+    );
   }
 
   async assignRosterPlayer(input: AssignRosterInput): Promise<RosterAssignmentRecord> {

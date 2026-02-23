@@ -17,6 +17,9 @@ import {
   type MagicLinkEmailSender,
 } from "./auth/magic-link.js";
 import {
+  authorizeProtectedMutation,
+} from "./auth/acl.js";
+import {
   buildCorsHeaders,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
@@ -27,6 +30,7 @@ import {
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
 } from "./auth/session.js";
+import { ThreeFcRepository } from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
 import { logRequest, logRequestError } from "./logging.js";
 
@@ -97,6 +101,7 @@ const magicLinkService = new MagicLinkService(ddbClient, magicLinkEmailSender, {
   tokenTtlSeconds: MAGIC_LINK_TOKEN_TTL_SECONDS,
   sessionTtlSeconds: MAGIC_LINK_SESSION_TTL_SECONDS,
 });
+const repository = new ThreeFcRepository(ddbClient, TABLE_NAME);
 
 async function ensureTable(): Promise<void> {
   try {
@@ -173,6 +178,213 @@ async function parseJsonBody(request: IncomingMessage): Promise<Record<string, u
 function badRequest(request: IncomingMessage, response: ServerResponse, message: string): number {
   sendJsonWithCors(request, response, 400, { error: message });
   return 400;
+}
+
+interface AclGateResult {
+  allowed: boolean;
+  status: number;
+  scope: { leagueId: string; seasonId?: string; sessionId?: string } | null;
+}
+
+async function enforceAclIfRequired(
+  request: IncomingMessage,
+  response: ServerResponse,
+  method: string,
+  route: string,
+  session: AuthSessionRecord | null,
+): Promise<AclGateResult> {
+  if (!session) {
+    return {
+      allowed: true,
+      status: 200,
+      scope: null,
+    };
+  }
+
+  const aclResult = await authorizeProtectedMutation(method, route, session.email, repository);
+  if (!aclResult.allowed) {
+    sendJsonWithCors(request, response, aclResult.statusCode, aclResult.error);
+    return {
+      allowed: false,
+      status: aclResult.statusCode,
+      scope: null,
+    };
+  }
+
+  return {
+    allowed: true,
+    status: 200,
+    scope: aclResult.scope,
+  };
+}
+
+async function handleCreateLeague(
+  request: IncomingMessage,
+  response: ServerResponse,
+  session: AuthSessionRecord,
+): Promise<number> {
+  let body: Record<string, unknown>;
+
+  try {
+    body = await parseJsonBody(request);
+  } catch {
+    return badRequest(request, response, "Request body must be valid JSON.");
+  }
+
+  if (typeof body.leagueId !== "string" || body.leagueId.trim().length === 0) {
+    return badRequest(request, response, "Field `leagueId` is required.");
+  }
+
+  if (typeof body.name !== "string" || body.name.trim().length === 0) {
+    return badRequest(request, response, "Field `name` is required.");
+  }
+
+  if (body.slug !== undefined && body.slug !== null && typeof body.slug !== "string") {
+    return badRequest(request, response, "Field `slug` must be a string when provided.");
+  }
+
+  const league = await repository.createLeague({
+    leagueId: body.leagueId,
+    name: body.name,
+    slug: (body.slug as string | null | undefined) ?? null,
+    createdByUserId: session.email,
+  });
+
+  sendJsonWithCors(request, response, 201, league);
+  return 201;
+}
+
+async function handleCreateSeason(
+  request: IncomingMessage,
+  response: ServerResponse,
+  leagueId: string,
+): Promise<number> {
+  let body: Record<string, unknown>;
+
+  try {
+    body = await parseJsonBody(request);
+  } catch {
+    return badRequest(request, response, "Request body must be valid JSON.");
+  }
+
+  if (typeof body.seasonId !== "string" || body.seasonId.trim().length === 0) {
+    return badRequest(request, response, "Field `seasonId` is required.");
+  }
+
+  if (typeof body.name !== "string" || body.name.trim().length === 0) {
+    return badRequest(request, response, "Field `name` is required.");
+  }
+
+  if (body.slug !== undefined && body.slug !== null && typeof body.slug !== "string") {
+    return badRequest(request, response, "Field `slug` must be a string when provided.");
+  }
+
+  if (body.startsOn !== undefined && body.startsOn !== null && typeof body.startsOn !== "string") {
+    return badRequest(request, response, "Field `startsOn` must be a string when provided.");
+  }
+
+  if (body.endsOn !== undefined && body.endsOn !== null && typeof body.endsOn !== "string") {
+    return badRequest(request, response, "Field `endsOn` must be a string when provided.");
+  }
+
+  const season = await repository.createSeason({
+    leagueId,
+    seasonId: body.seasonId,
+    name: body.name,
+    slug: (body.slug as string | null | undefined) ?? null,
+    startsOn: (body.startsOn as string | null | undefined) ?? null,
+    endsOn: (body.endsOn as string | null | undefined) ?? null,
+  });
+
+  sendJsonWithCors(request, response, 201, season);
+  return 201;
+}
+
+async function handleCreateSession(
+  request: IncomingMessage,
+  response: ServerResponse,
+  seasonId: string,
+): Promise<number> {
+  let body: Record<string, unknown>;
+
+  try {
+    body = await parseJsonBody(request);
+  } catch {
+    return badRequest(request, response, "Request body must be valid JSON.");
+  }
+
+  if (typeof body.sessionId !== "string" || body.sessionId.trim().length === 0) {
+    return badRequest(request, response, "Field `sessionId` is required.");
+  }
+
+  if (typeof body.sessionDate !== "string" || body.sessionDate.trim().length === 0) {
+    return badRequest(request, response, "Field `sessionDate` is required.");
+  }
+
+  const session = await repository.createSession({
+    seasonId,
+    sessionId: body.sessionId,
+    sessionDate: body.sessionDate,
+  });
+
+  sendJsonWithCors(request, response, 201, session);
+  return 201;
+}
+
+function isGameStatus(
+  value: unknown,
+): value is "scheduled" | "live" | "finished" {
+  return value === "scheduled" || value === "live" || value === "finished";
+}
+
+async function handleCreateGame(
+  request: IncomingMessage,
+  response: ServerResponse,
+  scope: { leagueId: string; seasonId: string; sessionId: string },
+): Promise<number> {
+  let body: Record<string, unknown>;
+
+  try {
+    body = await parseJsonBody(request);
+  } catch {
+    return badRequest(request, response, "Request body must be valid JSON.");
+  }
+
+  if (typeof body.gameId !== "string" || body.gameId.trim().length === 0) {
+    return badRequest(request, response, "Field `gameId` is required.");
+  }
+
+  if (typeof body.gameStartTs !== "string" || body.gameStartTs.trim().length === 0) {
+    return badRequest(request, response, "Field `gameStartTs` is required.");
+  }
+
+  if (body.status !== undefined && !isGameStatus(body.status)) {
+    return badRequest(
+      request,
+      response,
+      "Field `status` must be one of `scheduled`, `live`, or `finished`.",
+    );
+  }
+
+  const game = await repository.createGame({
+    gameId: body.gameId,
+    leagueId: scope.leagueId,
+    seasonId: scope.seasonId,
+    sessionId: scope.sessionId,
+    status: body.status as "scheduled" | "live" | "finished" | undefined,
+    gameStartTs: body.gameStartTs,
+  });
+
+  await repository.createSessionGame({
+    sessionId: scope.sessionId,
+    gameId: game.gameId,
+    gameStartTs: game.gameStartTs,
+    leagueId: game.leagueId,
+    seasonId: game.seasonId,
+  });
+
+  sendJsonWithCors(request, response, 201, game);
+  return 201;
 }
 
 async function handleCreateDevItem(
@@ -474,6 +686,12 @@ async function start(): Promise<void> {
         return;
       }
 
+      const aclGate = await enforceAclIfRequired(request, response, method, route, authGate.session);
+      if (!aclGate.allowed) {
+        status = aclGate.status;
+        return;
+      }
+
       if (method === "GET" && route === "/v1/health") {
         status = 200;
         sendJsonWithCors(request, response, status, buildHealthResponse());
@@ -503,6 +721,58 @@ async function start(): Promise<void> {
 
       if (method === "POST" && route === "/v1/auth/magic/complete") {
         status = await handleMagicLinkComplete(request, response);
+        return;
+      }
+
+      if (method === "POST" && route === "/v1/leagues") {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        status = await handleCreateLeague(request, response, authGate.session);
+        return;
+      }
+
+      const createSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
+      if (method === "POST" && createSeasonMatch) {
+        status = await handleCreateSeason(
+          request,
+          response,
+          aclGate.scope?.leagueId ?? decodeURIComponent(createSeasonMatch[1]),
+        );
+        return;
+      }
+
+      const createSessionMatch = route.match(/^\/v1\/seasons\/([^/]+)\/sessions$/);
+      if (method === "POST" && createSessionMatch) {
+        status = await handleCreateSession(
+          request,
+          response,
+          aclGate.scope?.seasonId ?? decodeURIComponent(createSessionMatch[1]),
+        );
+        return;
+      }
+
+      if (method === "POST" && /^\/v1\/sessions\/[^/]+\/games$/.test(route)) {
+        if (!aclGate.scope?.leagueId || !aclGate.scope?.seasonId || !aclGate.scope?.sessionId) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "ACL scope should be available for create game route.",
+          });
+          return;
+        }
+
+        status = await handleCreateGame(request, response, {
+          leagueId: aclGate.scope.leagueId,
+          seasonId: aclGate.scope.seasonId,
+          sessionId: aclGate.scope.sessionId,
+        });
         return;
       }
 

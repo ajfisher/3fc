@@ -35,6 +35,10 @@ test("buildSessionCookie omits Secure when disabled for local development", () =
 
 test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/auth/session"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/seasons"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/seasons/season-1/sessions"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/sessions/session-1/games"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/dev/items"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/dev/items/demo"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/dev/send-email"), true);

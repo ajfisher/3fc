@@ -18,12 +18,18 @@ This document defines the baseline key structure and access patterns for the
 - Season:
   - `pk=LEAGUE#{leagueId}`
   - `sk=SEASON#{seasonId}`
+- Season lookup mirror (for ACL scope resolution):
+  - `pk=SEASON#{seasonId}`
+  - `sk=METADATA`
 - Team:
   - `pk=SEASON#{seasonId}`
   - `sk=TEAM#{teamId}`
 - Session:
   - `pk=SEASON#{seasonId}`
   - `sk=SESSION#{sessionId}`
+- Session lookup mirror (for ACL scope resolution):
+  - `pk=SESSION#{sessionId}`
+  - `sk=METADATA`
 - Game metadata:
   - `pk=GAME#{gameId}`
   - `sk=METADATA`
