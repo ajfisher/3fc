@@ -1,8 +1,11 @@
 service: threefc-api-health
-frameworkVersion: "3"
+frameworkVersion: "4"
 
 plugins:
   - serverless-esbuild
+
+build:
+  esbuild: false
 
 provider:
   name: aws
