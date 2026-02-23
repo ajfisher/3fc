@@ -492,6 +492,38 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+data "aws_iam_policy_document" "lambda_data_access" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  statement {
+    sid    = "DynamoAppTableAccess"
+    effect = "Allow"
+    actions = [
+      "dynamodb:BatchGetItem",
+      "dynamodb:BatchWriteItem",
+      "dynamodb:ConditionCheckItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:Scan",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      aws_dynamodb_table.app[0].arn,
+      "${aws_dynamodb_table.app[0].arn}/index/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_data_access" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  name   = "${local.name_prefix}-lambda-data-access"
+  role   = aws_iam_role.lambda_exec[0].id
+  policy = data.aws_iam_policy_document.lambda_data_access[0].json
+}
+
 resource "aws_iam_openid_connect_provider" "github_actions" {
   count = var.create_baseline_resources && var.create_github_oidc_provider ? 1 : 0
 

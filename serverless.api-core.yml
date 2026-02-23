@@ -1,0 +1,78 @@
+service: threefc-api-core
+frameworkVersion: "4"
+
+plugins:
+  - serverless-esbuild
+
+build:
+  esbuild: false
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ${opt:region, env:AWS_REGION, 'ap-southeast-2'}
+  stage: ${opt:stage, 'qa'}
+  architecture: arm64
+  logRetentionInDays: 14
+  versionFunctions: false
+  httpApi:
+    id: ${env:HTTP_API_ID}
+  iam:
+    role: ${env:LAMBDA_EXECUTION_ROLE_ARN}
+  environment:
+    DYNAMODB_TABLE: ${env:DYNAMODB_TABLE, '3fc-${sls:stage}-app'}
+    APP_BASE_URL: ${self:custom.appBaseUrls.${sls:stage}, self:custom.appBaseUrls.default}
+    SESSION_COOKIE_NAME: threefc_session
+    CORS_ALLOWED_ORIGINS: ${self:custom.corsAllowedOrigins.${sls:stage}, self:custom.corsAllowedOrigins.default}
+    MAGIC_LINK_TOKEN_TTL_SECONDS: 900
+    MAGIC_LINK_SESSION_TTL_SECONDS: 86400
+  tags:
+    Project: 3fc
+    Environment: ${sls:stage}
+    ManagedBy: serverless
+
+custom:
+  appBaseUrls:
+    qa: https://qa.3fc.football
+    prod: https://app.3fc.football
+    default: https://app.3fc.football
+  corsAllowedOrigins:
+    qa: https://qa.3fc.football,https://app.3fc.football
+    prod: https://app.3fc.football,https://qa.3fc.football
+    default: https://app.3fc.football
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: false
+    keepNames: true
+    platform: node
+    target: node22
+    format: cjs
+    tsconfig: ./api/tsconfig.json
+
+package:
+  individually: true
+
+functions:
+  core:
+    name: 3fc-${sls:stage}-api-core
+    description: 3FC API core authenticated routes
+    handler: api/src/lambda-core.handler
+    memorySize: 256
+    timeout: 10
+    events:
+      - httpApi:
+          method: GET
+          path: /v1/auth/session
+      - httpApi:
+          method: POST
+          path: /v1/leagues
+      - httpApi:
+          method: POST
+          path: /v1/leagues/{leagueId}/seasons
+      - httpApi:
+          method: POST
+          path: /v1/seasons/{seasonId}/sessions
+      - httpApi:
+          method: POST
+          path: /v1/sessions/{sessionId}/games

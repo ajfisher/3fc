@@ -52,6 +52,11 @@ jobs:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
         run: make deploy ENV=prod SERVICE=api-health
 
+      - name: Deploy API core service to production
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+        run: make deploy ENV=prod SERVICE=api-core
+
       - name: Smoke test deployed production health endpoint
         run: |
           MANIFEST_PATH="out/deploy/prod/api-health-deploy-manifest.json"
@@ -83,13 +88,49 @@ jobs:
             echo "SMOKE_HTTP_CODE=${HTTP_CODE}"
           } >> "$GITHUB_ENV"
 
+      - name: Smoke test deployed production core endpoints
+        run: |
+          MANIFEST_PATH="out/deploy/prod/api-core-deploy-manifest.json"
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "Expected deploy manifest at $MANIFEST_PATH"
+            exit 1
+          fi
+
+          API_ID="$(jq -r '.httpApiId // empty' "$MANIFEST_PATH")"
+          if [ -z "$API_ID" ]; then
+            echo "Deploy manifest did not include httpApiId."
+            exit 1
+          fi
+
+          CORE_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues"
+          CORE_HTTP_CODE="$(curl -sS -o /tmp/prod-core.json -w '%{http_code}' \
+            -X POST "$CORE_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -d '{}')"
+
+          if [ "$CORE_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${CORE_ENDPOINT} (HTTP ${CORE_HTTP_CODE})"
+            cat /tmp/prod-core.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/prod-core.json >/dev/null
+
+          {
+            echo "SMOKE_CORE_ENDPOINT=${CORE_ENDPOINT}"
+            echo "SMOKE_CORE_HTTP_CODE=${CORE_HTTP_CODE}"
+          } >> "$GITHUB_ENV"
+
       - name: Write deployment summary
         run: |
           {
             echo "## Production deploy complete"
             echo "- Branch: main"
             echo "- Commit: ${{ github.sha }}"
-            echo "- Service: api-health"
+            echo "- Services: api-health, api-core"
             echo "- Smoke endpoint: ${SMOKE_ENDPOINT}"
             echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
+            echo "- Core smoke endpoint: ${SMOKE_CORE_ENDPOINT}"
+            echo "- Core smoke status: HTTP ${SMOKE_CORE_HTTP_CODE}"
           } >> "$GITHUB_STEP_SUMMARY"
