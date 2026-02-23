@@ -62,7 +62,7 @@ export function buildCorsHeaders(
   return {
     "Access-Control-Allow-Origin": origin as string,
     "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Headers": "content-type,x-csrf-token",
+    "Access-Control-Allow-Headers": "content-type,x-csrf-token,idempotency-key",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     Vary: "Origin",
   };
