@@ -10,6 +10,11 @@ import {
   PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
 
+import {
+  MagicLinkAuthError,
+  MagicLinkService,
+  type MagicLinkEmailSender,
+} from "./auth/magic-link.js";
 import { buildHealthResponse } from "./index.js";
 import { logRequest, logRequestError } from "./logging.js";
 
@@ -19,6 +24,18 @@ const TABLE_NAME = process.env.DYNAMODB_TABLE ?? "threefc_local";
 const DYNAMODB_ENDPOINT = process.env.DYNAMODB_ENDPOINT ?? "http://localhost:8000";
 const FAKE_SES_URL = process.env.FAKE_SES_URL ?? "http://localhost:4025/send-email";
 const FAKE_SES_FROM = process.env.FAKE_SES_FROM ?? "noreply@3fc.football";
+const APP_BASE_URL = process.env.APP_BASE_URL ?? "http://localhost:3000";
+const MAGIC_LINK_CALLBACK_PATH = process.env.MAGIC_LINK_CALLBACK_PATH ?? "/auth/callback";
+const MAGIC_LINK_TOKEN_TTL_SECONDS = Number.parseInt(
+  process.env.MAGIC_LINK_TOKEN_TTL_SECONDS ?? "900",
+  10,
+);
+const MAGIC_LINK_SESSION_TTL_SECONDS = Number.parseInt(
+  process.env.MAGIC_LINK_SESSION_TTL_SECONDS ?? "86400",
+  10,
+);
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME ?? "threefc_session";
+const SESSION_COOKIE_SECURE = (process.env.SESSION_COOKIE_SECURE ?? "false").toLowerCase() === "true";
 const DEV_ITEM_SK = "METADATA";
 
 const ddbClient = new DynamoDBClient({
@@ -28,6 +45,41 @@ const ddbClient = new DynamoDBClient({
     accessKeyId: process.env.AWS_ACCESS_KEY_ID ?? "local",
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "local",
   },
+});
+
+const magicLinkEmailSender: MagicLinkEmailSender = {
+  async sendMagicLink(input) {
+    const sendResponse = await fetch(FAKE_SES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: input.to,
+        from: FAKE_SES_FROM,
+        subject: input.subject,
+        body: input.body,
+      }),
+    });
+
+    if (!sendResponse.ok) {
+      throw new Error(`Magic-link email send failed with status ${sendResponse.status}.`);
+    }
+
+    const payload = (await sendResponse.json()) as { messageId?: unknown };
+
+    return {
+      messageId: typeof payload.messageId === "string" ? payload.messageId : undefined,
+    };
+  },
+};
+
+const magicLinkService = new MagicLinkService(ddbClient, magicLinkEmailSender, {
+  tableName: TABLE_NAME,
+  appBaseUrl: APP_BASE_URL,
+  callbackPath: MAGIC_LINK_CALLBACK_PATH,
+  tokenTtlSeconds: MAGIC_LINK_TOKEN_TTL_SECONDS,
+  sessionTtlSeconds: MAGIC_LINK_SESSION_TTL_SECONDS,
 });
 
 async function ensureTable(): Promise<void> {
@@ -54,8 +106,14 @@ async function ensureTable(): Promise<void> {
   }
 }
 
-function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+function sendJson(
+  response: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+  headers: Record<string, string> = {},
+): void {
   response.writeHead(statusCode, {
+    ...headers,
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(payload));
@@ -179,6 +237,109 @@ async function handleSendDevEmail(
   return 202;
 }
 
+function sessionCookie(sessionId: string, maxAgeSeconds: number): string {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionId)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAgeSeconds}`,
+  ];
+
+  if (SESSION_COOKIE_SECURE) {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function handleMagicLinkError(error: unknown, response: ServerResponse): number {
+  if (!(error instanceof MagicLinkAuthError)) {
+    throw error;
+  }
+
+  sendJson(response, error.statusCode, {
+    error: error.code,
+    message: error.message,
+  });
+
+  return error.statusCode;
+}
+
+async function handleMagicLinkStart(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<number> {
+  let body: Record<string, unknown>;
+
+  try {
+    body = await parseJsonBody(request);
+  } catch {
+    return badRequest(response, "Request body must be valid JSON.");
+  }
+
+  if (typeof body.email !== "string") {
+    return badRequest(response, "Field `email` is required.");
+  }
+
+  try {
+    const result = await magicLinkService.start(body.email);
+
+    sendJson(response, 202, {
+      status: "sent",
+      email: result.email,
+      expiresAt: result.expiresAt,
+      messageId: result.messageId,
+    });
+
+    return 202;
+  } catch (error) {
+    return handleMagicLinkError(error, response);
+  }
+}
+
+async function handleMagicLinkComplete(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<number> {
+  let body: Record<string, unknown>;
+
+  try {
+    body = await parseJsonBody(request);
+  } catch {
+    return badRequest(response, "Request body must be valid JSON.");
+  }
+
+  if (typeof body.token !== "string") {
+    return badRequest(response, "Field `token` is required.");
+  }
+
+  try {
+    const session = await magicLinkService.complete(body.token);
+
+    sendJson(
+      response,
+      200,
+      {
+        status: "authenticated",
+        session: {
+          sessionId: session.sessionId,
+          email: session.email,
+          createdAt: session.createdAt,
+          expiresAt: session.expiresAt,
+        },
+      },
+      {
+        "Set-Cookie": sessionCookie(session.sessionId, session.maxAgeSeconds),
+      },
+    );
+
+    return 200;
+  } catch (error) {
+    return handleMagicLinkError(error, response);
+  }
+}
+
 function getRequestId(request: IncomingMessage): string {
   const header = request.headers["x-request-id"];
 
@@ -223,6 +384,16 @@ async function start(): Promise<void> {
 
       if (method === "POST" && route === "/v1/dev/send-email") {
         status = await handleSendDevEmail(request, response);
+        return;
+      }
+
+      if (method === "POST" && route === "/v1/auth/magic/start") {
+        status = await handleMagicLinkStart(request, response);
+        return;
+      }
+
+      if (method === "POST" && route === "/v1/auth/magic/complete") {
+        status = await handleMagicLinkComplete(request, response);
         return;
       }
 

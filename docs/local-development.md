@@ -51,6 +51,26 @@ curl -s -X POST http://localhost:3001/v1/dev/send-email \
 curl -s http://localhost:4025/messages
 ```
 
+### Magic-link auth flow (local)
+
+Start flow (sends link to fake SES):
+
+```bash
+curl -s -X POST http://localhost:3001/v1/auth/magic/start \
+  -H 'content-type: application/json' \
+  -d '{"email":"player@example.com"}'
+
+curl -s http://localhost:4025/messages
+```
+
+Take the `token=...` query value from the latest fake SES message body, then complete:
+
+```bash
+curl -s -X POST http://localhost:3001/v1/auth/magic/complete \
+  -H 'content-type: application/json' \
+  -d '{"token":"<copied-token>"}'
+```
+
 Emails are persisted as newline-delimited JSON at:
 
 - `local/fake-ses/emails.jsonl`
