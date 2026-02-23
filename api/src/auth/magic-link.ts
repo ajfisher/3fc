@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
+  GetItemCommand,
   PutItemCommand,
   UpdateItemCommand,
   type AttributeValue,
+  type GetItemCommandOutput,
   type UpdateItemCommandOutput,
 } from "@aws-sdk/client-dynamodb";
 
@@ -56,6 +58,13 @@ export interface MagicLinkCompleteResult {
   createdAt: string;
   expiresAt: string;
   maxAgeSeconds: number;
+}
+
+export interface AuthSessionRecord {
+  sessionId: string;
+  email: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export class MagicLinkAuthError extends Error {
@@ -141,6 +150,14 @@ function readString(value: AttributeValue | undefined, field: string): string {
   }
 
   return value.S;
+}
+
+function readNumber(value: AttributeValue | undefined, field: string): number {
+  if (!value || value.N === undefined) {
+    throw new Error(`Missing number attribute \`${field}\`.`);
+  }
+
+  return Number.parseInt(value.N, 10);
 }
 
 function isConditionalCheckFailure(error: unknown): boolean {
@@ -308,6 +325,46 @@ export class MagicLinkService {
       createdAt: nowIso,
       expiresAt: expiresAtIso,
       maxAgeSeconds: this.options.sessionTtlSeconds,
+    };
+  }
+
+  async getSession(sessionId: string): Promise<AuthSessionRecord | null> {
+    if (sessionId.trim().length === 0) {
+      return null;
+    }
+
+    const result = (await this.client.send(
+      new GetItemCommand({
+        TableName: this.options.tableName,
+        Key: {
+          pk: { S: sessionPk(sessionId) },
+          sk: { S: METADATA_SK },
+        },
+      }),
+    )) as GetItemCommandOutput;
+
+    const item = result.Item;
+
+    if (!item) {
+      return null;
+    }
+
+    if (readString(item.entityType, "entityType") !== ENTITY_TYPE.session) {
+      return null;
+    }
+
+    const nowEpoch = Math.floor(this.clock.now().getTime() / 1000);
+    const expiresAtEpoch = readNumber(item.expiresAtEpoch, "expiresAtEpoch");
+
+    if (expiresAtEpoch < nowEpoch) {
+      return null;
+    }
+
+    return {
+      sessionId,
+      email: readString(item.email, "email"),
+      createdAt: readString(item.createdAt, "createdAt"),
+      expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
     };
   }
 }
