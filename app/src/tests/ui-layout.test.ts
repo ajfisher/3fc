@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderComponentShowcasePage, renderSetupHomePage } from "../ui/layout.js";
+import {
+  renderComponentShowcasePage,
+  renderGameContextPage,
+  renderMagicLinkCallbackPage,
+  renderSetupHomePage,
+} from "../ui/layout.js";
 import {
   renderButton,
   renderDataTable,
@@ -73,20 +78,22 @@ test("primitives render expected semantic and data-ui hooks", () => {
   assert.match(panel, /data-ui="panel"/);
 });
 
-test("setup home page includes all foundation sections and links external stylesheet", () => {
+test("setup home page includes auth hooks, setup flow panels, and external assets", () => {
   const html = renderSetupHomePage("https://qa-api.3fc.football");
 
-  assert.match(html, /League setup/);
-  assert.match(html, /Season setup/);
-  assert.match(html, /Session setup/);
-  assert.match(html, /Game setup/);
+  assert.match(html, /data-testid="panel-auth-flow"/);
+  assert.match(html, /data-testid="panel-league-flow"/);
+  assert.match(html, /data-testid="panel-season-flow"/);
+  assert.match(html, /data-testid="panel-session-flow"/);
+  assert.match(html, /data-testid="panel-game-flow"/);
+  assert.match(html, /data-testid="panel-submit-flow"/);
+  assert.match(html, /data-testid="send-magic-link"/);
+  assert.match(html, /data-testid="create-game-context"/);
   assert.match(html, /rel="stylesheet" href="\/ui\/styles\.css"/);
   assert.match(html, /data-ui="step-list"/);
   assert.match(html, /data-testid="setup-shell"/);
-  assert.match(html, /data-testid="panel-league"/);
-  assert.match(html, /data-testid="panel-season"/);
-  assert.match(html, /data-testid="panel-session"/);
-  assert.match(html, /data-testid="panel-game"/);
+  assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
+  assert.match(html, /<script src="\/ui\/setup-flow\.js" defer><\/script>/);
   assert.match(html, /https:\/\/qa-api\.3fc\.football/);
 });
 
@@ -107,4 +114,30 @@ test("component showcase page includes navigation, players, tables, validation, 
   assert.match(html, /data-modal-open="confirm-delete-game"/);
   assert.match(html, /data-modal-confirm="confirm-delete-game"/);
   assert.match(html, /<script src="\/ui\/modal\.js" defer><\/script>/);
+});
+
+test("magic-link callback page includes auth flow script and callback messaging", () => {
+  const html = renderMagicLinkCallbackPage("https://qa-api.3fc.football");
+
+  assert.match(html, /data-testid="auth-callback-shell"/);
+  assert.match(html, /Completing sign-in/);
+  assert.match(html, /id="auth-callback-status"/);
+  assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
+});
+
+test("game context page renders created identifiers and kickoff metadata", () => {
+  const html = renderGameContextPage({
+    gameId: "game-20260223-a1b2c3d4",
+    leagueId: "league-main",
+    seasonId: "season-2026",
+    sessionId: "20260223",
+    gameStartTs: "2026-02-23T10:00:00.000Z",
+  });
+
+  assert.match(html, /data-testid="game-context-shell"/);
+  assert.match(html, /game-20260223-a1b2c3d4/);
+  assert.match(html, /league-main/);
+  assert.match(html, /season-2026/);
+  assert.match(html, /2026-02-23T10:00:00.000Z/);
+  assert.match(html, /data-testid="create-another-game"/);
 });

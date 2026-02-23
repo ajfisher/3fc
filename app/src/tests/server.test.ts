@@ -94,12 +94,52 @@ test("modal behavior script route serves external javascript", () => {
   assert.match(response.body, /modal-open/);
 });
 
+test("setup and auth flow script routes serve external javascript", () => {
+  const setupFlowResponse = executeRoute("GET", "/ui/setup-flow.js");
+  assert.equal(setupFlowResponse.statusCode, 200);
+  assertSecurityHeaders(setupFlowResponse.headers);
+  assert.equal(setupFlowResponse.headers["Content-Type"], "application/javascript; charset=utf-8");
+  assert.match(setupFlowResponse.body, /create-game-context/);
+  assert.match(setupFlowResponse.body, /threefc:auth-state/);
+
+  const authFlowResponse = executeRoute("GET", "/ui/auth-flow.js");
+  assert.equal(authFlowResponse.statusCode, 200);
+  assertSecurityHeaders(authFlowResponse.headers);
+  assert.equal(authFlowResponse.headers["Content-Type"], "application/javascript; charset=utf-8");
+  assert.match(authFlowResponse.body, /auth-magic-form/);
+  assert.match(authFlowResponse.body, /auth\/callback/);
+});
+
+test("game context route renders created game shell", () => {
+  const response = executeRoute(
+    "GET",
+    "/games/game-123?leagueId=league-1&seasonId=season-1&sessionId=20260223&gameStartTs=2026-02-23T10:00:00.000Z",
+  );
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.match(response.body, /Game context created: game-123/);
+  assert.match(response.body, /league-1/);
+  assert.match(response.body, /season-1/);
+});
+
 test("auth callback error and success responses include security headers", () => {
   const errorResponse = executeRoute("GET", "/auth/callback?error=access_denied");
   assert.equal(errorResponse.statusCode, 400);
   assertSecurityHeaders(errorResponse.headers);
 
+  const tokenResponse = executeRoute("GET", "/auth/callback?token=abc123");
+  assert.equal(tokenResponse.statusCode, 200);
+  assertSecurityHeaders(tokenResponse.headers);
+  assert.match(tokenResponse.body, /Completing sign-in/);
+
   const successResponse = executeRoute("GET", "/auth/callback?code=abc123");
   assert.equal(successResponse.statusCode, 200);
   assertSecurityHeaders(successResponse.headers);
+
+  const missingResponse = executeRoute("GET", "/auth/callback");
+  assert.equal(missingResponse.statusCode, 400);
+  assertSecurityHeaders(missingResponse.headers);
+  assert.match(missingResponse.body, /did not include token or code/);
 });

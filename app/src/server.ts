@@ -6,6 +6,8 @@ import { URL, fileURLToPath } from "node:url";
 import { buildSecurityHeaders } from "./security.js";
 import {
   renderComponentShowcasePage,
+  renderGameContextPage,
+  renderMagicLinkCallbackPage,
   renderSetupHomePage,
   renderStatusPage,
 } from "./ui/layout.js";
@@ -22,8 +24,20 @@ const UI_MODAL_SCRIPT_PATHS = [
   resolve(process.cwd(), "src/ui/modal.js"),
   resolve(process.cwd(), "app/src/ui/modal.js"),
 ];
+const UI_SETUP_FLOW_SCRIPT_PATHS = [
+  fileURLToPath(new URL("./ui/setup-flow.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/setup-flow.js"),
+  resolve(process.cwd(), "app/src/ui/setup-flow.js"),
+];
+const UI_AUTH_FLOW_SCRIPT_PATHS = [
+  fileURLToPath(new URL("./ui/auth-flow.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/auth-flow.js"),
+  resolve(process.cwd(), "app/src/ui/auth-flow.js"),
+];
 const UI_STYLESHEET = loadUiStylesheet();
 const UI_MODAL_SCRIPT = loadUiModalScript();
+const UI_SETUP_FLOW_SCRIPT = loadUiSetupFlowScript();
+const UI_AUTH_FLOW_SCRIPT = loadUiAuthFlowScript();
 
 function loadUiStylesheet(): string {
   for (const stylesheetPath of UI_STYLESHEET_PATHS) {
@@ -47,6 +61,30 @@ function loadUiModalScript(): string {
   }
 
   return "/* ui modal script unavailable */";
+}
+
+function loadUiSetupFlowScript(): string {
+  for (const scriptPath of UI_SETUP_FLOW_SCRIPT_PATHS) {
+    try {
+      return readFileSync(scriptPath, "utf8");
+    } catch {
+      // Continue until a readable script path is found.
+    }
+  }
+
+  return "/* ui setup flow script unavailable */";
+}
+
+function loadUiAuthFlowScript(): string {
+  for (const scriptPath of UI_AUTH_FLOW_SCRIPT_PATHS) {
+    try {
+      return readFileSync(scriptPath, "utf8");
+    } catch {
+      // Continue until a readable script path is found.
+    }
+  }
+
+  return "/* ui auth flow script unavailable */";
 }
 
 function sendJson(
@@ -136,8 +174,37 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
+    if (method === "GET" && route === "/ui/setup-flow.js") {
+      sendJavascript(response, securityHeaders, 200, UI_SETUP_FLOW_SCRIPT);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/auth-flow.js") {
+      sendJavascript(response, securityHeaders, 200, UI_AUTH_FLOW_SCRIPT);
+      return;
+    }
+
+    const gameContextMatch = route.match(/^\/games\/([^/]+)$/);
+    if (method === "GET" && gameContextMatch) {
+      const gameId = decodeURIComponent(gameContextMatch[1]);
+      sendHtml(
+        response,
+        securityHeaders,
+        200,
+        renderGameContextPage({
+          gameId,
+          leagueId: requestUrl.searchParams.get("leagueId") ?? undefined,
+          seasonId: requestUrl.searchParams.get("seasonId") ?? undefined,
+          sessionId: requestUrl.searchParams.get("sessionId") ?? undefined,
+          gameStartTs: requestUrl.searchParams.get("gameStartTs") ?? undefined,
+        }),
+      );
+      return;
+    }
+
     if (method === "GET" && route === "/auth/callback") {
       const errorCode = requestUrl.searchParams.get("error");
+      const token = requestUrl.searchParams.get("token");
       const code = requestUrl.searchParams.get("code");
 
       if (errorCode) {
@@ -150,23 +217,22 @@ export function createAppRequestHandler(apiBaseUrl: string) {
         return;
       }
 
-      if (!code) {
-        sendJson(response, securityHeaders, 400, {
-          error: "missing_code",
-          message: "Authorization callback did not include a code.",
-        });
+      if (token) {
+        sendHtml(response, securityHeaders, 200, renderMagicLinkCallbackPage(apiBaseUrl));
         return;
       }
 
-      sendHtml(
-        response,
-        securityHeaders,
-        200,
-        renderStatusPage(
-          "Sign-in complete",
-          "Authorization callback received. Continue in the app.",
-        ),
-      );
+      if (!code) {
+        sendHtml(
+          response,
+          securityHeaders,
+          400,
+          renderStatusPage("Sign-in callback failed", "Authorization callback did not include token or code."),
+        );
+        return;
+      }
+
+      sendHtml(response, securityHeaders, 200, renderMagicLinkCallbackPage(apiBaseUrl));
       return;
     }
 
