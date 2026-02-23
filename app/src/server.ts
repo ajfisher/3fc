@@ -8,6 +8,7 @@ import {
   renderComponentShowcasePage,
   renderGameContextPage,
   renderMagicLinkCallbackPage,
+  renderSignInPage,
   renderSetupHomePage,
   renderStatusPage,
 } from "./ui/layout.js";
@@ -156,6 +157,12 @@ export function createAppRequestHandler(apiBaseUrl: string) {
 
     if (method === "GET" && (route === "/" || route === "/setup")) {
       sendHtml(response, securityHeaders, 200, setupShellHtml);
+      return;
+    }
+
+    if (method === "GET" && route === "/sign-in") {
+      const returnTo = requestUrl.searchParams.get("returnTo") ?? "/setup";
+      sendHtml(response, securityHeaders, 200, renderSignInPage(apiBaseUrl, returnTo));
       return;
     }
 

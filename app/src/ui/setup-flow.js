@@ -1,22 +1,39 @@
 (() => {
-  const form = document.getElementById("setup-flow-form");
-  if (!form) {
+  const root = document.getElementById("setup-flow-root");
+  if (!root) {
     return;
   }
 
-  const apiBaseUrl = form.getAttribute("data-api-base-url") ?? "";
-  const createButton = form.querySelector('[data-action="create-game-context"]');
-  const resetButton = form.querySelector('[data-action="reset-setup-flow"]');
+  const apiBaseUrl = root.getAttribute("data-api-base-url") ?? "";
   const statusElement = document.getElementById("setup-status");
   const errorElement = document.getElementById("setup-error");
-  const previewElement = document.getElementById("setup-id-preview");
-  const previewLeagueId = document.getElementById("preview-league-id");
-  const previewSeasonId = document.getElementById("preview-season-id");
-  const previewSessionId = document.getElementById("preview-session-id");
-  const previewGameId = document.getElementById("preview-game-id");
+
+  const leagueStep = root.querySelector('[data-step="league"]');
+  const seasonStep = root.querySelector('[data-step="season"]');
+  const gamesStep = root.querySelector('[data-step="games"]');
+
+  const createLeagueButton = root.querySelector('[data-action="create-league"]');
+  const createSeasonButton = root.querySelector('[data-action="create-season"]');
+  const createGameButton = root.querySelector('[data-action="create-game"]');
+
+  const gameCreatedNote = document.getElementById("game-created-note");
+  const gameContextLink = document.getElementById("game-context-link");
+
+  const leagueIdDisplay = document.getElementById("league-id-display");
+  const seasonIdDisplay = document.getElementById("season-id-display");
+  const sessionIdDisplay = document.getElementById("session-id-display");
+  const gameIdDisplay = document.getElementById("game-id-display");
+
+  const stepChipLeague = document.getElementById("step-chip-league");
+  const stepChipSeason = document.getElementById("step-chip-season");
+  const stepChipGames = document.getElementById("step-chip-games");
 
   let submitting = false;
-  let isAuthenticated = false;
+  let leagueCreated = null;
+  let seasonCreated = null;
+  let leagueSlugEdited = false;
+  let seasonSlugEdited = false;
+  let gameIdNonce = randomSuffix(4);
 
   function slugify(value) {
     return value
@@ -28,21 +45,12 @@
       .slice(0, 48);
   }
 
-  function randomSuffix() {
+  function randomSuffix(length = 8) {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+      return crypto.randomUUID().replace(/-/g, "").slice(0, length);
     }
 
-    return Math.random().toString(16).slice(2, 10);
-  }
-
-  function toIsoTimestamp(localDateTime) {
-    const parsed = new Date(localDateTime);
-    if (Number.isNaN(parsed.getTime())) {
-      return null;
-    }
-
-    return parsed.toISOString();
+    return Math.random().toString(16).slice(2, 2 + length);
   }
 
   function buildApiUrl(path) {
@@ -52,17 +60,13 @@
   }
 
   function createIdempotencyKey(prefix, stablePart) {
-    const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 48);
+    const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 56);
     return `${prefix}-${safeStable}-${Date.now().toString(36)}`;
   }
 
   function getInput(fieldId) {
-    const input = form.querySelector(`#${fieldId}`);
-    if (!(input instanceof HTMLInputElement)) {
-      return null;
-    }
-
-    return input;
+    const input = root.querySelector(`#${fieldId}`);
+    return input instanceof HTMLInputElement ? input : null;
   }
 
   function getValue(fieldId) {
@@ -76,14 +80,25 @@
     }
   }
 
-  function getFieldMessageContainer(fieldId) {
+  function getFieldContainer(fieldId) {
     const input = getInput(fieldId);
-    const field = input?.closest('[data-ui="field"]');
+    return input?.closest('[data-ui="field"]') ?? null;
+  }
+
+  function ensureFieldMessageContainer(fieldId) {
+    const field = getFieldContainer(fieldId);
     if (!field) {
       return null;
     }
 
-    return field.querySelector('[data-ui="field-message"]');
+    let message = field.querySelector('[data-ui="field-message"]');
+    if (!message) {
+      message = document.createElement("div");
+      message.setAttribute("data-ui", "field-message");
+      field.appendChild(message);
+    }
+
+    return message;
   }
 
   function clearFieldState(fieldId) {
@@ -94,7 +109,8 @@
 
     input.dataset.state = "default";
     input.removeAttribute("aria-invalid");
-    const message = getFieldMessageContainer(fieldId);
+
+    const message = ensureFieldMessageContainer(fieldId);
     if (message) {
       message.textContent = "";
     }
@@ -108,7 +124,8 @@
 
     input.dataset.state = "invalid";
     input.setAttribute("aria-invalid", "true");
-    const message = getFieldMessageContainer(fieldId);
+
+    const message = ensureFieldMessageContainer(fieldId);
     if (message) {
       message.textContent = text;
     }
@@ -128,7 +145,7 @@
     statusElement.setAttribute("data-state", state);
   }
 
-  function showGlobalError(message) {
+  function showError(message) {
     if (!errorElement) {
       return;
     }
@@ -137,129 +154,106 @@
     errorElement.hidden = false;
   }
 
-  function clearGlobalError() {
+  function clearError() {
     if (!errorElement) {
       return;
     }
 
-    errorElement.hidden = true;
     errorElement.textContent = "";
+    errorElement.hidden = true;
   }
 
-  function updatePreview(ids) {
-    if (!previewElement) {
-      return;
+  function toIsoTimestamp(localDateTime) {
+    const parsed = new Date(localDateTime);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
     }
 
-    if (!ids.leagueId && !ids.seasonId && !ids.sessionId && !ids.gameId) {
-      previewElement.hidden = true;
-      return;
-    }
-
-    previewElement.hidden = false;
-    if (previewLeagueId) {
-      previewLeagueId.textContent = ids.leagueId || "Not set";
-    }
-    if (previewSeasonId) {
-      previewSeasonId.textContent = ids.seasonId || "Not set";
-    }
-    if (previewSessionId) {
-      previewSessionId.textContent = ids.sessionId || "Not set";
-    }
-    if (previewGameId) {
-      previewGameId.textContent = ids.gameId || "Not set";
-    }
+    return parsed.toISOString();
   }
 
-  function deriveIdsFromInputs() {
-    if (!getValue("league-id")) {
-      const name = getValue("league-name");
-      if (name) {
-        setValue("league-id", slugify(name));
-      }
-    }
-
-    if (!getValue("season-id")) {
-      const name = getValue("season-name");
-      if (name) {
-        setValue("season-id", slugify(name));
-      }
-    }
-
-    if (!getValue("session-id")) {
-      const sessionDate = getValue("session-date");
-      if (sessionDate) {
-        setValue("session-id", sessionDate.replaceAll("-", ""));
-      }
-    }
-
-    if (!getValue("game-id")) {
-      const sessionId = getValue("session-id");
-      const fallbackSession = sessionId || "session";
-      setValue("game-id", `game-${fallbackSession}-${randomSuffix()}`);
-    }
+  function deriveLeagueId() {
+    const leagueSlug = slugify(getValue("league-slug"));
+    const leagueName = slugify(getValue("league-name"));
+    return leagueSlug || leagueName || `league-${randomSuffix(6)}`;
   }
 
-  function setSubmittableState(isEnabled) {
-    const enabled = isEnabled && isAuthenticated;
-    if (createButton instanceof HTMLButtonElement) {
-      createButton.disabled = !enabled;
+  function deriveSeasonId() {
+    const seasonSlug = slugify(getValue("season-slug"));
+    const seasonName = slugify(getValue("season-name"));
+    return seasonSlug || seasonName || `season-${randomSuffix(6)}`;
+  }
+
+  function deriveSessionId() {
+    const sessionDate = getValue("session-date");
+    if (sessionDate) {
+      return sessionDate.replaceAll("-", "");
     }
-    if (resetButton instanceof HTMLButtonElement) {
-      resetButton.disabled = !isEnabled;
+
+    return `session-${randomSuffix(6)}`;
+  }
+
+  function deriveGameId() {
+    const sessionId = deriveSessionId();
+    const kickoff = getValue("game-kickoff");
+    const kickoffPart = kickoff.includes("T") ? kickoff.split("T")[1].replace(":", "") : "0000";
+    return `game-${sessionId}-${kickoffPart}-${gameIdNonce}`;
+  }
+
+  function updateDerivedIds() {
+    if (leagueIdDisplay) {
+      leagueIdDisplay.textContent = deriveLeagueId();
+    }
+    if (seasonIdDisplay) {
+      seasonIdDisplay.textContent = deriveSeasonId();
+    }
+    if (sessionIdDisplay) {
+      sessionIdDisplay.textContent = deriveSessionId();
+    }
+    if (gameIdDisplay) {
+      gameIdDisplay.textContent = deriveGameId();
     }
   }
 
-  function validate() {
-    deriveIdsFromInputs();
-    clearGlobalError();
+  function setStepState(stepName) {
+    const isLeague = stepName === "league";
+    const isSeason = stepName === "season";
+    const isGames = stepName === "games";
 
-    const requiredFieldErrors = [];
-    const requiredFields = [
-      { id: "league-id", label: "League ID" },
-      { id: "league-name", label: "League name" },
-      { id: "season-id", label: "Season ID" },
-      { id: "season-name", label: "Season name" },
-      { id: "session-id", label: "Session ID" },
-      { id: "session-date", label: "Session date" },
-      { id: "game-id", label: "Game ID" },
-      { id: "game-kickoff", label: "Kickoff time" },
-    ];
-
-    requiredFields.forEach((field) => {
-      clearFieldState(field.id);
-      if (!getValue(field.id)) {
-        requiredFieldErrors.push(field.id);
-        setFieldError(field.id, `${field.label} is required.`);
-      }
-    });
-
-    const seasonStart = getValue("season-start");
-    const seasonEnd = getValue("season-end");
-    if (seasonStart && seasonEnd && seasonEnd < seasonStart) {
-      setFieldError("season-end", "Season end date must be on or after season start.");
-      requiredFieldErrors.push("season-end");
+    if (leagueStep) {
+      leagueStep.hidden = false;
+    }
+    if (seasonStep) {
+      seasonStep.hidden = !(isSeason || isGames);
+    }
+    if (gamesStep) {
+      gamesStep.hidden = !isGames;
     }
 
-    const kickoffIso = toIsoTimestamp(getValue("game-kickoff"));
-    if (!kickoffIso) {
-      setFieldError("game-kickoff", "Kickoff time must be a valid date and time.");
-      requiredFieldErrors.push("game-kickoff");
+    if (stepChipLeague) {
+      stepChipLeague.setAttribute("data-state", isLeague ? "active" : "done");
     }
+    if (stepChipSeason) {
+      stepChipSeason.setAttribute("data-state", isSeason ? "active" : isGames ? "done" : "upcoming");
+    }
+    if (stepChipGames) {
+      stepChipGames.setAttribute("data-state", isGames ? "active" : "upcoming");
+    }
+  }
 
-    const ids = {
-      leagueId: getValue("league-id"),
-      seasonId: getValue("season-id"),
-      sessionId: getValue("session-id"),
-      gameId: getValue("game-id"),
-    };
-    updatePreview(ids);
+  function setSubmittingState(isActive) {
+    submitting = isActive;
+    const disabled = isActive;
 
-    return {
-      isValid: requiredFieldErrors.length === 0,
-      ids,
-      kickoffIso,
-    };
+    if (createLeagueButton instanceof HTMLButtonElement) {
+      createLeagueButton.disabled = disabled;
+    }
+    if (createSeasonButton instanceof HTMLButtonElement) {
+      createSeasonButton.disabled = disabled;
+    }
+    if (createGameButton instanceof HTMLButtonElement) {
+      createGameButton.disabled = disabled;
+    }
   }
 
   async function postJson(path, payload, idempotencyKey) {
@@ -273,97 +267,310 @@
       body: JSON.stringify(payload),
     });
 
-    const rawText = await response.text();
-    let parsedBody = null;
-    if (rawText.length > 0) {
+    const text = await response.text();
+    let body = {};
+
+    if (text.length > 0) {
       try {
-        parsedBody = JSON.parse(rawText);
+        body = JSON.parse(text);
       } catch {
-        parsedBody = { error: rawText };
+        body = { error: text };
       }
     }
 
     if (!response.ok) {
-      const detail =
-        parsedBody?.message ||
-        parsedBody?.error ||
-        `Request failed with status ${response.status}.`;
-      throw new Error(detail);
+      const message = body?.message || body?.error || `Request failed with status ${response.status}.`;
+      throw new Error(message);
     }
 
-    return parsedBody ?? {};
+    return body;
   }
 
-  async function runSetupFlow(event) {
-    event.preventDefault();
-    if (submitting) {
+  function clearValidationState() {
+    [
+      "league-name",
+      "league-slug",
+      "season-name",
+      "season-slug",
+      "season-start",
+      "season-end",
+      "session-date",
+      "game-kickoff",
+    ].forEach((fieldId) => clearFieldState(fieldId));
+  }
+
+  function validateLeague() {
+    clearFieldState("league-name");
+    clearFieldState("league-slug");
+
+    let valid = true;
+
+    if (!getValue("league-name")) {
+      setFieldError("league-name", "League name is required.");
+      valid = false;
+    }
+
+    return valid;
+  }
+
+  function validateSeason() {
+    clearFieldState("season-name");
+    clearFieldState("season-slug");
+    clearFieldState("season-start");
+    clearFieldState("season-end");
+
+    let valid = true;
+
+    if (!getValue("season-name")) {
+      setFieldError("season-name", "Season name is required.");
+      valid = false;
+    }
+
+    const startsOn = getValue("season-start");
+    const endsOn = getValue("season-end");
+
+    if (startsOn && endsOn && endsOn < startsOn) {
+      setFieldError("season-end", "Season end date must be on or after season start.");
+      valid = false;
+    }
+
+    return valid;
+  }
+
+  function validateGame() {
+    clearFieldState("session-date");
+    clearFieldState("game-kickoff");
+
+    let valid = true;
+
+    if (!getValue("session-date")) {
+      setFieldError("session-date", "Session date is required.");
+      valid = false;
+    }
+
+    if (!getValue("game-kickoff")) {
+      setFieldError("game-kickoff", "Kickoff time is required.");
+      valid = false;
+    } else if (!toIsoTimestamp(getValue("game-kickoff"))) {
+      setFieldError("game-kickoff", "Kickoff time must be a valid date and time.");
+      valid = false;
+    }
+
+    return valid;
+  }
+
+  function syncKickoffDateFromSessionDate() {
+    const sessionDate = getValue("session-date");
+    if (!sessionDate) {
       return;
     }
 
-    if (!isAuthenticated) {
-      showGlobalError("Sign in is required before creating setup entities.");
-      setStatus("Sign in is required before setup can run.", "error");
+    const kickoffInput = getInput("game-kickoff");
+    if (!kickoffInput) {
       return;
     }
 
-    const validation = validate();
-    if (!validation.isValid || !validation.kickoffIso) {
-      setStatus("Fix validation issues and try again.", "error");
+    const current = kickoffInput.value.trim();
+    const timePart = current.includes("T") ? current.split("T")[1] : "10:00";
+    kickoffInput.value = `${sessionDate}T${timePart}`;
+  }
+
+  function wireAutoPopulation() {
+    const leagueName = getInput("league-name");
+    const leagueSlug = getInput("league-slug");
+    const seasonName = getInput("season-name");
+    const seasonSlug = getInput("season-slug");
+    const sessionDate = getInput("session-date");
+    const gameKickoff = getInput("game-kickoff");
+
+    leagueName?.addEventListener("input", () => {
+      if (!leagueSlugEdited && leagueSlug) {
+        leagueSlug.value = slugify(leagueName.value);
+      }
+      updateDerivedIds();
+    });
+
+    leagueSlug?.addEventListener("input", () => {
+      leagueSlugEdited = leagueSlug.value.trim().length > 0;
+      updateDerivedIds();
+    });
+
+    seasonName?.addEventListener("input", () => {
+      if (!seasonSlugEdited && seasonSlug) {
+        seasonSlug.value = slugify(seasonName.value);
+      }
+      updateDerivedIds();
+    });
+
+    seasonSlug?.addEventListener("input", () => {
+      seasonSlugEdited = seasonSlug.value.trim().length > 0;
+      updateDerivedIds();
+    });
+
+    sessionDate?.addEventListener("change", () => {
+      syncKickoffDateFromSessionDate();
+      updateDerivedIds();
+    });
+
+    gameKickoff?.addEventListener("change", () => {
+      updateDerivedIds();
+    });
+  }
+
+  async function ensureAuthenticatedSession() {
+    setStatus("Checking sign-in state…", "default");
+
+    const response = await fetch(buildApiUrl("/v1/auth/session"), {
+      method: "GET",
+      credentials: "include",
+    });
+
+    if (response.ok) {
+      const payload = await response.json();
+      const email = payload?.session?.email;
+      if (typeof email === "string" && email.length > 0) {
+        setStatus(`Signed in as ${email}. Create your league to begin.`, "success");
+      } else {
+        setStatus("Session active. Create your league to begin.", "success");
+      }
       return;
     }
 
-    const leagueId = validation.ids.leagueId;
-    const seasonId = validation.ids.seasonId;
-    const sessionId = validation.ids.sessionId;
-    const gameId = validation.ids.gameId;
+    const returnTo = encodeURIComponent("/setup");
+    window.location.replace(`/sign-in?returnTo=${returnTo}`);
+    throw new Error("redirecting_to_sign_in");
+  }
 
-    const leaguePayload = {
+  async function createLeague() {
+    clearError();
+    clearValidationState();
+
+    if (!validateLeague()) {
+      setStatus("Fix league validation issues and retry.", "error");
+      return;
+    }
+
+    const leagueId = deriveLeagueId();
+    const payload = {
       leagueId,
       name: getValue("league-name"),
-      slug: getValue("league-slug") || null,
+      slug: slugify(getValue("league-slug")) || null,
     };
-    const seasonPayload = {
+
+    setSubmittingState(true);
+    setStatus("Creating league…", "default");
+
+    try {
+      await postJson("/v1/leagues", payload, createIdempotencyKey("setup-league", leagueId));
+      leagueCreated = { leagueId };
+      setStatus(`League created (${leagueId}). Continue to season.`, "success");
+      setStepState("season");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create league.";
+      showError(message);
+      setStatus("League creation failed.", "error");
+    } finally {
+      setSubmittingState(false);
+    }
+  }
+
+  async function createSeason() {
+    clearError();
+    clearValidationState();
+
+    if (!leagueCreated?.leagueId) {
+      showError("Create a league first.");
+      setStatus("League step must be completed first.", "error");
+      setStepState("league");
+      return;
+    }
+
+    if (!validateSeason()) {
+      setStatus("Fix season validation issues and retry.", "error");
+      return;
+    }
+
+    const seasonId = deriveSeasonId();
+    const payload = {
       seasonId,
       name: getValue("season-name"),
-      slug: getValue("season-slug") || null,
+      slug: slugify(getValue("season-slug")) || null,
       startsOn: getValue("season-start") || null,
       endsOn: getValue("season-end") || null,
     };
-    const sessionPayload = {
-      sessionId,
-      sessionDate: getValue("session-date"),
-    };
-    const gamePayload = {
-      gameId,
-      gameStartTs: validation.kickoffIso,
-      status: "scheduled",
-    };
 
-    submitting = true;
-    setSubmittableState(false);
-    setStatus("Creating league...", "default");
+    setSubmittingState(true);
+    setStatus("Creating season…", "default");
 
     try {
       await postJson(
-        "/v1/leagues",
-        leaguePayload,
-        createIdempotencyKey("setup-league", leagueId),
+        `/v1/leagues/${encodeURIComponent(leagueCreated.leagueId)}/seasons`,
+        payload,
+        createIdempotencyKey("setup-season", `${leagueCreated.leagueId}-${seasonId}`),
       );
-      setStatus("Creating season...", "default");
 
-      await postJson(
-        `/v1/leagues/${encodeURIComponent(leagueId)}/seasons`,
-        seasonPayload,
-        createIdempotencyKey("setup-season", `${leagueId}-${seasonId}`),
-      );
-      setStatus("Creating session...", "default");
+      seasonCreated = {
+        leagueId: leagueCreated.leagueId,
+        seasonId,
+      };
+      setStatus(`Season created (${seasonId}). Continue to game creation.`, "success");
+      setStepState("games");
+      syncKickoffDateFromSessionDate();
+      updateDerivedIds();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create season.";
+      showError(message);
+      setStatus("Season creation failed.", "error");
+    } finally {
+      setSubmittingState(false);
+    }
+  }
 
+  async function createGame() {
+    clearError();
+    clearValidationState();
+
+    if (!seasonCreated?.seasonId || !seasonCreated.leagueId) {
+      showError("Create season before creating games.");
+      setStatus("Season step must be completed first.", "error");
+      setStepState("season");
+      return;
+    }
+
+    if (!validateGame()) {
+      setStatus("Fix game validation issues and retry.", "error");
+      return;
+    }
+
+    const sessionId = deriveSessionId();
+    const gameId = deriveGameId();
+    const sessionDate = getValue("session-date");
+    const kickoffIso = toIsoTimestamp(getValue("game-kickoff"));
+    if (!kickoffIso) {
+      setFieldError("game-kickoff", "Kickoff time must be valid.");
+      setStatus("Fix game validation issues and retry.", "error");
+      return;
+    }
+
+    const sessionPayload = {
+      sessionId,
+      sessionDate,
+    };
+    const gamePayload = {
+      gameId,
+      gameStartTs: kickoffIso,
+      status: "scheduled",
+    };
+
+    setSubmittingState(true);
+    setStatus("Creating session and game…", "default");
+
+    try {
       await postJson(
-        `/v1/seasons/${encodeURIComponent(seasonId)}/sessions`,
+        `/v1/seasons/${encodeURIComponent(seasonCreated.seasonId)}/sessions`,
         sessionPayload,
-        createIdempotencyKey("setup-session", `${seasonId}-${sessionId}`),
+        createIdempotencyKey("setup-session", `${seasonCreated.seasonId}-${sessionId}`),
       );
-      setStatus("Creating game...", "default");
 
       await postJson(
         `/v1/sessions/${encodeURIComponent(sessionId)}/games`,
@@ -371,127 +578,68 @@
         createIdempotencyKey("setup-game", `${sessionId}-${gameId}`),
       );
 
-      setStatus("Setup complete. Redirecting to game context...", "success");
-      clearGlobalError();
+      setStatus(`Game created (${gameId}). You can create another game.`, "success");
 
-      const query = new URLSearchParams({
-        leagueId,
-        seasonId,
-        sessionId,
-        gameStartTs: validation.kickoffIso,
-      });
-      window.location.assign(`/games/${encodeURIComponent(gameId)}?${query.toString()}`);
+      if (gameCreatedNote) {
+        gameCreatedNote.hidden = false;
+      }
+      if (gameContextLink) {
+        const query = new URLSearchParams({
+          leagueId: seasonCreated.leagueId,
+          seasonId: seasonCreated.seasonId,
+          sessionId,
+          gameStartTs: kickoffIso,
+        });
+        gameContextLink.setAttribute("href", `/games/${encodeURIComponent(gameId)}?${query.toString()}`);
+      }
+
+      gameIdNonce = randomSuffix(4);
+      updateDerivedIds();
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unexpected setup error occurred. Please retry.";
-      showGlobalError(message);
-      setStatus("Setup failed. Review errors and retry.", "error");
+      const message = error instanceof Error ? error.message : "Could not create game.";
+      showError(message);
+      setStatus("Game creation failed.", "error");
     } finally {
-      submitting = false;
-      setSubmittableState(true);
+      setSubmittingState(false);
     }
   }
 
-  function resetSetupFlow() {
-    form.reset();
-    [
-      "league-id",
-      "league-name",
-      "league-slug",
-      "season-id",
-      "season-name",
-      "season-slug",
-      "season-start",
-      "season-end",
-      "session-id",
-      "session-date",
-      "game-id",
-      "game-kickoff",
-    ].forEach((fieldId) => clearFieldState(fieldId));
+  async function initialize() {
+    setStepState("league");
+    wireAutoPopulation();
+    updateDerivedIds();
+    setSubmittingState(true);
 
-    clearGlobalError();
-    updatePreview({ leagueId: "", seasonId: "", sessionId: "", gameId: "" });
-    setStatus("Ready to create setup entities.", "default");
-    setSubmittableState(!submitting);
-  }
-
-  function attachAutoFillListeners() {
-    const leagueName = getInput("league-name");
-    const seasonName = getInput("season-name");
-    const sessionDate = getInput("session-date");
-    const kickoff = getInput("game-kickoff");
-
-    leagueName?.addEventListener("blur", () => {
-      if (!getValue("league-id")) {
-        deriveIdsFromInputs();
-        updatePreview({
-          leagueId: getValue("league-id"),
-          seasonId: getValue("season-id"),
-          sessionId: getValue("session-id"),
-          gameId: getValue("game-id"),
-        });
-      }
-    });
-
-    seasonName?.addEventListener("blur", () => {
-      if (!getValue("season-id")) {
-        deriveIdsFromInputs();
-        updatePreview({
-          leagueId: getValue("league-id"),
-          seasonId: getValue("season-id"),
-          sessionId: getValue("session-id"),
-          gameId: getValue("game-id"),
-        });
-      }
-    });
-
-    sessionDate?.addEventListener("change", () => {
-      if (!getValue("session-id")) {
-        deriveIdsFromInputs();
-        updatePreview({
-          leagueId: getValue("league-id"),
-          seasonId: getValue("season-id"),
-          sessionId: getValue("session-id"),
-          gameId: getValue("game-id"),
-        });
-      }
-    });
-
-    kickoff?.addEventListener("change", () => {
-      if (!getValue("game-id")) {
-        deriveIdsFromInputs();
-        updatePreview({
-          leagueId: getValue("league-id"),
-          seasonId: getValue("season-id"),
-          sessionId: getValue("session-id"),
-          gameId: getValue("game-id"),
-        });
-      }
-    });
-  }
-
-  form.addEventListener("submit", runSetupFlow);
-  if (resetButton instanceof HTMLButtonElement) {
-    resetButton.addEventListener("click", resetSetupFlow);
-  }
-
-  window.addEventListener("threefc:auth-state", (event) => {
-    const detail = event.detail ?? {};
-    isAuthenticated = Boolean(detail.authenticated);
-
-    if (!submitting) {
-      if (isAuthenticated) {
-        setStatus("Ready to create setup entities.", "default");
-      } else {
-        setStatus("Sign in is required before setup can run.", "error");
-      }
+    if (createLeagueButton instanceof HTMLButtonElement) {
+      createLeagueButton.addEventListener("click", () => {
+        void createLeague();
+      });
     }
 
-    setSubmittableState(!submitting);
-  });
+    if (createSeasonButton instanceof HTMLButtonElement) {
+      createSeasonButton.addEventListener("click", () => {
+        void createSeason();
+      });
+    }
 
-  attachAutoFillListeners();
-  resetSetupFlow();
+    if (createGameButton instanceof HTMLButtonElement) {
+      createGameButton.addEventListener("click", () => {
+        void createGame();
+      });
+    }
+
+    try {
+      await ensureAuthenticatedSession();
+      setSubmittingState(false);
+    } catch (error) {
+      if (error instanceof Error && error.message === "redirecting_to_sign_in") {
+        return;
+      }
+
+      showError("Could not verify sign-in state.");
+      setStatus("Session check failed.", "error");
+    }
+  }
+
+  void initialize();
 })();

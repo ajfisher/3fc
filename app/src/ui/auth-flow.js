@@ -1,9 +1,9 @@
 (() => {
   function resolveApiBaseUrl() {
-    const fromMain = document.querySelector("[data-api-base-url]");
-    const mainValue = fromMain?.getAttribute("data-api-base-url");
-    if (mainValue && mainValue.length > 0) {
-      return mainValue;
+    const root = document.querySelector("[data-api-base-url]");
+    const rootValue = root?.getAttribute("data-api-base-url");
+    if (rootValue && rootValue.length > 0) {
+      return rootValue;
     }
 
     const bodyValue = document.body.getAttribute("data-api-base-url");
@@ -15,6 +15,7 @@
   }
 
   const apiBaseUrl = resolveApiBaseUrl();
+  const RETURN_TO_STORAGE_KEY = "threefc.auth.return_to";
 
   function buildApiUrl(path) {
     const normalizedBase = apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`;
@@ -42,17 +43,6 @@
     };
   }
 
-  function dispatchAuthState(authenticated, email = null) {
-    window.dispatchEvent(
-      new CustomEvent("threefc:auth-state", {
-        detail: {
-          authenticated,
-          email,
-        },
-      }),
-    );
-  }
-
   function setStatus(element, message, state = "default") {
     if (!element) {
       return;
@@ -71,23 +61,52 @@
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   }
 
-  async function initSetupAuth() {
+  function persistReturnTo(returnTo) {
+    try {
+      localStorage.setItem(RETURN_TO_STORAGE_KEY, returnTo);
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  function consumeReturnTo(fallback = "/setup") {
+    try {
+      const value = localStorage.getItem(RETURN_TO_STORAGE_KEY);
+      if (value && value.length > 0) {
+        localStorage.removeItem(RETURN_TO_STORAGE_KEY);
+        return value;
+      }
+    } catch {
+      // Ignore storage failures.
+    }
+
+    return fallback;
+  }
+
+  async function initSignInPage() {
     const form = document.getElementById("auth-magic-form");
     if (!(form instanceof HTMLFormElement)) {
       return;
     }
 
     const emailInput = form.querySelector("#auth-email");
+    const returnToInput = form.querySelector("#auth-return-to");
     const statusElement = document.getElementById("auth-status");
     const errorElement = document.getElementById("auth-error");
     const sessionElement = document.getElementById("auth-session");
     const sessionEmail = document.getElementById("auth-session-email");
     const submitButton = form.querySelector('[data-action="send-magic-link"]');
 
+    const returnTo =
+      returnToInput instanceof HTMLInputElement && returnToInput.value.trim().length > 0
+        ? returnToInput.value.trim()
+        : "/setup";
+
     function showError(message) {
       if (!errorElement) {
         return;
       }
+
       errorElement.textContent = message;
       errorElement.hidden = false;
     }
@@ -96,23 +115,24 @@
       if (!errorElement) {
         return;
       }
+
       errorElement.hidden = true;
       errorElement.textContent = "";
     }
 
     function setSessionState(authenticated, email = null) {
-      if (authenticated) {
-        if (sessionElement) {
-          sessionElement.hidden = false;
-        }
-        if (sessionEmail) {
-          sessionEmail.textContent = email ?? "unknown";
-        }
-      } else if (sessionElement) {
-        sessionElement.hidden = true;
+      if (!sessionElement || !sessionEmail) {
+        return;
       }
 
-      dispatchAuthState(authenticated, email);
+      if (authenticated) {
+        sessionElement.hidden = false;
+        sessionEmail.textContent = email ?? "unknown";
+        return;
+      }
+
+      sessionElement.hidden = true;
+      sessionEmail.textContent = "";
     }
 
     async function checkSession() {
@@ -121,15 +141,18 @@
         credentials: "include",
       });
 
-      if (result.ok && result.body && result.body.session && result.body.session.email) {
+      if (result.ok && result.body?.session?.email) {
         clearError();
-        setStatus(statusElement, "Session active. You can run setup now.", "success");
+        setStatus(statusElement, "Session active. Redirecting to setup…", "success");
         setSessionState(true, result.body.session.email);
+        setTimeout(() => {
+          window.location.replace(returnTo);
+        }, 500);
         return;
       }
 
-      setStatus(statusElement, "Not signed in. Send a magic link to continue.", "default");
       setSessionState(false, null);
+      setStatus(statusElement, "Not signed in. Send a magic link to continue.", "default");
     }
 
     form.addEventListener("submit", async (event) => {
@@ -143,10 +166,12 @@
 
       const email = emailInput.value.trim();
       if (!isEmailLike(email)) {
-        showError("Enter a valid email address to send a magic link.");
+        showError("Enter a valid email address.");
         emailInput.focus();
         return;
       }
+
+      persistReturnTo(returnTo);
 
       if (submitButton instanceof HTMLButtonElement) {
         submitButton.disabled = true;
@@ -167,14 +192,14 @@
         if (!result.ok) {
           const message = result.body?.message || result.body?.error || "Could not send magic link.";
           showError(message);
-          setStatus(statusElement, "Magic link request failed.", "error");
+          setStatus(statusElement, "Magic-link request failed.", "error");
           return;
         }
 
-        setStatus(statusElement, "Magic link sent. Open it from your email to sign in.", "success");
+        setStatus(statusElement, "Magic link sent. Open the email link to continue.", "success");
       } catch {
         showError("Network error while requesting magic link.");
-        setStatus(statusElement, "Magic link request failed.", "error");
+        setStatus(statusElement, "Magic-link request failed.", "error");
       } finally {
         if (submitButton instanceof HTMLButtonElement) {
           submitButton.disabled = false;
@@ -192,7 +217,7 @@
     }
   }
 
-  async function initAuthCallback() {
+  async function initAuthCallbackPage() {
     if (window.location.pathname !== "/auth/callback") {
       return;
     }
@@ -201,7 +226,7 @@
     const errorElement = document.getElementById("auth-callback-error");
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
-    const error = params.get("error");
+    const oauthError = params.get("error");
     const code = params.get("code");
 
     function showCallbackError(message) {
@@ -209,11 +234,14 @@
         errorElement.textContent = message;
         errorElement.hidden = false;
       }
+
       setStatus(statusElement, "Sign-in callback failed.", "error");
     }
 
-    if (error) {
-      showCallbackError(`OAuth provider returned: ${error}.`);
+    const returnTo = consumeReturnTo("/setup");
+
+    if (oauthError) {
+      showCallbackError(`OAuth provider returned: ${oauthError}.`);
       return;
     }
 
@@ -229,30 +257,29 @@
       });
 
       if (!result.ok) {
-        const message = result.body?.message || result.body?.error || "Magic-link sign-in failed.";
+        const message = result.body?.message || result.body?.error || "Magic-link completion failed.";
         showCallbackError(message);
         return;
       }
 
-      setStatus(statusElement, "Sign-in complete. Redirecting to setup…", "success");
-      dispatchAuthState(true, result.body?.session?.email ?? null);
+      setStatus(statusElement, "Sign-in complete. Redirecting…", "success");
       setTimeout(() => {
-        window.location.replace("/setup");
+        window.location.replace(returnTo);
       }, 700);
       return;
     }
 
     if (code) {
-      setStatus(statusElement, "OAuth callback received. Continue in setup.", "success");
+      setStatus(statusElement, "OAuth callback received. Redirecting…", "success");
       setTimeout(() => {
-        window.location.replace("/setup");
+        window.location.replace(returnTo);
       }, 700);
       return;
     }
 
-    showCallbackError("Missing callback token or code.");
+    showCallbackError("Missing callback token or authorization code.");
   }
 
-  void initSetupAuth();
-  void initAuthCallback();
+  void initSignInPage();
+  void initAuthCallbackPage();
 })();

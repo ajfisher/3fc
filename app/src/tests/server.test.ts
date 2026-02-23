@@ -55,13 +55,16 @@ test("home route includes security headers", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Create League to Game in one mobile-first flow/);
+  assert.match(response.body, /Step through league, season, then game creation/);
+  assert.match(response.body, /data-testid="setup-flow-root"/);
 });
 
 test("component showcase routes render the setup shell", () => {
   const setupResponse = executeRoute("GET", "/setup");
   assert.equal(setupResponse.statusCode, 200);
-  assert.match(setupResponse.body, /3FC Setup Foundation/);
+  assert.match(setupResponse.body, /Step 1: Create League/);
+  assert.match(setupResponse.body, /Step 2: Create Season/);
+  assert.match(setupResponse.body, /Step 3: Create Games/);
 
   const componentsResponse = executeRoute("GET", "/ui\/components");
   assert.equal(componentsResponse.statusCode, 200);
@@ -71,6 +74,18 @@ test("component showcase routes render the setup shell", () => {
   assert.match(componentsResponse.body, /Field validation/);
   assert.match(componentsResponse.body, /Row action list/);
   assert.match(componentsResponse.body, /Popover modal prompt/);
+});
+
+test("sign-in route renders dedicated auth page", () => {
+  const response = executeRoute("GET", "/sign-in?returnTo=%2Fsetup");
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.match(response.body, /Sign in before setup/);
+  assert.match(response.body, /id="auth-magic-form"/);
+  assert.match(response.body, /id="auth-return-to"/);
+  assert.match(response.body, /value="\/setup"/);
 });
 
 test("stylesheet route serves external UI css", () => {
@@ -99,14 +114,16 @@ test("setup and auth flow script routes serve external javascript", () => {
   assert.equal(setupFlowResponse.statusCode, 200);
   assertSecurityHeaders(setupFlowResponse.headers);
   assert.equal(setupFlowResponse.headers["Content-Type"], "application/javascript; charset=utf-8");
-  assert.match(setupFlowResponse.body, /create-game-context/);
-  assert.match(setupFlowResponse.body, /threefc:auth-state/);
+  assert.match(setupFlowResponse.body, /setup-flow-root/);
+  assert.match(setupFlowResponse.body, /create-league/);
+  assert.match(setupFlowResponse.body, /sign-in\?returnTo=/);
 
   const authFlowResponse = executeRoute("GET", "/ui/auth-flow.js");
   assert.equal(authFlowResponse.statusCode, 200);
   assertSecurityHeaders(authFlowResponse.headers);
   assert.equal(authFlowResponse.headers["Content-Type"], "application/javascript; charset=utf-8");
   assert.match(authFlowResponse.body, /auth-magic-form/);
+  assert.match(authFlowResponse.body, /RETURN_TO_STORAGE_KEY/);
   assert.match(authFlowResponse.body, /auth\/callback/);
 });
 

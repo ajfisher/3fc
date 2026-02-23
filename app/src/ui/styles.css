@@ -123,10 +123,6 @@ body {
 [data-ui="panel-grid"] {
   display: grid;
   gap: 0.85rem;
-
-  [data-testid="panel-submit-flow"] {
-    grid-column: 1 / -1;
-  }
 }
 
 [data-ui="panel"] {
@@ -611,6 +607,12 @@ body {
   font-size: 0.84rem;
   color: #5a6f6b;
 
+  a {
+    color: inherit;
+    font-weight: 700;
+    text-underline-offset: 0.15rem;
+  }
+
   &[data-state="error"] {
     color: #9c2f27;
     font-weight: 650;
@@ -622,11 +624,13 @@ body {
   }
 }
 
-[data-ui="setup-form"] {
-  [data-ui="setup-runner"] {
-    display: grid;
-    gap: 0.5rem;
-  }
+[data-ui="setup-flow"] {
+  display: grid;
+  gap: 0.6rem;
+}
+
+[data-ui="setup-step"][hidden] {
+  display: none;
 }
 
 [data-ui="id-preview"] {
@@ -670,7 +674,7 @@ code {
   }
 
   [data-ui="step-list"] {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   [data-ui="panel-grid"] {
