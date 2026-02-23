@@ -592,6 +592,20 @@ data "aws_iam_policy_document" "github_actions_deploy_permissions" {
   }
 
   statement {
+    sid    = "ServerlessDeploymentMetadata"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:PutParameter",
+      "ssm:DeleteParameter",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/serverless-framework/deployment/*",
+    ]
+  }
+
+  statement {
     sid    = "ReadLambdaExecutionRole"
     effect = "Allow"
     actions = [
