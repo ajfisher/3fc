@@ -80,6 +80,16 @@ interface CreatedSessionGameInput {
   seasonId: string;
 }
 
+interface StoredIdempotencyRecord {
+  scope: string;
+  key: string;
+  requestHash: string;
+  responseStatusCode: number;
+  responseBody: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface HarnessConfig {
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
@@ -91,11 +101,13 @@ function createEvent(input: {
   method: string;
   path: string;
   headers?: Record<string, string>;
+  cookies?: string[];
   body?: Record<string, unknown>;
 }): ApiGatewayHttpEvent {
   return {
     rawPath: input.path,
     headers: input.headers,
+    cookies: input.cookies,
     body: input.body ? JSON.stringify(input.body) : undefined,
     requestContext: {
       requestId: "req-test",
@@ -113,6 +125,7 @@ function createHarness(config: HarnessConfig = {}) {
   const createdSessions: CreatedSessionInput[] = [];
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
+  const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
@@ -170,6 +183,23 @@ function createHarness(config: HarnessConfig = {}) {
       async getSession(sessionId: string) {
         return config.seasonSessions?.[sessionId] ?? null;
       },
+      async getIdempotencyRecord(scope: string, key: string) {
+        return idempotencyRecords.get(`${scope}:${key}`) ?? null;
+      },
+      async createIdempotencyRecord(input) {
+        const recordKey = `${input.scope}:${input.key}`;
+        if (idempotencyRecords.has(recordKey)) {
+          return false;
+        }
+
+        idempotencyRecords.set(recordKey, {
+          ...input,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        });
+
+        return true;
+      },
     },
   });
 
@@ -180,6 +210,7 @@ function createHarness(config: HarnessConfig = {}) {
     createdSessions,
     createdGames,
     createdSessionGames,
+    idempotencyRecords,
   };
 }
 
@@ -201,6 +232,34 @@ test("core lambda rejects protected mutation without session cookie", async () =
     error: "unauthorized",
     message: "Valid session cookie required.",
   });
+});
+
+test("core lambda accepts session cookie from API Gateway cookies array", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues",
+      cookies: ["threefc_session=session-1"],
+      body: {
+        leagueId: "league-1",
+        name: "League 1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(harness.createdLeagues.length, 1);
 });
 
 test("core lambda creates league for authenticated users", async () => {
@@ -377,4 +436,120 @@ test("core lambda creates game for admin with resolved ACL scope", async () => {
   assert.equal(harness.createdGames[0].leagueId, "league-1");
   assert.equal(harness.createdGames[0].seasonId, "season-1");
   assert.equal(harness.createdGames[0].sessionId, "session-abc");
+});
+
+test("core lambda deduplicates repeated create league request by idempotency key", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+  });
+
+  const event = createEvent({
+    method: "POST",
+    path: "/v1/leagues",
+    headers: {
+      Cookie: "threefc_session=session-1",
+      "Idempotency-Key": "league-create-1",
+    },
+    body: {
+      leagueId: "league-1",
+      name: "League 1",
+    },
+  });
+
+  const firstResponse = await harness.handler(event);
+  const secondResponse = await harness.handler(event);
+
+  assert.equal(firstResponse.statusCode, 201);
+  assert.equal(secondResponse.statusCode, 201);
+  assert.equal(harness.createdLeagues.length, 1);
+  assert.deepEqual(JSON.parse(secondResponse.body), JSON.parse(firstResponse.body));
+  assert.equal(harness.idempotencyRecords.size, 1);
+});
+
+test("core lambda rejects idempotency key reuse for different payloads", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+  });
+
+  const baseHeaders = {
+    Cookie: "threefc_session=session-1",
+    "Idempotency-Key": "league-create-1",
+  };
+
+  const firstResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues",
+      headers: baseHeaders,
+      body: {
+        leagueId: "league-1",
+        name: "League 1",
+      },
+    }),
+  );
+
+  const secondResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues",
+      headers: baseHeaders,
+      body: {
+        leagueId: "league-1",
+        name: "League A",
+      },
+    }),
+  );
+
+  assert.equal(firstResponse.statusCode, 201);
+  assert.equal(secondResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(secondResponse.body), {
+    error: "idempotency_conflict",
+    message: "Idempotency key has already been used with a different payload.",
+  });
+  assert.equal(harness.createdLeagues.length, 1);
+});
+
+test("core lambda rejects invalid idempotency key header", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "   ",
+      },
+      body: {
+        leagueId: "league-1",
+        name: "League 1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(harness.createdLeagues.length, 0);
 });

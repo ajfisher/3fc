@@ -14,6 +14,7 @@ import {
   gameSessionIndexPk,
   gameSessionIndexSk,
   goalSk,
+  idempotencyPk,
   leaguePk,
   metadataSk,
   playerPk,
@@ -29,6 +30,7 @@ import type {
   AssignRosterInput,
   CreateGameInput,
   CreateGoalEventInput,
+  CreateIdempotencyRecordInput,
   CreateLeagueInput,
   CreatePlayerInput,
   CreateSeasonInput,
@@ -37,6 +39,7 @@ import type {
   CreateTeamInput,
   GameRecord,
   GoalEventRecord,
+  IdempotencyRecord,
   LeagueAclRecord,
   LeagueRecord,
   PlayerRecord,
@@ -59,6 +62,7 @@ const ENTITY_TYPE = {
   acl: "acl",
   roster: "roster",
   goal: "goal",
+  idempotency: "idempotency",
 } as const;
 
 type EntityType = (typeof ENTITY_TYPE)[keyof typeof ENTITY_TYPE];
@@ -566,6 +570,70 @@ export class ThreeFcRepository {
           item.updatedAt,
         ),
       );
+  }
+
+  async getIdempotencyRecord(scope: string, key: string): Promise<IdempotencyRecord | null> {
+    requireNonEmpty("scope", scope);
+    requireNonEmpty("key", key);
+    const item = await this.getEntity(idempotencyPk(scope, key), metadataSk());
+
+    if (!item || item.entityType !== ENTITY_TYPE.idempotency) {
+      return null;
+    }
+
+    return withTimestamps(
+      item.data as Omit<IdempotencyRecord, "createdAt" | "updatedAt">,
+      item.createdAt,
+      item.updatedAt,
+    );
+  }
+
+  async createIdempotencyRecord(input: CreateIdempotencyRecordInput): Promise<boolean> {
+    requireNonEmpty("scope", input.scope);
+    requireNonEmpty("key", input.key);
+    requireNonEmpty("requestHash", input.requestHash);
+    requireNonEmpty("responseBody", input.responseBody);
+
+    if (
+      !Number.isInteger(input.responseStatusCode) ||
+      input.responseStatusCode < 100 ||
+      input.responseStatusCode > 599
+    ) {
+      throw new Error("responseStatusCode must be a valid HTTP status code.");
+    }
+
+    const now = this.clock.now();
+    const payload = {
+      scope: input.scope,
+      key: input.key,
+      requestHash: input.requestHash,
+      responseStatusCode: input.responseStatusCode,
+      responseBody: input.responseBody,
+    };
+
+    try {
+      await this.client.send(
+        new PutItemCommand({
+          TableName: this.tableName,
+          Item: buildItem(
+            idempotencyPk(input.scope, input.key),
+            metadataSk(),
+            ENTITY_TYPE.idempotency,
+            payload,
+            now,
+          ),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        }),
+      );
+      return true;
+    } catch (error) {
+      const awsError = error as { name?: string };
+      if (awsError.name === "ConditionalCheckFailedException") {
+        return false;
+      }
+
+      throw error;
+    }
   }
 
   private async putEntity<T>(

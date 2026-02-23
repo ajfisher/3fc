@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { URL } from "node:url";
@@ -30,6 +30,14 @@ import {
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
 } from "./auth/session.js";
+import {
+  createGameRequestSchema,
+  createLeagueRequestSchema,
+  createSeasonRequestSchema,
+  createSessionRequestSchema,
+  formatSchemaValidationError,
+  idempotencyKeyHeaderSchema,
+} from "./contracts/core-write.js";
 import { ThreeFcRepository } from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
 import { logRequest, logRequestError } from "./logging.js";
@@ -180,6 +188,142 @@ function badRequest(request: IncomingMessage, response: ServerResponse, message:
   return 400;
 }
 
+function idempotencyConflict(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "idempotency_conflict",
+    message: "Idempotency key has already been used with a different payload.",
+  });
+  return 409;
+}
+
+function readHeaderValue(request: IncomingMessage, name: string): string | undefined {
+  const value = request.headers[name.toLowerCase()];
+
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+
+  return value;
+}
+
+function normalizePayloadForHashing(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizePayloadForHashing(entry));
+  }
+
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const normalizedEntries = Object.keys(source)
+      .sort()
+      .map((key) => [key, normalizePayloadForHashing(source[key])] as const);
+    return Object.fromEntries(normalizedEntries);
+  }
+
+  return value;
+}
+
+function buildIdempotencyScope(sessionEmail: string, method: string, route: string): string {
+  return `${sessionEmail}:${method}:${route}`;
+}
+
+function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
+  return createHash("sha256")
+    .update(`${scope}:${JSON.stringify(normalizePayloadForHashing(payload))}`)
+    .digest("hex");
+}
+
+function parseStoredIdempotencyResponseBody(responseBody: string): unknown {
+  try {
+    return JSON.parse(responseBody);
+  } catch {
+    return {
+      error: "Internal server error",
+      detail: "Stored idempotency response could not be parsed.",
+    };
+  }
+}
+
+interface JsonMutationResult {
+  statusCode: number;
+  payload: unknown;
+}
+
+async function executeIdempotentMutation(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  execute: () => Promise<JsonMutationResult>;
+}): Promise<number> {
+  const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
+
+  if (!idempotencyKeyRaw) {
+    const mutation = await input.execute();
+    sendJsonWithCors(input.request, input.response, mutation.statusCode, mutation.payload);
+    return mutation.statusCode;
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(idempotencyKeyRaw);
+  if (!parsedHeader.success) {
+    return badRequest(
+      input.request,
+      input.response,
+      formatSchemaValidationError(parsedHeader.error),
+    );
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const key = parsedHeader.data;
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+
+  const existing = await repository.getIdempotencyRecord(scope, key);
+  if (existing) {
+    if (existing.requestHash !== requestHash) {
+      return idempotencyConflict(input.request, input.response);
+    }
+
+    sendJsonWithCors(
+      input.request,
+      input.response,
+      existing.responseStatusCode,
+      parseStoredIdempotencyResponseBody(existing.responseBody),
+    );
+    return existing.responseStatusCode;
+  }
+
+  const mutation = await input.execute();
+  const mutationBody = JSON.stringify(mutation.payload);
+  const created = await repository.createIdempotencyRecord({
+    scope,
+    key,
+    requestHash,
+    responseStatusCode: mutation.statusCode,
+    responseBody: mutationBody,
+  });
+
+  if (!created) {
+    const raceRecord = await repository.getIdempotencyRecord(scope, key);
+    if (raceRecord) {
+      if (raceRecord.requestHash !== requestHash) {
+        return idempotencyConflict(input.request, input.response);
+      }
+
+      sendJsonWithCors(
+        input.request,
+        input.response,
+        raceRecord.responseStatusCode,
+        parseStoredIdempotencyResponseBody(raceRecord.responseBody),
+      );
+      return raceRecord.responseStatusCode;
+    }
+  }
+
+  sendJsonWithCors(input.request, input.response, mutation.statusCode, mutation.payload);
+  return mutation.statusCode;
+}
+
 interface AclGateResult {
   allowed: boolean;
   status: number;
@@ -222,169 +366,186 @@ async function handleCreateLeague(
   request: IncomingMessage,
   response: ServerResponse,
   session: AuthSessionRecord,
+  method: string,
+  route: string,
 ): Promise<number> {
-  let body: Record<string, unknown>;
+  let rawBody: Record<string, unknown>;
 
   try {
-    body = await parseJsonBody(request);
+    rawBody = await parseJsonBody(request);
   } catch {
     return badRequest(request, response, "Request body must be valid JSON.");
   }
 
-  if (typeof body.leagueId !== "string" || body.leagueId.trim().length === 0) {
-    return badRequest(request, response, "Field `leagueId` is required.");
+  const parsedBody = createLeagueRequestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
   }
 
-  if (typeof body.name !== "string" || body.name.trim().length === 0) {
-    return badRequest(request, response, "Field `name` is required.");
-  }
+  return executeIdempotentMutation({
+    request,
+    response,
+    sessionEmail: session.email,
+    method,
+    route,
+    requestPayload: parsedBody.data,
+    execute: async () => {
+      const league = await repository.createLeague({
+        leagueId: parsedBody.data.leagueId,
+        name: parsedBody.data.name,
+        slug: parsedBody.data.slug ?? null,
+        createdByUserId: session.email,
+      });
 
-  if (body.slug !== undefined && body.slug !== null && typeof body.slug !== "string") {
-    return badRequest(request, response, "Field `slug` must be a string when provided.");
-  }
-
-  const league = await repository.createLeague({
-    leagueId: body.leagueId,
-    name: body.name,
-    slug: (body.slug as string | null | undefined) ?? null,
-    createdByUserId: session.email,
+      return {
+        statusCode: 201,
+        payload: league,
+      };
+    },
   });
-
-  sendJsonWithCors(request, response, 201, league);
-  return 201;
 }
 
 async function handleCreateSeason(
   request: IncomingMessage,
   response: ServerResponse,
   leagueId: string,
+  sessionEmail: string,
+  method: string,
+  route: string,
 ): Promise<number> {
-  let body: Record<string, unknown>;
+  let rawBody: Record<string, unknown>;
 
   try {
-    body = await parseJsonBody(request);
+    rawBody = await parseJsonBody(request);
   } catch {
     return badRequest(request, response, "Request body must be valid JSON.");
   }
 
-  if (typeof body.seasonId !== "string" || body.seasonId.trim().length === 0) {
-    return badRequest(request, response, "Field `seasonId` is required.");
+  const parsedBody = createSeasonRequestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
   }
 
-  if (typeof body.name !== "string" || body.name.trim().length === 0) {
-    return badRequest(request, response, "Field `name` is required.");
-  }
+  return executeIdempotentMutation({
+    request,
+    response,
+    sessionEmail,
+    method,
+    route,
+    requestPayload: parsedBody.data,
+    execute: async () => {
+      const season = await repository.createSeason({
+        leagueId,
+        seasonId: parsedBody.data.seasonId,
+        name: parsedBody.data.name,
+        slug: parsedBody.data.slug ?? null,
+        startsOn: parsedBody.data.startsOn ?? null,
+        endsOn: parsedBody.data.endsOn ?? null,
+      });
 
-  if (body.slug !== undefined && body.slug !== null && typeof body.slug !== "string") {
-    return badRequest(request, response, "Field `slug` must be a string when provided.");
-  }
-
-  if (body.startsOn !== undefined && body.startsOn !== null && typeof body.startsOn !== "string") {
-    return badRequest(request, response, "Field `startsOn` must be a string when provided.");
-  }
-
-  if (body.endsOn !== undefined && body.endsOn !== null && typeof body.endsOn !== "string") {
-    return badRequest(request, response, "Field `endsOn` must be a string when provided.");
-  }
-
-  const season = await repository.createSeason({
-    leagueId,
-    seasonId: body.seasonId,
-    name: body.name,
-    slug: (body.slug as string | null | undefined) ?? null,
-    startsOn: (body.startsOn as string | null | undefined) ?? null,
-    endsOn: (body.endsOn as string | null | undefined) ?? null,
+      return {
+        statusCode: 201,
+        payload: season,
+      };
+    },
   });
-
-  sendJsonWithCors(request, response, 201, season);
-  return 201;
 }
 
 async function handleCreateSession(
   request: IncomingMessage,
   response: ServerResponse,
   seasonId: string,
+  sessionEmail: string,
+  method: string,
+  route: string,
 ): Promise<number> {
-  let body: Record<string, unknown>;
+  let rawBody: Record<string, unknown>;
 
   try {
-    body = await parseJsonBody(request);
+    rawBody = await parseJsonBody(request);
   } catch {
     return badRequest(request, response, "Request body must be valid JSON.");
   }
 
-  if (typeof body.sessionId !== "string" || body.sessionId.trim().length === 0) {
-    return badRequest(request, response, "Field `sessionId` is required.");
+  const parsedBody = createSessionRequestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
   }
 
-  if (typeof body.sessionDate !== "string" || body.sessionDate.trim().length === 0) {
-    return badRequest(request, response, "Field `sessionDate` is required.");
-  }
+  return executeIdempotentMutation({
+    request,
+    response,
+    sessionEmail,
+    method,
+    route,
+    requestPayload: parsedBody.data,
+    execute: async () => {
+      const session = await repository.createSession({
+        seasonId,
+        sessionId: parsedBody.data.sessionId,
+        sessionDate: parsedBody.data.sessionDate,
+      });
 
-  const session = await repository.createSession({
-    seasonId,
-    sessionId: body.sessionId,
-    sessionDate: body.sessionDate,
+      return {
+        statusCode: 201,
+        payload: session,
+      };
+    },
   });
-
-  sendJsonWithCors(request, response, 201, session);
-  return 201;
-}
-
-function isGameStatus(
-  value: unknown,
-): value is "scheduled" | "live" | "finished" {
-  return value === "scheduled" || value === "live" || value === "finished";
 }
 
 async function handleCreateGame(
   request: IncomingMessage,
   response: ServerResponse,
   scope: { leagueId: string; seasonId: string; sessionId: string },
+  sessionEmail: string,
+  method: string,
+  route: string,
 ): Promise<number> {
-  let body: Record<string, unknown>;
+  let rawBody: Record<string, unknown>;
 
   try {
-    body = await parseJsonBody(request);
+    rawBody = await parseJsonBody(request);
   } catch {
     return badRequest(request, response, "Request body must be valid JSON.");
   }
 
-  if (typeof body.gameId !== "string" || body.gameId.trim().length === 0) {
-    return badRequest(request, response, "Field `gameId` is required.");
+  const parsedBody = createGameRequestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
   }
 
-  if (typeof body.gameStartTs !== "string" || body.gameStartTs.trim().length === 0) {
-    return badRequest(request, response, "Field `gameStartTs` is required.");
-  }
+  return executeIdempotentMutation({
+    request,
+    response,
+    sessionEmail,
+    method,
+    route,
+    requestPayload: parsedBody.data,
+    execute: async () => {
+      const game = await repository.createGame({
+        gameId: parsedBody.data.gameId,
+        leagueId: scope.leagueId,
+        seasonId: scope.seasonId,
+        sessionId: scope.sessionId,
+        status: parsedBody.data.status,
+        gameStartTs: parsedBody.data.gameStartTs,
+      });
 
-  if (body.status !== undefined && !isGameStatus(body.status)) {
-    return badRequest(
-      request,
-      response,
-      "Field `status` must be one of `scheduled`, `live`, or `finished`.",
-    );
-  }
+      await repository.createSessionGame({
+        sessionId: scope.sessionId,
+        gameId: game.gameId,
+        gameStartTs: game.gameStartTs,
+        leagueId: game.leagueId,
+        seasonId: game.seasonId,
+      });
 
-  const game = await repository.createGame({
-    gameId: body.gameId,
-    leagueId: scope.leagueId,
-    seasonId: scope.seasonId,
-    sessionId: scope.sessionId,
-    status: body.status as "scheduled" | "live" | "finished" | undefined,
-    gameStartTs: body.gameStartTs,
+      return {
+        statusCode: 201,
+        payload: game,
+      };
+    },
   });
-
-  await repository.createSessionGame({
-    sessionId: scope.sessionId,
-    gameId: game.gameId,
-    gameStartTs: game.gameStartTs,
-    leagueId: game.leagueId,
-    seasonId: game.seasonId,
-  });
-
-  sendJsonWithCors(request, response, 201, game);
-  return 201;
 }
 
 async function handleCreateDevItem(
@@ -734,31 +895,64 @@ async function start(): Promise<void> {
           return;
         }
 
-        status = await handleCreateLeague(request, response, authGate.session);
+        status = await handleCreateLeague(request, response, authGate.session, method, route);
         return;
       }
 
       const createSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
       if (method === "POST" && createSeasonMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
         status = await handleCreateSeason(
           request,
           response,
           aclGate.scope?.leagueId ?? decodeURIComponent(createSeasonMatch[1]),
+          authGate.session.email,
+          method,
+          route,
         );
         return;
       }
 
       const createSessionMatch = route.match(/^\/v1\/seasons\/([^/]+)\/sessions$/);
       if (method === "POST" && createSessionMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
         status = await handleCreateSession(
           request,
           response,
           aclGate.scope?.seasonId ?? decodeURIComponent(createSessionMatch[1]),
+          authGate.session.email,
+          method,
+          route,
         );
         return;
       }
 
       if (method === "POST" && /^\/v1\/sessions\/[^/]+\/games$/.test(route)) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
         if (!aclGate.scope?.leagueId || !aclGate.scope?.seasonId || !aclGate.scope?.sessionId) {
           status = 500;
           sendJsonWithCors(request, response, status, {
@@ -772,7 +966,7 @@ async function start(): Promise<void> {
           leagueId: aclGate.scope.leagueId,
           seasonId: aclGate.scope.seasonId,
           sessionId: aclGate.scope.sessionId,
-        });
+        }, authGate.session.email, method, route);
         return;
       }
 
