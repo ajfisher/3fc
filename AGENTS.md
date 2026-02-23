@@ -23,6 +23,9 @@ When in doubt, prefer the backlog and specs over assumptions.
 - Do not push directly to `main`.
 - Use feature branches; for agent work use `codex/<topic>`.
 - Use Conventional Commit messages.
+- Any backend/API feature is not complete until both are true:
+  - it can be exercised locally for development/testing
+  - it has a clear, implemented deployment path to live AWS endpoints (Serverless config + workflow path)
 - Open PRs with:
   - concise summary
   - validation steps executed

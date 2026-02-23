@@ -99,6 +99,7 @@ test("repository supports round-trip create/read for core entities", async () =>
     name: "2026 Season",
     slug: "2026",
   });
+  assert.deepEqual(await repository.getSeason("2026"), season);
   assert.deepEqual(await repository.listSeasonsForLeague("league-1"), [season]);
 
   const team = await repository.createTeam({
@@ -114,6 +115,7 @@ test("repository supports round-trip create/read for core entities", async () =>
     sessionId: "20260222",
     sessionDate: "2026-02-22",
   });
+  assert.deepEqual(await repository.getSession("20260222"), session);
   assert.deepEqual(await repository.listSessionsForSeason("2026"), [session]);
 
   const game = await repository.createGame({
@@ -138,7 +140,13 @@ test("repository supports round-trip create/read for core entities", async () =>
     role: "scorekeeper",
     grantedByUserId: "user-admin",
   });
-  assert.deepEqual(await repository.listLeagueAccess("league-1"), [accessGrant]);
+  const leagueAccess = await repository.listLeagueAccess("league-1");
+  assert.equal(leagueAccess.length, 2);
+  assert.equal(leagueAccess[0].userId, "user-admin");
+  assert.equal(leagueAccess[0].role, "admin");
+  assert.equal(leagueAccess[1].userId, "user-scorekeeper");
+  assert.deepEqual(leagueAccess[1], accessGrant);
+  assert.deepEqual(await repository.getLeagueAccess("league-1", "user-admin"), leagueAccess[0]);
 
   const rosterAssignment = await repository.assignRosterPlayer({
     gameId: "game-1",

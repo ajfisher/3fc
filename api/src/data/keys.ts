@@ -26,6 +26,10 @@ export function sessionSk(sessionId: string): string {
   return `SESSION#${sessionId}`;
 }
 
+export function sessionPk(sessionId: string): string {
+  return `${ENTITY_PK_PREFIX.session}${sessionId}`;
+}
+
 export function gamePk(gameId: string): string {
   return `${ENTITY_PK_PREFIX.game}${gameId}`;
 }
@@ -51,7 +55,7 @@ export function rosterSk(teamId: string, playerId: string): string {
 }
 
 export function gameSessionIndexPk(sessionId: string): string {
-  return `${ENTITY_PK_PREFIX.session}${sessionId}`;
+  return sessionPk(sessionId);
 }
 
 export function gameSessionIndexSk(gameStartTs: string, gameId: string): string {

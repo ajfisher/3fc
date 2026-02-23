@@ -139,9 +139,19 @@ Serverless definitions live in `serverless.<service>.yml` (for example `serverle
 
 Serverless manages API/Lambda provisioning through CloudFormation stacks per service and stage.
 
+Current API services:
+
+- `api-health`: health route (`GET /v1/health`)
+- `api-core`: authenticated core routes (`/v1/auth/session`, leagues/seasons/sessions/games write endpoints)
+
 The deploy script requires `HTTP_API_ID` and `LAMBDA_EXECUTION_ROLE_ARN` and resolves them from env vars first, then from AWS by convention (`3fc-<env>-http-api`, `3fc-<env>-lambda-exec`). Infrastructure must be provisioned first.
 
 Scale note: as endpoint count grows, keep adding discrete `serverless.<service>.yml` services and group deployments by domain area.
+
+Delivery rule: local-only wiring is not sufficient. A backend feature is only considered complete when it has:
+
+- a working local test path
+- a wired live deployment path (Serverless service definition + CI deploy workflow coverage)
 
 Run help:
 
