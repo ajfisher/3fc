@@ -3,7 +3,11 @@ import { resolve } from "node:path";
 import { URL, fileURLToPath } from "node:url";
 
 import { buildSecurityHeaders } from "./security.js";
-import { renderSetupHomePage, renderStatusPage } from "./ui/layout.js";
+import {
+  renderComponentShowcasePage,
+  renderSetupHomePage,
+  renderStatusPage,
+} from "./ui/layout.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
 const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:3001";
@@ -37,6 +41,7 @@ function sendHtml(
 export function createAppRequestHandler(apiBaseUrl: string) {
   const securityHeaders = buildSecurityHeaders(apiBaseUrl);
   const setupShellHtml = renderSetupHomePage(apiBaseUrl);
+  const componentShowcaseHtml = renderComponentShowcasePage(apiBaseUrl);
 
   return (request: IncomingMessage, response: ServerResponse) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
@@ -48,8 +53,13 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    if (method === "GET" && (route === "/" || route === "/setup" || route === "/ui/components")) {
+    if (method === "GET" && (route === "/" || route === "/setup")) {
       sendHtml(response, securityHeaders, 200, setupShellHtml);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/components") {
+      sendHtml(response, securityHeaders, 200, componentShowcaseHtml);
       return;
     }
 

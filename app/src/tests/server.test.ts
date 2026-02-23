@@ -65,10 +65,12 @@ test("component showcase routes render the setup shell", () => {
 
   const componentsResponse = executeRoute("GET", "/ui\/components");
   assert.equal(componentsResponse.statusCode, 200);
-  assert.match(componentsResponse.body, /League setup/);
-  assert.match(componentsResponse.body, /Season setup/);
-  assert.match(componentsResponse.body, /Session setup/);
-  assert.match(componentsResponse.body, /Game setup/);
+  assert.match(componentsResponse.body, /Navigation items/);
+  assert.match(componentsResponse.body, /Player representation/);
+  assert.match(componentsResponse.body, /Information table/);
+  assert.match(componentsResponse.body, /Field validation/);
+  assert.match(componentsResponse.body, /Row action list/);
+  assert.match(componentsResponse.body, /Popover modal prompt/);
 });
 
 test("auth callback error and success responses include security headers", () => {
