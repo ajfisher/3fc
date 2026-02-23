@@ -65,14 +65,29 @@ functions:
           method: GET
           path: /v1/auth/session
       - httpApi:
+          method: OPTIONS
+          path: /v1/auth/session
+      - httpApi:
           method: POST
+          path: /v1/leagues
+      - httpApi:
+          method: OPTIONS
           path: /v1/leagues
       - httpApi:
           method: POST
           path: /v1/leagues/{leagueId}/seasons
       - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/seasons
+      - httpApi:
           method: POST
           path: /v1/seasons/{seasonId}/sessions
       - httpApi:
+          method: OPTIONS
+          path: /v1/seasons/{seasonId}/sessions
+      - httpApi:
           method: POST
+          path: /v1/sessions/{sessionId}/games
+      - httpApi:
+          method: OPTIONS
           path: /v1/sessions/{sessionId}/games

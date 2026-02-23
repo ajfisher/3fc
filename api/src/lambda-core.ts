@@ -26,6 +26,7 @@ import { logRequest, logRequestError } from "./logging.js";
 export interface ApiGatewayHttpEvent {
   rawPath?: string;
   body?: string | null;
+  cookies?: string[];
   headers?: Record<string, string | undefined>;
   requestContext?: {
     requestId?: string;
@@ -183,6 +184,19 @@ function getHeader(event: ApiGatewayHttpEvent, headerName: string): string | und
     if (name.toLowerCase() === target) {
       return value ?? undefined;
     }
+  }
+
+  return undefined;
+}
+
+function getCookieHeader(event: ApiGatewayHttpEvent): string | undefined {
+  const cookieHeader = getHeader(event, "cookie");
+  if (cookieHeader && cookieHeader.trim().length > 0) {
+    return cookieHeader;
+  }
+
+  if (Array.isArray(event.cookies) && event.cookies.length > 0) {
+    return event.cookies.join("; ");
   }
 
   return undefined;
@@ -426,7 +440,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
     const route = details.route;
     const method = details.method;
     const origin = getHeader(event, "origin");
-    const cookieHeader = getHeader(event, "cookie");
+    const cookieHeader = getCookieHeader(event);
     const idempotencyKey = getHeader(event, "idempotency-key");
     let status = 500;
 

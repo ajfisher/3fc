@@ -101,11 +101,13 @@ function createEvent(input: {
   method: string;
   path: string;
   headers?: Record<string, string>;
+  cookies?: string[];
   body?: Record<string, unknown>;
 }): ApiGatewayHttpEvent {
   return {
     rawPath: input.path,
     headers: input.headers,
+    cookies: input.cookies,
     body: input.body ? JSON.stringify(input.body) : undefined,
     requestContext: {
       requestId: "req-test",
@@ -230,6 +232,34 @@ test("core lambda rejects protected mutation without session cookie", async () =
     error: "unauthorized",
     message: "Valid session cookie required.",
   });
+});
+
+test("core lambda accepts session cookie from API Gateway cookies array", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues",
+      cookies: ["threefc_session=session-1"],
+      body: {
+        leagueId: "league-1",
+        name: "League 1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(harness.createdLeagues.length, 1);
 });
 
 test("core lambda creates league for authenticated users", async () => {
