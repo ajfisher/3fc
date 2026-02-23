@@ -39,6 +39,28 @@ variable "api_domain" {
   nullable    = true
 }
 
+variable "cognito_domain" {
+  description = "Optional Cognito Hosted UI custom domain (for example auth.3fc.football)"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "google_oauth_client_id" {
+  description = "Google OAuth web client ID used by Cognito social sign-in"
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "google_oauth_client_secret" {
+  description = "Google OAuth web client secret used by Cognito social sign-in"
+  type        = string
+  default     = null
+  nullable    = true
+  sensitive   = true
+}
+
 variable "hosted_zone_name" {
   description = "Route53 public hosted zone name used for DNS validation and alias records"
   type        = string

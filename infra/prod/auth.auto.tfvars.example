@@ -1,0 +1,3 @@
+# Copy to auth.auto.tfvars (gitignored) and replace placeholders.
+google_oauth_client_id     = "REPLACE_WITH_GOOGLE_CLIENT_ID"
+google_oauth_client_secret = "REPLACE_WITH_GOOGLE_CLIENT_SECRET"
