@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GetItemCommand,
   PutItemCommand,
   UpdateItemCommand,
   type AttributeValue,
@@ -76,6 +77,19 @@ class InMemoryMagicDynamoClient {
       this.items.set(itemKey, next);
 
       return { Attributes: next };
+    }
+
+    if (command instanceof GetItemCommand) {
+      const key = command.input.Key;
+
+      if (!key) {
+        throw new Error("GetItemCommand is missing Key.");
+      }
+
+      const pk = this.readString(key.pk, "pk");
+      const sk = this.readString(key.sk, "sk");
+      const item = this.items.get(`${pk}|${sk}`);
+      return { Item: item };
     }
 
     throw new Error(
@@ -216,6 +230,10 @@ test("magic complete consumes token once and creates a session", async () => {
   assert(sessionItem);
   assert.equal(sessionItem.email?.S, "player@example.com");
 
+  const persistedSession = await service.getSession("session-1");
+  assert(persistedSession);
+  assert.equal(persistedSession.email, "player@example.com");
+
   await assert.rejects(
     service.complete(token),
     (error: unknown) => {
@@ -225,6 +243,21 @@ test("magic complete consumes token once and creates a session", async () => {
       return true;
     },
   );
+});
+
+test("session lookup returns null when session is expired", async () => {
+  const { service, sentMessages, clock } = createHarness();
+
+  await service.start("player@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  await service.complete(token);
+
+  const activeSession = await service.getSession("session-1");
+  assert(activeSession);
+
+  clock.advanceSeconds(3601);
+  const expiredSession = await service.getSession("session-1");
+  assert.equal(expiredSession, null);
 });
 
 test("expired token is rejected on completion", async () => {
