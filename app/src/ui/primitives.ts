@@ -130,9 +130,9 @@ export function renderValidatedField(input: ValidatedFieldInput): string {
   const noticeId = `${escapeHtml(input.id)}-notice`;
 
   const notice = error
-    ? `<p class="field-notice field-notice-error" id="${noticeId}">${error}</p>`
+    ? `<p class="field-notice field-notice-error" id="${noticeId}" role="alert">${error}</p>`
     : success
-      ? `<p class="field-notice field-notice-success" id="${noticeId}">${success}</p>`
+      ? `<p class="field-notice field-notice-success" id="${noticeId}" aria-live="polite">${success}</p>`
       : hint
         ? `<p class="field-hint" id="${noticeId}">${hint}</p>`
         : "";
@@ -148,7 +148,7 @@ export function renderValidatedField(input: ValidatedFieldInput): string {
   return `<div class="field field-validated">
   <label class="field-label" for="${escapeHtml(input.id)}">${escapeHtml(input.label)}</label>
   <input class="field-input${stateClass}" id="${escapeHtml(input.id)}" name="${escapeHtml(input.id)}" type="${type}"${value}${placeholder}${required}${noticeAttr}${invalidAttr} />
-  ${notice}
+  <div class="field-message-wrap">${notice}</div>
 </div>`;
 }
 
@@ -256,25 +256,30 @@ export function renderRowActionList(rows: RowActionItemInput[], listId = "row-ac
 
 export function renderModalPrompt(input: ModalPromptInput): string {
   const safeId = escapeHtml(input.id);
+  const titleId = `${safeId}-title`;
+  const messageId = `${safeId}-message`;
 
   return `<div class="modal-prompt" data-testid="${safeId}-container">
   ${renderButton(input.triggerLabel, "ghost", {
     "data-modal-open": safeId,
     type: "button",
   })}
-  <dialog class="prompt-dialog" data-modal="${safeId}" aria-label="${escapeHtml(input.title)}">
-    <h3>${escapeHtml(input.title)}</h3>
-    <p>${escapeHtml(input.message)}</p>
-    <div class="prompt-actions">
-      ${renderButton(input.cancelLabel, "secondary", {
-        "data-modal-close": safeId,
-        type: "button",
-      })}
-      ${renderButton(input.confirmLabel, "danger", {
-        "data-modal-confirm": safeId,
-        type: "button",
-      })}
-    </div>
-  </dialog>
+  <div class="prompt-overlay" data-modal="${safeId}" hidden>
+    <button class="prompt-backdrop" type="button" data-modal-close="${safeId}" aria-label="Dismiss prompt"></button>
+    <section class="prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${messageId}">
+      <h3 id="${titleId}">${escapeHtml(input.title)}</h3>
+      <p id="${messageId}">${escapeHtml(input.message)}</p>
+      <div class="prompt-actions">
+        ${renderButton(input.cancelLabel, "secondary", {
+          "data-modal-close": safeId,
+          type: "button",
+        })}
+        ${renderButton(input.confirmLabel, "danger", {
+          "data-modal-confirm": safeId,
+          type: "button",
+        })}
+      </div>
+    </section>
+  </div>
 </div>`;
 }

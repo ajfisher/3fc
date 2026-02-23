@@ -20,520 +20,12 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function renderStyleBlock(): string {
-  return `<style>
-:root {
-  color-scheme: light;
-  --font-display: "Avenir Next", "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
-  --font-body: "Trebuchet MS", "Verdana", "Segoe UI", sans-serif;
-  --bg-top: #f2efe7;
-  --bg-bottom: #dce7ef;
-  --ink-strong: #1d2a2f;
-  --ink-soft: #445a61;
-  --surface: #fbfaf7;
-  --surface-elevated: #ffffff;
-  --line: #cfddd7;
-  --accent: #106c61;
-  --accent-strong: #0c4e46;
-  --accent-soft: #dbf3ef;
-  --danger: #a33a2f;
-  --danger-soft: #ffe9e5;
-  --radius-lg: 18px;
-  --radius-sm: 12px;
-  --shadow: 0 18px 40px rgba(9, 44, 39, 0.12);
+function renderStylesheetLink(): string {
+  return '<link rel="stylesheet" href="/ui/styles.css" />';
 }
 
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  min-height: 100vh;
-  font-family: var(--font-body);
-  color: var(--ink-strong);
-  background:
-    radial-gradient(140% 120% at 0% 0%, rgba(16, 108, 97, 0.12), transparent 60%),
-    linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
-}
-
-.app-shell {
-  width: min(72rem, 100%);
-  margin: 0 auto;
-  padding: 1.1rem 0.9rem 2.4rem;
-}
-
-.hero {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: linear-gradient(145deg, var(--surface), var(--surface-elevated));
-  box-shadow: var(--shadow);
-  padding: 1.1rem;
-}
-
-.hero-kicker {
-  display: inline-block;
-  border-radius: 999px;
-  border: 1px solid var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-weight: 700;
-  font-size: 0.74rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 0.24rem 0.6rem;
-}
-
-h1 {
-  font-family: var(--font-display);
-  line-height: 1.1;
-  margin: 0.65rem 0 0.5rem;
-  font-size: clamp(1.6rem, 6vw, 2.5rem);
-}
-
-.hero-copy {
-  margin: 0;
-  color: var(--ink-soft);
-  max-width: 56ch;
-}
-
-.section-stack {
-  display: grid;
-  gap: 1rem;
-  margin-top: 1rem;
-}
-
-.step-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-  margin: 1rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.step-chip {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.45rem 0.7rem;
-  font-weight: 650;
-  font-size: 0.86rem;
-}
-
-.step-chip-active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-}
-
-.step-chip-done {
-  border-color: #8db8a9;
-  background: #ebf8f4;
-}
-
-.step-chip-upcoming {
-  color: var(--ink-soft);
-  background: #f4f8f6;
-}
-
-.panel-grid {
-  display: grid;
-  gap: 0.85rem;
-}
-
-.panel {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
-  padding: 0.85rem;
-}
-
-.panel h2 {
-  margin: 0;
-  font-size: 1.04rem;
-  font-family: var(--font-display);
-}
-
-.panel h3 {
-  margin: 0;
-  font-size: 0.95rem;
-  font-family: var(--font-display);
-}
-
-.panel p {
-  margin: 0.35rem 0 0;
-  color: var(--ink-soft);
-  font-size: 0.92rem;
-}
-
-.panel-body {
-  display: grid;
-  gap: 0.7rem;
-  margin-top: 0.9rem;
-}
-
-.panel-footer {
-  margin-top: 0.9rem;
-}
-
-.field {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.field-label {
-  font-weight: 680;
-  font-size: 0.89rem;
-}
-
-.field-input {
-  width: 100%;
-  border: 1px solid #b5ccc2;
-  border-radius: 12px;
-  padding: 0.65rem 0.72rem;
-  font: inherit;
-  background: #fdfefe;
-  color: var(--ink-strong);
-}
-
-.field-input:focus {
-  border-color: var(--accent);
-  outline: 2px solid #5eb6aa45;
-  outline-offset: 1px;
-}
-
-.field-hint {
-  margin: 0;
-  font-size: 0.8rem;
-  color: #5d7571;
-}
-
-.field-notice {
-  margin: 0;
-  font-size: 0.8rem;
-}
-
-.field-notice-error {
-  color: #9c2f27;
-}
-
-.field-notice-success {
-  color: #1f6d45;
-}
-
-.field-input-invalid {
-  border-color: #ca5a50;
-  background: #fff7f6;
-}
-
-.field-input-success {
-  border-color: #4da173;
-  background: #f5fff8;
-}
-
-.button-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-}
-
-.btn {
-  border-radius: 999px;
-  font: inherit;
-  font-weight: 700;
-  padding: 0.58rem 0.95rem;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--ink-strong);
-}
-
-.btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #f6fdfb;
-}
-
-.btn-secondary {
-  background: #f1f7f4;
-  border-color: #b7d2c7;
-}
-
-.btn-ghost {
-  background: transparent;
-  border-color: #b9cbc5;
-}
-
-.btn-danger {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #fff6f5;
-}
-
-.top-nav {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: #f8fcfa;
-  padding: 0.25rem;
-}
-
-.top-nav-list {
-  display: flex;
-  gap: 0.25rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-x: auto;
-}
-
-.nav-link {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  text-decoration: none;
-  color: var(--ink-soft);
-  font-weight: 700;
-  font-size: 0.86rem;
-  padding: 0.45rem 0.8rem;
-}
-
-.nav-link-active {
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-}
-
-.player-grid {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.player-card {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  border: 1px solid #cce0d8;
-  border-radius: 12px;
-  background: #f9fffc;
-  padding: 0.5rem 0.6rem;
-}
-
-.player-avatar {
-  width: 2.2rem;
-  height: 2.2rem;
-  border-radius: 999px;
-  border: 1px solid #8db8a9;
-  background: #d9f0e8;
-  color: #0b534a;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-}
-
-.player-avatar img {
-  width: 100%;
-  height: 100%;
-  border-radius: 999px;
-  object-fit: cover;
-}
-
-.player-meta h3 {
-  margin: 0;
-}
-
-.player-meta p {
-  margin: 0.2rem 0 0;
-  font-size: 0.81rem;
-}
-
-.table-wrap {
-  overflow-x: auto;
-  border: 1px solid #cadcd6;
-  border-radius: 10px;
-}
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 28rem;
-}
-
-.data-table caption {
-  caption-side: top;
-  text-align: left;
-  padding: 0.6rem;
-  font-weight: 700;
-}
-
-.data-table th,
-.data-table td {
-  border-bottom: 1px solid #dbe8e3;
-  text-align: left;
-  padding: 0.52rem 0.6rem;
-  font-size: 0.87rem;
-}
-
-.data-table th {
-  background: #f1f8f5;
-  color: #2a4f49;
-}
-
-.row-action-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.row-action-item {
-  border: 1px solid #cadfd8;
-  border-radius: 10px;
-  padding: 0.6rem;
-  display: grid;
-  gap: 0.45rem;
-}
-
-.row-action-copy p {
-  margin: 0.2rem 0 0;
-  font-size: 0.81rem;
-}
-
-.row-action-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.list-action {
-  border-radius: 999px;
-  border: 1px solid #a8c8bc;
-  background: #f4faf7;
-  font: inherit;
-  font-size: 0.81rem;
-  font-weight: 700;
-  color: #1c4f46;
-  padding: 0.3rem 0.65rem;
-}
-
-.list-action-danger {
-  border-color: #d38d84;
-  background: var(--danger-soft);
-  color: #8a2d24;
-}
-
-.prompt-dialog {
-  border: 1px solid #bed5cd;
-  border-radius: 12px;
-  padding: 1rem;
-  width: min(24rem, 92vw);
-}
-
-.prompt-dialog::backdrop {
-  background: rgba(20, 40, 36, 0.45);
-}
-
-.prompt-dialog h3 {
-  margin: 0;
-}
-
-.prompt-dialog p {
-  margin-top: 0.5rem;
-}
-
-.prompt-actions {
-  margin-top: 0.85rem;
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.45rem;
-}
-
-.status-note {
-  margin-top: 0.9rem;
-  font-size: 0.84rem;
-  color: #5a6f6b;
-}
-
-code {
-  font-family: "SF Mono", "Menlo", "Monaco", monospace;
-  background: #e8f0ec;
-  border-radius: 6px;
-  padding: 0.08rem 0.3rem;
-}
-
-@media (min-width: 768px) {
-  .app-shell {
-    padding: 1.8rem 1.4rem 2.6rem;
-  }
-
-  .hero {
-    padding: 1.35rem;
-  }
-
-  .step-list {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .panel-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.95rem;
-  }
-
-  .player-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-</style>`;
-}
-
-function renderModalBehaviorScript(): string {
-  return `<script>
-(() => {
-  const dialogs = Array.from(document.querySelectorAll('dialog[data-modal]'));
-  const note = document.getElementById('modal-note');
-
-  function setNote(message) {
-    if (note) {
-      note.textContent = message;
-    }
-  }
-
-  document.querySelectorAll('[data-modal-open]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const id = button.getAttribute('data-modal-open');
-      const dialog = dialogs.find((entry) => entry.getAttribute('data-modal') === id);
-      if (dialog && typeof dialog.showModal === 'function') {
-        dialog.showModal();
-      }
-    });
-  });
-
-  document.querySelectorAll('[data-modal-close]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const id = button.getAttribute('data-modal-close');
-      const dialog = dialogs.find((entry) => entry.getAttribute('data-modal') === id);
-      if (dialog) {
-        dialog.close();
-      }
-    });
-  });
-
-  document.querySelectorAll('[data-modal-confirm]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const id = button.getAttribute('data-modal-confirm');
-      const dialog = dialogs.find((entry) => entry.getAttribute('data-modal') === id);
-      if (dialog) {
-        dialog.close();
-      }
-      setNote('Confirmed modal action: ' + id);
-    });
-  });
-
-  dialogs.forEach((dialog) => {
-    dialog.addEventListener('cancel', () => {
-      const id = dialog.getAttribute('data-modal') || 'unknown';
-      setNote('Cancelled modal action: ' + id);
-    });
-  });
-})();
-</script>`;
+function renderModalScriptTag(): string {
+  return '<script src="/ui/modal.js" defer></script>';
 }
 
 function renderSetupFoundationPanels(): string {
@@ -651,7 +143,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>3FC Setup Shell</title>
-    ${renderStyleBlock()}
+    ${renderStylesheetLink()}
   </head>
   <body>
     <main class="app-shell" data-testid="setup-shell">
@@ -714,22 +206,28 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   const validationPanel = renderPanel(
     "Field validation",
     "Inline notice state for valid/invalid input feedback.",
-    [
-      renderValidatedField({
-        id: "organizer-email-invalid",
-        label: "Organizer email",
-        type: "email",
-        value: "player-at-example.com",
-        error: "Please provide a valid email address.",
-      }),
-      renderValidatedField({
-        id: "organizer-email-valid",
-        label: "Organizer email",
-        type: "email",
-        value: "organizer@example.com",
-        success: "Email format looks valid.",
-      }),
-    ].join(""),
+    `<div class="validation-stack">
+      <section class="validation-card validation-card-invalid" data-testid="validation-invalid">
+        <h3>Invalid email example</h3>
+        ${renderValidatedField({
+          id: "organizer-email-invalid",
+          label: "Organizer email",
+          type: "email",
+          value: "player-at-example.com",
+          error: "Please provide a valid email address.",
+        })}
+      </section>
+      <section class="validation-card validation-card-valid" data-testid="validation-valid">
+        <h3>Valid email example</h3>
+        ${renderValidatedField({
+          id: "organizer-email-valid",
+          label: "Organizer email",
+          type: "email",
+          value: "organizer@example.com",
+          success: "Email format looks valid.",
+        })}
+      </section>
+    </div>`,
     "",
     "panel-validation",
   );
@@ -765,7 +263,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
 
   const modalPanel = renderPanel(
     "Popover modal prompt",
-    "Dialog-based confirmation for destructive actions.",
+    "Overlay prompt for destructive actions with confirm and cancel paths.",
     `${renderModalPrompt({
       id: "confirm-delete-game",
       triggerLabel: "Open delete prompt",
@@ -792,7 +290,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>3FC Component Showcase</title>
-    ${renderStyleBlock()}
+    ${renderStylesheetLink()}
   </head>
   <body>
     <main class="app-shell" data-testid="component-showcase">
@@ -809,7 +307,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
         </section>
       </div>
     </main>
-    ${renderModalBehaviorScript()}
+    ${renderModalScriptTag()}
   </body>
 </html>`;
 }
@@ -824,7 +322,7 @@ export function renderStatusPage(title: string, message: string): string {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${safeTitle}</title>
-    ${renderStyleBlock()}
+    ${renderStylesheetLink()}
   </head>
   <body>
     <main class="app-shell">

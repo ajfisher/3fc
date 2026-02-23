@@ -56,22 +56,25 @@ test("primitives render expected class hooks", () => {
   assert.match(chip, /class="step-chip step-chip-active"/);
   assert.match(field, /class="field-input"/);
   assert.match(validatedField, /field-input-invalid/);
+  assert.match(validatedField, /field-message-wrap/);
+  assert.match(validatedField, /role="alert"/);
   assert.match(nav, /data-testid="test-nav"/);
   assert.match(player, /data-testid="player-ari"/);
   assert.match(table, /data-testid="table-standings"/);
   assert.match(actions, /data-testid="row-actions"/);
   assert.match(modal, /data-modal-open="delete-game"/);
+  assert.match(modal, /class="prompt-overlay"/);
   assert.match(panel, /class="panel"/);
 });
 
-test("setup home page includes all foundation sections and responsive CSS", () => {
+test("setup home page includes all foundation sections and links external stylesheet", () => {
   const html = renderSetupHomePage("https://qa-api.3fc.football");
 
   assert.match(html, /League setup/);
   assert.match(html, /Season setup/);
   assert.match(html, /Session setup/);
   assert.match(html, /Game setup/);
-  assert.match(html, /@media \(min-width: 768px\)/);
+  assert.match(html, /rel="stylesheet" href="\/ui\/styles\.css"/);
   assert.match(html, /class="step-list"/);
   assert.match(html, /data-testid="setup-shell"/);
   assert.match(html, /data-testid="panel-league"/);
@@ -92,6 +95,10 @@ test("component showcase page includes navigation, players, tables, validation, 
   assert.match(html, /data-testid="panel-row-actions"/);
   assert.match(html, /data-testid="panel-modal"/);
   assert.match(html, /data-testid="panel-setup-composition"/);
+  assert.match(html, /data-testid="validation-invalid"/);
+  assert.match(html, /data-testid="validation-valid"/);
   assert.match(html, /Delete game\\?/);
+  assert.match(html, /data-modal-open="confirm-delete-game"/);
   assert.match(html, /data-modal-confirm="confirm-delete-game"/);
+  assert.match(html, /<script src="\/ui\/modal\.js" defer><\/script>/);
 });

@@ -73,6 +73,26 @@ test("component showcase routes render the setup shell", () => {
   assert.match(componentsResponse.body, /Popover modal prompt/);
 });
 
+test("stylesheet route serves external UI css", () => {
+  const response = executeRoute("GET", "/ui/styles.css");
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "text/css; charset=utf-8");
+  assert.match(response.body, /\.btn:hover/);
+  assert.match(response.body, /\.nav-link:hover/);
+});
+
+test("modal behavior script route serves external javascript", () => {
+  const response = executeRoute("GET", "/ui/modal.js");
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "application/javascript; charset=utf-8");
+  assert.match(response.body, /data-modal-open/);
+  assert.match(response.body, /modal-open/);
+});
+
 test("auth callback error and success responses include security headers", () => {
   const errorResponse = executeRoute("GET", "/auth/callback?error=access_denied");
   assert.equal(errorResponse.statusCode, 400);

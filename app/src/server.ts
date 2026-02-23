@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL, fileURLToPath } from "node:url";
 
@@ -11,6 +12,42 @@ import {
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
 const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:3001";
+const UI_STYLESHEET_PATHS = [
+  fileURLToPath(new URL("./ui/styles.css", import.meta.url)),
+  resolve(process.cwd(), "src/ui/styles.css"),
+  resolve(process.cwd(), "app/src/ui/styles.css"),
+];
+const UI_MODAL_SCRIPT_PATHS = [
+  fileURLToPath(new URL("./ui/modal.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/modal.js"),
+  resolve(process.cwd(), "app/src/ui/modal.js"),
+];
+const UI_STYLESHEET = loadUiStylesheet();
+const UI_MODAL_SCRIPT = loadUiModalScript();
+
+function loadUiStylesheet(): string {
+  for (const stylesheetPath of UI_STYLESHEET_PATHS) {
+    try {
+      return readFileSync(stylesheetPath, "utf8");
+    } catch {
+      // Continue until a readable stylesheet path is found.
+    }
+  }
+
+  return "/* ui stylesheet unavailable */";
+}
+
+function loadUiModalScript(): string {
+  for (const scriptPath of UI_MODAL_SCRIPT_PATHS) {
+    try {
+      return readFileSync(scriptPath, "utf8");
+    } catch {
+      // Continue until a readable script path is found.
+    }
+  }
+
+  return "/* ui modal script unavailable */";
+}
 
 function sendJson(
   response: ServerResponse,
@@ -38,6 +75,32 @@ function sendHtml(
   response.end(body);
 }
 
+function sendCss(
+  response: ServerResponse,
+  securityHeaders: Record<string, string>,
+  statusCode: number,
+  css: string,
+): void {
+  response.writeHead(statusCode, {
+    ...securityHeaders,
+    "Content-Type": "text/css; charset=utf-8",
+  });
+  response.end(css);
+}
+
+function sendJavascript(
+  response: ServerResponse,
+  securityHeaders: Record<string, string>,
+  statusCode: number,
+  javascript: string,
+): void {
+  response.writeHead(statusCode, {
+    ...securityHeaders,
+    "Content-Type": "application/javascript; charset=utf-8",
+  });
+  response.end(javascript);
+}
+
 export function createAppRequestHandler(apiBaseUrl: string) {
   const securityHeaders = buildSecurityHeaders(apiBaseUrl);
   const setupShellHtml = renderSetupHomePage(apiBaseUrl);
@@ -60,6 +123,16 @@ export function createAppRequestHandler(apiBaseUrl: string) {
 
     if (method === "GET" && route === "/ui/components") {
       sendHtml(response, securityHeaders, 200, componentShowcaseHtml);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/styles.css") {
+      sendCss(response, securityHeaders, 200, UI_STYLESHEET);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/modal.js") {
+      sendJavascript(response, securityHeaders, 200, UI_MODAL_SCRIPT);
       return;
     }
 
