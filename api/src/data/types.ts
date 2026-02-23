@@ -100,6 +100,16 @@ export interface GoalEventRecord {
   updatedAt: string;
 }
 
+export interface IdempotencyRecord {
+  scope: string;
+  key: string;
+  requestHash: string;
+  responseStatusCode: number;
+  responseBody: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CreateLeagueInput {
   leagueId: string;
   name: string;
@@ -175,4 +185,12 @@ export interface CreateGoalEventInput {
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+}
+
+export interface CreateIdempotencyRecordInput {
+  scope: string;
+  key: string;
+  requestHash: string;
+  responseStatusCode: number;
+  responseBody: string;
 }

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 
@@ -11,6 +11,14 @@ import {
 import { MagicLinkService } from "./auth/magic-link.js";
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import { isAuthenticatedApiRoute } from "./auth/session.js";
+import {
+  createGameRequestSchema,
+  createLeagueRequestSchema,
+  createSeasonRequestSchema,
+  createSessionRequestSchema,
+  formatSchemaValidationError,
+  idempotencyKeyHeaderSchema,
+} from "./contracts/core-write.js";
 import { ThreeFcRepository } from "./data/repository.js";
 import type { GameStatus } from "./data/types.js";
 import { logRequest, logRequestError } from "./logging.js";
@@ -130,6 +138,28 @@ interface RepositoryContract {
       }
     | null
   >;
+  getIdempotencyRecord(
+    scope: string,
+    key: string,
+  ): Promise<
+    | {
+        scope: string;
+        key: string;
+        requestHash: string;
+        responseStatusCode: number;
+        responseBody: string;
+        createdAt: string;
+        updatedAt: string;
+      }
+    | null
+  >;
+  createIdempotencyRecord(input: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+  }): Promise<boolean>;
 }
 
 interface CoreHandlerDependencies {
@@ -216,8 +246,124 @@ function internalError(
   );
 }
 
-function isGameStatus(value: unknown): value is GameStatus {
-  return value === "scheduled" || value === "live" || value === "finished";
+function buildIdempotencyScope(sessionEmail: string, method: string, route: string): string {
+  return `${sessionEmail}:${method}:${route}`;
+}
+
+function normalizePayloadForHashing(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizePayloadForHashing(entry));
+  }
+
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const sortedKeys = Object.keys(source).sort();
+    const normalizedEntries = sortedKeys.map((key) => [key, normalizePayloadForHashing(source[key])] as const);
+    return Object.fromEntries(normalizedEntries);
+  }
+
+  return value;
+}
+
+function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
+  return createHash("sha256")
+    .update(`${scope}:${JSON.stringify(normalizePayloadForHashing(payload))}`)
+    .digest("hex");
+}
+
+function parseStoredIdempotencyResponseBody(responseBody: string): unknown {
+  try {
+    return JSON.parse(responseBody);
+  } catch {
+    return {
+      error: "Internal server error",
+      detail: "Stored idempotency response could not be parsed.",
+    };
+  }
+}
+
+function idempotencyConflictResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "idempotency_conflict",
+      message: "Idempotency key has already been used with a different payload.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+async function executeIdempotentMutation(input: {
+  repository: RepositoryContract;
+  idempotencyKey: string | undefined;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  origin: string | undefined;
+  allowedOrigins: string[];
+  execute: () => Promise<ApiGatewayHttpResponse>;
+}): Promise<ApiGatewayHttpResponse> {
+  if (!input.idempotencyKey) {
+    return input.execute();
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);
+  if (!parsedHeader.success) {
+    return badRequest(
+      input.origin,
+      input.allowedOrigins,
+      formatSchemaValidationError(parsedHeader.error),
+    );
+  }
+
+  const idempotencyKey = parsedHeader.data;
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  const existingRecord = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
+
+  if (existingRecord) {
+    if (existingRecord.requestHash !== requestHash) {
+      return idempotencyConflictResponse(input.origin, input.allowedOrigins);
+    }
+
+    return createJsonResponse(
+      existingRecord.responseStatusCode,
+      parseStoredIdempotencyResponseBody(existingRecord.responseBody),
+      buildCorsHeaders(input.origin, input.allowedOrigins),
+    );
+  }
+
+  const mutationResponse = await input.execute();
+  const created = await input.repository.createIdempotencyRecord({
+    scope,
+    key: idempotencyKey,
+    requestHash,
+    responseStatusCode: mutationResponse.statusCode,
+    responseBody: mutationResponse.body,
+  });
+
+  if (created) {
+    return mutationResponse;
+  }
+
+  const raceRecord = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
+  if (!raceRecord) {
+    return mutationResponse;
+  }
+
+  if (raceRecord.requestHash !== requestHash) {
+    return idempotencyConflictResponse(input.origin, input.allowedOrigins);
+  }
+
+  return createJsonResponse(
+    raceRecord.responseStatusCode,
+    parseStoredIdempotencyResponseBody(raceRecord.responseBody),
+    buildCorsHeaders(input.origin, input.allowedOrigins),
+  );
 }
 
 function decodeRouteParam(value: string): string {
@@ -281,6 +427,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
     const method = details.method;
     const origin = getHeader(event, "origin");
     const cookieHeader = getHeader(event, "cookie");
+    const idempotencyKey = getHeader(event, "idempotency-key");
     let status = 500;
 
     try {
@@ -351,144 +498,150 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         }
 
         if (method === "POST" && route === "/v1/leagues") {
-          let body: Record<string, unknown>;
+          let rawBody: Record<string, unknown>;
           try {
-            body = parseJsonBody(event);
+            rawBody = parseJsonBody(event);
           } catch {
             status = 400;
             return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
           }
 
-          if (typeof body.leagueId !== "string" || body.leagueId.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `leagueId` is required.");
-          }
-
-          if (typeof body.name !== "string" || body.name.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `name` is required.");
-          }
-
-          if (body.slug !== undefined && body.slug !== null && typeof body.slug !== "string") {
+          const parsedBody = createLeagueRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
             status = 400;
             return badRequest(
               origin,
               dependencies.corsAllowedOrigins,
-              "Field `slug` must be a string when provided.",
+              formatSchemaValidationError(parsedBody.error),
             );
           }
 
-          const createdLeague = await dependencies.repository.createLeague({
-            leagueId: body.leagueId,
-            name: body.name,
-            slug: (body.slug as string | null | undefined) ?? null,
-            createdByUserId: session.email,
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              const createdLeague = await dependencies.repository.createLeague({
+                leagueId: parsedBody.data.leagueId,
+                name: parsedBody.data.name,
+                slug: parsedBody.data.slug ?? null,
+                createdByUserId: session.email,
+              });
+
+              return createJsonResponse(
+                201,
+                createdLeague,
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
           });
 
-          status = 201;
-          return createJsonResponse(
-            status,
-            createdLeague,
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-          );
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
         if (method === "POST" && createSeasonMatch) {
-          let body: Record<string, unknown>;
+          let rawBody: Record<string, unknown>;
           try {
-            body = parseJsonBody(event);
+            rawBody = parseJsonBody(event);
           } catch {
             status = 400;
             return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
           }
 
-          if (typeof body.seasonId !== "string" || body.seasonId.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `seasonId` is required.");
-          }
-
-          if (typeof body.name !== "string" || body.name.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `name` is required.");
-          }
-
-          if (body.slug !== undefined && body.slug !== null && typeof body.slug !== "string") {
+          const parsedBody = createSeasonRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
             status = 400;
             return badRequest(
               origin,
               dependencies.corsAllowedOrigins,
-              "Field `slug` must be a string when provided.",
+              formatSchemaValidationError(parsedBody.error),
             );
           }
 
-          if (body.startsOn !== undefined && body.startsOn !== null && typeof body.startsOn !== "string") {
-            status = 400;
-            return badRequest(
-              origin,
-              dependencies.corsAllowedOrigins,
-              "Field `startsOn` must be a string when provided.",
-            );
-          }
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              const createdSeason = await dependencies.repository.createSeason({
+                leagueId: decodeRouteParam(createSeasonMatch[1]),
+                seasonId: parsedBody.data.seasonId,
+                name: parsedBody.data.name,
+                slug: parsedBody.data.slug ?? null,
+                startsOn: parsedBody.data.startsOn ?? null,
+                endsOn: parsedBody.data.endsOn ?? null,
+              });
 
-          if (body.endsOn !== undefined && body.endsOn !== null && typeof body.endsOn !== "string") {
-            status = 400;
-            return badRequest(
-              origin,
-              dependencies.corsAllowedOrigins,
-              "Field `endsOn` must be a string when provided.",
-            );
-          }
-
-          const createdSeason = await dependencies.repository.createSeason({
-            leagueId: decodeRouteParam(createSeasonMatch[1]),
-            seasonId: body.seasonId,
-            name: body.name,
-            slug: (body.slug as string | null | undefined) ?? null,
-            startsOn: (body.startsOn as string | null | undefined) ?? null,
-            endsOn: (body.endsOn as string | null | undefined) ?? null,
+              return createJsonResponse(
+                201,
+                createdSeason,
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
           });
 
-          status = 201;
-          return createJsonResponse(
-            status,
-            createdSeason,
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-          );
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createSessionMatch = route.match(/^\/v1\/seasons\/([^/]+)\/sessions$/);
         if (method === "POST" && createSessionMatch) {
-          let body: Record<string, unknown>;
+          let rawBody: Record<string, unknown>;
           try {
-            body = parseJsonBody(event);
+            rawBody = parseJsonBody(event);
           } catch {
             status = 400;
             return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
           }
 
-          if (typeof body.sessionId !== "string" || body.sessionId.trim().length === 0) {
+          const parsedBody = createSessionRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
             status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `sessionId` is required.");
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
           }
 
-          if (typeof body.sessionDate !== "string" || body.sessionDate.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `sessionDate` is required.");
-          }
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              const createdSession = await dependencies.repository.createSession({
+                seasonId: decodeRouteParam(createSessionMatch[1]),
+                sessionId: parsedBody.data.sessionId,
+                sessionDate: parsedBody.data.sessionDate,
+              });
 
-          const createdSession = await dependencies.repository.createSession({
-            seasonId: decodeRouteParam(createSessionMatch[1]),
-            sessionId: body.sessionId,
-            sessionDate: body.sessionDate,
+              return createJsonResponse(
+                201,
+                createdSession,
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
           });
 
-          status = 201;
-          return createJsonResponse(
-            status,
-            createdSession,
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-          );
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createGameMatch = route.match(/^\/v1\/sessions\/([^/]+)\/games$/);
@@ -502,56 +655,65 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          let body: Record<string, unknown>;
+          const leagueId = aclResult.scope.leagueId;
+          const seasonId = aclResult.scope.seasonId;
+          const sessionId = aclResult.scope.sessionId;
+
+          let rawBody: Record<string, unknown>;
           try {
-            body = parseJsonBody(event);
+            rawBody = parseJsonBody(event);
           } catch {
             status = 400;
             return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
           }
 
-          if (typeof body.gameId !== "string" || body.gameId.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `gameId` is required.");
-          }
-
-          if (typeof body.gameStartTs !== "string" || body.gameStartTs.trim().length === 0) {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Field `gameStartTs` is required.");
-          }
-
-          if (body.status !== undefined && !isGameStatus(body.status)) {
+          const parsedBody = createGameRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
             status = 400;
             return badRequest(
               origin,
               dependencies.corsAllowedOrigins,
-              "Field `status` must be one of `scheduled`, `live`, or `finished`.",
+              formatSchemaValidationError(parsedBody.error),
             );
           }
 
-          const createdGame = await dependencies.repository.createGame({
-            gameId: body.gameId,
-            leagueId: aclResult.scope.leagueId,
-            seasonId: aclResult.scope.seasonId,
-            sessionId: aclResult.scope.sessionId,
-            status: body.status as GameStatus | undefined,
-            gameStartTs: body.gameStartTs,
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              const createdGame = await dependencies.repository.createGame({
+                gameId: parsedBody.data.gameId,
+                leagueId,
+                seasonId,
+                sessionId,
+                status: parsedBody.data.status as GameStatus | undefined,
+                gameStartTs: parsedBody.data.gameStartTs,
+              });
+
+              await dependencies.repository.createSessionGame({
+                sessionId: createdGame.sessionId,
+                gameId: createdGame.gameId,
+                gameStartTs: createdGame.gameStartTs,
+                leagueId: createdGame.leagueId,
+                seasonId: createdGame.seasonId,
+              });
+
+              return createJsonResponse(
+                201,
+                createdGame,
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
           });
 
-          await dependencies.repository.createSessionGame({
-            sessionId: createdGame.sessionId,
-            gameId: createdGame.gameId,
-            gameStartTs: createdGame.gameStartTs,
-            leagueId: createdGame.leagueId,
-            seasonId: createdGame.seasonId,
-          });
-
-          status = 201;
-          return createJsonResponse(
-            status,
-            createdGame,
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-          );
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         if (method === "GET" && route === "/v1/auth/session") {

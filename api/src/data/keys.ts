@@ -4,6 +4,7 @@ export const ENTITY_PK_PREFIX = {
   game: "GAME#",
   session: "SESSION#",
   player: "PLAYER#",
+  idempotency: "IDEMPOTENCY#",
 } as const;
 
 export function leaguePk(leagueId: string): string {
@@ -36,6 +37,10 @@ export function gamePk(gameId: string): string {
 
 export function playerPk(playerId: string): string {
   return `${ENTITY_PK_PREFIX.player}${playerId}`;
+}
+
+export function idempotencyPk(scope: string, key: string): string {
+  return `${ENTITY_PK_PREFIX.idempotency}${scope}#${key}`;
 }
 
 export function metadataSk(): string {

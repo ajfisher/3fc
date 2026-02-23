@@ -45,6 +45,7 @@ The project is in the delivery setup phase:
 - `packages/contracts/`: shared TypeScript contracts and core domain types
 - `infra/`: Terraform modules and environment wrappers (`qa`, `prod`)
 - `docs/`: product, spec, and backlog artifacts
+- `docs/openapi/`: OpenAPI definitions for implemented API surface
 - `docs/local-development.md`: local stack usage and smoke checks
 - `docs/dynamodb-single-table.md`: key schema and repository access patterns
 - `scripts/github/`: backlog validation/export/sync helpers
@@ -99,6 +100,7 @@ Detailed local stack smoke tests are documented in:
 
 - API contracts must be explicit and validated.
 - Write endpoints should support idempotency keys where specified.
+- Core write endpoint contract reference: `docs/openapi/v1-core-write.yaml`.
 - Security defaults must prioritize httpOnly cookies, CSP, and least privilege.
 - Public pages must not expose player email addresses.
 - Mobile-first UX and low-friction scorekeeper workflows are the default.

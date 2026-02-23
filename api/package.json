@@ -13,7 +13,8 @@
     "clean": "rm -rf dist dist-tests"
   },
   "dependencies": {
+    "@3fc/contracts": "0.1.0",
     "@aws-sdk/client-dynamodb": "^3.822.0",
-    "@3fc/contracts": "0.1.0"
+    "zod": "^4.3.6"
   }
 }

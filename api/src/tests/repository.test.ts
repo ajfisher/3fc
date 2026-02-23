@@ -24,7 +24,15 @@ class InMemoryDynamoClient {
 
       const pk = this.readString(item.pk, "pk");
       const sk = this.readString(item.sk, "sk");
-      this.items.set(`${pk}|${sk}`, item);
+      const id = `${pk}|${sk}`;
+
+      if (command.input.ConditionExpression && this.items.has(id)) {
+        const error = new Error("Conditional request failed.");
+        (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+        throw error;
+      }
+
+      this.items.set(id, item);
       return {};
     }
 
@@ -225,6 +233,37 @@ test("repository query supports deterministic game timeline ordering", async () 
     timeline.map((goal) => goal.eventId),
     ["goal-1", "goal-2", "goal-3"],
   );
+});
+
+test("repository supports idempotency record create/get semantics", async () => {
+  const repository = createRepository();
+
+  const created = await repository.createIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues",
+    key: "create-league-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ leagueId: "league-1" }),
+  });
+
+  const duplicate = await repository.createIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues",
+    key: "create-league-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ leagueId: "league-1" }),
+  });
+
+  const record = await repository.getIdempotencyRecord(
+    "admin@example.com:POST:/v1/leagues",
+    "create-league-1",
+  );
+
+  assert.equal(created, true);
+  assert.equal(duplicate, false);
+  assert.equal(record?.requestHash, "hash-1");
+  assert.equal(record?.responseStatusCode, 201);
+  assert.equal(record?.responseBody, JSON.stringify({ leagueId: "league-1" }));
 });
 
 test("repository rejects missing partition-key inputs", async () => {
