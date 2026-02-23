@@ -3,81 +3,10 @@ import { resolve } from "node:path";
 import { URL, fileURLToPath } from "node:url";
 
 import { buildSecurityHeaders } from "./security.js";
+import { renderSetupHomePage, renderStatusPage } from "./ui/layout.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
 const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:3001";
-
-function buildHomeHtml(apiBaseUrl: string): string {
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Local App</title>
-    <style>
-      :root {
-        color-scheme: light;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-
-      body {
-        margin: 0;
-        padding: 2rem;
-        background: #f5f7fb;
-        color: #1c2430;
-      }
-
-      main {
-        max-width: 50rem;
-        margin: 0 auto;
-      }
-
-      h1 {
-        margin-top: 0;
-      }
-
-      code {
-        background: #e5eaf3;
-        border-radius: 4px;
-        padding: 0.15rem 0.35rem;
-      }
-
-      .card {
-        background: white;
-        border: 1px solid #d8deea;
-        border-radius: 10px;
-        padding: 1rem;
-        margin-top: 1rem;
-      }
-
-      ul {
-        margin: 0.5rem 0 0;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>3FC Local Development</h1>
-      <p>
-        Local app scaffold is running. API base URL: <code>${apiBaseUrl}</code>
-      </p>
-
-      <section class="card">
-        <strong>Useful endpoints</strong>
-        <ul>
-          <li><code>${apiBaseUrl}/v1/health</code></li>
-          <li><code>${apiBaseUrl}/v1/dev/items</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/dev/items/&lt;id&gt;</code> (GET)</li>
-          <li><code>${apiBaseUrl}/v1/dev/send-email</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/auth/magic/start</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/auth/magic/complete</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/auth/session</code> (GET)</li>
-        </ul>
-      </section>
-    </main>
-  </body>
-</html>`;
-}
 
 function sendJson(
   response: ServerResponse,
@@ -107,7 +36,7 @@ function sendHtml(
 
 export function createAppRequestHandler(apiBaseUrl: string) {
   const securityHeaders = buildSecurityHeaders(apiBaseUrl);
-  const homeHtml = buildHomeHtml(apiBaseUrl);
+  const setupShellHtml = renderSetupHomePage(apiBaseUrl);
 
   return (request: IncomingMessage, response: ServerResponse) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
@@ -119,8 +48,8 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    if (method === "GET" && route === "/") {
-      sendHtml(response, securityHeaders, 200, homeHtml);
+    if (method === "GET" && (route === "/" || route === "/setup" || route === "/ui/components")) {
+      sendHtml(response, securityHeaders, 200, setupShellHtml);
       return;
     }
 
@@ -133,7 +62,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
           response,
           securityHeaders,
           400,
-          `<h1>Sign-in failed</h1><p>OAuth provider returned: <code>${errorCode}</code>.</p>`,
+          renderStatusPage("Sign-in failed", `OAuth provider returned: ${errorCode}.`),
         );
         return;
       }
@@ -150,7 +79,10 @@ export function createAppRequestHandler(apiBaseUrl: string) {
         response,
         securityHeaders,
         200,
-        "<h1>Sign-in complete</h1><p>Authorization callback received. Continue in the app.</p>",
+        renderStatusPage(
+          "Sign-in complete",
+          "Authorization callback received. Continue in the app.",
+        ),
       );
       return;
     }

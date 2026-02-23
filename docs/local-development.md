@@ -31,6 +31,17 @@ curl -s http://localhost:3001/v1/health
 curl -s http://localhost:4025/health
 ```
 
+### UI component showcase
+
+The app includes a foundation showcase route that renders the reusable setup
+shell and all placeholder components on one page:
+
+```bash
+open http://localhost:3000/ui/components
+```
+
+Useful for manual visual review and automation smoke checks (Playwright/DevTools MCP).
+
 ### DynamoDB write/read via API
 
 ```bash

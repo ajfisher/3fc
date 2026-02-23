@@ -55,7 +55,20 @@ test("home route includes security headers", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /3FC Local Development/);
+  assert.match(response.body, /Create League to Game in one mobile-first flow/);
+});
+
+test("component showcase routes render the setup shell", () => {
+  const setupResponse = executeRoute("GET", "/setup");
+  assert.equal(setupResponse.statusCode, 200);
+  assert.match(setupResponse.body, /3FC Setup Foundation/);
+
+  const componentsResponse = executeRoute("GET", "/ui\/components");
+  assert.equal(componentsResponse.statusCode, 200);
+  assert.match(componentsResponse.body, /League setup/);
+  assert.match(componentsResponse.body, /Season setup/);
+  assert.match(componentsResponse.body, /Session setup/);
+  assert.match(componentsResponse.body, /Game setup/);
 });
 
 test("auth callback error and success responses include security headers", () => {
