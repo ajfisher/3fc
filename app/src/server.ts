@@ -1,82 +1,52 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL, fileURLToPath } from "node:url";
 
 import { buildSecurityHeaders } from "./security.js";
+import {
+  renderComponentShowcasePage,
+  renderSetupHomePage,
+  renderStatusPage,
+} from "./ui/layout.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
 const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:3001";
+const UI_STYLESHEET_PATHS = [
+  fileURLToPath(new URL("./ui/styles.css", import.meta.url)),
+  resolve(process.cwd(), "src/ui/styles.css"),
+  resolve(process.cwd(), "app/src/ui/styles.css"),
+];
+const UI_MODAL_SCRIPT_PATHS = [
+  fileURLToPath(new URL("./ui/modal.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/modal.js"),
+  resolve(process.cwd(), "app/src/ui/modal.js"),
+];
+const UI_STYLESHEET = loadUiStylesheet();
+const UI_MODAL_SCRIPT = loadUiModalScript();
 
-function buildHomeHtml(apiBaseUrl: string): string {
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Local App</title>
-    <style>
-      :root {
-        color-scheme: light;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
+function loadUiStylesheet(): string {
+  for (const stylesheetPath of UI_STYLESHEET_PATHS) {
+    try {
+      return readFileSync(stylesheetPath, "utf8");
+    } catch {
+      // Continue until a readable stylesheet path is found.
+    }
+  }
 
-      body {
-        margin: 0;
-        padding: 2rem;
-        background: #f5f7fb;
-        color: #1c2430;
-      }
+  return "/* ui stylesheet unavailable */";
+}
 
-      main {
-        max-width: 50rem;
-        margin: 0 auto;
-      }
+function loadUiModalScript(): string {
+  for (const scriptPath of UI_MODAL_SCRIPT_PATHS) {
+    try {
+      return readFileSync(scriptPath, "utf8");
+    } catch {
+      // Continue until a readable script path is found.
+    }
+  }
 
-      h1 {
-        margin-top: 0;
-      }
-
-      code {
-        background: #e5eaf3;
-        border-radius: 4px;
-        padding: 0.15rem 0.35rem;
-      }
-
-      .card {
-        background: white;
-        border: 1px solid #d8deea;
-        border-radius: 10px;
-        padding: 1rem;
-        margin-top: 1rem;
-      }
-
-      ul {
-        margin: 0.5rem 0 0;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>3FC Local Development</h1>
-      <p>
-        Local app scaffold is running. API base URL: <code>${apiBaseUrl}</code>
-      </p>
-
-      <section class="card">
-        <strong>Useful endpoints</strong>
-        <ul>
-          <li><code>${apiBaseUrl}/v1/health</code></li>
-          <li><code>${apiBaseUrl}/v1/dev/items</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/dev/items/&lt;id&gt;</code> (GET)</li>
-          <li><code>${apiBaseUrl}/v1/dev/send-email</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/auth/magic/start</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/auth/magic/complete</code> (POST)</li>
-          <li><code>${apiBaseUrl}/v1/auth/session</code> (GET)</li>
-        </ul>
-      </section>
-    </main>
-  </body>
-</html>`;
+  return "/* ui modal script unavailable */";
 }
 
 function sendJson(
@@ -105,9 +75,36 @@ function sendHtml(
   response.end(body);
 }
 
+function sendCss(
+  response: ServerResponse,
+  securityHeaders: Record<string, string>,
+  statusCode: number,
+  css: string,
+): void {
+  response.writeHead(statusCode, {
+    ...securityHeaders,
+    "Content-Type": "text/css; charset=utf-8",
+  });
+  response.end(css);
+}
+
+function sendJavascript(
+  response: ServerResponse,
+  securityHeaders: Record<string, string>,
+  statusCode: number,
+  javascript: string,
+): void {
+  response.writeHead(statusCode, {
+    ...securityHeaders,
+    "Content-Type": "application/javascript; charset=utf-8",
+  });
+  response.end(javascript);
+}
+
 export function createAppRequestHandler(apiBaseUrl: string) {
   const securityHeaders = buildSecurityHeaders(apiBaseUrl);
-  const homeHtml = buildHomeHtml(apiBaseUrl);
+  const setupShellHtml = renderSetupHomePage(apiBaseUrl);
+  const componentShowcaseHtml = renderComponentShowcasePage(apiBaseUrl);
 
   return (request: IncomingMessage, response: ServerResponse) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
@@ -119,8 +116,23 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    if (method === "GET" && route === "/") {
-      sendHtml(response, securityHeaders, 200, homeHtml);
+    if (method === "GET" && (route === "/" || route === "/setup")) {
+      sendHtml(response, securityHeaders, 200, setupShellHtml);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/components") {
+      sendHtml(response, securityHeaders, 200, componentShowcaseHtml);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/styles.css") {
+      sendCss(response, securityHeaders, 200, UI_STYLESHEET);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/modal.js") {
+      sendJavascript(response, securityHeaders, 200, UI_MODAL_SCRIPT);
       return;
     }
 
@@ -133,7 +145,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
           response,
           securityHeaders,
           400,
-          `<h1>Sign-in failed</h1><p>OAuth provider returned: <code>${errorCode}</code>.</p>`,
+          renderStatusPage("Sign-in failed", `OAuth provider returned: ${errorCode}.`),
         );
         return;
       }
@@ -150,7 +162,10 @@ export function createAppRequestHandler(apiBaseUrl: string) {
         response,
         securityHeaders,
         200,
-        "<h1>Sign-in complete</h1><p>Authorization callback received. Continue in the app.</p>",
+        renderStatusPage(
+          "Sign-in complete",
+          "Authorization callback received. Continue in the app.",
+        ),
       );
       return;
     }
