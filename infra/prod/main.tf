@@ -10,6 +10,9 @@ module "app" {
   github_environment_name     = "production"
   site_domain                 = "app.3fc.football"
   api_domain                  = "api.3fc.football"
+  cognito_domain              = "auth.app.3fc.football"
+  google_oauth_client_id      = var.google_oauth_client_id
+  google_oauth_client_secret  = var.google_oauth_client_secret
   hosted_zone_name            = "3fc.football"
   ses_from_email              = "noreply@3fc.football"
 }

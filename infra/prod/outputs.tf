@@ -43,6 +43,26 @@ output "cognito_user_pool_id" {
   value       = module.app.cognito_user_pool_id
 }
 
+output "cognito_user_pool_client_id" {
+  description = "Cognito user pool app client ID"
+  value       = module.app.cognito_user_pool_client_id
+}
+
+output "cognito_hosted_ui_domain" {
+  description = "Cognito Hosted UI domain"
+  value       = module.app.cognito_hosted_ui_domain
+}
+
+output "cognito_hosted_ui_base_url" {
+  description = "Cognito Hosted UI base URL"
+  value       = module.app.cognito_hosted_ui_base_url
+}
+
+output "cognito_idp_response_url" {
+  description = "OAuth redirect URI to register with social IdPs"
+  value       = module.app.cognito_idp_response_url
+}
+
 output "lambda_execution_role_arn" {
   description = "Execution role ARN used by deployed Lambda functions"
   value       = module.app.lambda_execution_role_arn

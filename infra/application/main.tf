@@ -25,6 +25,10 @@ locals {
   hosted_zone_name                      = endswith(var.hosted_zone_name, ".") ? var.hosted_zone_name : "${var.hosted_zone_name}."
   site_custom_domain_enabled            = var.create_baseline_resources && var.enable_custom_domains
   api_custom_domain_enabled             = var.create_baseline_resources && var.enable_custom_domains && var.api_domain != null
+  cognito_custom_domain_enabled         = var.create_baseline_resources && var.enable_custom_domains && var.cognito_domain != null
+  google_oauth_client_id                = var.google_oauth_client_id != null && trimspace(var.google_oauth_client_id) != "" ? trimspace(var.google_oauth_client_id) : null
+  google_oauth_client_secret            = var.google_oauth_client_secret != null && trimspace(var.google_oauth_client_secret) != "" ? trimspace(var.google_oauth_client_secret) : null
+  google_identity_provider_enabled      = local.google_oauth_client_id != null
 
   app_tags = merge(
     {
@@ -37,7 +41,7 @@ locals {
 }
 
 data "aws_route53_zone" "primary" {
-  count = local.site_custom_domain_enabled || local.api_custom_domain_enabled ? 1 : 0
+  count = local.site_custom_domain_enabled || local.api_custom_domain_enabled || local.cognito_custom_domain_enabled ? 1 : 0
 
   name         = local.hosted_zone_name
   private_zone = false
@@ -229,6 +233,106 @@ resource "aws_cognito_user_pool" "app" {
   tags = local.app_tags
 }
 
+resource "aws_acm_certificate" "cognito_domain" {
+  count    = local.cognito_custom_domain_enabled ? 1 : 0
+  provider = aws.us_east_1
+
+  domain_name       = var.cognito_domain
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = local.app_tags
+}
+
+resource "aws_route53_record" "cognito_domain_certificate_validation" {
+  for_each = local.cognito_custom_domain_enabled ? {
+    for option in aws_acm_certificate.cognito_domain[0].domain_validation_options :
+    option.domain_name => {
+      name   = option.resource_record_name
+      record = option.resource_record_value
+      type   = option.resource_record_type
+    }
+  } : {}
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "cognito_domain" {
+  count    = local.cognito_custom_domain_enabled ? 1 : 0
+  provider = aws.us_east_1
+
+  certificate_arn         = aws_acm_certificate.cognito_domain[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.cognito_domain_certificate_validation : record.fqdn]
+}
+
+resource "aws_cognito_user_pool_domain" "app" {
+  count = local.cognito_custom_domain_enabled ? 1 : 0
+
+  domain          = var.cognito_domain
+  user_pool_id    = aws_cognito_user_pool.app[0].id
+  certificate_arn = aws_acm_certificate_validation.cognito_domain[0].certificate_arn
+}
+
+resource "aws_route53_record" "cognito_domain_alias_ipv4" {
+  count = local.cognito_custom_domain_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = var.cognito_domain
+  type    = "A"
+
+  alias {
+    name                   = aws_cognito_user_pool_domain.app[0].cloudfront_distribution
+    zone_id                = aws_cognito_user_pool_domain.app[0].cloudfront_distribution_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "cognito_domain_alias_ipv6" {
+  count = local.cognito_custom_domain_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = var.cognito_domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cognito_user_pool_domain.app[0].cloudfront_distribution
+    zone_id                = aws_cognito_user_pool_domain.app[0].cloudfront_distribution_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_cognito_identity_provider" "google" {
+  count = local.google_identity_provider_enabled ? 1 : 0
+
+  user_pool_id  = aws_cognito_user_pool.app[0].id
+  provider_name = "Google"
+  provider_type = "Google"
+
+  provider_details = {
+    authorize_scopes = "openid email profile"
+    client_id        = local.google_oauth_client_id
+    client_secret    = local.google_oauth_client_secret
+  }
+
+  attribute_mapping = {
+    email = "email"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.google_oauth_client_secret != null
+      error_message = "google_oauth_client_secret must be set when google_oauth_client_id is provided."
+    }
+  }
+}
+
 resource "aws_cognito_user_pool_client" "web" {
   count = var.create_baseline_resources ? 1 : 0
 
@@ -238,12 +342,14 @@ resource "aws_cognito_user_pool_client" "web" {
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
-  supported_identity_providers         = ["COGNITO"]
+  supported_identity_providers         = concat(["COGNITO"], local.google_identity_provider_enabled ? ["Google"] : [])
 
   callback_urls = ["https://${var.site_domain}/auth/callback"]
   logout_urls   = ["https://${var.site_domain}"]
 
   generate_secret = false
+
+  depends_on = [aws_cognito_identity_provider.google]
 }
 
 resource "aws_apigatewayv2_api" "http" {
@@ -515,6 +621,26 @@ output "api_id" {
 output "cognito_user_pool_id" {
   description = "Cognito user pool ID"
   value       = try(aws_cognito_user_pool.app[0].id, null)
+}
+
+output "cognito_user_pool_client_id" {
+  description = "Cognito user pool app client ID"
+  value       = try(aws_cognito_user_pool_client.web[0].id, null)
+}
+
+output "cognito_hosted_ui_domain" {
+  description = "Cognito Hosted UI domain"
+  value       = try(aws_cognito_user_pool_domain.app[0].domain, null)
+}
+
+output "cognito_hosted_ui_base_url" {
+  description = "Cognito Hosted UI base URL"
+  value       = try("https://${aws_cognito_user_pool_domain.app[0].domain}", null)
+}
+
+output "cognito_idp_response_url" {
+  description = "OAuth redirect URI to register with social IdPs"
+  value       = try("https://${aws_cognito_user_pool_domain.app[0].domain}/oauth2/idpresponse", null)
 }
 
 output "api_invoke_url" {

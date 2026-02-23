@@ -181,3 +181,16 @@ Expected result for both commands:
 
 - HTTP `200` response
 - JSON body from the health handler
+
+## Social Auth Credentials (Local)
+
+To enable Google social sign-in in Cognito, add local-only credentials per environment:
+
+1. QA:
+   - Copy `infra/qa/auth.auto.tfvars.example` to `infra/qa/auth.auto.tfvars`
+   - Set `google_oauth_client_id` and `google_oauth_client_secret`
+2. Prod:
+   - Copy `infra/prod/auth.auto.tfvars.example` to `infra/prod/auth.auto.tfvars`
+   - Set `google_oauth_client_id` and `google_oauth_client_secret`
+
+`auth.auto.tfvars` files are gitignored and are loaded automatically by Terraform.
