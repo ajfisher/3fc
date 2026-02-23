@@ -15,7 +15,7 @@ import {
   renderValidatedField,
 } from "../ui/primitives.js";
 
-test("primitives render expected class hooks", () => {
+test("primitives render expected semantic and data-ui hooks", () => {
   const button = renderButton("Continue", "danger");
   const chip = renderStepChip({ label: "1. League", state: "active" });
   const field = renderInputField({
@@ -52,19 +52,25 @@ test("primitives render expected class hooks", () => {
   });
   const panel = renderPanel("League setup", "Description", field, button);
 
-  assert.match(button, /class="btn btn-danger"/);
-  assert.match(chip, /class="step-chip step-chip-active"/);
-  assert.match(field, /class="field-input"/);
-  assert.match(validatedField, /field-input-invalid/);
-  assert.match(validatedField, /field-message-wrap/);
+  assert.match(button, /data-ui="button"/);
+  assert.match(button, /data-variant="danger"/);
+  assert.match(chip, /data-ui="step-chip"/);
+  assert.match(chip, /data-state="active"/);
+  assert.match(field, /data-ui="input"/);
+  assert.match(validatedField, /data-state="invalid"/);
+  assert.match(validatedField, /data-ui="field-message"/);
   assert.match(validatedField, /role="alert"/);
   assert.match(nav, /data-testid="test-nav"/);
+  assert.match(nav, /data-ui="nav"/);
   assert.match(player, /data-testid="player-ari"/);
+  assert.match(player, /data-ui="player-card"/);
   assert.match(table, /data-testid="table-standings"/);
+  assert.match(table, /data-ui="data-table"/);
   assert.match(actions, /data-testid="row-actions"/);
+  assert.match(actions, /data-ui="row-action"/);
   assert.match(modal, /data-modal-open="delete-game"/);
-  assert.match(modal, /class="prompt-overlay"/);
-  assert.match(panel, /class="panel"/);
+  assert.match(modal, /data-ui="prompt-overlay"/);
+  assert.match(panel, /data-ui="panel"/);
 });
 
 test("setup home page includes all foundation sections and links external stylesheet", () => {
@@ -75,7 +81,7 @@ test("setup home page includes all foundation sections and links external styles
   assert.match(html, /Session setup/);
   assert.match(html, /Game setup/);
   assert.match(html, /rel="stylesheet" href="\/ui\/styles\.css"/);
-  assert.match(html, /class="step-list"/);
+  assert.match(html, /data-ui="step-list"/);
   assert.match(html, /data-testid="setup-shell"/);
   assert.match(html, /data-testid="panel-league"/);
   assert.match(html, /data-testid="panel-season"/);

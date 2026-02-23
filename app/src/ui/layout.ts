@@ -46,7 +46,7 @@ function renderSetupFoundationPanels(): string {
         hint: "Used for readable public URLs.",
       }),
     ].join(""),
-    `<div class="button-row">${renderButton("Save League", "primary", { "data-testid": "save-league" })}${renderButton("Reset", "ghost", { "data-testid": "reset-league" })}${renderButton("Cancel", "danger", { "data-testid": "cancel-league" })}</div>`,
+    `<div data-ui="button-row">${renderButton("Save League", "primary", { "data-testid": "save-league" })}${renderButton("Reset", "ghost", { "data-testid": "reset-league" })}${renderButton("Cancel", "danger", { "data-testid": "cancel-league" })}</div>`,
     "panel-league",
   );
 
@@ -71,7 +71,7 @@ function renderSetupFoundationPanels(): string {
         type: "date",
       }),
     ].join(""),
-    `<div class="button-row">${renderButton("Save Season", "secondary", { "data-testid": "save-season" })}</div>`,
+    `<div data-ui="button-row">${renderButton("Save Season", "secondary", { "data-testid": "save-season" })}</div>`,
     "panel-season",
   );
 
@@ -113,11 +113,11 @@ function renderSetupFoundationPanels(): string {
         required: true,
       }),
     ].join(""),
-    `<div class="button-row">${renderButton("Create Game", "primary", { "data-testid": "create-game" })}${renderButton("Preview", "secondary", { "data-testid": "preview-game" })}</div>`,
+    `<div data-ui="button-row">${renderButton("Create Game", "primary", { "data-testid": "create-game" })}${renderButton("Preview", "secondary", { "data-testid": "preview-game" })}</div>`,
     "panel-game",
   );
 
-  return `<section class="panel-grid">${leaguePanel}${seasonPanel}${sessionPanel}${gamePanel}</section>`;
+  return `<section data-ui="panel-grid">${leaguePanel}${seasonPanel}${sessionPanel}${gamePanel}</section>`;
 }
 
 function renderSetupHero(apiBaseUrl: string): string {
@@ -128,11 +128,11 @@ function renderSetupHero(apiBaseUrl: string): string {
     renderStepChip({ label: "4. Game", state: "upcoming" }),
   ].join("");
 
-  return `<section class="hero">
-    <span class="hero-kicker">3FC Setup Foundation</span>
+  return `<section data-ui="hero">
+    <span data-ui="hero-kicker">3FC Setup Foundation</span>
     <h1>Create League to Game in one mobile-first flow.</h1>
-    <p class="hero-copy">This shell provides reusable form primitives and layout scaffolding for the M1-07 setup journey. API target: <code>${escapeHtml(apiBaseUrl)}</code></p>
-    <ul class="step-list" data-testid="setup-steps">${steps}</ul>
+    <p data-ui="hero-copy">This shell provides reusable form primitives and layout scaffolding for the M1-07 setup journey. API target: <code>${escapeHtml(apiBaseUrl)}</code></p>
+    <ul data-ui="step-list" data-testid="setup-steps">${steps}</ul>
   </section>`;
 }
 
@@ -146,11 +146,11 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
     ${renderStylesheetLink()}
   </head>
   <body>
-    <main class="app-shell" data-testid="setup-shell">
+    <main data-ui="app-shell" data-testid="setup-shell">
       ${renderSetupHero(apiBaseUrl)}
-      <div class="section-stack">
+      <div data-ui="section-stack">
         ${renderSetupFoundationPanels()}
-        <p class="status-note">Foundation only: persistence wiring and validation messaging will be implemented in M1-07.</p>
+        <p data-ui="status-note">Foundation only: persistence wiring and validation messaging will be implemented in M1-07.</p>
       </div>
     </main>
   </body>
@@ -177,7 +177,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   const playersPanel = renderPanel(
     "Player representation",
     "Avatar + name rows suitable for roster and score events.",
-    `<div class="player-grid" data-testid="player-grid">${[
+    `<div data-ui="player-grid" data-testid="player-grid">${[
       renderPlayerCard({ name: "Ari Fisher", subtitle: "Red Team" }, "player-ari"),
       renderPlayerCard({ name: "Mina G", subtitle: "Blue Team" }, "player-mina"),
       renderPlayerCard({ name: "Chris Long", subtitle: "Yellow Team" }, "player-chris"),
@@ -206,8 +206,8 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   const validationPanel = renderPanel(
     "Field validation",
     "Inline notice state for valid/invalid input feedback.",
-    `<div class="validation-stack">
-      <section class="validation-card validation-card-invalid" data-testid="validation-invalid">
+    `<div data-ui="validation-stack">
+      <section data-ui="validation-card" data-state="invalid" data-testid="validation-invalid">
         <h3>Invalid email example</h3>
         ${renderValidatedField({
           id: "organizer-email-invalid",
@@ -217,7 +217,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
           error: "Please provide a valid email address.",
         })}
       </section>
-      <section class="validation-card validation-card-valid" data-testid="validation-valid">
+      <section data-ui="validation-card" data-state="valid" data-testid="validation-valid">
         <h3>Valid email example</h3>
         ${renderValidatedField({
           id: "organizer-email-valid",
@@ -271,7 +271,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
       message: "This action removes game timeline and scores for this game.",
       cancelLabel: "Keep game",
       confirmLabel: "Delete game",
-    })}<p class="status-note" id="modal-note">No modal action has been confirmed yet.</p>`,
+    })}<p data-ui="status-note" id="modal-note">No modal action has been confirmed yet.</p>`,
     "",
     "panel-modal",
   );
@@ -293,11 +293,11 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
     ${renderStylesheetLink()}
   </head>
   <body>
-    <main class="app-shell" data-testid="component-showcase">
+    <main data-ui="app-shell" data-testid="component-showcase">
       ${renderSetupHero(apiBaseUrl)}
-      <div class="section-stack">
+      <div data-ui="section-stack">
         ${navigationPanel}
-        <section class="panel-grid" data-testid="component-grid">
+        <section data-ui="panel-grid" data-testid="component-grid">
           ${playersPanel}
           ${tablePanel}
           ${validationPanel}
@@ -325,11 +325,11 @@ export function renderStatusPage(title: string, message: string): string {
     ${renderStylesheetLink()}
   </head>
   <body>
-    <main class="app-shell">
-      <section class="hero">
-        <span class="hero-kicker">3FC Auth</span>
+    <main data-ui="app-shell">
+      <section data-ui="hero">
+        <span data-ui="hero-kicker">3FC Auth</span>
         <h1>${safeTitle}</h1>
-        <p class="hero-copy">${safeMessage}</p>
+        <p data-ui="hero-copy">${safeMessage}</p>
       </section>
     </main>
   </body>

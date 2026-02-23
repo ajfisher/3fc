@@ -79,8 +79,9 @@ test("stylesheet route serves external UI css", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/css; charset=utf-8");
-  assert.match(response.body, /\.btn:hover/);
-  assert.match(response.body, /\.nav-link:hover/);
+  assert.match(response.body, /\[data-ui="button"]/);
+  assert.match(response.body, /\[data-ui="nav"]/);
+  assert.match(response.body, /&:hover/);
 });
 
 test("modal behavior script route serves external javascript", () => {
