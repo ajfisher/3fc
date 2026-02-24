@@ -48,7 +48,7 @@ function renderSetupFoundationPanels(): string {
       }),
       renderInputField({
         id: "league-slug",
-        label: "League slug",
+        label: "League friendly URL",
         placeholder: "three-sided-fc",
         hint: "Used for readable public URLs.",
       }),
@@ -127,147 +127,240 @@ function renderSetupFoundationPanels(): string {
   return `<section data-ui="panel-grid">${leaguePanel}${seasonPanel}${sessionPanel}${gamePanel}</section>`;
 }
 
-function renderSetupFlowForm(apiBaseUrl: string): string {
-  const leaguePanel = renderPanel(
-    "Step 1: Create League",
-    "League ID is generated automatically from the league name/slug.",
-    [
-      renderInputField({
-        id: "league-name",
-        label: "League name",
-        placeholder: "Three Sided Football Club",
-        required: true,
-      }),
-      renderInputField({
-        id: "league-slug",
-        label: "League slug",
-        placeholder: "three-sided-football-club",
-        hint: "Auto-filled from league name. Editable.",
-      }),
-      `<dl data-ui="id-preview" data-testid="league-id-preview">
-        <div><dt>League ID</dt><dd id="league-id-display">Not generated yet</dd></div>
-      </dl>`,
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Create League", "primary", {
-      type: "button",
-      "data-action": "create-league",
-      "data-testid": "create-league",
-    })}</div>`,
-    "panel-league-flow",
-  );
+function renderTableShell(input: {
+  tableTestId: string;
+  bodyId: string;
+  emptyId: string;
+  emptyText: string;
+  headers: string[];
+}): string {
+  const headers = input.headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
 
-  const seasonPanel = renderPanel(
-    "Step 2: Create Season",
-    "Season can only be created after league is confirmed.",
-    [
-      renderInputField({
-        id: "season-name",
-        label: "Season name",
-        placeholder: "2026 Season",
-        required: true,
-      }),
-      renderInputField({
-        id: "season-slug",
-        label: "Season slug",
-        placeholder: "2026-season",
-        hint: "Auto-filled from season name. Editable.",
-      }),
-      renderInputField({
-        id: "season-start",
-        label: "Season start date",
-        type: "date",
-      }),
-      renderInputField({
-        id: "season-end",
-        label: "Season end date",
-        type: "date",
-      }),
-      `<dl data-ui="id-preview" data-testid="season-id-preview">
-        <div><dt>Season ID</dt><dd id="season-id-display">Not generated yet</dd></div>
-      </dl>`,
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Create Season", "primary", {
-      type: "button",
-      "data-action": "create-season",
-      "data-testid": "create-season",
-    })}</div>`,
-    "panel-season-flow",
-  );
-
-  const gamePanel = renderPanel(
-    "Step 3: Create Games",
-    "Games are created under the selected season and session date.",
-    [
-      renderInputField({
-        id: "session-date",
-        label: "Session date",
-        type: "date",
-        required: true,
-      }),
-      renderInputField({
-        id: "game-kickoff",
-        label: "Kickoff time",
-        type: "datetime-local",
-        required: true,
-      }),
-      `<dl data-ui="id-preview" data-testid="game-id-preview">
-        <div><dt>Session ID</dt><dd id="session-id-display">Not generated yet</dd></div>
-        <div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div>
-      </dl>`,
-      `<p data-ui="status-note" id="game-created-note" data-state="success" hidden>
-        Game created. <a id="game-context-link" href="#">Open game context</a>
-      </p>`,
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Create Game", "primary", {
-      type: "button",
-      "data-action": "create-game",
-      "data-testid": "create-game",
-    })}</div>`,
-    "panel-game-flow",
-  );
-
-  return `<section data-ui="setup-flow" id="setup-flow-root" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-testid="setup-flow-root">
-    <p data-ui="status-note" id="setup-status">Checking sign-in state…</p>
-    <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
-    <section data-ui="panel-grid" data-testid="setup-flow-grid">
-      <div data-ui="setup-step" data-step="league">${leaguePanel}</div>
-      <div data-ui="setup-step" data-step="season" hidden>${seasonPanel}</div>
-      <div data-ui="setup-step" data-step="games" hidden>${gamePanel}</div>
-    </section>
-  </section>`;
+  return `<p data-ui="status-note" id="${escapeHtml(input.emptyId)}">${escapeHtml(input.emptyText)}</p>
+  <div data-ui="table-wrap" data-testid="${escapeHtml(input.tableTestId)}" hidden>
+    <table data-ui="data-table">
+      <thead><tr>${headers}</tr></thead>
+      <tbody id="${escapeHtml(input.bodyId)}"></tbody>
+    </table>
+  </div>`;
 }
 
-function renderSetupHero(apiBaseUrl: string): string {
-  const steps = [
-    '<li id="step-chip-league" data-ui="step-chip" data-state="active">1. League</li>',
-    '<li id="step-chip-season" data-ui="step-chip" data-state="upcoming">2. Season</li>',
-    '<li id="step-chip-games" data-ui="step-chip" data-state="upcoming">3. Games</li>',
-  ].join("");
-
+function renderDashboardHero(apiBaseUrl: string): string {
   return `<section data-ui="hero">
-    <span data-ui="hero-kicker">3FC Setup</span>
-    <h1>Step through league, season, then game creation.</h1>
-    <p data-ui="hero-copy">Authenticated setup flow for M1-07. API target: <code>${escapeHtml(apiBaseUrl)}</code></p>
-    <ul data-ui="step-list" data-testid="setup-steps">${steps}</ul>
+    <span data-ui="hero-kicker">3FC Organizer</span>
+    <h1>Dashboard</h1>
+    <p data-ui="hero-copy">Create leagues, then drill into seasons and games. API target: <code>${escapeHtml(apiBaseUrl)}</code></p>
   </section>`;
 }
 
 export function renderSetupHomePage(apiBaseUrl: string): string {
+  const createLeaguePanel = renderPanel(
+    "Create league",
+    "Start here if this account has no leagues yet.",
+    `${renderInputField({
+      id: "league-name",
+      label: "League name",
+      placeholder: "Three Sided Football Club",
+      required: true,
+    })}${renderInputField({
+      id: "league-friendly-url",
+      label: "League friendly URL",
+      placeholder: "three-sided-football-club",
+      hint: "Auto-filled from league name. Editable.",
+    })}<dl data-ui="id-preview"><div><dt>League ID</dt><dd id="league-id-display">Not generated yet</dd></div></dl>`,
+    `<div data-ui="button-row">${renderButton("Create league", "primary", {
+      type: "button",
+      "data-action": "create-league",
+      "data-testid": "create-league",
+    })}</div>`,
+    "panel-dashboard-create-league",
+  );
+
+  const leaguesPanel = renderPanel(
+    "Leagues",
+    "Select a league to manage seasons and games.",
+    renderTableShell({
+      tableTestId: "dashboard-leagues-table",
+      bodyId: "dashboard-leagues-body",
+      emptyId: "dashboard-leagues-empty",
+      emptyText: "No leagues yet. Create your first league to begin.",
+      headers: ["League", "Friendly URL", "Actions"],
+    }),
+    "",
+    "panel-dashboard-leagues",
+  );
+
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Setup Shell</title>
+    <title>3FC Dashboard</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="setup-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      ${renderSetupHero(apiBaseUrl)}
-      <div data-ui="section-stack">
-        ${renderSetupFlowForm(apiBaseUrl)}
-        <p data-ui="status-note">If you are not signed in, you will be redirected to <code>/sign-in</code>.</p>
-      </div>
+      ${renderDashboardHero(apiBaseUrl)}
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="dashboard" data-api-base-url="${escapeHtml(apiBaseUrl)}">
+        <p data-ui="status-note" id="setup-status">Checking sign-in state…</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="dashboard-grid">
+          ${createLeaguePanel}
+          ${leaguesPanel}
+        </section>
+      </section>
+    </main>
+    ${renderSetupScriptTag()}
+  </body>
+</html>`;
+}
+
+export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
+  const safeLeagueId = escapeHtml(leagueId);
+  const createSeasonPanel = renderPanel(
+    "Create season",
+    "Create a season inside this league.",
+    `${renderInputField({
+      id: "season-name",
+      label: "Season name",
+      placeholder: "2026 Season",
+      required: true,
+    })}${renderInputField({
+      id: "season-friendly-url",
+      label: "Season friendly URL",
+      placeholder: "2026-season",
+      hint: "Auto-filled from season name. Editable.",
+    })}${renderInputField({
+      id: "season-start",
+      label: "Season start date",
+      type: "date",
+    })}${renderInputField({
+      id: "season-end",
+      label: "Season end date",
+      type: "date",
+    })}<dl data-ui="id-preview"><div><dt>Season ID</dt><dd id="season-id-display">Not generated yet</dd></div></dl>`,
+    `<div data-ui="button-row">${renderButton("Create season", "primary", {
+      type: "button",
+      "data-action": "create-season",
+      "data-testid": "create-season",
+    })}</div>`,
+    "panel-league-create-season",
+  );
+
+  const seasonsPanel = renderPanel(
+    "Seasons",
+    "Manage seasons for this league.",
+    renderTableShell({
+      tableTestId: "league-seasons-table",
+      bodyId: "league-seasons-body",
+      emptyId: "league-seasons-empty",
+      emptyText: "No seasons yet. Create one to add games.",
+      headers: ["Season", "Dates", "Friendly URL", "Actions"],
+    }),
+    "",
+    "panel-league-seasons",
+  );
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3FC League</title>
+    ${renderStylesheetLink()}
+  </head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell" data-testid="league-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
+      <section data-ui="hero">
+        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / League</span>
+        <h1 id="league-title">${safeLeagueId}</h1>
+        <p data-ui="hero-copy" id="league-subtitle">Loading league details…</p>
+        <div data-ui="button-row">${renderButton("Delete league", "danger", {
+          type: "button",
+          "data-action": "delete-league",
+          "data-testid": "delete-league",
+        })}</div>
+      </section>
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="league" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-league-id="${safeLeagueId}">
+        <p data-ui="status-note" id="setup-status">Loading league data…</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="league-grid">
+          ${createSeasonPanel}
+          ${seasonsPanel}
+        </section>
+      </section>
+    </main>
+    ${renderSetupScriptTag()}
+  </body>
+</html>`;
+}
+
+export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
+  const safeSeasonId = escapeHtml(seasonId);
+  const createGamePanel = renderPanel(
+    "Create game",
+    "Add a game into this season.",
+    `${renderInputField({
+      id: "game-date",
+      label: "Game date",
+      type: "date",
+      required: true,
+    })}${renderInputField({
+      id: "game-kickoff",
+      label: "Kickoff time",
+      type: "datetime-local",
+      required: true,
+    })}<dl data-ui="id-preview"><div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div></dl>`,
+    `<div data-ui="button-row">${renderButton("Create game", "primary", {
+      type: "button",
+      "data-action": "create-game",
+      "data-testid": "create-game",
+    })}</div>`,
+    "panel-season-create-game",
+  );
+
+  const gamesPanel = renderPanel(
+    "Games",
+    "Manage scheduled games for this season.",
+    renderTableShell({
+      tableTestId: "season-games-table",
+      bodyId: "season-games-body",
+      emptyId: "season-games-empty",
+      emptyText: "No games yet. Create your first game.",
+      headers: ["Game", "Kickoff", "Status", "Actions"],
+    }),
+    "",
+    "panel-season-games",
+  );
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3FC Season</title>
+    ${renderStylesheetLink()}
+  </head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
+      <section data-ui="hero">
+        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
+        <h1 id="season-title">${safeSeasonId}</h1>
+        <p data-ui="hero-copy" id="season-subtitle">Loading season details…</p>
+        <div data-ui="button-row">${renderButton("Delete season", "danger", {
+          type: "button",
+          "data-action": "delete-season",
+          "data-testid": "delete-season",
+        })}</div>
+      </section>
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}">
+        <p data-ui="status-note" id="setup-status">Loading season data…</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="season-grid">
+          ${createGamePanel}
+          ${gamesPanel}
+        </section>
+      </section>
     </main>
     ${renderSetupScriptTag()}
   </body>
@@ -462,7 +555,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   </head>
   <body>
     <main data-ui="app-shell" data-testid="component-showcase">
-      ${renderSetupHero(apiBaseUrl)}
+      ${renderDashboardHero(apiBaseUrl)}
       <div data-ui="section-stack">
         ${navigationPanel}
         <section data-ui="panel-grid" data-testid="component-grid">
@@ -534,48 +627,72 @@ export interface GameContextPageInput {
   gameId: string;
   leagueId?: string;
   seasonId?: string;
-  sessionId?: string;
   gameStartTs?: string;
 }
 
-export function renderGameContextPage(input: GameContextPageInput): string {
+export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput): string {
   const gameId = escapeHtml(input.gameId);
-  const leagueId = input.leagueId ? escapeHtml(input.leagueId) : "Not provided";
-  const seasonId = input.seasonId ? escapeHtml(input.seasonId) : "Not provided";
-  const sessionId = input.sessionId ? escapeHtml(input.sessionId) : "Not provided";
-  const gameStartTs = input.gameStartTs ? escapeHtml(input.gameStartTs) : "Not provided";
 
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Game Context</title>
+    <title>3FC Game</title>
     ${renderStylesheetLink()}
   </head>
-  <body>
-    <main data-ui="app-shell" data-testid="game-context-shell">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell" data-testid="game-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Setup</span>
-        <h1>Game context created: ${gameId}</h1>
-        <p data-ui="hero-copy">Setup flow completed successfully. Live scoring controls are scheduled for Milestone M2.</p>
+        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="game-league-link" href="/setup">League</a> / <a id="game-season-link" href="/setup">Season</a> / Game</span>
+        <h1 id="game-title">${gameId}</h1>
+        <p data-ui="hero-copy" id="game-subtitle">Loading game details…</p>
       </section>
-      <section data-ui="panel-grid">
-        ${renderPanel(
-          "Context details",
-          "Resolved identifiers for this game run.",
-          `<dl data-ui="id-preview" data-testid="game-context-details">
-            <div><dt>League ID</dt><dd>${leagueId}</dd></div>
-            <div><dt>Season ID</dt><dd>${seasonId}</dd></div>
-            <div><dt>Session ID</dt><dd>${sessionId}</dd></div>
-            <div><dt>Game ID</dt><dd>${gameId}</dd></div>
-            <div><dt>Kickoff (UTC)</dt><dd>${gameStartTs}</dd></div>
-          </dl>`,
-          `<div data-ui="button-row"><a href="/setup" data-ui="button-link" data-variant="secondary" data-testid="create-another-game">Create another game</a></div>`,
-          "panel-game-context",
-        )}
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
+        <p data-ui="status-note" id="setup-status">Loading game data…</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="game-grid">
+          ${renderPanel(
+            "Game details",
+            "Edit core game metadata.",
+            `<dl data-ui="id-preview" data-testid="game-context-details">
+              <div><dt>Game ID</dt><dd id="game-id-value">${gameId}</dd></div>
+              <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
+              <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
+            </dl>
+            ${renderInputField({
+              id: "game-edit-kickoff",
+              label: "Kickoff time",
+              type: "datetime-local",
+              required: true,
+            })}
+            <div data-ui="field">
+              <label for="game-edit-status">Status</label>
+              <select id="game-edit-status" data-ui="input" data-testid="game-edit-status">
+                <option value="scheduled">Scheduled</option>
+                <option value="live">Live</option>
+                <option value="finished">Finished</option>
+              </select>
+            </div>`,
+            `<div data-ui="button-row">
+              ${renderButton("Save changes", "primary", {
+                type: "button",
+                "data-action": "save-game",
+                "data-testid": "save-game",
+              })}
+              ${renderButton("Delete game", "danger", {
+                type: "button",
+                "data-action": "delete-game",
+                "data-testid": "delete-game",
+              })}
+              <a id="create-another-game-link" href="/setup" data-ui="button-link" data-variant="secondary" data-testid="create-another-game">Create another game</a>
+            </div>`,
+            "panel-game-details",
+          )}
+        </section>
       </section>
     </main>
+    ${renderSetupScriptTag()}
   </body>
 </html>`;
 }

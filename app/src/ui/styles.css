@@ -629,8 +629,13 @@ body {
   gap: 0.6rem;
 }
 
-[data-ui="setup-step"][hidden] {
+[data-ui="setup-mode"][hidden] {
   display: none;
+}
+
+[data-ui="context-grid"] {
+  display: grid;
+  gap: 0.7rem;
 }
 
 [data-ui="id-preview"] {
@@ -680,6 +685,10 @@ code {
   [data-ui="panel-grid"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.95rem;
+  }
+
+  [data-ui="context-grid"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   [data-ui="player-grid"] {

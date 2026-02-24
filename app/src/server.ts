@@ -6,8 +6,10 @@ import { URL, fileURLToPath } from "node:url";
 import { buildSecurityHeaders } from "./security.js";
 import {
   renderComponentShowcasePage,
-  renderGameContextPage,
+  renderGamePage,
+  renderLeaguePage,
   renderMagicLinkCallbackPage,
+  renderSeasonPage,
   renderSignInPage,
   renderSetupHomePage,
   renderStatusPage,
@@ -191,21 +193,32 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    const gameContextMatch = route.match(/^\/games\/([^/]+)$/);
-    if (method === "GET" && gameContextMatch) {
-      const gameId = decodeURIComponent(gameContextMatch[1]);
+    const leaguePageMatch = route.match(/^\/leagues\/([^/]+)$/);
+    if (method === "GET" && leaguePageMatch) {
       sendHtml(
         response,
         securityHeaders,
         200,
-        renderGameContextPage({
-          gameId,
-          leagueId: requestUrl.searchParams.get("leagueId") ?? undefined,
-          seasonId: requestUrl.searchParams.get("seasonId") ?? undefined,
-          sessionId: requestUrl.searchParams.get("sessionId") ?? undefined,
-          gameStartTs: requestUrl.searchParams.get("gameStartTs") ?? undefined,
-        }),
+        renderLeaguePage(apiBaseUrl, decodeURIComponent(leaguePageMatch[1])),
       );
+      return;
+    }
+
+    const seasonPageMatch = route.match(/^\/seasons\/([^/]+)$/);
+    if (method === "GET" && seasonPageMatch) {
+      sendHtml(
+        response,
+        securityHeaders,
+        200,
+        renderSeasonPage(apiBaseUrl, decodeURIComponent(seasonPageMatch[1])),
+      );
+      return;
+    }
+
+    const gamePageMatch = route.match(/^\/games\/([^/]+)$/);
+    if (method === "GET" && gamePageMatch) {
+      const gameId = decodeURIComponent(gamePageMatch[1]);
+      sendHtml(response, securityHeaders, 200, renderGamePage(apiBaseUrl, { gameId }));
       return;
     }
 

@@ -55,16 +55,16 @@ test("home route includes security headers", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Step through league, season, then game creation/);
+  assert.match(response.body, /Dashboard/);
   assert.match(response.body, /data-testid="setup-flow-root"/);
+  assert.match(response.body, /data-page="dashboard"/);
 });
 
 test("component showcase routes render the setup shell", () => {
   const setupResponse = executeRoute("GET", "/setup");
   assert.equal(setupResponse.statusCode, 200);
-  assert.match(setupResponse.body, /Step 1: Create League/);
-  assert.match(setupResponse.body, /Step 2: Create Season/);
-  assert.match(setupResponse.body, /Step 3: Create Games/);
+  assert.match(setupResponse.body, /data-testid="panel-dashboard-create-league"/);
+  assert.match(setupResponse.body, /data-testid="panel-dashboard-leagues"/);
 
   const componentsResponse = executeRoute("GET", "/ui\/components");
   assert.equal(componentsResponse.statusCode, 200);
@@ -127,18 +127,28 @@ test("setup and auth flow script routes serve external javascript", () => {
   assert.match(authFlowResponse.body, /auth\/callback/);
 });
 
-test("game context route renders created game shell", () => {
+test("league, season, and game routes render their shells", () => {
+  const leagueResponse = executeRoute("GET", "/leagues/league-1");
+  assert.equal(leagueResponse.statusCode, 200);
+  assert.match(leagueResponse.body, /data-testid="league-shell"/);
+  assert.match(leagueResponse.body, /data-page="league"/);
+
+  const seasonResponse = executeRoute("GET", "/seasons/season-1");
+  assert.equal(seasonResponse.statusCode, 200);
+  assert.match(seasonResponse.body, /data-testid="season-shell"/);
+  assert.match(seasonResponse.body, /data-page="season"/);
+
   const response = executeRoute(
     "GET",
-    "/games/game-123?leagueId=league-1&seasonId=season-1&sessionId=20260223&gameStartTs=2026-02-23T10:00:00.000Z",
+    "/games/game-123",
   );
 
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Game context created: game-123/);
-  assert.match(response.body, /league-1/);
-  assert.match(response.body, /season-1/);
+  assert.match(response.body, /data-testid="game-shell"/);
+  assert.match(response.body, /data-page="game"/);
+  assert.match(response.body, /game-123/);
 });
 
 test("auth callback error and success responses include security headers", () => {

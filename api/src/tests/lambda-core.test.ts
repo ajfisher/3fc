@@ -33,10 +33,30 @@ interface MockSeasonRecord {
   updatedAt: string;
 }
 
+interface MockLeagueRecord {
+  leagueId: string;
+  name: string;
+  slug: string | null;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface MockSessionEntity {
   seasonId: string;
   sessionId: string;
   sessionDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockGameRecord {
+  gameId: string;
+  leagueId: string;
+  seasonId: string;
+  sessionId: string;
+  status: "scheduled" | "live" | "finished";
+  gameStartTs: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -93,8 +113,10 @@ interface StoredIdempotencyRecord {
 interface HarnessConfig {
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
+  leagues?: Record<string, MockLeagueRecord>;
   seasons?: Record<string, MockSeasonRecord>;
   seasonSessions?: Record<string, MockSessionEntity>;
+  games?: Record<string, MockGameRecord>;
 }
 
 function createEvent(input: {
@@ -126,6 +148,12 @@ function createHarness(config: HarnessConfig = {}) {
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
+  const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
+  const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
+  const sessionEntities = new Map<string, MockSessionEntity>(
+    Object.entries(config.seasonSessions ?? {}),
+  );
+  const games = new Map<string, MockGameRecord>(Object.entries(config.games ?? {}));
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
@@ -136,52 +164,116 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async listLeaguesForUser(userId: string) {
+        const accessibleLeagueIds = Object.values(config.leagueAccess ?? {})
+          .filter((entry) => entry.userId === userId)
+          .map((entry) => entry.leagueId);
+        const uniqueIds = new Set(accessibleLeagueIds);
+        return [...uniqueIds]
+          .map((leagueId) => leagues.get(leagueId))
+          .filter((league): league is MockLeagueRecord => Boolean(league));
+      },
       async createLeague(input) {
         createdLeagues.push(input);
-        return {
-          ...input,
+        const record = {
+          leagueId: input.leagueId,
+          name: input.name,
+          slug: input.slug ?? null,
+          createdByUserId: input.createdByUserId,
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
+        leagues.set(input.leagueId, record);
+        return record;
+      },
+      async getLeague(leagueId: string) {
+        return leagues.get(leagueId) ?? null;
+      },
+      async listSeasonsForLeague(leagueId: string) {
+        return [...seasons.values()].filter((season) => season.leagueId === leagueId);
       },
       async createSeason(input) {
         createdSeasons.push(input);
-        return {
-          ...input,
+        const record = {
+          leagueId: input.leagueId,
+          seasonId: input.seasonId,
+          name: input.name,
+          slug: input.slug ?? null,
+          startsOn: input.startsOn ?? null,
+          endsOn: input.endsOn ?? null,
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
+        seasons.set(input.seasonId, record);
+        return record;
       },
       async createSession(input) {
         createdSessions.push(input);
-        return {
+        const record = {
           ...input,
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
+        sessionEntities.set(input.sessionId, record);
+        return record;
       },
       async createGame(input) {
         createdGames.push(input);
-        return {
+        const record = {
           gameId: input.gameId,
           leagueId: input.leagueId,
           seasonId: input.seasonId,
           sessionId: input.sessionId,
+          status: input.status ?? "scheduled",
           gameStartTs: input.gameStartTs,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
         };
+        games.set(input.gameId, record);
+        return record;
       },
       async createSessionGame(input) {
         createdSessionGames.push(input);
         return input;
       },
+      async listGamesForSeason(seasonId: string) {
+        return [...games.values()].filter((game) => game.seasonId === seasonId);
+      },
+      async getGame(gameId: string) {
+        return games.get(gameId) ?? null;
+      },
+      async updateGame(input) {
+        const existing = games.get(input.gameId);
+        if (!existing) {
+          return null;
+        }
+
+        const updated = {
+          ...existing,
+          status: input.status ?? existing.status,
+          gameStartTs: input.gameStartTs ?? existing.gameStartTs,
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        };
+        games.set(input.gameId, updated);
+        return updated;
+      },
+      async deleteGame(gameId: string) {
+        return games.delete(gameId);
+      },
+      async deleteSeason(seasonId: string) {
+        return seasons.delete(seasonId);
+      },
+      async deleteLeague(leagueId: string) {
+        return leagues.delete(leagueId);
+      },
       async getLeagueAccess(leagueId: string, userId: string) {
         return config.leagueAccess?.[`${leagueId}:${userId}`] ?? null;
       },
       async getSeason(seasonId: string) {
-        return config.seasons?.[seasonId] ?? null;
+        return seasons.get(seasonId) ?? null;
       },
       async getSession(sessionId: string) {
-        return config.seasonSessions?.[sessionId] ?? null;
+        return sessionEntities.get(sessionId) ?? null;
       },
       async getIdempotencyRecord(scope: string, key: string) {
         return idempotencyRecords.get(`${scope}:${key}`) ?? null;
