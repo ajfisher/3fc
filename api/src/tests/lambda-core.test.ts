@@ -147,6 +147,8 @@ function createHarness(config: HarnessConfig = {}) {
   const createdSessions: CreatedSessionInput[] = [];
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
+  const magicLinkStarts: string[] = [];
+  const magicLinkCompletes: string[] = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
@@ -157,10 +159,29 @@ function createHarness(config: HarnessConfig = {}) {
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
+    sessionCookieSecure: false,
     corsAllowedOrigins: ["https://qa.3fc.football"],
-    sessionLookup: {
+    magicLinkService: {
       async getSession(sessionId: string) {
         return config.sessions?.[sessionId] ?? null;
+      },
+      async start(email: string) {
+        magicLinkStarts.push(email);
+        return {
+          email,
+          expiresAt: "2026-02-24T00:00:00.000Z",
+          messageId: "msg-1",
+        };
+      },
+      async complete(token: string) {
+        magicLinkCompletes.push(token);
+        return {
+          sessionId: "new-session-1",
+          email: "admin@example.com",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          expiresAt: "2026-02-24T00:00:00.000Z",
+          maxAgeSeconds: 86400,
+        };
       },
     },
     repository: {
@@ -302,6 +323,8 @@ function createHarness(config: HarnessConfig = {}) {
     createdSessions,
     createdGames,
     createdSessionGames,
+    magicLinkStarts,
+    magicLinkCompletes,
     idempotencyRecords,
   };
 }
@@ -323,6 +346,57 @@ test("core lambda rejects protected mutation without session cookie", async () =
   assert.deepEqual(JSON.parse(response.body), {
     error: "unauthorized",
     message: "Valid session cookie required.",
+  });
+});
+
+test("core lambda starts magic-link auth without requiring a session", async () => {
+  const harness = createHarness();
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/start",
+      body: {
+        email: "player@example.com",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(harness.magicLinkStarts.length, 1);
+  assert.equal(harness.magicLinkStarts[0], "player@example.com");
+  assert.deepEqual(JSON.parse(response.body), {
+    status: "sent",
+    email: "player@example.com",
+    expiresAt: "2026-02-24T00:00:00.000Z",
+    messageId: "msg-1",
+  });
+});
+
+test("core lambda completes magic-link auth and returns a session cookie", async () => {
+  const harness = createHarness();
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/complete",
+      body: {
+        token: "tok_abc",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(harness.magicLinkCompletes.length, 1);
+  assert.equal(harness.magicLinkCompletes[0], "tok_abc");
+  assert.match(response.headers["set-cookie"] ?? "", /^threefc_session=new-session-1;/);
+
+  assert.deepEqual(JSON.parse(response.body), {
+    status: "authenticated",
+    session: {
+      sessionId: "new-session-1",
+      email: "admin@example.com",
+      createdAt: "2026-02-23T00:00:00.000Z",
+      expiresAt: "2026-02-24T00:00:00.000Z",
+    },
   });
 });
 

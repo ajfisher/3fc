@@ -15,6 +15,7 @@
   "dependencies": {
     "@3fc/contracts": "0.1.0",
     "@aws-sdk/client-dynamodb": "^3.822.0",
+    "@aws-sdk/client-sesv2": "^3.996.0",
     "zod": "^4.3.6"
   }
 }

@@ -514,6 +514,18 @@ data "aws_iam_policy_document" "lambda_data_access" {
       "${aws_dynamodb_table.app[0].arn}/index/*",
     ]
   }
+
+  statement {
+    sid    = "SendMagicLinkEmail"
+    effect = "Allow"
+    actions = [
+      "ses:SendEmail",
+      "ses:SendRawEmail",
+    ]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ses:${var.region}:${data.aws_caller_identity.current.account_id}:identity/${var.ses_from_email}",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_data_access" {

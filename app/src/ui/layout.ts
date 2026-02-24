@@ -388,7 +388,7 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
       <section data-ui="section-stack">
         ${renderPanel(
           "Magic-link sign-in",
-          "Use your organizer email and open the link from your inbox.",
+          "Use your organizer email and open the link from your inbox. First-time emails are treated as sign-up and account creation.",
           `<form data-ui="auth-form" id="auth-magic-form" novalidate>
             <input id="auth-return-to" type="hidden" value="${safeReturnTo}" />
             ${renderInputField({

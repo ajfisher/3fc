@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 
 import { authorizeProtectedMutation } from "./auth/acl.js";
 import {
@@ -8,9 +9,13 @@ import {
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
 } from "./auth/http-security.js";
-import { MagicLinkService } from "./auth/magic-link.js";
+import { MagicLinkAuthError, MagicLinkService } from "./auth/magic-link.js";
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
-import { isAuthenticatedApiRoute } from "./auth/session.js";
+import {
+  buildSessionCookie,
+  isAuthenticatedApiRoute,
+  resolveSessionCookieSecureFlag,
+} from "./auth/session.js";
 import {
   createGameRequestSchema,
   createLeagueRequestSchema,
@@ -59,6 +64,21 @@ type AuthSessionRecord = {
 
 interface SessionLookup {
   getSession(sessionId: string): Promise<AuthSessionRecord | null>;
+}
+
+interface MagicLinkServiceContract extends SessionLookup {
+  start(email: string): Promise<{
+    email: string;
+    expiresAt: string;
+    messageId: string | null;
+  }>;
+  complete(token: string): Promise<{
+    sessionId: string;
+    email: string;
+    createdAt: string;
+    expiresAt: string;
+    maxAgeSeconds: number;
+  }>;
 }
 
 interface RepositoryContract {
@@ -251,8 +271,9 @@ interface RepositoryContract {
 
 interface CoreHandlerDependencies {
   repository: RepositoryContract;
-  sessionLookup: SessionLookup;
+  magicLinkService: MagicLinkServiceContract;
   sessionCookieName: string;
+  sessionCookieSecure: boolean;
   corsAllowedOrigins: string[];
 }
 
@@ -327,6 +348,21 @@ function badRequest(
   return createJsonResponse(
     400,
     { error: message },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function magicLinkErrorResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  error: MagicLinkAuthError,
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    error.statusCode,
+    {
+      error: error.code,
+      message: error.message,
+    },
     buildCorsHeaders(origin, allowedOrigins),
   );
 }
@@ -577,6 +613,11 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   const tableName = process.env.DYNAMODB_TABLE ?? "threefc_local";
   const ddbEndpoint = process.env.DYNAMODB_ENDPOINT;
   const appBaseUrl = process.env.APP_BASE_URL ?? "https://app.3fc.football";
+  const sessionCookieSecure = resolveSessionCookieSecureFlag(
+    process.env.SESSION_COOKIE_SECURE,
+    appBaseUrl,
+  );
+  const sesFromEmail = process.env.SES_FROM_EMAIL ?? "noreply@3fc.football";
   const callbackPath = process.env.MAGIC_LINK_CALLBACK_PATH ?? "/auth/callback";
   const tokenTtlSeconds = Number.parseInt(process.env.MAGIC_LINK_TOKEN_TTL_SECONDS ?? "900", 10);
   const sessionTtlSeconds = Number.parseInt(
@@ -598,11 +639,37 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   });
 
   const repository = new ThreeFcRepository(ddbClient, tableName);
+  const sesClient = new SESv2Client({ region });
   const magicLinkService = new MagicLinkService(
     ddbClient,
     {
-      async sendMagicLink() {
-        throw new Error("Magic link email sending is not supported by this lambda service.");
+      async sendMagicLink(input) {
+        const output = await sesClient.send(
+          new SendEmailCommand({
+            FromEmailAddress: sesFromEmail,
+            Destination: {
+              ToAddresses: [input.to],
+            },
+            Content: {
+              Simple: {
+                Subject: {
+                  Data: input.subject,
+                  Charset: "UTF-8",
+                },
+                Body: {
+                  Text: {
+                    Data: input.body,
+                    Charset: "UTF-8",
+                  },
+                },
+              },
+            },
+          }),
+        );
+
+        return {
+          messageId: output.MessageId,
+        };
       },
     },
     {
@@ -616,8 +683,9 @@ function createDefaultDependencies(): CoreHandlerDependencies {
 
   return {
     repository,
-    sessionLookup: magicLinkService,
+    magicLinkService,
     sessionCookieName: process.env.SESSION_COOKIE_NAME ?? "threefc_session",
+    sessionCookieSecure,
     corsAllowedOrigins: parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS),
   };
 }
@@ -650,12 +718,97 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         );
       }
 
+      if (method === "POST" && route === "/v1/auth/magic/start") {
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = parseJsonBody(event);
+        } catch {
+          status = 400;
+          return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+        }
+
+        if (typeof rawBody.email !== "string") {
+          status = 400;
+          return badRequest(origin, dependencies.corsAllowedOrigins, "Field `email` is required.");
+        }
+
+        try {
+          const startResult = await dependencies.magicLinkService.start(rawBody.email);
+          status = 202;
+          return createJsonResponse(
+            status,
+            {
+              status: "sent",
+              email: startResult.email,
+              expiresAt: startResult.expiresAt,
+              messageId: startResult.messageId,
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        } catch (error) {
+          if (error instanceof MagicLinkAuthError) {
+            status = error.statusCode;
+            return magicLinkErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+          }
+
+          throw error;
+        }
+      }
+
+      if (method === "POST" && route === "/v1/auth/magic/complete") {
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = parseJsonBody(event);
+        } catch {
+          status = 400;
+          return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+        }
+
+        if (typeof rawBody.token !== "string") {
+          status = 400;
+          return badRequest(origin, dependencies.corsAllowedOrigins, "Field `token` is required.");
+        }
+
+        try {
+          const completed = await dependencies.magicLinkService.complete(rawBody.token);
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              status: "authenticated",
+              session: {
+                sessionId: completed.sessionId,
+                email: completed.email,
+                createdAt: completed.createdAt,
+                expiresAt: completed.expiresAt,
+              },
+            },
+            {
+              ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              "set-cookie": buildSessionCookie(
+                dependencies.sessionCookieName,
+                completed.sessionId,
+                completed.maxAgeSeconds,
+                dependencies.sessionCookieSecure,
+              ),
+            },
+          );
+        } catch (error) {
+          if (error instanceof MagicLinkAuthError) {
+            status = error.statusCode;
+            return magicLinkErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+          }
+
+          throw error;
+        }
+      }
+
       let session: AuthSessionRecord | null = null;
       if (isAuthenticatedApiRoute(method, route)) {
         const sessionResolution = await resolveSessionFromCookie(
           cookieHeader,
           dependencies.sessionCookieName,
-          dependencies.sessionLookup,
+          dependencies.magicLinkService,
         );
         if (sessionResolution.failure === "missing_cookie") {
           status = 401;
