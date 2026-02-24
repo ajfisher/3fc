@@ -117,9 +117,23 @@ jobs:
 
           jq -e '.error == "unauthorized"' /tmp/prod-core.json >/dev/null
 
+          MAGIC_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/magic/start"
+          MAGIC_HTTP_CODE="$(curl -sS -o /tmp/prod-magic.json -w '%{http_code}' \
+            -X POST "$MAGIC_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -d '{}')"
+
+          if [ "$MAGIC_HTTP_CODE" != "400" ]; then
+            echo "Smoke test failed for ${MAGIC_ENDPOINT} (HTTP ${MAGIC_HTTP_CODE})"
+            cat /tmp/prod-magic.json
+            exit 1
+          fi
+
           {
             echo "SMOKE_CORE_ENDPOINT=${CORE_ENDPOINT}"
             echo "SMOKE_CORE_HTTP_CODE=${CORE_HTTP_CODE}"
+            echo "SMOKE_MAGIC_ENDPOINT=${MAGIC_ENDPOINT}"
+            echo "SMOKE_MAGIC_HTTP_CODE=${MAGIC_HTTP_CODE}"
           } >> "$GITHUB_ENV"
 
       - name: Write deployment summary
@@ -133,4 +147,6 @@ jobs:
             echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
             echo "- Core smoke endpoint: ${SMOKE_CORE_ENDPOINT}"
             echo "- Core smoke status: HTTP ${SMOKE_CORE_HTTP_CODE}"
+            echo "- Magic-link smoke endpoint: ${SMOKE_MAGIC_ENDPOINT}"
+            echo "- Magic-link smoke status: HTTP ${SMOKE_MAGIC_HTTP_CODE}"
           } >> "$GITHUB_STEP_SUMMARY"

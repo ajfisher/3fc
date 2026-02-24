@@ -1,9 +1,12 @@
 import {
+  DeleteItemCommand,
   GetItemCommand,
   type GetItemCommandOutput,
   PutItemCommand,
   QueryCommand,
   type QueryCommandOutput,
+  ScanCommand,
+  type ScanCommandOutput,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 import { validateAssistPlayerIds } from "@3fc/contracts";
@@ -119,12 +122,23 @@ function buildItem<T>(
   payload: T,
   now: string,
 ): Item {
+  return buildItemWithTimestamps(pk, sk, entityType, payload, now, now);
+}
+
+function buildItemWithTimestamps<T>(
+  pk: string,
+  sk: string,
+  entityType: EntityType,
+  payload: T,
+  createdAt: string,
+  updatedAt: string,
+): Item {
   return {
     pk: { S: pk },
     sk: { S: sk },
     entityType: { S: entityType },
-    createdAt: { S: now },
-    updatedAt: { S: now },
+    createdAt: { S: createdAt },
+    updatedAt: { S: updatedAt },
     data: { S: JSON.stringify(payload) },
   };
 }
@@ -198,6 +212,50 @@ export class ThreeFcRepository {
     }
 
     return withTimestamps(item.data as Omit<LeagueRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
+  }
+
+  async listLeaguesForUser(userId: string): Promise<LeagueRecord[]> {
+    requireNonEmpty("userId", userId);
+
+    const scanResult = (await this.client.send(
+      new ScanCommand({
+        TableName: this.tableName,
+      }),
+    )) as ScanCommandOutput;
+
+    const leagueIds = new Set<string>();
+    for (const item of scanResult.Items ?? []) {
+      if (item.entityType?.S !== ENTITY_TYPE.acl) {
+        continue;
+      }
+
+      if (!item.data || item.data.S === undefined) {
+        // Skip non-repository ACL-shaped items that do not store JSON payloads.
+        continue;
+      }
+
+      let data: unknown;
+      try {
+        data = JSON.parse(item.data.S);
+      } catch {
+        continue;
+      }
+
+      if (
+        typeof data === "object" &&
+        data !== null &&
+        typeof (data as { leagueId?: unknown }).leagueId === "string" &&
+        typeof (data as { userId?: unknown }).userId === "string" &&
+        (data as { userId: string }).userId === userId
+      ) {
+        leagueIds.add((data as { leagueId: string }).leagueId);
+      }
+    }
+
+    const leagues = await Promise.all([...leagueIds].map((leagueId) => this.getLeague(leagueId)));
+    return leagues
+      .filter((league): league is LeagueRecord => league !== null)
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async createSeason(input: CreateSeasonInput): Promise<SeasonRecord> {
@@ -406,6 +464,162 @@ export class ThreeFcRepository {
           item.updatedAt,
         ),
       );
+  }
+
+  async listGamesForSeason(seasonId: string): Promise<GameRecord[]> {
+    requireNonEmpty("seasonId", seasonId);
+
+    const sessions = await this.listSessionsForSeason(seasonId);
+    const sessionGames = await Promise.all(
+      sessions.map((session) => this.listGamesForSession(session.sessionId)),
+    );
+
+    const orderedSessionGames = sessionGames
+      .flat()
+      .sort((left, right) => {
+        const timestampSort = left.gameStartTs.localeCompare(right.gameStartTs);
+        if (timestampSort !== 0) {
+          return timestampSort;
+        }
+
+        return left.gameId.localeCompare(right.gameId);
+      });
+
+    const gameRecords = await Promise.all(
+      orderedSessionGames.map((sessionGame) => this.getGame(sessionGame.gameId)),
+    );
+
+    return gameRecords.filter((game): game is GameRecord => game !== null);
+  }
+
+  async updateGame(input: {
+    gameId: string;
+    status?: GameRecord["status"];
+    gameStartTs?: string;
+  }): Promise<GameRecord | null> {
+    requireNonEmpty("gameId", input.gameId);
+
+    if (input.status === undefined && input.gameStartTs === undefined) {
+      throw new Error("At least one game field must be updated.");
+    }
+
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = gameItem.data as Omit<GameRecord, "createdAt" | "updatedAt">;
+    const nextGameStartTs = input.gameStartTs ?? existing.gameStartTs;
+    const nextStatus = input.status ?? existing.status;
+
+    const updatedPayload = {
+      ...existing,
+      gameStartTs: nextGameStartTs,
+      status: nextStatus,
+    };
+
+    const now = this.clock.now();
+
+    await this.putEntityWithTimestamps(
+      gamePk(existing.gameId),
+      metadataSk(),
+      ENTITY_TYPE.game,
+      updatedPayload,
+      gameItem.createdAt,
+      now,
+    );
+
+    const oldSessionGameSk = gameSessionIndexSk(existing.gameStartTs, existing.gameId);
+    const oldSessionGameItem = await this.getEntity(
+      gameSessionIndexPk(existing.sessionId),
+      oldSessionGameSk,
+    );
+
+    if (oldSessionGameItem) {
+      await this.deleteEntity(gameSessionIndexPk(existing.sessionId), oldSessionGameSk);
+    }
+
+    const sessionGameCreatedAt = oldSessionGameItem?.createdAt ?? now;
+    await this.putEntityWithTimestamps(
+      gameSessionIndexPk(existing.sessionId),
+      gameSessionIndexSk(nextGameStartTs, existing.gameId),
+      ENTITY_TYPE.sessionGame,
+      {
+        sessionId: existing.sessionId,
+        gameId: existing.gameId,
+        gameStartTs: nextGameStartTs,
+        leagueId: existing.leagueId,
+        seasonId: existing.seasonId,
+      },
+      sessionGameCreatedAt,
+      now,
+    );
+
+    return withTimestamps(updatedPayload, gameItem.createdAt, now);
+  }
+
+  async deleteGame(gameId: string): Promise<boolean> {
+    requireNonEmpty("gameId", gameId);
+
+    const gameItem = await this.getEntity(gamePk(gameId), metadataSk());
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return false;
+    }
+
+    const game = gameItem.data as Omit<GameRecord, "createdAt" | "updatedAt">;
+
+    await this.deleteEntity(gamePk(gameId), metadataSk());
+    await this.deleteEntity(
+      gameSessionIndexPk(game.sessionId),
+      gameSessionIndexSk(game.gameStartTs, game.gameId),
+    );
+
+    const remainingGames = await this.listGamesForSession(game.sessionId);
+    if (remainingGames.length === 0) {
+      await this.deleteEntity(seasonPk(game.seasonId), sessionSk(game.sessionId));
+      await this.deleteEntity(sessionPk(game.sessionId), metadataSk());
+    }
+
+    return true;
+  }
+
+  async deleteSeason(seasonId: string): Promise<boolean> {
+    requireNonEmpty("seasonId", seasonId);
+
+    const season = await this.getSeason(seasonId);
+    if (!season) {
+      return false;
+    }
+
+    const sessions = await this.listSessionsForSeason(seasonId);
+    if (sessions.length > 0) {
+      throw new Error("Cannot delete season with existing games.");
+    }
+
+    await this.deleteEntity(seasonPk(seasonId), metadataSk());
+    await this.deleteEntity(leaguePk(season.leagueId), seasonSk(seasonId));
+    return true;
+  }
+
+  async deleteLeague(leagueId: string): Promise<boolean> {
+    requireNonEmpty("leagueId", leagueId);
+
+    const league = await this.getLeague(leagueId);
+    if (!league) {
+      return false;
+    }
+
+    const seasons = await this.listSeasonsForLeague(leagueId);
+    if (seasons.length > 0) {
+      throw new Error("Cannot delete league with existing seasons.");
+    }
+
+    const aclEntries = await this.listLeagueAccess(leagueId);
+    await Promise.all(
+      aclEntries.map((entry) => this.deleteEntity(leaguePk(leagueId), aclSk(entry.userId))),
+    );
+    await this.deleteEntity(leaguePk(leagueId), metadataSk());
+    return true;
   }
 
   async createPlayer(input: CreatePlayerInput): Promise<PlayerRecord> {
@@ -643,10 +857,33 @@ export class ThreeFcRepository {
     payload: T,
     now: string,
   ): Promise<void> {
+    await this.putEntityWithTimestamps(pk, sk, entityType, payload, now, now);
+  }
+
+  private async putEntityWithTimestamps<T>(
+    pk: string,
+    sk: string,
+    entityType: EntityType,
+    payload: T,
+    createdAt: string,
+    updatedAt: string,
+  ): Promise<void> {
     await this.client.send(
       new PutItemCommand({
         TableName: this.tableName,
-        Item: buildItem(pk, sk, entityType, payload, now),
+        Item: buildItemWithTimestamps(pk, sk, entityType, payload, createdAt, updatedAt),
+      }),
+    );
+  }
+
+  private async deleteEntity(pk: string, sk: string): Promise<void> {
+    await this.client.send(
+      new DeleteItemCommand({
+        TableName: this.tableName,
+        Key: {
+          pk: { S: pk },
+          sk: { S: sk },
+        },
       }),
     );
   }

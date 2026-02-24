@@ -55,13 +55,16 @@ test("home route includes security headers", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Create League to Game in one mobile-first flow/);
+  assert.match(response.body, /Dashboard/);
+  assert.match(response.body, /data-testid="setup-flow-root"/);
+  assert.match(response.body, /data-page="dashboard"/);
 });
 
 test("component showcase routes render the setup shell", () => {
   const setupResponse = executeRoute("GET", "/setup");
   assert.equal(setupResponse.statusCode, 200);
-  assert.match(setupResponse.body, /3FC Setup Foundation/);
+  assert.match(setupResponse.body, /data-testid="panel-dashboard-create-league"/);
+  assert.match(setupResponse.body, /data-testid="panel-dashboard-leagues"/);
 
   const componentsResponse = executeRoute("GET", "/ui\/components");
   assert.equal(componentsResponse.statusCode, 200);
@@ -71,6 +74,18 @@ test("component showcase routes render the setup shell", () => {
   assert.match(componentsResponse.body, /Field validation/);
   assert.match(componentsResponse.body, /Row action list/);
   assert.match(componentsResponse.body, /Popover modal prompt/);
+});
+
+test("sign-in route renders dedicated auth page", () => {
+  const response = executeRoute("GET", "/sign-in?returnTo=%2Fsetup");
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.match(response.body, /Sign in before setup/);
+  assert.match(response.body, /id="auth-magic-form"/);
+  assert.match(response.body, /id="auth-return-to"/);
+  assert.match(response.body, /value="\/setup"/);
 });
 
 test("stylesheet route serves external UI css", () => {
@@ -94,12 +109,64 @@ test("modal behavior script route serves external javascript", () => {
   assert.match(response.body, /modal-open/);
 });
 
+test("setup and auth flow script routes serve external javascript", () => {
+  const setupFlowResponse = executeRoute("GET", "/ui/setup-flow.js");
+  assert.equal(setupFlowResponse.statusCode, 200);
+  assertSecurityHeaders(setupFlowResponse.headers);
+  assert.equal(setupFlowResponse.headers["Content-Type"], "application/javascript; charset=utf-8");
+  assert.match(setupFlowResponse.body, /setup-flow-root/);
+  assert.match(setupFlowResponse.body, /create-league/);
+  assert.match(setupFlowResponse.body, /sign-in\?returnTo=/);
+
+  const authFlowResponse = executeRoute("GET", "/ui/auth-flow.js");
+  assert.equal(authFlowResponse.statusCode, 200);
+  assertSecurityHeaders(authFlowResponse.headers);
+  assert.equal(authFlowResponse.headers["Content-Type"], "application/javascript; charset=utf-8");
+  assert.match(authFlowResponse.body, /auth-magic-form/);
+  assert.match(authFlowResponse.body, /RETURN_TO_STORAGE_KEY/);
+  assert.match(authFlowResponse.body, /auth\/callback/);
+});
+
+test("league, season, and game routes render their shells", () => {
+  const leagueResponse = executeRoute("GET", "/leagues/league-1");
+  assert.equal(leagueResponse.statusCode, 200);
+  assert.match(leagueResponse.body, /data-testid="league-shell"/);
+  assert.match(leagueResponse.body, /data-page="league"/);
+
+  const seasonResponse = executeRoute("GET", "/seasons/season-1");
+  assert.equal(seasonResponse.statusCode, 200);
+  assert.match(seasonResponse.body, /data-testid="season-shell"/);
+  assert.match(seasonResponse.body, /data-page="season"/);
+
+  const response = executeRoute(
+    "GET",
+    "/games/game-123",
+  );
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.match(response.body, /data-testid="game-shell"/);
+  assert.match(response.body, /data-page="game"/);
+  assert.match(response.body, /game-123/);
+});
+
 test("auth callback error and success responses include security headers", () => {
   const errorResponse = executeRoute("GET", "/auth/callback?error=access_denied");
   assert.equal(errorResponse.statusCode, 400);
   assertSecurityHeaders(errorResponse.headers);
 
+  const tokenResponse = executeRoute("GET", "/auth/callback?token=abc123");
+  assert.equal(tokenResponse.statusCode, 200);
+  assertSecurityHeaders(tokenResponse.headers);
+  assert.match(tokenResponse.body, /Completing sign-in/);
+
   const successResponse = executeRoute("GET", "/auth/callback?code=abc123");
   assert.equal(successResponse.statusCode, 200);
   assertSecurityHeaders(successResponse.headers);
+
+  const missingResponse = executeRoute("GET", "/auth/callback");
+  assert.equal(missingResponse.statusCode, 400);
+  assertSecurityHeaders(missingResponse.headers);
+  assert.match(missingResponse.body, /did not include token or code/);
 });

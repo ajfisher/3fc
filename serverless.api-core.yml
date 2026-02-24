@@ -22,6 +22,7 @@ provider:
   environment:
     DYNAMODB_TABLE: ${env:DYNAMODB_TABLE, '3fc-${sls:stage}-app'}
     APP_BASE_URL: ${self:custom.appBaseUrls.${sls:stage}, self:custom.appBaseUrls.default}
+    SES_FROM_EMAIL: ${self:custom.sesFromEmail.${sls:stage}, self:custom.sesFromEmail.default}
     SESSION_COOKIE_NAME: threefc_session
     CORS_ALLOWED_ORIGINS: ${self:custom.corsAllowedOrigins.${sls:stage}, self:custom.corsAllowedOrigins.default}
     MAGIC_LINK_TOKEN_TTL_SECONDS: 900
@@ -36,6 +37,10 @@ custom:
     qa: https://qa.3fc.football
     prod: https://app.3fc.football
     default: https://app.3fc.football
+  sesFromEmail:
+    qa: noreply@3fc.football
+    prod: noreply@3fc.football
+    default: noreply@3fc.football
   corsAllowedOrigins:
     qa: https://qa.3fc.football,https://app.3fc.football
     prod: https://app.3fc.football,https://qa.3fc.football
@@ -62,17 +67,44 @@ functions:
     timeout: 10
     events:
       - httpApi:
+          method: POST
+          path: /v1/auth/magic/start
+      - httpApi:
+          method: OPTIONS
+          path: /v1/auth/magic/start
+      - httpApi:
+          method: POST
+          path: /v1/auth/magic/complete
+      - httpApi:
+          method: OPTIONS
+          path: /v1/auth/magic/complete
+      - httpApi:
           method: GET
           path: /v1/auth/session
       - httpApi:
           method: OPTIONS
           path: /v1/auth/session
       - httpApi:
+          method: GET
+          path: /v1/leagues
+      - httpApi:
           method: POST
           path: /v1/leagues
       - httpApi:
           method: OPTIONS
           path: /v1/leagues
+      - httpApi:
+          method: GET
+          path: /v1/leagues/{leagueId}
+      - httpApi:
+          method: DELETE
+          path: /v1/leagues/{leagueId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}
+      - httpApi:
+          method: GET
+          path: /v1/leagues/{leagueId}/seasons
       - httpApi:
           method: POST
           path: /v1/leagues/{leagueId}/seasons
@@ -80,11 +112,38 @@ functions:
           method: OPTIONS
           path: /v1/leagues/{leagueId}/seasons
       - httpApi:
+          method: GET
+          path: /v1/seasons/{seasonId}
+      - httpApi:
+          method: DELETE
+          path: /v1/seasons/{seasonId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/seasons/{seasonId}
+      - httpApi:
+          method: GET
+          path: /v1/seasons/{seasonId}/games
+      - httpApi:
+          method: OPTIONS
+          path: /v1/seasons/{seasonId}/games
+      - httpApi:
           method: POST
           path: /v1/seasons/{seasonId}/sessions
       - httpApi:
           method: OPTIONS
           path: /v1/seasons/{seasonId}/sessions
+      - httpApi:
+          method: GET
+          path: /v1/games/{gameId}
+      - httpApi:
+          method: PATCH
+          path: /v1/games/{gameId}
+      - httpApi:
+          method: DELETE
+          path: /v1/games/{gameId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}
       - httpApi:
           method: POST
           path: /v1/sessions/{sessionId}/games
