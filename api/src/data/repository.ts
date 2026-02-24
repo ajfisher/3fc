@@ -223,21 +223,34 @@ export class ThreeFcRepository {
       }),
     )) as ScanCommandOutput;
 
-    const leagueIds = new Set(
-      (scanResult.Items ?? [])
-        .map((item) => parseStoredEntity<Record<string, unknown>>(item))
-        .filter((item) => item.entityType === ENTITY_TYPE.acl)
-        .map((item) => item.data)
-        .filter(
-          (data): data is { leagueId: string; userId: string } =>
-            typeof data === "object" &&
-            data !== null &&
-            typeof (data as { leagueId?: unknown }).leagueId === "string" &&
-            typeof (data as { userId?: unknown }).userId === "string",
-        )
-        .filter((data) => data.userId === userId)
-        .map((data) => data.leagueId),
-    );
+    const leagueIds = new Set<string>();
+    for (const item of scanResult.Items ?? []) {
+      if (item.entityType?.S !== ENTITY_TYPE.acl) {
+        continue;
+      }
+
+      if (!item.data || item.data.S === undefined) {
+        // Skip non-repository ACL-shaped items that do not store JSON payloads.
+        continue;
+      }
+
+      let data: unknown;
+      try {
+        data = JSON.parse(item.data.S);
+      } catch {
+        continue;
+      }
+
+      if (
+        typeof data === "object" &&
+        data !== null &&
+        typeof (data as { leagueId?: unknown }).leagueId === "string" &&
+        typeof (data as { userId?: unknown }).userId === "string" &&
+        (data as { userId: string }).userId === userId
+      ) {
+        leagueIds.add((data as { leagueId: string }).leagueId);
+      }
+    }
 
     const leagues = await Promise.all([...leagueIds].map((leagueId) => this.getLeague(leagueId)));
     return leagues

@@ -17,6 +17,12 @@ type Item = Record<string, AttributeValue>;
 class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
 
+  seedItem(item: Item): void {
+    const pk = this.readString(item.pk, "pk");
+    const sk = this.readString(item.sk, "sk");
+    this.items.set(`${pk}|${sk}`, item);
+  }
+
   async send(command: unknown): Promise<unknown> {
     if (command instanceof PutItemCommand) {
       const item = command.input.Item;
@@ -105,6 +111,14 @@ class IncrementingClock {
 
 function createRepository(): ThreeFcRepository {
   return new ThreeFcRepository(new InMemoryDynamoClient(), "threefc_test", new IncrementingClock());
+}
+
+function createRepositoryHarness(): { repository: ThreeFcRepository; client: InMemoryDynamoClient } {
+  const client = new InMemoryDynamoClient();
+  return {
+    client,
+    repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock()),
+  };
 }
 
 test("repository supports round-trip create/read for core entities", async () => {
@@ -281,6 +295,31 @@ test("repository supports league discovery by user ACL", async () => {
     leagues.map((league) => league.leagueId),
     ["league-1", "league-2"],
   );
+});
+
+test("repository league discovery ignores non-entity auth records in table scans", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    slug: "league-one",
+    createdByUserId: "admin@example.com",
+  });
+
+  client.seedItem({
+    pk: { S: "AUTH_SESSION#session-1" },
+    sk: { S: "METADATA" },
+    entityType: { S: "session" },
+    email: { S: "admin@example.com" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    expiresAtEpoch: { N: "1770000000" },
+  });
+
+  const leagues = await repository.listLeaguesForUser("admin@example.com");
+  assert.equal(leagues.length, 1);
+  assert.equal(leagues[0].leagueId, "league-1");
 });
 
 test("repository supports update and delete of games", async () => {
