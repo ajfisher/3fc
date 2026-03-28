@@ -46,6 +46,10 @@ STATIC_SITE_OUTPUT_DIR="${STATIC_SITE_OUTPUT_DIR:-out/site/${ENV}}"
 ARTIFACT_DIR="out/deploy/${ENV}"
 DEPLOY_MANIFEST_PATH="${ARTIFACT_DIR}/site-deploy-manifest.json"
 
+if [[ "$STATIC_SITE_OUTPUT_DIR" != /* ]]; then
+  STATIC_SITE_OUTPUT_DIR="${ROOT_DIR}/${STATIC_SITE_OUTPUT_DIR}"
+fi
+
 echo "[deploy] Building workspaces"
 make build >/dev/null
 
