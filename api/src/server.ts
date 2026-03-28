@@ -188,6 +188,94 @@ function badRequest(request: IncomingMessage, response: ServerResponse, message:
   return 400;
 }
 
+function forbidden(
+  request: IncomingMessage,
+  response: ServerResponse,
+  code: string,
+  message: string,
+): number {
+  sendJsonWithCors(request, response, 403, {
+    error: "forbidden",
+    code,
+    message,
+  });
+  return 403;
+}
+
+function notFound(request: IncomingMessage, response: ServerResponse, message: string): number {
+  sendJsonWithCors(request, response, 404, {
+    error: "not_found",
+    message,
+  });
+  return 404;
+}
+
+function conflict(request: IncomingMessage, response: ServerResponse, message: string): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    message,
+  });
+  return 409;
+}
+
+async function ensureLeagueAccess(
+  leagueId: string,
+  userId: string,
+): Promise<{ allowed: boolean; role: "admin" | "scorekeeper" | "viewer" | null }> {
+  const access = await repository.getLeagueAccess(leagueId, userId);
+  if (!access) {
+    return {
+      allowed: false,
+      role: null,
+    };
+  }
+
+  return {
+    allowed: true,
+    role: access.role,
+  };
+}
+
+async function ensureLeagueAdmin(leagueId: string, userId: string): Promise<boolean> {
+  const access = await repository.getLeagueAccess(leagueId, userId);
+  return access?.role === "admin";
+}
+
+function parseGamePatchBody(rawBody: Record<string, unknown>): {
+  status?: "scheduled" | "live" | "finished";
+  gameStartTs?: string;
+} | null {
+  const parsed: {
+    status?: "scheduled" | "live" | "finished";
+    gameStartTs?: string;
+  } = {};
+
+  if (rawBody.status !== undefined) {
+    if (
+      typeof rawBody.status !== "string" ||
+      !["scheduled", "live", "finished"].includes(rawBody.status)
+    ) {
+      return null;
+    }
+
+    parsed.status = rawBody.status as "scheduled" | "live" | "finished";
+  }
+
+  if (rawBody.gameStartTs !== undefined) {
+    if (typeof rawBody.gameStartTs !== "string" || rawBody.gameStartTs.trim().length === 0) {
+      return null;
+    }
+
+    parsed.gameStartTs = rawBody.gameStartTs;
+  }
+
+  if (parsed.status === undefined && parsed.gameStartTs === undefined) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function idempotencyConflict(request: IncomingMessage, response: ServerResponse): number {
   sendJsonWithCors(request, response, 409, {
     error: "idempotency_conflict",
@@ -885,6 +973,19 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (
+        authGate.session &&
+        method === "GET" &&
+        route === "/v1/leagues"
+      ) {
+        const leagues = await repository.listLeaguesForUser(authGate.session.email);
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          leagues,
+        });
+        return;
+      }
+
       if (method === "POST" && route === "/v1/leagues") {
         if (!authGate.session) {
           status = 500;
@@ -896,6 +997,40 @@ async function start(): Promise<void> {
         }
 
         status = await handleCreateLeague(request, response, authGate.session, method, route);
+        return;
+      }
+
+      const getLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
+      if (method === "GET" && getLeagueMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(getLeagueMatch[1]);
+        const access = await ensureLeagueAccess(leagueId, authGate.session.email);
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${leagueId} is required.`,
+          );
+          return;
+        }
+
+        const league = await repository.getLeague(leagueId);
+        if (!league) {
+          status = notFound(request, response, `League ${leagueId} was not found.`);
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, league);
         return;
       }
 
@@ -921,6 +1056,80 @@ async function start(): Promise<void> {
         return;
       }
 
+      const listSeasonsMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
+      if (method === "GET" && listSeasonsMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(listSeasonsMatch[1]);
+        const access = await ensureLeagueAccess(leagueId, authGate.session.email);
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${leagueId} is required.`,
+          );
+          return;
+        }
+
+        const seasons = await repository.listSeasonsForLeague(leagueId);
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          seasons,
+        });
+        return;
+      }
+
+      const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
+      if (method === "DELETE" && deleteLeagueMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(deleteLeagueMatch[1]);
+        const isAdmin = await ensureLeagueAdmin(leagueId, authGate.session.email);
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${leagueId}.`,
+          );
+          return;
+        }
+
+        try {
+          const deleted = await repository.deleteLeague(leagueId);
+          if (!deleted) {
+            status = notFound(request, response, `League ${leagueId} was not found.`);
+            return;
+          }
+        } catch (error) {
+          if (error instanceof Error && /Cannot delete league/.test(error.message)) {
+            status = conflict(request, response, error.message);
+            return;
+          }
+
+          throw error;
+        }
+
+        status = 204;
+        sendNoContentWithCors(request, response);
+        return;
+      }
+
       const createSessionMatch = route.match(/^\/v1\/seasons\/([^/]+)\/sessions$/);
       if (method === "POST" && createSessionMatch) {
         if (!authGate.session) {
@@ -940,6 +1149,122 @@ async function start(): Promise<void> {
           method,
           route,
         );
+        return;
+      }
+
+      const getSeasonMatch = route.match(/^\/v1\/seasons\/([^/]+)$/);
+      if (method === "GET" && getSeasonMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const seasonId = decodeURIComponent(getSeasonMatch[1]);
+        const season = await repository.getSeason(seasonId);
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${season.leagueId} is required.`,
+          );
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, season);
+        return;
+      }
+
+      const listSeasonGamesMatch = route.match(/^\/v1\/seasons\/([^/]+)\/games$/);
+      if (method === "GET" && listSeasonGamesMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const seasonId = decodeURIComponent(listSeasonGamesMatch[1]);
+        const season = await repository.getSeason(seasonId);
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${season.leagueId} is required.`,
+          );
+          return;
+        }
+
+        const games = await repository.listGamesForSeason(seasonId);
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          games,
+        });
+        return;
+      }
+
+      const deleteSeasonMatch = route.match(/^\/v1\/seasons\/([^/]+)$/);
+      if (method === "DELETE" && deleteSeasonMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const seasonId = decodeURIComponent(deleteSeasonMatch[1]);
+        const season = await repository.getSeason(seasonId);
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        const isAdmin = await ensureLeagueAdmin(season.leagueId, authGate.session.email);
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${season.leagueId}.`,
+          );
+          return;
+        }
+
+        try {
+          await repository.deleteSeason(seasonId);
+        } catch (error) {
+          if (error instanceof Error && /Cannot delete season/.test(error.message)) {
+            status = conflict(request, response, error.message);
+            return;
+          }
+
+          throw error;
+        }
+
+        status = 204;
+        sendNoContentWithCors(request, response);
         return;
       }
 
@@ -967,6 +1292,138 @@ async function start(): Promise<void> {
           seasonId: aclGate.scope.seasonId,
           sessionId: aclGate.scope.sessionId,
         }, authGate.session.email, method, route);
+        return;
+      }
+
+      const getGameMatch = route.match(/^\/v1\/games\/([^/]+)$/);
+      if (method === "GET" && getGameMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(getGameMatch[1]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${game.leagueId} is required.`,
+          );
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, game);
+        return;
+      }
+
+      const patchGameMatch = route.match(/^\/v1\/games\/([^/]+)$/);
+      if (method === "PATCH" && patchGameMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(patchGameMatch[1]);
+        const existingGame = await repository.getGame(gameId);
+        if (!existingGame) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const isAdmin = await ensureLeagueAdmin(existingGame.leagueId, authGate.session.email);
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${existingGame.leagueId}.`,
+          );
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedPatch = parseGamePatchBody(rawBody);
+        if (!parsedPatch) {
+          status = badRequest(
+            request,
+            response,
+            "PATCH /v1/games/{gameId} accepts status and/or gameStartTs.",
+          );
+          return;
+        }
+
+        const updated = await repository.updateGame({
+          gameId,
+          status: parsedPatch.status,
+          gameStartTs: parsedPatch.gameStartTs,
+        });
+
+        if (!updated) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, updated);
+        return;
+      }
+
+      const deleteGameMatch = route.match(/^\/v1\/games\/([^/]+)$/);
+      if (method === "DELETE" && deleteGameMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(deleteGameMatch[1]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const isAdmin = await ensureLeagueAdmin(game.leagueId, authGate.session.email);
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${game.leagueId}.`,
+          );
+          return;
+        }
+
+        await repository.deleteGame(gameId);
+        status = 204;
+        sendNoContentWithCors(request, response);
         return;
       }
 

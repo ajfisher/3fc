@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json && mkdir -p dist/ui && cp src/ui/styles.css dist/ui/styles.css && cp src/ui/modal.js dist/ui/modal.js",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/ui && cp src/ui/styles.css dist/ui/styles.css && cp src/ui/modal.js dist/ui/modal.js && cp src/ui/setup-flow.js dist/ui/setup-flow.js && cp src/ui/auth-flow.js dist/ui/auth-flow.js",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && rm -rf dist-tests && tsc -p tsconfig.test.json && node --test dist-tests/src/tests/**/*.test.js",

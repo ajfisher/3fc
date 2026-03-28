@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DeleteItemCommand,
   GetItemCommand,
+  ScanCommand,
   type AttributeValue,
   PutItemCommand,
   QueryCommand,
@@ -14,6 +16,12 @@ type Item = Record<string, AttributeValue>;
 
 class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
+
+  seedItem(item: Item): void {
+    const pk = this.readString(item.pk, "pk");
+    const sk = this.readString(item.sk, "sk");
+    this.items.set(`${pk}|${sk}`, item);
+  }
 
   async send(command: unknown): Promise<unknown> {
     if (command instanceof PutItemCommand) {
@@ -63,6 +71,22 @@ class InMemoryDynamoClient {
       return { Items: items };
     }
 
+    if (command instanceof ScanCommand) {
+      return { Items: [...this.items.values()] };
+    }
+
+    if (command instanceof DeleteItemCommand) {
+      const key = command.input.Key;
+      if (!key) {
+        throw new Error("DeleteItemCommand is missing Key.");
+      }
+
+      const pk = this.readString(key.pk, "pk");
+      const sk = this.readString(key.sk, "sk");
+      this.items.delete(`${pk}|${sk}`);
+      return {};
+    }
+
     throw new Error(`Unsupported command: ${(command as { constructor?: { name?: string } }).constructor?.name ?? "unknown"}`);
   }
 
@@ -87,6 +111,14 @@ class IncrementingClock {
 
 function createRepository(): ThreeFcRepository {
   return new ThreeFcRepository(new InMemoryDynamoClient(), "threefc_test", new IncrementingClock());
+}
+
+function createRepositoryHarness(): { repository: ThreeFcRepository; client: InMemoryDynamoClient } {
+  const client = new InMemoryDynamoClient();
+  return {
+    client,
+    repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock()),
+  };
 }
 
 test("repository supports round-trip create/read for core entities", async () => {
@@ -232,6 +264,143 @@ test("repository query supports deterministic game timeline ordering", async () 
   assert.deepEqual(
     timeline.map((goal) => goal.eventId),
     ["goal-1", "goal-2", "goal-3"],
+  );
+});
+
+test("repository supports league discovery by user ACL", async () => {
+  const repository = createRepository();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    slug: "league-one",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    slug: "league-two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.grantLeagueAccess({
+    leagueId: "league-2",
+    userId: "admin@example.com",
+    role: "scorekeeper",
+    grantedByUserId: "other@example.com",
+  });
+
+  const leagues = await repository.listLeaguesForUser("admin@example.com");
+  assert.equal(leagues.length, 2);
+  assert.deepEqual(
+    leagues.map((league) => league.leagueId),
+    ["league-1", "league-2"],
+  );
+});
+
+test("repository league discovery ignores non-entity auth records in table scans", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    slug: "league-one",
+    createdByUserId: "admin@example.com",
+  });
+
+  client.seedItem({
+    pk: { S: "AUTH_SESSION#session-1" },
+    sk: { S: "METADATA" },
+    entityType: { S: "session" },
+    email: { S: "admin@example.com" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    expiresAtEpoch: { N: "1770000000" },
+  });
+
+  const leagues = await repository.listLeaguesForUser("admin@example.com");
+  assert.equal(leagues.length, 1);
+  assert.equal(leagues[0].leagueId, "league-1");
+});
+
+test("repository supports update and delete of games", async () => {
+  const repository = createRepository();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createSessionGame({
+    sessionId: "20260222",
+    gameId: "game-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+  });
+
+  const updated = await repository.updateGame({
+    gameId: "game-1",
+    status: "live",
+    gameStartTs: "2026-02-22T11:00:00Z",
+  });
+  assert.equal(updated?.status, "live");
+  assert.equal(updated?.gameStartTs, "2026-02-22T11:00:00Z");
+
+  const listed = await repository.listGamesForSeason("season-1");
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].gameStartTs, "2026-02-22T11:00:00Z");
+
+  const deleted = await repository.deleteGame("game-1");
+  assert.equal(deleted, true);
+  assert.equal(await repository.getGame("game-1"), null);
+  assert.deepEqual(await repository.listSessionsForSeason("season-1"), []);
+});
+
+test("repository blocks deleting season or league while descendants exist", async () => {
+  const repository = createRepository();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+
+  await assert.rejects(
+    repository.deleteSeason("season-1"),
+    /Cannot delete season with existing games/,
+  );
+
+  await assert.rejects(
+    repository.deleteLeague("league-1"),
+    /Cannot delete league with existing seasons/,
   );
 });
 

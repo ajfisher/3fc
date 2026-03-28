@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderComponentShowcasePage, renderSetupHomePage } from "../ui/layout.js";
+import {
+  renderComponentShowcasePage,
+  renderGamePage,
+  renderLeaguePage,
+  renderMagicLinkCallbackPage,
+  renderSeasonPage,
+  renderSignInPage,
+  renderSetupHomePage,
+} from "../ui/layout.js";
 import {
   renderButton,
   renderDataTable,
@@ -73,21 +81,45 @@ test("primitives render expected semantic and data-ui hooks", () => {
   assert.match(panel, /data-ui="panel"/);
 });
 
-test("setup home page includes all foundation sections and links external stylesheet", () => {
+test("setup home page includes stepwise setup panels and setup-flow script", () => {
   const html = renderSetupHomePage("https://qa-api.3fc.football");
 
-  assert.match(html, /League setup/);
-  assert.match(html, /Season setup/);
-  assert.match(html, /Session setup/);
-  assert.match(html, /Game setup/);
+  assert.match(html, /data-testid="setup-flow-root"/);
+  assert.match(html, /data-page="dashboard"/);
+  assert.match(html, /data-testid="panel-dashboard-create-league"/);
+  assert.match(html, /data-testid="panel-dashboard-leagues"/);
+  assert.match(html, /League friendly URL/);
+  assert.match(html, /dashboard-leagues-body/);
+  assert.match(html, /data-testid="create-league"/);
+  assert.match(html, /id="league-id-display"/);
   assert.match(html, /rel="stylesheet" href="\/ui\/styles\.css"/);
-  assert.match(html, /data-ui="step-list"/);
   assert.match(html, /data-testid="setup-shell"/);
-  assert.match(html, /data-testid="panel-league"/);
-  assert.match(html, /data-testid="panel-season"/);
-  assert.match(html, /data-testid="panel-session"/);
-  assert.match(html, /data-testid="panel-game"/);
+  assert.match(html, /<script src="\/ui\/setup-flow\.js" defer><\/script>/);
   assert.match(html, /https:\/\/qa-api\.3fc\.football/);
+});
+
+test("league page includes season create form and seasons table", () => {
+  const html = renderLeaguePage("https://qa-api.3fc.football", "league-1");
+
+  assert.match(html, /data-testid="league-shell"/);
+  assert.match(html, /data-page="league"/);
+  assert.match(html, /data-league-id="league-1"/);
+  assert.match(html, /Season friendly URL/);
+  assert.match(html, /league-seasons-body/);
+  assert.match(html, /data-testid="create-season"/);
+  assert.match(html, /data-testid="delete-league"/);
+});
+
+test("season page includes game create form and games table", () => {
+  const html = renderSeasonPage("https://qa-api.3fc.football", "season-1");
+
+  assert.match(html, /data-testid="season-shell"/);
+  assert.match(html, /data-page="season"/);
+  assert.match(html, /data-season-id="season-1"/);
+  assert.match(html, /Game date/);
+  assert.match(html, /season-games-body/);
+  assert.match(html, /data-testid="create-game"/);
+  assert.match(html, /data-testid="delete-season"/);
 });
 
 test("component showcase page includes navigation, players, tables, validation, row actions, and modal", () => {
@@ -107,4 +139,38 @@ test("component showcase page includes navigation, players, tables, validation, 
   assert.match(html, /data-modal-open="confirm-delete-game"/);
   assert.match(html, /data-modal-confirm="confirm-delete-game"/);
   assert.match(html, /<script src="\/ui\/modal\.js" defer><\/script>/);
+});
+
+test("magic-link callback page includes auth flow script and callback messaging", () => {
+  const html = renderMagicLinkCallbackPage("https://qa-api.3fc.football");
+
+  assert.match(html, /data-testid="auth-callback-shell"/);
+  assert.match(html, /Completing sign-in/);
+  assert.match(html, /id="auth-callback-status"/);
+  assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
+});
+
+test("sign-in page renders magic-link form and carries return path", () => {
+  const html = renderSignInPage("https://qa-api.3fc.football", "/setup");
+
+  assert.match(html, /data-testid="signin-shell"/);
+  assert.match(html, /data-testid="panel-signin-flow"/);
+  assert.match(html, /id="auth-magic-form"/);
+  assert.match(html, /id="auth-return-to"/);
+  assert.match(html, /value="\/setup"/);
+  assert.match(html, /data-testid="send-magic-link"/);
+  assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
+});
+
+test("game page renders editable game metadata view", () => {
+  const html = renderGamePage("https://qa-api.3fc.football", {
+    gameId: "game-20260223-a1b2c3d4",
+  });
+
+  assert.match(html, /data-testid="game-shell"/);
+  assert.match(html, /data-page="game"/);
+  assert.match(html, /game-20260223-a1b2c3d4/);
+  assert.match(html, /data-testid="save-game"/);
+  assert.match(html, /data-testid="delete-game"/);
+  assert.match(html, /data-testid="create-another-game"/);
 });

@@ -31,6 +31,46 @@ export function buildSessionCookie(
 }
 
 export function isAuthenticatedApiRoute(method: string, route: string): boolean {
+  if (method === "GET" && route === "/v1/leagues") {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/leagues\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/leagues\/[^/]+\/seasons$/.test(route)) {
+    return true;
+  }
+
+  if (method === "DELETE" && /^\/v1\/leagues\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/seasons\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/seasons\/[^/]+\/games$/.test(route)) {
+    return true;
+  }
+
+  if (method === "DELETE" && /^\/v1\/seasons\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/games\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "PATCH" && /^\/v1\/games\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "DELETE" && /^\/v1\/games\/[^/]+$/.test(route)) {
+    return true;
+  }
+
   if (method === "GET" && route === "/v1/auth/session") {
     return true;
   }

@@ -127,19 +127,35 @@ export function renderValidatedField(input: ValidatedFieldInput): string {
   const placeholder = input.placeholder
     ? ` placeholder="${escapeHtml(input.placeholder)}"`
     : "";
-  const error = input.error ? escapeHtml(input.error) : null;
-  const success = !error && input.success ? escapeHtml(input.success) : null;
-  const hint = input.hint ? escapeHtml(input.hint) : null;
+  const errorMessage = input.error ?? null;
+  const successMessage = !errorMessage && input.success ? input.success : null;
+  const hintMessage = input.hint ?? null;
+  const error = errorMessage ? escapeHtml(errorMessage) : null;
+  const success = successMessage ? escapeHtml(successMessage) : null;
+  const hint = hintMessage ? escapeHtml(hintMessage) : null;
   const noticeId = `${escapeHtml(input.id)}-notice`;
   const state = error ? "invalid" : success ? "valid" : "default";
+  const defaultMessage = errorMessage ?? successMessage ?? hintMessage ?? "";
+  const safeDefaultMessage = escapeHtml(defaultMessage);
+  const defaultKind = errorMessage ? "invalid" : successMessage ? "valid" : hintMessage ? "hint" : "empty";
+  const noticeAttributes = [
+    `id="${noticeId}"`,
+    `data-default-message="${safeDefaultMessage}"`,
+    `data-default-kind="${defaultKind}"`,
+  ];
 
-  const notice = error
-    ? `<p data-ui="field-notice" data-state="invalid" id="${noticeId}" role="alert">${error}</p>`
-    : success
-      ? `<p data-ui="field-notice" data-state="valid" id="${noticeId}" aria-live="polite">${success}</p>`
-      : hint
-        ? `<p data-ui="field-hint" id="${noticeId}">${hint}</p>`
-        : "";
+  let noticeUi = "field-hint";
+  if (error || success) {
+    noticeUi = "field-notice";
+  }
+
+  if (error) {
+    noticeAttributes.push('data-state="invalid"', 'role="alert"');
+  } else if (success) {
+    noticeAttributes.push('data-state="valid"', 'aria-live="polite"');
+  }
+
+  const notice = `<p data-ui="${noticeUi}" ${noticeAttributes.join(" ")}>${safeDefaultMessage}</p>`;
 
   const noticeAttr = notice ? ` aria-describedby="${noticeId}"` : "";
   const invalidAttr = error ? " aria-invalid=\"true\"" : "";

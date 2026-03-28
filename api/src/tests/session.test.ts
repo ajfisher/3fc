@@ -34,6 +34,16 @@ test("buildSessionCookie omits Secure when disabled for local development", () =
 });
 
 test("isAuthenticatedApiRoute marks protected routes only", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1/seasons"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/leagues/league-1"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/seasons/season-1"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/seasons/season-1/games"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/seasons/season-1"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/games/game-1"), true);
+  assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/games/game-1"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/games/game-1"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/auth/session"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/seasons"), true);
@@ -47,4 +57,5 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/auth/magic/start"), false);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/auth/magic/complete"), false);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/unknown"), false);
+  assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/unknown"), false);
 });
