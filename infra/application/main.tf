@@ -143,6 +143,41 @@ resource "aws_cloudfront_distribution" "site" {
   tags = local.app_tags
 }
 
+data "aws_iam_policy_document" "site_bucket_access" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  statement {
+    sid    = "AllowCloudFrontReadAccess"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+
+    actions = [
+      "s3:GetObject",
+    ]
+
+    resources = [
+      "${aws_s3_bucket.site[0].arn}/*",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.site[0].arn]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "site" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  bucket = aws_s3_bucket.site[0].id
+  policy = data.aws_iam_policy_document.site_bucket_access[0].json
+}
+
 resource "aws_acm_certificate" "site" {
   count    = local.site_custom_domain_enabled ? 1 : 0
   provider = aws.us_east_1
