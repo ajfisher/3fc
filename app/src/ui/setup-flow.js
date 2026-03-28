@@ -149,6 +149,29 @@
     return new URL(normalizedPath, normalizedBase).toString();
   }
 
+  function resolveRouteEntityId(attributeName, collectionName) {
+    const attributeValue = root.getAttribute(attributeName);
+    if (attributeValue && attributeValue.trim().length > 0) {
+      return attributeValue.trim();
+    }
+
+    const pathSegments = window.location.pathname
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+
+    const collectionIndex = pathSegments.indexOf(collectionName);
+    if (collectionIndex < 0 || pathSegments.length <= collectionIndex + 1) {
+      return null;
+    }
+
+    try {
+      return decodeURIComponent(pathSegments[collectionIndex + 1]);
+    } catch {
+      return pathSegments[collectionIndex + 1];
+    }
+  }
+
   function createIdempotencyKey(prefix, stablePart) {
     const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 56);
     return `${prefix}-${safeStable}-${Date.now().toString(36)}`;
@@ -426,7 +449,7 @@
   }
 
   async function initLeaguePage() {
-    const leagueId = root.getAttribute("data-league-id");
+    const leagueId = resolveRouteEntityId("data-league-id", "leagues");
     if (!leagueId) {
       return;
     }
@@ -633,7 +656,7 @@
   }
 
   async function initSeasonPage() {
-    const seasonId = root.getAttribute("data-season-id");
+    const seasonId = resolveRouteEntityId("data-season-id", "seasons");
     if (!seasonId) {
       return;
     }
@@ -890,7 +913,7 @@
   }
 
   async function initGamePage() {
-    const gameId = root.getAttribute("data-game-id");
+    const gameId = resolveRouteEntityId("data-game-id", "games");
     if (!gameId) {
       return;
     }
@@ -900,6 +923,7 @@
     const gameLeagueLink = document.getElementById("game-league-link");
     const gameSeasonLink = document.getElementById("game-season-link");
 
+    const gameIdValue = document.getElementById("game-id-value");
     const gameLeagueId = document.getElementById("game-league-id");
     const gameSeasonId = document.getElementById("game-season-id");
 
@@ -941,6 +965,9 @@
         subtitle.innerHTML = `Kickoff (UTC): <code>${escapeHtml(game.gameStartTs)}</code>`;
       }
 
+      if (gameIdValue) {
+        gameIdValue.textContent = game.gameId;
+      }
       if (gameLeagueId) {
         gameLeagueId.textContent = game.leagueId;
       }

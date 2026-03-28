@@ -82,6 +82,16 @@ resource "aws_cloudfront_origin_access_control" "site" {
   signing_protocol                  = "sigv4"
 }
 
+resource "aws_cloudfront_function" "site_router" {
+  count = var.create_baseline_resources ? 1 : 0
+
+  name    = "${local.name_prefix}-site-router"
+  runtime = "cloudfront-js-2.0"
+  comment = "Route static 3FC app paths to exported HTML shells"
+  publish = true
+  code    = file("${path.module}/cloudfront-site-router.js")
+}
+
 resource "aws_cloudfront_distribution" "site" {
   count = var.create_baseline_resources ? 1 : 0
 
@@ -109,6 +119,11 @@ resource "aws_cloudfront_distribution" "site" {
       cookies {
         forward = "none"
       }
+    }
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.site_router[0].arn
     }
   }
 
@@ -640,6 +655,25 @@ data "aws_iam_policy_document" "github_actions_deploy_permissions" {
       values   = ["lambda.amazonaws.com"]
     }
   }
+
+  statement {
+    sid    = "ListCloudFrontDistributions"
+    effect = "Allow"
+    actions = [
+      "cloudfront:ListDistributions",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "InvalidateSiteDistribution"
+    effect = "Allow"
+    actions = [
+      "cloudfront:CreateInvalidation",
+      "cloudfront:GetInvalidation",
+    ]
+    resources = [aws_cloudfront_distribution.site[0].arn]
+  }
 }
 
 resource "aws_iam_role_policy" "github_actions_deploy" {
@@ -664,6 +698,11 @@ output "baseline_resources_enabled" {
 output "site_bucket_name" {
   description = "Name of the static site bucket"
   value       = try(aws_s3_bucket.site[0].id, null)
+}
+
+output "site_cloudfront_distribution_id" {
+  description = "CloudFront distribution ID serving the static site"
+  value       = try(aws_cloudfront_distribution.site[0].id, null)
 }
 
 output "dynamodb_table_name" {

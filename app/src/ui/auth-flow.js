@@ -37,6 +37,25 @@
     return new URL(normalizedPath, normalizedBase).toString();
   }
 
+  function resolveReturnTo(fallback = "/setup") {
+    const hiddenInput = document.getElementById("auth-return-to");
+    const hiddenValue =
+      hiddenInput instanceof HTMLInputElement && hiddenInput.value.trim().length > 0
+        ? hiddenInput.value.trim()
+        : fallback;
+
+    try {
+      const requested = new URL(window.location.href).searchParams.get("returnTo");
+      if (requested && requested.trim().length > 0) {
+        return requested.trim();
+      }
+    } catch {
+      // Fall back to hidden input value when URL parsing fails.
+    }
+
+    return hiddenValue;
+  }
+
   async function requestJson(path, init) {
     const response = await fetch(buildApiUrl(path), init);
     const text = await response.text();
@@ -171,10 +190,7 @@
     const sessionEmail = document.getElementById("auth-session-email");
     const submitButton = form.querySelector('[data-action="send-magic-link"]');
 
-    const returnTo =
-      returnToInput instanceof HTMLInputElement && returnToInput.value.trim().length > 0
-        ? returnToInput.value.trim()
-        : "/setup";
+    const returnTo = resolveReturnTo("/setup");
 
     function showError(message) {
       if (!errorElement) {
