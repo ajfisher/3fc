@@ -157,12 +157,12 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
   const createLeaguePanel = renderPanel(
     "Create league",
     "Start here if this account has no leagues yet.",
-    `${renderInputField({
+    `${renderValidatedField({
       id: "league-name",
       label: "League name",
       placeholder: "Three Sided Football Club",
       required: true,
-    })}${renderInputField({
+    })}${renderValidatedField({
       id: "league-friendly-url",
       label: "League friendly URL",
       placeholder: "three-sided-football-club",
@@ -220,12 +220,12 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   const createSeasonPanel = renderPanel(
     "Create season",
     "Create a season inside this league.",
-    `${renderInputField({
+    `${renderValidatedField({
       id: "season-name",
       label: "Season name",
       placeholder: "2026 Season",
       required: true,
-    })}${renderInputField({
+    })}${renderValidatedField({
       id: "season-friendly-url",
       label: "Season friendly URL",
       placeholder: "2026-season",
@@ -300,12 +300,12 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
   const createGamePanel = renderPanel(
     "Create game",
     "Add a game into this season.",
-    `${renderInputField({
+    `${renderValidatedField({
       id: "game-date",
       label: "Game date",
       type: "date",
       required: true,
-    })}${renderInputField({
+    })}${renderValidatedField({
       id: "game-kickoff",
       label: "Kickoff time",
       type: "datetime-local",
@@ -391,7 +391,7 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
           "Use your organizer email and open the link from your inbox. First-time emails are treated as sign-up and account creation.",
           `<form data-ui="auth-form" id="auth-magic-form" novalidate>
             <input id="auth-return-to" type="hidden" value="${safeReturnTo}" />
-            ${renderInputField({
+            ${renderValidatedField({
               id: "auth-email",
               label: "Email address",
               type: "email",
@@ -660,7 +660,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
               <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
             </dl>
-            ${renderInputField({
+            ${renderValidatedField({
               id: "game-edit-kickoff",
               label: "Kickoff time",
               type: "datetime-local",

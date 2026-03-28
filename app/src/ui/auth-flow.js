@@ -17,6 +17,20 @@
   const apiBaseUrl = resolveApiBaseUrl();
   const RETURN_TO_STORAGE_KEY = "threefc.auth.return_to";
 
+  function navigateTo(url, mode = "assign") {
+    if (typeof window.__THREEFC_NAVIGATE__ === "function") {
+      window.__THREEFC_NAVIGATE__(url, mode);
+      return;
+    }
+
+    if (mode === "replace") {
+      window.location.replace(url);
+      return;
+    }
+
+    window.location.assign(url);
+  }
+
   function buildApiUrl(path) {
     const normalizedBase = apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`;
     const normalizedPath = path.startsWith("/") ? path.slice(1) : path;
@@ -59,6 +73,66 @@
 
   function isEmailLike(value) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+
+  function setFieldMessage(fieldId, state = "default", message = null) {
+    const input = document.getElementById(fieldId);
+    const notice = document.getElementById(`${fieldId}-notice`);
+    if (!(input instanceof HTMLElement) || !(notice instanceof HTMLElement)) {
+      return;
+    }
+
+    if (state === "invalid") {
+      input.setAttribute("data-state", "invalid");
+      input.setAttribute("aria-invalid", "true");
+      notice.setAttribute("data-ui", "field-notice");
+      notice.setAttribute("data-state", "invalid");
+      notice.setAttribute("role", "alert");
+      notice.removeAttribute("aria-live");
+      notice.textContent = message ?? "";
+      return;
+    }
+
+    if (state === "valid") {
+      input.setAttribute("data-state", "valid");
+      input.removeAttribute("aria-invalid");
+      notice.setAttribute("data-ui", "field-notice");
+      notice.setAttribute("data-state", "valid");
+      notice.setAttribute("aria-live", "polite");
+      notice.removeAttribute("role");
+      notice.textContent = message ?? "";
+      return;
+    }
+
+    input.setAttribute("data-state", "default");
+    input.removeAttribute("aria-invalid");
+
+    const defaultKind = notice.getAttribute("data-default-kind") ?? "empty";
+    const defaultMessage = notice.getAttribute("data-default-message") ?? "";
+
+    if (defaultKind === "hint") {
+      notice.setAttribute("data-ui", "field-hint");
+      notice.removeAttribute("data-state");
+      notice.removeAttribute("role");
+      notice.removeAttribute("aria-live");
+      notice.textContent = defaultMessage;
+      return;
+    }
+
+    if (defaultKind === "valid") {
+      notice.setAttribute("data-ui", "field-notice");
+      notice.setAttribute("data-state", "valid");
+      notice.removeAttribute("role");
+      notice.setAttribute("aria-live", "polite");
+      notice.textContent = defaultMessage;
+      return;
+    }
+
+    notice.setAttribute("data-ui", "field-hint");
+    notice.removeAttribute("data-state");
+    notice.removeAttribute("role");
+    notice.removeAttribute("aria-live");
+    notice.textContent = defaultMessage;
   }
 
   function persistReturnTo(returnTo) {
@@ -146,7 +220,7 @@
         setStatus(statusElement, "Session active. Redirecting to setup…", "success");
         setSessionState(true, result.body.session.email);
         setTimeout(() => {
-          window.location.replace(returnTo);
+          navigateTo(returnTo, "replace");
         }, 500);
         return;
       }
@@ -166,10 +240,12 @@
 
       const email = emailInput.value.trim();
       if (!isEmailLike(email)) {
-        showError("Enter a valid email address.");
+        setFieldMessage("auth-email", "invalid", "Enter a valid email address.");
         emailInput.focus();
         return;
       }
+
+      setFieldMessage("auth-email");
 
       persistReturnTo(returnTo);
 
@@ -206,6 +282,12 @@
         }
       }
     });
+
+    if (emailInput instanceof HTMLInputElement) {
+      emailInput.addEventListener("input", () => {
+        setFieldMessage("auth-email");
+      });
+    }
 
     try {
       setStatus(statusElement, "Checking session…", "default");
@@ -264,7 +346,7 @@
 
       setStatus(statusElement, "Sign-in complete. Redirecting…", "success");
       setTimeout(() => {
-        window.location.replace(returnTo);
+        navigateTo(returnTo, "replace");
       }, 700);
       return;
     }
@@ -272,7 +354,7 @@
     if (code) {
       setStatus(statusElement, "OAuth callback received. Redirecting…", "success");
       setTimeout(() => {
-        window.location.replace(returnTo);
+        navigateTo(returnTo, "replace");
       }, 700);
       return;
     }

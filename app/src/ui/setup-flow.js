@@ -19,6 +19,20 @@
       .replaceAll("'", "&#39;");
   }
 
+  function navigateTo(url, mode = "assign") {
+    if (typeof window.__THREEFC_NAVIGATE__ === "function") {
+      window.__THREEFC_NAVIGATE__(url, mode);
+      return;
+    }
+
+    if (mode === "replace") {
+      window.location.replace(url);
+      return;
+    }
+
+    window.location.assign(url);
+  }
+
   function randomSuffix(length = 8) {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
       return crypto.randomUUID().replace(/-/g, "").slice(0, length);
@@ -67,6 +81,66 @@
 
     errorElement.hidden = true;
     errorElement.textContent = "";
+  }
+
+  function setFieldMessage(fieldId, state = "default", message = null) {
+    const input = document.getElementById(fieldId);
+    const notice = document.getElementById(`${fieldId}-notice`);
+    if (!(input instanceof HTMLElement) || !(notice instanceof HTMLElement)) {
+      return;
+    }
+
+    if (state === "invalid") {
+      input.setAttribute("data-state", "invalid");
+      input.setAttribute("aria-invalid", "true");
+      notice.setAttribute("data-ui", "field-notice");
+      notice.setAttribute("data-state", "invalid");
+      notice.setAttribute("role", "alert");
+      notice.removeAttribute("aria-live");
+      notice.textContent = message ?? "";
+      return;
+    }
+
+    if (state === "valid") {
+      input.setAttribute("data-state", "valid");
+      input.removeAttribute("aria-invalid");
+      notice.setAttribute("data-ui", "field-notice");
+      notice.setAttribute("data-state", "valid");
+      notice.setAttribute("aria-live", "polite");
+      notice.removeAttribute("role");
+      notice.textContent = message ?? "";
+      return;
+    }
+
+    input.setAttribute("data-state", "default");
+    input.removeAttribute("aria-invalid");
+
+    const defaultKind = notice.getAttribute("data-default-kind") ?? "empty";
+    const defaultMessage = notice.getAttribute("data-default-message") ?? "";
+
+    if (defaultKind === "hint") {
+      notice.setAttribute("data-ui", "field-hint");
+      notice.removeAttribute("data-state");
+      notice.removeAttribute("role");
+      notice.removeAttribute("aria-live");
+      notice.textContent = defaultMessage;
+      return;
+    }
+
+    if (defaultKind === "valid") {
+      notice.setAttribute("data-ui", "field-notice");
+      notice.setAttribute("data-state", "valid");
+      notice.removeAttribute("role");
+      notice.setAttribute("aria-live", "polite");
+      notice.textContent = defaultMessage;
+      return;
+    }
+
+    notice.setAttribute("data-ui", "field-hint");
+    notice.removeAttribute("data-state");
+    notice.removeAttribute("role");
+    notice.removeAttribute("aria-live");
+    notice.textContent = defaultMessage;
   }
 
   function buildApiUrl(path) {
@@ -158,7 +232,7 @@
 
     if (!result.ok) {
       const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-      window.location.replace(`/sign-in?returnTo=${returnTo}`);
+      navigateTo(`/sign-in?returnTo=${returnTo}`, "replace");
       throw new Error("redirecting_to_sign_in");
     }
 
@@ -220,6 +294,12 @@
     }
 
     attachSlugAutoFill(leagueNameInput, leagueFriendlyUrlInput, leagueIdDisplay, "league");
+    leagueNameInput.addEventListener("input", () => {
+      setFieldMessage("league-name");
+    });
+    leagueFriendlyUrlInput.addEventListener("input", () => {
+      setFieldMessage("league-friendly-url");
+    });
 
     async function renderLeagues() {
       const payload = await requestJsonOrThrow("/v1/leagues", { method: "GET" });
@@ -268,10 +348,12 @@
 
       const leagueName = leagueNameInput.value.trim();
       if (!leagueName) {
-        showError("League name is required.");
+        setFieldMessage("league-name", "invalid", "League name is required.");
         leagueNameInput.focus();
         return;
       }
+
+      setFieldMessage("league-name");
 
       const leagueFriendlyUrl = slugify(leagueFriendlyUrlInput.value) || slugify(leagueName);
       const leagueId = leagueFriendlyUrl || `league-${randomSuffix(6)}`;
@@ -293,7 +375,7 @@
           }),
         });
 
-        window.location.assign(`/leagues/${encodeURIComponent(leagueId)}`);
+        navigateTo(`/leagues/${encodeURIComponent(leagueId)}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create league.";
         showError(message);
@@ -372,6 +454,12 @@
     }
 
     attachSlugAutoFill(seasonNameInput, seasonFriendlyUrlInput, seasonIdDisplay, "season");
+    seasonNameInput.addEventListener("input", () => {
+      setFieldMessage("season-name");
+    });
+    seasonFriendlyUrlInput.addEventListener("input", () => {
+      setFieldMessage("season-friendly-url");
+    });
 
     async function loadLeague() {
       const league = await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}`, {
@@ -437,10 +525,12 @@
 
       const seasonName = seasonNameInput.value.trim();
       if (!seasonName) {
-        showError("Season name is required.");
+        setFieldMessage("season-name", "invalid", "Season name is required.");
         seasonNameInput.focus();
         return;
       }
+
+      setFieldMessage("season-name");
 
       const seasonFriendlyUrl = slugify(seasonFriendlyUrlInput.value) || slugify(seasonName);
       const seasonId = seasonFriendlyUrl || `season-${randomSuffix(6)}`;
@@ -464,7 +554,7 @@
           }),
         });
 
-        window.location.assign(`/seasons/${encodeURIComponent(seasonId)}`);
+        navigateTo(`/seasons/${encodeURIComponent(seasonId)}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create season.";
         showError(message);
@@ -526,7 +616,7 @@
           await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}`, {
             method: "DELETE",
           });
-          window.location.assign("/setup");
+          navigateTo("/setup");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete league.";
           showError(message);
@@ -586,9 +676,19 @@
 
     gameDateInput.addEventListener("change", () => {
       syncKickoffFromDate(gameDateInput, gameKickoffInput);
+      setFieldMessage("game-date");
       updateDerivedGameId();
     });
-    gameKickoffInput.addEventListener("change", updateDerivedGameId);
+    gameKickoffInput.addEventListener("change", () => {
+      setFieldMessage("game-kickoff");
+      updateDerivedGameId();
+    });
+    gameDateInput.addEventListener("input", () => {
+      setFieldMessage("game-date");
+    });
+    gameKickoffInput.addEventListener("input", () => {
+      setFieldMessage("game-kickoff");
+    });
 
     if (!gameDateInput.value) {
       gameDateInput.value = todayDate();
@@ -665,15 +765,19 @@
       const gameDate = gameDateInput.value.trim();
       const gameKickoff = gameKickoffInput.value.trim();
       if (!gameDate) {
-        showError("Game date is required.");
+        setFieldMessage("game-date", "invalid", "Game date is required.");
+        gameDateInput.focus();
         return;
       }
+      setFieldMessage("game-date");
 
       const kickoffIso = toIsoTimestamp(gameKickoff);
       if (!kickoffIso) {
-        showError("Kickoff time must be valid.");
+        setFieldMessage("game-kickoff", "invalid", "Kickoff time must be valid.");
+        gameKickoffInput.focus();
         return;
       }
+      setFieldMessage("game-kickoff");
 
       const sessionId = gameDate.replaceAll("-", "");
       const gameId = (gameIdDisplay?.textContent ?? "").trim() || `game-${sessionId}-${randomSuffix(6)}`;
@@ -707,7 +811,7 @@
           }),
         });
 
-        window.location.assign(`/games/${encodeURIComponent(gameId)}`);
+        navigateTo(`/games/${encodeURIComponent(gameId)}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create game.";
         showError(message);
@@ -769,7 +873,7 @@
           await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(seasonId)}`, {
             method: "DELETE",
           });
-          window.location.assign(`/leagues/${encodeURIComponent(leagueId)}`);
+          navigateTo(`/leagues/${encodeURIComponent(leagueId)}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete season.";
           showError(message);
@@ -817,6 +921,10 @@
     let currentLeagueId = "";
     let currentSeasonId = "";
 
+    kickoffInput.addEventListener("input", () => {
+      setFieldMessage("game-edit-kickoff");
+    });
+
     async function loadGame() {
       const game = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
         method: "GET",
@@ -859,9 +967,11 @@
 
       const kickoffIso = toIsoTimestamp(kickoffInput.value.trim());
       if (!kickoffIso) {
-        showError("Kickoff time must be valid.");
+        setFieldMessage("game-edit-kickoff", "invalid", "Kickoff time must be valid.");
+        kickoffInput.focus();
         return;
       }
+      setFieldMessage("game-edit-kickoff");
 
       saveButton.disabled = true;
       setStatus("Saving game updates…", "default");
@@ -902,7 +1012,7 @@
         await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
           method: "DELETE",
         });
-        window.location.assign(`/seasons/${encodeURIComponent(currentSeasonId)}`);
+        navigateTo(`/seasons/${encodeURIComponent(currentSeasonId)}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not delete game.";
         showError(message);
