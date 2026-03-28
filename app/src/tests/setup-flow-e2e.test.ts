@@ -656,3 +656,68 @@ test("setup happy path runs from sign-in to created game context", async () => {
   assert.equal(seasonId?.textContent, "autumn-cup");
   assert.equal(createAnotherLink?.getAttribute("href"), "/seasons/autumn-cup");
 });
+
+test("setup flow resolves route ids from static shells", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "autumn-league",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: "2026-03-01",
+    endsOn: "2026-05-31",
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-20260328-abc123", {
+    gameId: "game-20260328-abc123",
+    leagueId: "autumn-league",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const leaguePage = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", ""),
+    url: "http://localhost:3000/leagues/autumn-league",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  assert.equal(leaguePage.document.getElementById("league-title")?.textContent, "Autumn League");
+
+  const seasonPage = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", ""),
+    url: "http://localhost:3000/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  assert.equal(seasonPage.document.getElementById("season-title")?.textContent, "Autumn Cup");
+
+  const gamePage = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "" }),
+    url: "http://localhost:3000/games/game-20260328-abc123",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  assert.equal(gamePage.document.getElementById("game-title")?.textContent, "game-20260328-abc123");
+  assert.equal(gamePage.document.getElementById("game-id-value")?.textContent, "game-20260328-abc123");
+});

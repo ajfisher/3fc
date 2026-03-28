@@ -15,7 +15,7 @@ help:
 	@echo "  make dev                                Start local Docker Compose stack"
 	@echo "  make dev-down                           Stop local Docker Compose stack"
 	@echo "  make dev-logs                           Follow local Docker Compose logs"
-	@echo "  make deploy ENV=qa|prod [SERVICE=name]   Build and deploy a Serverless endpoint service"
+	@echo "  make deploy ENV=qa|prod [SERVICE=name]   Build and deploy a target (api-health, api-core, site)"
 	@echo ""
 	@echo "Backlog targets:"
 	@echo "  make backlog-validate                   Validate backlog JSON"
@@ -38,7 +38,11 @@ deploy:
 		echo "ENV must be set to qa or prod"; \
 		exit 1; \
 	fi
-	./scripts/deploy/deploy-app.sh $(ENV) $(SERVICE)
+	@if [ "$(SERVICE)" = "site" ]; then \
+		./scripts/deploy/deploy-site.sh $(ENV); \
+	else \
+		./scripts/deploy/deploy-app.sh $(ENV) $(SERVICE); \
+	fi
 
 install:
 	npm install

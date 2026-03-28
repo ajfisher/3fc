@@ -217,6 +217,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
 
 export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   const safeLeagueId = escapeHtml(leagueId);
+  const leagueHeading = safeLeagueId.length > 0 ? safeLeagueId : "League";
   const createSeasonPanel = renderPanel(
     "Create season",
     "Create a season inside this league.",
@@ -273,7 +274,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
     <main data-ui="app-shell" data-testid="league-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / League</span>
-        <h1 id="league-title">${safeLeagueId}</h1>
+        <h1 id="league-title">${leagueHeading}</h1>
         <p data-ui="hero-copy" id="league-subtitle">Loading league details…</p>
         <div data-ui="button-row">${renderButton("Delete league", "danger", {
           type: "button",
@@ -297,6 +298,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
 
 export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
   const safeSeasonId = escapeHtml(seasonId);
+  const seasonHeading = safeSeasonId.length > 0 ? safeSeasonId : "Season";
   const createGamePanel = renderPanel(
     "Create game",
     "Add a game into this season.",
@@ -345,7 +347,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
     <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
-        <h1 id="season-title">${safeSeasonId}</h1>
+        <h1 id="season-title">${seasonHeading}</h1>
         <p data-ui="hero-copy" id="season-subtitle">Loading season details…</p>
         <div data-ui="button-row">${renderButton("Delete season", "danger", {
           type: "button",
@@ -632,6 +634,7 @@ export interface GameContextPageInput {
 
 export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput): string {
   const gameId = escapeHtml(input.gameId);
+  const gameHeading = gameId.length > 0 ? gameId : "Game";
 
   return `<!doctype html>
 <html lang="en">
@@ -645,7 +648,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     <main data-ui="app-shell" data-testid="game-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="game-league-link" href="/setup">League</a> / <a id="game-season-link" href="/setup">Season</a> / Game</span>
-        <h1 id="game-title">${gameId}</h1>
+        <h1 id="game-title">${gameHeading}</h1>
         <p data-ui="hero-copy" id="game-subtitle">Loading game details…</p>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
@@ -656,7 +659,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             "Game details",
             "Edit core game metadata.",
             `<dl data-ui="id-preview" data-testid="game-context-details">
-              <div><dt>Game ID</dt><dd id="game-id-value">${gameId}</dd></div>
+              <div><dt>Game ID</dt><dd id="game-id-value">${gameHeading}</dd></div>
               <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
               <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
             </dl>
