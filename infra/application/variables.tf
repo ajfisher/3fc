@@ -109,6 +109,12 @@ variable "ses_from_email" {
   default     = "noreply@3fc.football"
 }
 
+variable "ses_from_domain" {
+  description = "SES verified domain identity used for sender addresses"
+  type        = string
+  default     = "3fc.football"
+}
+
 variable "github_repository" {
   description = "GitHub repository allowed to assume deploy role (owner/repo)"
   type        = string
@@ -122,6 +128,12 @@ variable "github_environment_name" {
 
 variable "create_github_oidc_provider" {
   description = "When true, create the GitHub OIDC provider in this environment stack"
+  type        = bool
+  default     = false
+}
+
+variable "manage_shared_ses_domain_identity" {
+  description = "When true, manage the shared SES sender domain identity in this environment stack"
   type        = bool
   default     = false
 }

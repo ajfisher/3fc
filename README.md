@@ -194,6 +194,19 @@ Expected result for both commands:
 - HTTP `200` response
 - JSON body from the health handler
 
+## Email Delivery Setup
+
+SES sender identity infrastructure is managed in Terraform for the `3fc.football`
+domain and the `noreply@3fc.football` from-address. Because SES identities are
+shared at the AWS account and region level, the shared domain identity is owned
+by the QA environment wrapper and reused by production.
+
+Manual SES steps still remain:
+
+- Request SES production access for the AWS account/region when ready.
+- While SES remains in sandbox, verify any recipient email addresses you want to
+  use for QA magic-link testing.
+
 ## Social Auth Credentials (Local)
 
 To enable Google social sign-in in Cognito, add local-only credentials per environment:

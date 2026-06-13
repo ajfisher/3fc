@@ -29,6 +29,7 @@ locals {
   google_oauth_client_id                = var.google_oauth_client_id != null && trimspace(var.google_oauth_client_id) != "" ? trimspace(var.google_oauth_client_id) : null
   google_oauth_client_secret            = var.google_oauth_client_secret != null && trimspace(var.google_oauth_client_secret) != "" ? trimspace(var.google_oauth_client_secret) : null
   google_identity_provider_enabled      = local.google_oauth_client_id != null
+  shared_ses_domain_identity_enabled    = var.create_baseline_resources && var.manage_shared_ses_domain_identity
 
   app_tags = merge(
     {
@@ -572,8 +573,11 @@ data "aws_iam_policy_document" "lambda_data_access" {
       "ses:SendEmail",
       "ses:SendRawEmail",
     ]
+    # SES sandbox testing can authorize against verified recipient identities as
+    # well as the configured sender identity, so scope this to account-local
+    # identities instead of a single mailbox identity ARN.
     resources = [
-      "arn:${data.aws_partition.current.partition}:ses:${var.region}:${data.aws_caller_identity.current.account_id}:identity/${var.ses_from_email}",
+      "arn:${data.aws_partition.current.partition}:ses:${var.region}:${data.aws_caller_identity.current.account_id}:identity/*",
     ]
   }
 }
@@ -719,10 +723,36 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
   policy = data.aws_iam_policy_document.github_actions_deploy_permissions[0].json
 }
 
-resource "aws_ses_email_identity" "from_address" {
-  count = var.create_baseline_resources ? 1 : 0
+resource "aws_ses_domain_identity" "from_domain" {
+  count = local.shared_ses_domain_identity_enabled ? 1 : 0
 
-  email = var.ses_from_email
+  domain = var.ses_from_domain
+}
+
+resource "aws_route53_record" "ses_domain_verification" {
+  count = local.shared_ses_domain_identity_enabled ? 1 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = "_amazonses.${var.ses_from_domain}"
+  type    = "TXT"
+  ttl     = 600
+  records = [aws_ses_domain_identity.from_domain[0].verification_token]
+}
+
+resource "aws_ses_domain_dkim" "from_domain" {
+  count = local.shared_ses_domain_identity_enabled ? 1 : 0
+
+  domain = aws_ses_domain_identity.from_domain[0].domain
+}
+
+resource "aws_route53_record" "ses_domain_dkim" {
+  count = local.shared_ses_domain_identity_enabled ? 3 : 0
+
+  zone_id = data.aws_route53_zone.primary[0].zone_id
+  name    = "${aws_ses_domain_dkim.from_domain[0].dkim_tokens[count.index]}._domainkey.${var.ses_from_domain}"
+  type    = "CNAME"
+  ttl     = 600
+  records = ["${aws_ses_domain_dkim.from_domain[0].dkim_tokens[count.index]}.dkim.amazonses.com"]
 }
 
 output "baseline_resources_enabled" {
