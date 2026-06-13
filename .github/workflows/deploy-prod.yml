@@ -173,6 +173,7 @@ jobs:
           MAGIC_HTTP_CODE="$(curl -sS -o /tmp/prod-magic.json -w '%{http_code}' \
             -X POST "$MAGIC_ENDPOINT" \
             -H 'content-type: application/json' \
+            -H 'origin: https://app.3fc.football' \
             -d '{}')"
 
           if [ "$MAGIC_HTTP_CODE" != "400" ]; then

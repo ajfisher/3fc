@@ -69,6 +69,7 @@ Start flow (sends link to fake SES):
 ```bash
 curl -s -X POST http://localhost:3001/v1/auth/magic/start \
   -H 'content-type: application/json' \
+  -H 'origin: http://localhost:3000' \
   -d '{"email":"player@example.com"}'
 
 curl -s http://localhost:4025/messages

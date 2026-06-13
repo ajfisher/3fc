@@ -6,10 +6,21 @@ import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { authorizeProtectedMutation } from "./auth/acl.js";
 import {
   buildCorsHeaders,
+  isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
 } from "./auth/http-security.js";
-import { MagicLinkAuthError, MagicLinkService } from "./auth/magic-link.js";
+import {
+  isMagicLinkEmailLike,
+  MagicLinkAuthError,
+  MagicLinkService,
+  normalizeMagicLinkEmail,
+} from "./auth/magic-link.js";
+import {
+  AuthRateLimiter,
+  readMagicLinkRateLimitConfig,
+  type RateLimitDecision,
+} from "./auth/rate-limit.js";
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
@@ -26,7 +37,7 @@ import {
 } from "./contracts/core-write.js";
 import { ThreeFcRepository } from "./data/repository.js";
 import type { GameStatus } from "./data/types.js";
-import { logRequest, logRequestError } from "./logging.js";
+import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
 export interface ApiGatewayHttpEvent {
   rawPath?: string;
@@ -39,6 +50,7 @@ export interface ApiGatewayHttpEvent {
     http?: {
       method?: string;
       path?: string;
+      sourceIp?: string;
     };
   };
 }
@@ -272,6 +284,9 @@ interface RepositoryContract {
 interface CoreHandlerDependencies {
   repository: RepositoryContract;
   magicLinkService: MagicLinkServiceContract;
+  magicLinkRateLimiter: {
+    consumeMagicLinkStart(input: { email: string; clientIp: string }): Promise<RateLimitDecision>;
+  };
   sessionCookieName: string;
   sessionCookieSecure: boolean;
   corsAllowedOrigins: string[];
@@ -307,6 +322,20 @@ function getCookieHeader(event: ApiGatewayHttpEvent): string | undefined {
   }
 
   return undefined;
+}
+
+function getClientIp(event: ApiGatewayHttpEvent): string {
+  const sourceIp = event.requestContext?.http?.sourceIp;
+  if (sourceIp && sourceIp.trim().length > 0) {
+    return sourceIp.trim();
+  }
+
+  const forwardedFor = getHeader(event, "x-forwarded-for");
+  if (forwardedFor && forwardedFor.trim().length > 0) {
+    return forwardedFor.split(",")[0]?.trim() || "unknown";
+  }
+
+  return "unknown";
 }
 
 function createJsonResponse(
@@ -364,6 +393,39 @@ function magicLinkErrorResponse(
       message: error.message,
     },
     buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function forbiddenOrigin(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    403,
+    {
+      error: "forbidden_origin",
+      message: "State-changing requests must originate from an allowed app domain.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function rateLimited(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  retryAfterSeconds: number,
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    429,
+    {
+      error: "rate_limited",
+      message: "Too many sign-in link requests. Try again later.",
+      retryAfterSeconds,
+    },
+    {
+      ...buildCorsHeaders(origin, allowedOrigins),
+      "retry-after": String(retryAfterSeconds),
+    },
   );
 }
 
@@ -639,6 +701,11 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   });
 
   const repository = new ThreeFcRepository(ddbClient, tableName);
+  const magicLinkRateLimiter = new AuthRateLimiter(
+    ddbClient,
+    tableName,
+    readMagicLinkRateLimitConfig(),
+  );
   const sesClient = new SESv2Client({ region });
   const magicLinkService = new MagicLinkService(
     ddbClient,
@@ -684,6 +751,7 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   return {
     repository,
     magicLinkService,
+    magicLinkRateLimiter,
     sessionCookieName: process.env.SESSION_COOKIE_NAME ?? "threefc_session",
     sessionCookieSecure,
     corsAllowedOrigins: parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS),
@@ -698,6 +766,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
     const origin = getHeader(event, "origin");
     const cookieHeader = getCookieHeader(event);
     const idempotencyKey = getHeader(event, "idempotency-key");
+    const clientIp = getClientIp(event);
     let status = 500;
 
     try {
@@ -708,17 +777,15 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
       if (!isStateChangeOriginPermitted(method, origin, dependencies.corsAllowedOrigins)) {
         status = 403;
-        return createJsonResponse(
-          status,
-          {
-            error: "forbidden_origin",
-            message: "State-changing requests must originate from an allowed app domain.",
-          },
-          buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-        );
+        return forbiddenOrigin(origin, dependencies.corsAllowedOrigins);
       }
 
       if (method === "POST" && route === "/v1/auth/magic/start") {
+        if (!isMagicLinkStartOriginPermitted(method, route, origin, dependencies.corsAllowedOrigins)) {
+          status = 403;
+          return forbiddenOrigin(origin, dependencies.corsAllowedOrigins);
+        }
+
         let rawBody: Record<string, unknown>;
         try {
           rawBody = parseJsonBody(event);
@@ -732,8 +799,39 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           return badRequest(origin, dependencies.corsAllowedOrigins, "Field `email` is required.");
         }
 
+        const email = normalizeMagicLinkEmail(rawBody.email);
+        if (!isMagicLinkEmailLike(email)) {
+          status = 400;
+          return magicLinkErrorResponse(
+            origin,
+            dependencies.corsAllowedOrigins,
+            new MagicLinkAuthError("invalid_email", 400, "Email must be a valid email address."),
+          );
+        }
+
+        const rateLimitDecision = await dependencies.magicLinkRateLimiter.consumeMagicLinkStart({
+          email,
+          clientIp,
+        });
+        if (!rateLimitDecision.allowed) {
+          status = 429;
+          logAuthRateLimit({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            dimension: rateLimitDecision.dimension,
+            retryAfterSeconds: rateLimitDecision.retryAfterSeconds,
+          });
+          return rateLimited(
+            origin,
+            dependencies.corsAllowedOrigins,
+            rateLimitDecision.retryAfterSeconds,
+          );
+        }
+
         try {
-          const startResult = await dependencies.magicLinkService.start(rawBody.email);
+          const startResult = await dependencies.magicLinkService.start(email);
           status = 202;
           return createJsonResponse(
             status,

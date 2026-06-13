@@ -11,6 +11,11 @@ interface RequestErrorLogFields extends RequestLogFields {
   error: string;
 }
 
+interface AuthRateLimitLogFields extends RequestLogFields {
+  dimension: string;
+  retryAfterSeconds: number;
+}
+
 function writeLog(level: LogLevel, payload: Record<string, unknown>): void {
   const entry = JSON.stringify({
     level,
@@ -37,6 +42,13 @@ export function logRequest(fields: RequestLogFields): void {
 export function logRequestError(fields: RequestErrorLogFields): void {
   writeLog("error", {
     message: "request_failed",
+    ...fields,
+  });
+}
+
+export function logAuthRateLimit(fields: AuthRateLimitLogFields): void {
+  writeLog("info", {
+    message: "auth_rate_limited",
     ...fields,
   });
 }

@@ -11,8 +11,10 @@ import {
 } from "@aws-sdk/client-dynamodb";
 
 import {
+  isMagicLinkEmailLike,
   MagicLinkAuthError,
   MagicLinkService,
+  normalizeMagicLinkEmail,
   type AuthSessionRecord,
   type MagicLinkEmailSender,
 } from "./auth/magic-link.js";
@@ -21,9 +23,14 @@ import {
 } from "./auth/acl.js";
 import {
   buildCorsHeaders,
+  isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
 } from "./auth/http-security.js";
+import {
+  AuthRateLimiter,
+  readMagicLinkRateLimitConfig,
+} from "./auth/rate-limit.js";
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
@@ -40,7 +47,7 @@ import {
 } from "./contracts/core-write.js";
 import { ThreeFcRepository } from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
-import { logRequest, logRequestError } from "./logging.js";
+import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const REGION = process.env.AWS_REGION ?? "ap-southeast-2";
@@ -109,6 +116,11 @@ const magicLinkService = new MagicLinkService(ddbClient, magicLinkEmailSender, {
   tokenTtlSeconds: MAGIC_LINK_TOKEN_TTL_SECONDS,
   sessionTtlSeconds: MAGIC_LINK_SESSION_TTL_SECONDS,
 });
+const magicLinkRateLimiter = new AuthRateLimiter(
+  ddbClient,
+  TABLE_NAME,
+  readMagicLinkRateLimitConfig(),
+);
 const repository = new ThreeFcRepository(ddbClient, TABLE_NAME);
 
 async function ensureTable(): Promise<void> {
@@ -168,6 +180,19 @@ function sendNoContentWithCors(request: IncomingMessage, response: ServerRespons
   response.end();
 }
 
+function getClientIp(request: IncomingMessage): string {
+  const forwardedFor = request.headers["x-forwarded-for"];
+  if (Array.isArray(forwardedFor) && forwardedFor[0]?.trim()) {
+    return forwardedFor[0].split(",")[0]?.trim() || "unknown";
+  }
+
+  if (typeof forwardedFor === "string" && forwardedFor.trim().length > 0) {
+    return forwardedFor.split(",")[0]?.trim() || "unknown";
+  }
+
+  return request.socket.remoteAddress ?? "unknown";
+}
+
 async function parseJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Uint8Array[] = [];
 
@@ -186,6 +211,35 @@ async function parseJsonBody(request: IncomingMessage): Promise<Record<string, u
 function badRequest(request: IncomingMessage, response: ServerResponse, message: string): number {
   sendJsonWithCors(request, response, 400, { error: message });
   return 400;
+}
+
+function forbiddenOrigin(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 403, {
+    error: "forbidden_origin",
+    message: "State-changing requests must originate from an allowed app domain.",
+  });
+  return 403;
+}
+
+function rateLimited(
+  request: IncomingMessage,
+  response: ServerResponse,
+  retryAfterSeconds: number,
+): number {
+  sendJsonWithCors(
+    request,
+    response,
+    429,
+    {
+      error: "rate_limited",
+      message: "Too many sign-in link requests. Try again later.",
+      retryAfterSeconds,
+    },
+    {
+      "Retry-After": String(retryAfterSeconds),
+    },
+  );
+  return 429;
 }
 
 function forbidden(
@@ -758,7 +812,19 @@ function handleMagicLinkError(
 async function handleMagicLinkStart(
   request: IncomingMessage,
   response: ServerResponse,
+  context: { requestId: string; route: string; method: string },
 ): Promise<number> {
+  if (
+    !isMagicLinkStartOriginPermitted(
+      context.method,
+      context.route,
+      request.headers.origin,
+      CORS_ALLOWED_ORIGINS,
+    )
+  ) {
+    return forbiddenOrigin(request, response);
+  }
+
   let body: Record<string, unknown>;
 
   try {
@@ -771,8 +837,33 @@ async function handleMagicLinkStart(
     return badRequest(request, response, "Field `email` is required.");
   }
 
+  const email = normalizeMagicLinkEmail(body.email);
+  if (!isMagicLinkEmailLike(email)) {
+    return handleMagicLinkError(
+      request,
+      new MagicLinkAuthError("invalid_email", 400, "Email must be a valid email address."),
+      response,
+    );
+  }
+
+  const rateLimitDecision = await magicLinkRateLimiter.consumeMagicLinkStart({
+    email,
+    clientIp: getClientIp(request),
+  });
+  if (!rateLimitDecision.allowed) {
+    logAuthRateLimit({
+      requestId: context.requestId,
+      route: context.route,
+      method: context.method,
+      status: 429,
+      dimension: rateLimitDecision.dimension,
+      retryAfterSeconds: rateLimitDecision.retryAfterSeconds,
+    });
+    return rateLimited(request, response, rateLimitDecision.retryAfterSeconds);
+  }
+
   try {
-    const result = await magicLinkService.start(body.email);
+    const result = await magicLinkService.start(email);
 
     sendJsonWithCors(request, response, 202, {
       status: "sent",
@@ -921,11 +1012,7 @@ async function start(): Promise<void> {
       }
 
       if (!isStateChangeOriginPermitted(method, request.headers.origin, CORS_ALLOWED_ORIGINS)) {
-        status = 403;
-        sendJsonWithCors(request, response, status, {
-          error: "forbidden_origin",
-          message: "State-changing requests must originate from an allowed app domain.",
-        });
+        status = forbiddenOrigin(request, response);
         return;
       }
 
@@ -964,7 +1051,7 @@ async function start(): Promise<void> {
       }
 
       if (method === "POST" && route === "/v1/auth/magic/start") {
-        status = await handleMagicLinkStart(request, response);
+        status = await handleMagicLinkStart(request, response, { requestId, route, method });
         return;
       }
 
