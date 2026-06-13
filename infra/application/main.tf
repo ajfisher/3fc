@@ -378,10 +378,20 @@ resource "aws_cognito_identity_provider" "google" {
   }
 
   attribute_mapping = {
-    email = "email"
+    email    = "email"
+    username = "sub"
   }
 
   lifecycle {
+    ignore_changes = [
+      provider_details["attributes_url"],
+      provider_details["attributes_url_add_attributes"],
+      provider_details["authorize_url"],
+      provider_details["oidc_issuer"],
+      provider_details["token_request_method"],
+      provider_details["token_url"],
+    ]
+
     precondition {
       condition     = local.google_oauth_client_secret != null
       error_message = "google_oauth_client_secret must be set when google_oauth_client_id is provided."
