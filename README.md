@@ -201,11 +201,16 @@ domain and the `noreply@3fc.football` from-address. Because SES identities are
 shared at the AWS account and region level, the shared domain identity is owned
 by the QA environment wrapper and reused by production.
 
-Manual SES steps still remain:
+SES production access has been granted in `ap-southeast-2`, so QA and prod can
+send transactional magic-link emails to unverified recipients. New regions or
+accounts will need their own SES production access request before unrestricted
+recipient sending works there.
 
-- Request SES production access for the AWS account/region when ready.
-- While SES remains in sandbox, verify any recipient email addresses you want to
-  use for QA magic-link testing.
+Magic-link start requests are protected by API-side rate limits backed by the
+application DynamoDB table. The `/v1/auth/magic/start` route requires an allowed
+app `Origin` header and defaults to 3 requests per email per 15 minutes and 20
+requests per client IP per 5 minutes. These limits can be tuned with the
+`MAGIC_LINK_RATE_LIMIT_*` environment variables in the API runtime.
 
 ## Social Auth Credentials (Local)
 

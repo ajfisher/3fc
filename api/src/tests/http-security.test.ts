@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildCorsHeaders,
   getCookieValue,
+  isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
   parseCookies,
@@ -54,4 +55,35 @@ test("state-changing requests enforce origin allowlist while allowing non-browse
   assert.equal(isStateChangeOriginPermitted("POST", "https://qa.3fc.football", allowlist), true);
   assert.equal(isStateChangeOriginPermitted("POST", "https://evil.example", allowlist), false);
   assert.equal(isStateChangeOriginPermitted("POST", undefined, allowlist), true);
+});
+
+test("magic-link start requires an allowed origin", () => {
+  const allowlist = ["https://qa.3fc.football"];
+
+  assert.equal(
+    isMagicLinkStartOriginPermitted(
+      "POST",
+      "/v1/auth/magic/start",
+      "https://qa.3fc.football",
+      allowlist,
+    ),
+    true,
+  );
+  assert.equal(
+    isMagicLinkStartOriginPermitted("POST", "/v1/auth/magic/start", undefined, allowlist),
+    false,
+  );
+  assert.equal(
+    isMagicLinkStartOriginPermitted(
+      "POST",
+      "/v1/auth/magic/start",
+      "https://evil.example",
+      allowlist,
+    ),
+    false,
+  );
+  assert.equal(
+    isMagicLinkStartOriginPermitted("POST", "/v1/auth/magic/complete", undefined, allowlist),
+    true,
+  );
 });

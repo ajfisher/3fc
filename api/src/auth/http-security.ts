@@ -87,3 +87,16 @@ export function isStateChangeOriginPermitted(
 
   return isOriginAllowed(origin, allowedOrigins);
 }
+
+export function isMagicLinkStartOriginPermitted(
+  method: string,
+  route: string,
+  origin: string | undefined,
+  allowedOrigins: string[],
+): boolean {
+  if (method.toUpperCase() !== "POST" || route !== "/v1/auth/magic/start") {
+    return true;
+  }
+
+  return isOriginAllowed(origin, allowedOrigins);
+}

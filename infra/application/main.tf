@@ -269,6 +269,11 @@ resource "aws_dynamodb_table" "app" {
     enabled = true
   }
 
+  ttl {
+    attribute_name = "ttlEpoch"
+    enabled        = true
+  }
+
   tags = local.app_tags
 }
 

@@ -98,11 +98,11 @@ class CryptoRandomProvider implements RandomProvider {
   }
 }
 
-function normalizeEmail(value: string): string {
+export function normalizeMagicLinkEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function isEmailLike(value: string): boolean {
+export function isMagicLinkEmailLike(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
@@ -201,9 +201,9 @@ export class MagicLinkService {
   }
 
   async start(email: string): Promise<MagicLinkStartResult> {
-    const normalizedEmail = normalizeEmail(email);
+    const normalizedEmail = normalizeMagicLinkEmail(email);
 
-    if (!isEmailLike(normalizedEmail)) {
+    if (!isMagicLinkEmailLike(normalizedEmail)) {
       throw new MagicLinkAuthError("invalid_email", 400, "Email must be a valid email address.");
     }
 

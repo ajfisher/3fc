@@ -5,6 +5,7 @@ import {
   createLambdaCoreHandler,
   type ApiGatewayHttpEvent,
 } from "../lambda-core.js";
+import type { RateLimitDecision } from "../auth/rate-limit.js";
 
 interface MockSessionRecord {
   sessionId: string;
@@ -117,6 +118,9 @@ interface HarnessConfig {
   seasons?: Record<string, MockSeasonRecord>;
   seasonSessions?: Record<string, MockSessionEntity>;
   games?: Record<string, MockGameRecord>;
+  rateLimitDecision?:
+    | RateLimitDecision
+    | ((input: { email: string; clientIp: string }) => RateLimitDecision);
 }
 
 function createEvent(input: {
@@ -125,6 +129,7 @@ function createEvent(input: {
   headers?: Record<string, string>;
   cookies?: string[];
   body?: Record<string, unknown>;
+  sourceIp?: string;
 }): ApiGatewayHttpEvent {
   return {
     rawPath: input.path,
@@ -136,6 +141,7 @@ function createEvent(input: {
       http: {
         method: input.method,
         path: input.path,
+        sourceIp: input.sourceIp,
       },
     },
   };
@@ -149,6 +155,7 @@ function createHarness(config: HarnessConfig = {}) {
   const createdSessionGames: CreatedSessionGameInput[] = [];
   const magicLinkStarts: string[] = [];
   const magicLinkCompletes: string[] = [];
+  const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
@@ -182,6 +189,16 @@ function createHarness(config: HarnessConfig = {}) {
           expiresAt: "2026-02-24T00:00:00.000Z",
           maxAgeSeconds: 86400,
         };
+      },
+    },
+    magicLinkRateLimiter: {
+      async consumeMagicLinkStart(input) {
+        magicLinkRateLimitChecks.push(input);
+        if (typeof config.rateLimitDecision === "function") {
+          return config.rateLimitDecision(input);
+        }
+
+        return config.rateLimitDecision ?? { allowed: true };
       },
     },
     repository: {
@@ -325,6 +342,7 @@ function createHarness(config: HarnessConfig = {}) {
     createdSessionGames,
     magicLinkStarts,
     magicLinkCompletes,
+    magicLinkRateLimitChecks,
     idempotencyRecords,
   };
 }
@@ -355,6 +373,10 @@ test("core lambda starts magic-link auth without requiring a session", async () 
     createEvent({
       method: "POST",
       path: "/v1/auth/magic/start",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      sourceIp: "203.0.113.10",
       body: {
         email: "player@example.com",
       },
@@ -364,12 +386,104 @@ test("core lambda starts magic-link auth without requiring a session", async () 
   assert.equal(response.statusCode, 202);
   assert.equal(harness.magicLinkStarts.length, 1);
   assert.equal(harness.magicLinkStarts[0], "player@example.com");
+  assert.deepEqual(harness.magicLinkRateLimitChecks, [
+    {
+      email: "player@example.com",
+      clientIp: "203.0.113.10",
+    },
+  ]);
   assert.deepEqual(JSON.parse(response.body), {
     status: "sent",
     email: "player@example.com",
     expiresAt: "2026-02-24T00:00:00.000Z",
     messageId: "msg-1",
   });
+});
+
+test("core lambda rejects magic-link start without an allowed origin", async () => {
+  const harness = createHarness();
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/start",
+      body: {
+        email: "player@example.com",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "forbidden_origin",
+    message: "State-changing requests must originate from an allowed app domain.",
+  });
+  assert.deepEqual(harness.magicLinkRateLimitChecks, []);
+  assert.deepEqual(harness.magicLinkStarts, []);
+});
+
+test("core lambda does not rate-limit malformed magic-link start requests", async () => {
+  const harness = createHarness({
+    rateLimitDecision: {
+      allowed: false,
+      dimension: "email",
+      retryAfterSeconds: 900,
+    },
+  });
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/start",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {},
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "Field `email` is required.",
+  });
+  assert.deepEqual(harness.magicLinkRateLimitChecks, []);
+  assert.deepEqual(harness.magicLinkStarts, []);
+});
+
+test("core lambda returns rate limit response before starting magic-link auth", async () => {
+  const harness = createHarness({
+    rateLimitDecision: {
+      allowed: false,
+      dimension: "email",
+      retryAfterSeconds: 900,
+    },
+  });
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/start",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      sourceIp: "203.0.113.10",
+      body: {
+        email: "Player@Example.COM",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 429);
+  assert.equal(response.headers["retry-after"], "900");
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "rate_limited",
+    message: "Too many sign-in link requests. Try again later.",
+    retryAfterSeconds: 900,
+  });
+  assert.deepEqual(harness.magicLinkRateLimitChecks, [
+    {
+      email: "player@example.com",
+      clientIp: "203.0.113.10",
+    },
+  ]);
+  assert.deepEqual(harness.magicLinkStarts, []);
 });
 
 test("core lambda completes magic-link auth and returns a session cookie", async () => {
