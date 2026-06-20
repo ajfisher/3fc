@@ -44,6 +44,7 @@ test("CORS headers are returned only for allowed origins", () => {
     allowed["Access-Control-Allow-Headers"],
     "content-type,x-csrf-token,idempotency-key",
   );
+  assert.match(allowed["Access-Control-Allow-Methods"], /\bPUT\b/);
 
   const denied = buildCorsHeaders("https://evil.example", allowlist);
   assert.deepEqual(denied, {});
