@@ -136,8 +136,8 @@ class InMemoryDynamoClient {
       const writes = command.input.TransactItems ?? [];
 
       for (const write of writes) {
-        if (!write.Put && !write.Delete) {
-          throw new Error("Test client only supports Put and Delete transaction items.");
+        if (!write.Put && !write.Delete && !write.ConditionCheck) {
+          throw new Error("Test client only supports Put, Delete, and ConditionCheck transaction items.");
         }
       }
 
@@ -210,6 +210,31 @@ class InMemoryDynamoClient {
             )
           ) {
             throwConditionalCancellation(write);
+          }
+        }
+
+        if (write.ConditionCheck) {
+          const key = write.ConditionCheck.Key;
+          if (!key) {
+            throw new Error("TransactWriteItemsCommand ConditionCheck is missing Key.");
+          }
+
+          const pk = this.readString(key.pk, "pk");
+          const sk = this.readString(key.sk, "sk");
+          const id = `${pk}|${sk}`;
+
+          if (
+            write.ConditionCheck.ConditionExpression &&
+            !this.conditionMatches(
+              write.ConditionCheck.ConditionExpression,
+              this.items.get(id),
+              write.ConditionCheck.ExpressionAttributeNames ?? {},
+              write.ConditionCheck.ExpressionAttributeValues ?? {},
+            )
+          ) {
+            const error = new Error("Conditional transaction request failed.");
+            (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+            throw error;
           }
         }
       }
@@ -1122,6 +1147,143 @@ async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {
     });
   }
 }
+
+test("repository finishes a game with deterministic clear-winner result", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finish-1",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finish-2",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finish-3",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.finishGameThird({ gameId: "game-1", third: 1 });
+
+  const finished = await repository.finishGame({ gameId: "game-1" });
+
+  assert.ok(finished);
+  assert.equal(finished.status, "finished");
+  assert.match(finished.finishedAt ?? "", /^2026-02-22T00:00:\d{2}\.000Z$/);
+  assert.equal(finished.result?.winnerTeamId, "yellow");
+  assert.equal(finished.result?.outcome, "win");
+  assert.equal(finished.result?.comparator, "fewest_conceded_then_most_scored");
+  assert.deepEqual(
+    finished.result?.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "yellow", scored: 2, conceded: 0, rank: 1, outcome: "win" },
+      { teamId: "red", scored: 1, conceded: 1, rank: 2, outcome: "loss" },
+      { teamId: "blue", scored: 0, conceded: 2, rank: 3, outcome: "loss" },
+    ],
+  );
+  assert.deepEqual(await repository.finishGame({ gameId: "game-1" }), finished);
+});
+
+test("repository finishes a game with full draw result", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+
+  const finished = await repository.finishGame({ gameId: "game-1" });
+
+  assert.ok(finished);
+  assert.equal(finished.status, "finished");
+  assert.equal(finished.result?.winnerTeamId, null);
+  assert.equal(finished.result?.outcome, "draw");
+  assert.deepEqual(
+    finished.result?.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+      { teamId: "blue", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+      { teamId: "yellow", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+    ],
+  );
+});
+
+test("repository recomputes finished game result after goal corrections", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finished-correction",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.finishGameThird({ gameId: "game-1", third: 1 });
+  const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeCorrection?.result?.winnerTeamId, "red");
+
+  await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-finished-correction",
+    actorUserId: "admin@example.com",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-blue",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "blue");
+  assert.deepEqual(
+    finishedAfterCorrection?.result?.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "blue", scored: 1, conceded: 0, rank: 1, outcome: "win" },
+      { teamId: "yellow", scored: 0, conceded: 0, rank: 2, outcome: "loss" },
+      { teamId: "red", scored: 0, conceded: 1, rank: 3, outcome: "loss" },
+    ],
+  );
+});
 
 test("repository creates standard goals with timer stamping, mixed-team assists, and persisted tallies", async () => {
   const { repository, client } = createRepositoryHarness();

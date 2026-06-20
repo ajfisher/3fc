@@ -8,6 +8,7 @@ import {
   isThirdLengthMinutes,
   isThirdNumber,
   TEAM_IDS,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdNumber,
@@ -108,6 +109,25 @@ interface MagicLinkServiceContract extends SessionLookup {
     expiresAt: string;
     maxAgeSeconds: number;
   }>;
+}
+
+interface RepositoryGameRecord {
+  gameId: string;
+  leagueId: string;
+  seasonId: string;
+  sessionId: string;
+  status: "scheduled" | "live" | "finished";
+  gameStartTs: string;
+  thirdLengthMinutes: ThirdLengthMinutes;
+  thirds: Array<{
+    third: ThirdNumber;
+    startedAt: string | null;
+    finishedAt: string | null;
+  }>;
+  finishedAt: string | null;
+  result: GameResult | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface RepositoryContract {
@@ -230,22 +250,7 @@ interface RepositoryContract {
     status?: GameStatus;
     gameStartTs: string;
     thirdLengthMinutes?: ThirdLengthMinutes;
-  }): Promise<{
-    gameId: string;
-    leagueId: string;
-    seasonId: string;
-    sessionId: string;
-    gameStartTs: string;
-    thirdLengthMinutes: ThirdLengthMinutes;
-    thirds: Array<{
-      third: ThirdNumber;
-      startedAt: string | null;
-      finishedAt: string | null;
-    }>;
-    status: "scheduled" | "live" | "finished";
-    createdAt: string;
-    updatedAt: string;
-  }>;
+  }): Promise<RepositoryGameRecord>;
   createSessionGame(input: {
     sessionId: string;
     gameId: string;
@@ -253,109 +258,17 @@ interface RepositoryContract {
     leagueId: string;
     seasonId: string;
   }): Promise<unknown>;
-  listGamesForSeason(
-    seasonId: string,
-  ): Promise<
-    Array<{
-      gameId: string;
-      leagueId: string;
-      seasonId: string;
-      sessionId: string;
-      status: "scheduled" | "live" | "finished";
-      gameStartTs: string;
-      thirdLengthMinutes: ThirdLengthMinutes;
-      thirds: Array<{
-        third: ThirdNumber;
-        startedAt: string | null;
-        finishedAt: string | null;
-      }>;
-      createdAt: string;
-      updatedAt: string;
-    }>
-  >;
-  getGame(
-    gameId: string,
-  ): Promise<
-    | {
-        gameId: string;
-        leagueId: string;
-        seasonId: string;
-        sessionId: string;
-        status: "scheduled" | "live" | "finished";
-        gameStartTs: string;
-        thirdLengthMinutes: ThirdLengthMinutes;
-        thirds: Array<{
-          third: ThirdNumber;
-          startedAt: string | null;
-          finishedAt: string | null;
-        }>;
-        createdAt: string;
-        updatedAt: string;
-      }
-    | null
-  >;
+  listGamesForSeason(seasonId: string): Promise<RepositoryGameRecord[]>;
+  getGame(gameId: string): Promise<RepositoryGameRecord | null>;
   updateGame(input: {
     gameId: string;
     status?: "scheduled" | "live" | "finished";
     gameStartTs?: string;
     thirdLengthMinutes?: ThirdLengthMinutes;
-  }): Promise<
-    | {
-        gameId: string;
-        leagueId: string;
-        seasonId: string;
-        sessionId: string;
-        status: "scheduled" | "live" | "finished";
-        gameStartTs: string;
-        thirdLengthMinutes: ThirdLengthMinutes;
-        thirds: Array<{
-          third: ThirdNumber;
-          startedAt: string | null;
-          finishedAt: string | null;
-        }>;
-        createdAt: string;
-        updatedAt: string;
-      }
-    | null
-  >;
-  startGameThird(input: { gameId: string; third: ThirdNumber }): Promise<
-    | {
-        gameId: string;
-        leagueId: string;
-        seasonId: string;
-        sessionId: string;
-        status: "scheduled" | "live" | "finished";
-        gameStartTs: string;
-        thirdLengthMinutes: ThirdLengthMinutes;
-        thirds: Array<{
-          third: ThirdNumber;
-          startedAt: string | null;
-          finishedAt: string | null;
-        }>;
-        createdAt: string;
-        updatedAt: string;
-      }
-    | null
-  >;
-  finishGameThird(input: { gameId: string; third: ThirdNumber }): Promise<
-    | {
-        gameId: string;
-        leagueId: string;
-        seasonId: string;
-        sessionId: string;
-        status: "scheduled" | "live" | "finished";
-        gameStartTs: string;
-        thirdLengthMinutes: ThirdLengthMinutes;
-        thirds: Array<{
-          third: ThirdNumber;
-          startedAt: string | null;
-          finishedAt: string | null;
-        }>;
-        createdAt: string;
-        updatedAt: string;
-      }
-    | null
-  >;
+  }): Promise<RepositoryGameRecord | null>;
+  startGameThird(input: { gameId: string; third: ThirdNumber }): Promise<RepositoryGameRecord | null>;
+  finishGameThird(input: { gameId: string; third: ThirdNumber }): Promise<RepositoryGameRecord | null>;
+  finishGame(input: { gameId: string }): Promise<RepositoryGameRecord | null>;
   deleteGame(gameId: string): Promise<boolean>;
   deleteSeason(seasonId: string): Promise<boolean>;
   deleteLeague(leagueId: string): Promise<boolean>;
@@ -796,22 +709,7 @@ function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
   return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
 }
 
-function buildGameResponse(game: {
-  gameId: string;
-  leagueId: string;
-  seasonId: string;
-  sessionId: string;
-  status: "scheduled" | "live" | "finished";
-  gameStartTs: string;
-  thirdLengthMinutes: ThirdLengthMinutes;
-  thirds: Array<{
-    third: ThirdNumber;
-    startedAt: string | null;
-    finishedAt: string | null;
-  }>;
-  createdAt: string;
-  updatedAt: string;
-}) {
+function buildGameResponse(game: RepositoryGameRecord) {
   return {
     ...game,
     timer: buildGameTimerState({
@@ -875,6 +773,37 @@ function goalCorrectionErrorResponse(
       message: error.message,
     },
     buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+async function buildFinishedGameMutationBlock(input: {
+  repository: RepositoryContract;
+  game: Pick<RepositoryGameRecord, "gameId" | "leagueId" | "status">;
+  sessionEmail: string;
+  origin: string | undefined;
+  allowedOrigins: string[];
+}): Promise<ApiGatewayHttpResponse | null> {
+  if (input.game.status !== "finished") {
+    return null;
+  }
+
+  const access = await ensureLeagueAccess(
+    input.repository,
+    input.game.leagueId,
+    input.sessionEmail,
+  );
+  if (access.role === "admin") {
+    return null;
+  }
+
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "game_finished",
+      message: `Game ${input.game.gameId} is finished. Admin role is required to mutate finished games.`,
+    },
+    buildCorsHeaders(input.origin, input.allowedOrigins),
   );
 }
 
@@ -2119,6 +2048,24 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return badRequest(origin, dependencies.corsAllowedOrigins, "Third must be 1, 2, or 3.");
           }
 
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
+          }
+
           let updated;
           try {
             updated = await dependencies.repository.startGameThird({ gameId, third });
@@ -2157,6 +2104,24 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return badRequest(origin, dependencies.corsAllowedOrigins, "Third must be 1, 2, or 3.");
           }
 
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
+          }
+
           let updated;
           try {
             updated = await dependencies.repository.finishGameThird({ gameId, third });
@@ -2184,6 +2149,76 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             buildGameResponse(updated),
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
+        }
+
+        const finishGameMatch = route.match(/^\/v1\/games\/([^/]+)\/finish$/);
+        if (method === "POST" && finishGameMatch) {
+          const gameId = decodeRouteParam(finishGameMatch[1]);
+
+          let mutationResponse: ApiGatewayHttpResponse;
+          try {
+            mutationResponse = await executeIdempotentMutation({
+              repository: dependencies.repository,
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload: {},
+              origin,
+              allowedOrigins: dependencies.corsAllowedOrigins,
+              execute: async () => {
+                const currentGame = await dependencies.repository.getGame(gameId);
+                if (!currentGame) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Game ${gameId} was not found.`,
+                  );
+                }
+
+                const finishedBlock = await buildFinishedGameMutationBlock({
+                  repository: dependencies.repository,
+                  game: currentGame,
+                  sessionEmail: session.email,
+                  origin,
+                  allowedOrigins: dependencies.corsAllowedOrigins,
+                });
+                if (finishedBlock) {
+                  return finishedBlock;
+                }
+
+                await ensureGameTeamsForGame(dependencies.repository, currentGame);
+                const result = await dependencies.repository.finishGame({ gameId });
+                if (!result) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Game ${gameId} was not found.`,
+                  );
+                }
+
+                return createJsonResponse(
+                  200,
+                  buildGameResponse(result),
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              },
+            });
+          } catch (error) {
+            if (error instanceof GameTimerTransitionError) {
+              status = 409;
+              return timerTransitionConflictResponse(
+                origin,
+                dependencies.corsAllowedOrigins,
+                error,
+              );
+            }
+
+            throw error;
+          }
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals$/);
@@ -2232,6 +2267,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     dependencies.corsAllowedOrigins,
                     `Game ${gameId} was not found.`,
                   );
+                }
+
+                const finishedBlock = await buildFinishedGameMutationBlock({
+                  repository: dependencies.repository,
+                  game: currentGame,
+                  sessionEmail: session.email,
+                  origin,
+                  allowedOrigins: dependencies.corsAllowedOrigins,
+                });
+                if (finishedBlock) {
+                  return finishedBlock;
                 }
 
                 if (!currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
@@ -2334,6 +2380,26 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               origin,
               allowedOrigins: dependencies.corsAllowedOrigins,
               execute: async () => {
+                const currentGame = await dependencies.repository.getGame(gameId);
+                if (!currentGame) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Game ${gameId} was not found.`,
+                  );
+                }
+
+                const finishedBlock = await buildFinishedGameMutationBlock({
+                  repository: dependencies.repository,
+                  game: currentGame,
+                  sessionEmail: session.email,
+                  origin,
+                  allowedOrigins: dependencies.corsAllowedOrigins,
+                });
+                if (finishedBlock) {
+                  return finishedBlock;
+                }
+
                 const result = await dependencies.repository.updateGoal({
                   gameId,
                   eventId,
@@ -2403,6 +2469,26 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               origin,
               allowedOrigins: dependencies.corsAllowedOrigins,
               execute: async () => {
+                const currentGame = await dependencies.repository.getGame(gameId);
+                if (!currentGame) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Game ${gameId} was not found.`,
+                  );
+                }
+
+                const finishedBlock = await buildFinishedGameMutationBlock({
+                  repository: dependencies.repository,
+                  game: currentGame,
+                  sessionEmail: session.email,
+                  origin,
+                  allowedOrigins: dependencies.corsAllowedOrigins,
+                });
+                if (finishedBlock) {
+                  return finishedBlock;
+                }
+
                 const result = await dependencies.repository.deleteGoal({
                   gameId,
                   eventId,
@@ -2487,6 +2573,26 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               origin,
               allowedOrigins: dependencies.corsAllowedOrigins,
               execute: async () => {
+                const currentGame = await dependencies.repository.getGame(gameId);
+                if (!currentGame) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Game ${gameId} was not found.`,
+                  );
+                }
+
+                const finishedBlock = await buildFinishedGameMutationBlock({
+                  repository: dependencies.repository,
+                  game: currentGame,
+                  sessionEmail: session.email,
+                  origin,
+                  allowedOrigins: dependencies.corsAllowedOrigins,
+                });
+                if (finishedBlock) {
+                  return finishedBlock;
+                }
+
                 const result = await dependencies.repository.undoLastGoal({
                   gameId,
                   actorUserId: session.email,
@@ -2744,6 +2850,26 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
             execute: async () => {
+              const currentGame = await dependencies.repository.getGame(gameId);
+              if (!currentGame) {
+                return notFound(
+                  origin,
+                  dependencies.corsAllowedOrigins,
+                  `Game ${gameId} was not found.`,
+                );
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock({
+                repository: dependencies.repository,
+                game: currentGame,
+                sessionEmail: session.email,
+                origin,
+                allowedOrigins: dependencies.corsAllowedOrigins,
+              });
+              if (finishedBlock) {
+                return finishedBlock;
+              }
+
               const player = await dependencies.repository.createPlayer({
                 playerId,
                 nickname: parsedBody.data.nickname,
@@ -2806,6 +2932,18 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           if (!game) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
           }
 
           let rawBody: Record<string, unknown>;

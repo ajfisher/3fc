@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: |
     Authenticated core routes for league/season/session/game creation, M2 roster setup,
-    third timer control, and goal scoring reads and writes.
+    third timer control, goal scoring reads and writes, and game finish.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
@@ -182,6 +182,34 @@ paths:
       responses:
         "200":
           description: Third finished
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/games/{gameId}/finish:
+    post:
+      summary: Finish a game and compute final result
+      operationId: finishGame
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Game finished with deterministic winner or draw result
           content:
             application/json:
               schema:
@@ -971,6 +999,8 @@ components:
         - gameStartTs
         - thirdLengthMinutes
         - thirds
+        - finishedAt
+        - result
         - timer
         - createdAt
         - updatedAt
@@ -1003,6 +1033,15 @@ components:
           maxItems: 3
           items:
             $ref: "#/components/schemas/ThirdTimerSegment"
+        finishedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/GameResult"
+            - type: "null"
         timer:
           $ref: "#/components/schemas/GameTimerState"
         createdAt:
@@ -1011,6 +1050,80 @@ components:
         updatedAt:
           type: string
           format: date-time
+    GameResult:
+      type: object
+      required:
+        - winnerTeamId
+        - outcome
+        - comparator
+        - computedAt
+        - teams
+      properties:
+        winnerTeamId:
+          type:
+            - string
+            - "null"
+          enum:
+            - red
+            - blue
+            - yellow
+            - null
+        outcome:
+          type: string
+          enum:
+            - win
+            - draw
+        comparator:
+          type: string
+          enum:
+            - fewest_conceded_then_most_scored
+        computedAt:
+          type: string
+          format: date-time
+        teams:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/GameResultTeam"
+    GameResultTeam:
+      type: object
+      required:
+        - teamId
+        - name
+        - color
+        - scored
+        - conceded
+        - rank
+        - outcome
+      properties:
+        teamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        name:
+          type: string
+        color:
+          type:
+            - string
+            - "null"
+        scored:
+          type: integer
+          minimum: 0
+        conceded:
+          type: integer
+          minimum: 0
+        rank:
+          type: integer
+          minimum: 1
+        outcome:
+          type: string
+          enum:
+            - win
+            - draw
+            - loss
     ThirdTimerSegment:
       type: object
       required:

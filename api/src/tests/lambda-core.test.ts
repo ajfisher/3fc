@@ -11,6 +11,7 @@ import {
   DEFAULT_THIRD_LENGTH_MINUTES,
   formatThirdDisplayTime,
   TEAM_IDS,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdTimerSegment,
@@ -70,12 +71,14 @@ interface MockGameRecord {
   gameStartTs: string;
   thirdLengthMinutes: ThirdLengthMinutes;
   thirds: ThirdTimerSegment[];
+  finishedAt: string | null;
+  result: GameResult | null;
   createdAt: string;
   updatedAt: string;
 }
 
-type MockGameInput = Omit<MockGameRecord, "thirdLengthMinutes" | "thirds"> &
-  Partial<Pick<MockGameRecord, "thirdLengthMinutes" | "thirds">>;
+type MockGameInput = Omit<MockGameRecord, "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> &
+  Partial<Pick<MockGameRecord, "thirdLengthMinutes" | "thirds" | "finishedAt" | "result">>;
 
 interface MockSeasonTeamRecord {
   seasonId: string;
@@ -269,6 +272,8 @@ function createHarness(config: HarnessConfig = {}) {
         ...game,
         thirdLengthMinutes: game.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
         thirds: game.thirds ?? createDefaultThirdTimerSegments(),
+        finishedAt: game.finishedAt ?? null,
+        result: game.result ?? null,
       },
     ]),
   );
@@ -336,6 +341,63 @@ function createHarness(config: HarnessConfig = {}) {
 
   function latestGoal(gameId: string): MockGoalEventRecord | null {
     return sortedGoalTimeline(gameId).at(-1) ?? null;
+  }
+
+  function buildMockGameResult(gameId: string, computedAt: string): GameResult {
+    const rankedTeams = sortedGameTeams(gameId).sort((left, right) => {
+      const concededSort = left.conceded - right.conceded;
+      if (concededSort !== 0) {
+        return concededSort;
+      }
+
+      const scoredSort = right.scored - left.scored;
+      if (scoredSort !== 0) {
+        return scoredSort;
+      }
+
+      return TEAM_IDS.indexOf(left.teamId) - TEAM_IDS.indexOf(right.teamId);
+    });
+    const topTeam = rankedTeams[0] ?? null;
+    const topTiedTeams = topTeam
+      ? rankedTeams.filter(
+          (team) => team.conceded === topTeam.conceded && team.scored === topTeam.scored,
+        )
+      : [];
+    const winnerTeamId = topTiedTeams.length === 1 ? topTiedTeams[0].teamId : null;
+    let previousTeam: MockGameTeamRecord | null = null;
+    let previousRank = 0;
+
+    return {
+      winnerTeamId,
+      outcome: winnerTeamId ? "win" : "draw",
+      comparator: "fewest_conceded_then_most_scored",
+      computedAt,
+      teams: rankedTeams.map((team, index) => {
+        const samePosition =
+          previousTeam !== null &&
+          previousTeam.conceded === team.conceded &&
+          previousTeam.scored === team.scored;
+        const rank = samePosition ? previousRank : index + 1;
+        previousTeam = team;
+        previousRank = rank;
+
+        return {
+          teamId: team.teamId,
+          name: team.name,
+          color: team.color,
+          scored: team.scored,
+          conceded: team.conceded,
+          rank,
+          outcome: winnerTeamId
+            ? team.teamId === winnerTeamId
+              ? "win"
+              : "loss"
+            : topTeam && team.conceded === topTeam.conceded && team.scored === topTeam.scored
+              ? "draw"
+              : "loss",
+        };
+      }),
+    };
   }
 
   function validateMockGoal(goal: {
@@ -446,6 +508,16 @@ function createHarness(config: HarnessConfig = {}) {
         ...team,
         scored: teamCounts.scored,
         conceded: teamCounts.conceded,
+        updatedAt: "2026-02-23T00:00:04.000Z",
+      });
+    }
+
+    const game = games.get(gameId);
+    if (game?.status === "finished") {
+      games.set(gameId, {
+        ...game,
+        finishedAt: game.finishedAt ?? "2026-02-23T00:00:04.000Z",
+        result: buildMockGameResult(gameId, "2026-02-23T00:00:04.000Z"),
         updatedAt: "2026-02-23T00:00:04.000Z",
       });
     }
@@ -614,6 +686,8 @@ function createHarness(config: HarnessConfig = {}) {
           gameStartTs: input.gameStartTs,
           thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
           thirds: createDefaultThirdTimerSegments(),
+          finishedAt: null,
+          result: null,
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
@@ -758,6 +832,35 @@ function createHarness(config: HarnessConfig = {}) {
         games.set(input.gameId, updated);
         return updated;
       },
+      async finishGame(input) {
+        const existing = games.get(input.gameId);
+        if (!existing) {
+          return null;
+        }
+
+        if (existing.status === "finished" && existing.result && existing.finishedAt) {
+          return existing;
+        }
+
+        const runningThird = existing.thirds.find((third) => third.startedAt && !third.finishedAt);
+        if (runningThird) {
+          throw new GameTimerTransitionError(
+            "third_running",
+            `Third ${runningThird.third} must be finished before the game can be finished.`,
+          );
+        }
+
+        const finishedAt = "2026-02-23T00:00:05.000Z";
+        const updated = {
+          ...existing,
+          status: "finished" as const,
+          finishedAt,
+          result: buildMockGameResult(input.gameId, finishedAt),
+          updatedAt: finishedAt,
+        };
+        games.set(input.gameId, updated);
+        return updated;
+      },
       async deleteGame(gameId: string) {
         return games.delete(gameId);
       },
@@ -840,6 +943,14 @@ function createHarness(config: HarnessConfig = {}) {
         const game = games.get(input.gameId);
         if (!game) {
           return null;
+        }
+
+        if (game.status === "finished") {
+          throw new GoalCreationError(
+            "game_finished",
+            409,
+            "Cannot create a goal after the game is finished.",
+          );
         }
 
         const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
@@ -1881,6 +1992,294 @@ test("core lambda rejects viewer third timer mutations through ACL", async () =>
     code: "scorekeeper_required",
     message: "Admin or scorekeeper role is required for league league-1.",
   });
+});
+
+test("core lambda finishes a game with clear winner and idempotency replay", async () => {
+  const harness = createGoalHarness();
+  const goalPayloads = [
+    {
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    },
+    {
+      scoringTeamId: "yellow",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-yellow",
+      assistPlayerIds: [],
+      ownGoal: false,
+    },
+    {
+      scoringTeamId: "yellow",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-yellow",
+      assistPlayerIds: [],
+      ownGoal: false,
+    },
+  ];
+
+  for (const [index, body] of goalPayloads.entries()) {
+    const goalResponse = await harness.handler(
+      createEvent({
+        method: "POST",
+        path: "/v1/games/game-1/goals",
+        headers: {
+          Cookie: "threefc_session=session-1",
+          "Idempotency-Key": `finish-goal-${index + 1}`,
+        },
+        body,
+      }),
+    );
+    assert.equal(goalResponse.statusCode, 201);
+  }
+
+  const finishThirdResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+  assert.equal(finishThirdResponse.statusCode, 200);
+
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-game-1",
+      },
+    }),
+  );
+  const replayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-game-1",
+      },
+    }),
+  );
+
+  assert.equal(finishResponse.statusCode, 200);
+  assert.equal(replayResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(replayResponse.body), JSON.parse(finishResponse.body));
+  const body = JSON.parse(finishResponse.body) as {
+    status: string;
+    finishedAt: string | null;
+    result: GameResult;
+  };
+  assert.equal(body.status, "finished");
+  assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
+  assert.equal(body.result.winnerTeamId, "yellow");
+  assert.deepEqual(
+    body.result.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "yellow", scored: 2, conceded: 0, rank: 1, outcome: "win" },
+      { teamId: "red", scored: 1, conceded: 1, rank: 2, outcome: "loss" },
+      { teamId: "blue", scored: 0, conceded: 2, rank: 3, outcome: "loss" },
+    ],
+  );
+});
+
+test("core lambda finishes a game with full draw result", async () => {
+  const harness = createGoalHarness({ runningThird: false });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-draw-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as {
+    status: string;
+    result: GameResult;
+  };
+  assert.equal(body.status, "finished");
+  assert.equal(body.result.winnerTeamId, null);
+  assert.equal(body.result.outcome, "draw");
+  assert.deepEqual(
+    body.result.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+      { teamId: "blue", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+      { teamId: "yellow", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+    ],
+  );
+});
+
+test("core lambda returns idempotency conflict for reused finish key with mismatched record", async () => {
+  const harness = createGoalHarness({ runningThird: false });
+  harness.idempotencyRecords.set("scorekeeper@example.com:POST:/v1/games/game-1/finish:finish-conflict", {
+    scope: "scorekeeper@example.com:POST:/v1/games/game-1/finish",
+    key: "finish-conflict",
+    requestHash: "different-hash",
+    responseStatusCode: 200,
+    responseBody: "{}",
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-conflict",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "idempotency_conflict",
+    message: "Idempotency key has already been used with a different payload.",
+  });
+});
+
+test("core lambda rejects non-admin goal creation after finish", async () => {
+  const harness = createGoalHarness({ runningThird: false });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-create-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "post-finish-goal-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
+  });
+  assert.equal(harness.createdGoals.length, 0);
+});
+
+test("core lambda allows admin goal correction after finish and refreshes result", async () => {
+  const harness = createGoalHarness({ email: "admin@example.com", role: "admin" });
+  const createResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "admin-finish-goal-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(createResponse.statusCode, 201);
+  const createdBody = JSON.parse(createResponse.body) as { goal: { eventId: string } };
+
+  const finishThirdResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+  assert.equal(finishThirdResponse.statusCode, 200);
+
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "admin-finish-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+  assert.equal((JSON.parse(finishResponse.body) as { result: GameResult }).result.winnerTeamId, "red");
+
+  const updateResponse = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: `/v1/games/game-1/goals/${createdBody.goal.eventId}`,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "admin-finished-update-1",
+      },
+      body: {
+        scoringTeamId: "blue",
+        concedingTeamId: "red",
+        scorerPlayerId: "player-blue",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(updateResponse.statusCode, 200);
+
+  const gameResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+  const gameBody = JSON.parse(gameResponse.body) as { result: GameResult };
+  assert.equal(gameResponse.statusCode, 200);
+  assert.equal(gameBody.result.winnerTeamId, "blue");
 });
 
 test("core lambda creates goals with idempotency replay and conflict behavior", async () => {

@@ -15,6 +15,7 @@ import {
   isThirdLengthMinutes,
   isThirdNumber,
   TEAM_IDS,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdNumber,
@@ -345,6 +346,8 @@ function buildGameResponse(game: {
     startedAt: string | null;
     finishedAt: string | null;
   }>;
+  finishedAt: string | null;
+  result: GameResult | null;
   createdAt: string;
   updatedAt: string;
 }) {
@@ -403,6 +406,44 @@ function goalCorrectionError(
     message: error.message,
   });
   return error.statusCode;
+}
+
+async function buildFinishedGameMutationBlock(
+  game: { gameId: string; leagueId: string; status: "scheduled" | "live" | "finished" },
+  sessionEmail: string,
+): Promise<{ statusCode: 409; payload: { error: "conflict"; code: "game_finished"; message: string } } | null> {
+  if (game.status !== "finished") {
+    return null;
+  }
+
+  const access = await ensureLeagueAccess(game.leagueId, sessionEmail);
+  if (access.role === "admin") {
+    return null;
+  }
+
+  return {
+    statusCode: 409,
+    payload: {
+      error: "conflict",
+      code: "game_finished",
+      message: `Game ${game.gameId} is finished. Admin role is required to mutate finished games.`,
+    },
+  };
+}
+
+async function ensureFinishedGameMutationAllowed(
+  request: IncomingMessage,
+  response: ServerResponse,
+  game: { gameId: string; leagueId: string; status: "scheduled" | "live" | "finished" },
+  sessionEmail: string,
+): Promise<{ allowed: boolean; status: number }> {
+  const block = await buildFinishedGameMutationBlock(game, sessionEmail);
+  if (!block) {
+    return { allowed: true, status: 200 };
+  }
+
+  sendJsonWithCors(request, response, block.statusCode, block.payload);
+  return { allowed: false, status: block.statusCode };
 }
 
 function toPublicPlayer(player: {
@@ -1849,10 +1890,36 @@ async function start(): Promise<void> {
 
       const startThirdMatch = route.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/);
       if (method === "POST" && startThirdMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
         const gameId = decodeURIComponent(startThirdMatch[1]);
         const third = parseThirdRouteParam(decodeURIComponent(startThirdMatch[2]));
         if (!third) {
           status = badRequest(request, response, "Third must be 1, 2, or 3.");
+          return;
+        }
+
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const finishedLock = await ensureFinishedGameMutationAllowed(
+          request,
+          response,
+          game,
+          authGate.session.email,
+        );
+        if (!finishedLock.allowed) {
+          status = finishedLock.status;
           return;
         }
 
@@ -1880,10 +1947,36 @@ async function start(): Promise<void> {
 
       const finishThirdMatch = route.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/);
       if (method === "POST" && finishThirdMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
         const gameId = decodeURIComponent(finishThirdMatch[1]);
         const third = parseThirdRouteParam(decodeURIComponent(finishThirdMatch[2]));
         if (!third) {
           status = badRequest(request, response, "Third must be 1, 2, or 3.");
+          return;
+        }
+
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const finishedLock = await ensureFinishedGameMutationAllowed(
+          request,
+          response,
+          game,
+          authGate.session.email,
+        );
+        if (!finishedLock.allowed) {
+          status = finishedLock.status;
           return;
         }
 
@@ -1906,6 +1999,80 @@ async function start(): Promise<void> {
 
         status = 200;
         sendJsonWithCors(request, response, status, buildGameResponse(updated));
+        return;
+      }
+
+      const finishGameMatch = route.match(/^\/v1\/games\/([^/]+)\/finish$/);
+      if (method === "POST" && finishGameMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(finishGameMatch[1]);
+        const sessionEmail = authGate.session.email;
+
+        try {
+          status = await executeIdempotentMutation({
+            request,
+            response,
+            sessionEmail,
+            method,
+            route,
+            requestPayload: {},
+            execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
+              await ensureGameTeamsForGame(currentGame);
+              const result = await repository.finishGame({ gameId });
+              if (!result) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              return {
+                statusCode: 200,
+                payload: buildGameResponse(result),
+              };
+            },
+          });
+        } catch (error) {
+          if (error instanceof GameTimerTransitionError) {
+            status = timerTransitionConflict(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
         return;
       }
 
@@ -1959,6 +2126,17 @@ async function start(): Promise<void> {
                     error: "not_found",
                     message: `Game ${gameId} was not found.`,
                   },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
                 };
               }
 
@@ -2064,6 +2242,28 @@ async function start(): Promise<void> {
             route,
             requestPayload: parsedBody.data,
             execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
               const result = await repository.updateGoal({
                 gameId,
                 eventId,
@@ -2139,6 +2339,28 @@ async function start(): Promise<void> {
             route,
             requestPayload,
             execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
               const result = await repository.deleteGoal({
                 gameId,
                 eventId,
@@ -2225,6 +2447,28 @@ async function start(): Promise<void> {
             route,
             requestPayload: parsedBody.data,
             execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
               const result = await repository.undoLastGoal({
                 gameId,
                 actorUserId: sessionEmail,
@@ -2478,14 +2722,37 @@ async function start(): Promise<void> {
         }
 
         const playerId = parsedBody.data.playerId ?? `player-${randomUUID()}`;
+        const sessionEmail = authGate.session.email;
         status = await executeIdempotentMutation({
           request,
           response,
-          sessionEmail: authGate.session.email,
+          sessionEmail,
           method,
           route,
           requestPayload: parsedBody.data,
           execute: async () => {
+            const currentGame = await repository.getGame(gameId);
+            if (!currentGame) {
+              return {
+                statusCode: 404,
+                payload: {
+                  error: "not_found",
+                  message: `Game ${gameId} was not found.`,
+                },
+              };
+            }
+
+            const finishedBlock = await buildFinishedGameMutationBlock(
+              currentGame,
+              sessionEmail,
+            );
+            if (finishedBlock) {
+              return {
+                statusCode: finishedBlock.statusCode,
+                payload: finishedBlock.payload,
+              };
+            }
+
             const player = await repository.createPlayer({
               playerId,
               nickname: parsedBody.data.nickname,
@@ -2546,6 +2813,26 @@ async function start(): Promise<void> {
         const game = await repository.getGame(gameId);
         if (!game) {
           status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const finishedLock = await ensureFinishedGameMutationAllowed(
+          request,
+          response,
+          game,
+          authGate.session.email,
+        );
+        if (!finishedLock.allowed) {
+          status = finishedLock.status;
           return;
         }
 

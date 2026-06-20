@@ -36,10 +36,12 @@ class InMemoryAclLookup implements AclLookup {
   }
 }
 
-function defaultTimerFields(): Pick<GameRecord, "thirdLengthMinutes" | "thirds"> {
+function defaultGameStateFields(): Pick<GameRecord, "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> {
   return {
     thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
     thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
   };
 }
 
@@ -77,6 +79,10 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
   });
   assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/thirds/1/finish"), {
     operation: "finishGameThird",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/finish"), {
+    operation: "finishGame",
     gameId: "game-1",
   });
   assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/goals"), {
@@ -201,7 +207,7 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -254,7 +260,7 @@ test("game-scoped timer mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -307,7 +313,7 @@ test("game-scoped goal mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "live",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -360,7 +366,7 @@ test("game team override mutation rejects scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -409,7 +415,7 @@ test("game player creation mutation rejects viewers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },

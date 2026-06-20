@@ -1,4 +1,10 @@
-import type { TeamId, ThirdLengthMinutes, ThirdNumber, ThirdTimerSegment } from "@3fc/contracts";
+import type {
+  GameResult,
+  TeamId,
+  ThirdLengthMinutes,
+  ThirdNumber,
+  ThirdTimerSegment,
+} from "@3fc/contracts";
 
 export type GameStatus = "scheduled" | "live" | "finished";
 export type LeagueRole = "admin" | "scorekeeper" | "viewer";
@@ -60,6 +66,8 @@ export interface GameRecord {
   gameStartTs: string;
   thirdLengthMinutes: ThirdLengthMinutes;
   thirds: ThirdTimerSegment[];
+  finishedAt: string | null;
+  result: GameResult | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -337,6 +345,10 @@ export interface UndoLastGoalInput {
   operationId?: string | null;
   operationRequestHash?: string | null;
   expectedEventId: string;
+}
+
+export interface FinishGameInput {
+  gameId: string;
 }
 
 export interface ThirdTransitionInput {

@@ -19,6 +19,7 @@ import {
   THIRD_NUMBERS,
   validateAssistPlayerIds,
   TEAM_IDS,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdNumber,
@@ -63,6 +64,7 @@ import type {
   CreateTeamInput,
   DeleteGoalInput,
   DeleteGoalResult,
+  FinishGameInput,
   GameTeamRecord,
   GamePlayerRecord,
   GameRecord,
@@ -259,6 +261,48 @@ function normalizeThirdTimerSegments(value: unknown): ThirdTimerSegment[] {
   });
 }
 
+function normalizeGameResultPayload(value: unknown): GameResult | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const raw = value as Partial<GameResult>;
+  if (!Array.isArray(raw.teams)) {
+    return null;
+  }
+
+  const winnerTeamId = raw.winnerTeamId ?? null;
+  if (winnerTeamId !== null && !TEAM_IDS.includes(winnerTeamId as TeamId)) {
+    return null;
+  }
+
+  return {
+    winnerTeamId,
+    outcome: raw.outcome === "win" ? "win" : "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt: typeof raw.computedAt === "string" ? raw.computedAt : "",
+    teams: raw.teams
+      .filter(
+        (team): team is GameResult["teams"][number] =>
+          typeof team === "object" &&
+          team !== null &&
+          TEAM_IDS.includes((team as { teamId?: unknown }).teamId as TeamId),
+      )
+      .map((team) => ({
+        teamId: team.teamId,
+        name: typeof team.name === "string" ? team.name : "",
+        color: typeof team.color === "string" ? team.color : null,
+        scored: normalizeNonNegativeInteger(team.scored),
+        conceded: normalizeNonNegativeInteger(team.conceded),
+        rank: normalizeNonNegativeInteger(team.rank),
+        outcome:
+          team.outcome === "win" || team.outcome === "draw" || team.outcome === "loss"
+            ? team.outcome
+            : "loss",
+      })),
+  };
+}
+
 function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "updatedAt"> {
   const raw = data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
 
@@ -271,6 +315,8 @@ function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "up
     gameStartTs: raw.gameStartTs ?? "",
     thirdLengthMinutes: normalizeThirdLengthMinutes(raw.thirdLengthMinutes),
     thirds: normalizeThirdTimerSegments(raw.thirds),
+    finishedAt: typeof raw.finishedAt === "string" ? raw.finishedAt : null,
+    result: normalizeGameResultPayload(raw.result),
   };
 }
 
@@ -433,6 +479,76 @@ function compareTeamIds(left: TeamId, right: TeamId): number {
 
 function sortGameTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
   return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
+}
+
+function compareGameResultTeams(
+  left: Pick<GameTeamRecord, "teamId" | "scored" | "conceded">,
+  right: Pick<GameTeamRecord, "teamId" | "scored" | "conceded">,
+): number {
+  const concededSort = left.conceded - right.conceded;
+  if (concededSort !== 0) {
+    return concededSort;
+  }
+
+  const scoredSort = right.scored - left.scored;
+  if (scoredSort !== 0) {
+    return scoredSort;
+  }
+
+  return compareTeamIds(left.teamId, right.teamId);
+}
+
+function sameGameResultPosition(
+  left: Pick<GameTeamRecord, "scored" | "conceded">,
+  right: Pick<GameTeamRecord, "scored" | "conceded">,
+): boolean {
+  return left.conceded === right.conceded && left.scored === right.scored;
+}
+
+function buildGameResult(teams: GameTeamRecord[], computedAt: string): GameResult {
+  const rankedTeams = [...teams].sort(compareGameResultTeams);
+  const topTeam = rankedTeams[0] ?? null;
+  const topTiedTeams = topTeam
+    ? rankedTeams.filter((team) => sameGameResultPosition(team, topTeam))
+    : [];
+  const winnerTeamId = topTiedTeams.length === 1 ? topTiedTeams[0].teamId : null;
+
+  let previousTeam: GameTeamRecord | null = null;
+  let previousRank = 0;
+  const resultTeams = rankedTeams.map((team, index) => {
+    const rank =
+      previousTeam && sameGameResultPosition(team, previousTeam)
+        ? previousRank
+        : index + 1;
+    previousTeam = team;
+    previousRank = rank;
+
+    const outcome: GameResult["teams"][number]["outcome"] = winnerTeamId
+      ? team.teamId === winnerTeamId
+        ? "win"
+        : "loss"
+      : topTeam && sameGameResultPosition(team, topTeam)
+        ? "draw"
+        : "loss";
+
+    return {
+      teamId: team.teamId,
+      name: team.name,
+      color: team.color,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank,
+      outcome,
+    };
+  });
+
+  return {
+    winnerTeamId,
+    outcome: winnerTeamId ? "win" : "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt,
+    teams: resultTeams,
+  };
 }
 
 function compareGoalEvents(
@@ -860,6 +976,8 @@ export class ThreeFcRepository {
       gameStartTs: input.gameStartTs,
       thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
       thirds: createDefaultThirdTimerSegments(),
+      finishedAt: null,
+      result: null,
     };
 
     await this.putEntity(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now);
@@ -1195,6 +1313,76 @@ export class ThreeFcRepository {
       throw new GameTimerTransitionError(
         "timer_state_changed",
         "Timer state changed while applying this transition. Reload the game and try again.",
+      );
+    }
+
+    return withTimestamps(updatedPayload, gameItem.createdAt, now);
+  }
+
+  async finishGame(input: FinishGameInput): Promise<GameRecord | null> {
+    requireNonEmpty("gameId", input.gameId);
+
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk(), {
+      consistentRead: true,
+    });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = normalizeGamePayload(gameItem.data);
+    if (existing.status === "finished" && existing.result && existing.finishedAt) {
+      return withTimestamps(existing, gameItem.createdAt, gameItem.updatedAt);
+    }
+
+    const runningThird = existing.thirds.find((third) => third.startedAt && !third.finishedAt);
+    if (runningThird) {
+      throw new GameTimerTransitionError(
+        "third_running",
+        `Third ${runningThird.third} must be finished before the game can be finished.`,
+      );
+    }
+
+    const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
+      consistentRead: true,
+    });
+    const missingTeams = TEAM_IDS.filter((teamId) => !teamStatesById.has(teamId));
+    if (missingTeams.length > 0) {
+      throw new GameTimerTransitionError(
+        "teams_not_ready",
+        "All three game teams must exist before finishing the game.",
+      );
+    }
+
+    const now = this.clock.now();
+    const result = buildGameResult(teams, now);
+    const updatedPayload = {
+      ...existing,
+      status: "finished" as const,
+      finishedAt: existing.finishedAt ?? now,
+      result,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGamePutTransactionItem({
+              game: updatedPayload,
+              stored: gameItem,
+              now,
+            }),
+            ...this.buildTeamConditionChecks(teams, teamStatesById),
+          ],
+        }),
+      );
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) {
+        throw error;
+      }
+
+      throw new GameTimerTransitionError(
+        "game_state_changed",
+        "Game or scoreboard state changed while finishing this game. Reload and try again.",
       );
     }
 
@@ -1772,6 +1960,69 @@ export class ThreeFcRepository {
     };
   }
 
+  private buildGamePutTransactionItem(input: {
+    game: Omit<GameRecord, "createdAt" | "updatedAt">;
+    stored: StoredEntity<unknown>;
+    now: string;
+  }) {
+    return {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItemWithTimestamps(
+          gamePk(input.game.gameId),
+          metadataSk(),
+          ENTITY_TYPE.game,
+          input.game,
+          input.stored.createdAt,
+          input.now,
+        ),
+        ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedGameUpdatedAt": { S: input.stored.updatedAt },
+          ":expectedGameData": { S: input.stored.rawData },
+        },
+      },
+    };
+  }
+
+  private buildTeamConditionChecks(
+    teams: GameTeamRecord[],
+    originalTeamStatesById: Map<TeamId, { record: GameTeamRecord; rawData: string }>,
+  ) {
+    return teams.map((team) => {
+      const original = originalTeamStatesById.get(team.teamId);
+      if (!original) {
+        throw new GameTimerTransitionError(
+          "teams_not_ready",
+          "All three game teams must exist before finishing the game.",
+        );
+      }
+
+      return {
+        ConditionCheck: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gamePk(team.gameId) },
+            sk: { S: teamSk(team.teamId) },
+          },
+          ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedUpdatedAt": { S: original.record.updatedAt },
+            ":expectedData": { S: original.rawData },
+          },
+        },
+      };
+    });
+  }
+
   private buildGoalAuditRecord(input: {
     gameId: string;
     eventId: string;
@@ -2016,6 +2267,14 @@ export class ThreeFcRepository {
     }
 
     const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished") {
+      throw new GoalCreationError(
+        "game_finished",
+        409,
+        "Cannot create a goal after the game is finished.",
+      );
+    }
+
     const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
     if (!activeThird?.startedAt) {
       throw new GoalCreationError(
@@ -2341,6 +2600,7 @@ export class ThreeFcRepository {
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
+    const game = normalizeGamePayload(gameItem.data);
 
     const existing = await this.findGoalByEventId(
       input.gameId,
@@ -2401,12 +2661,29 @@ export class ThreeFcRepository {
       timeline: nextTimeline,
       audit,
     };
+    const updatedFinishedGame =
+      game.status === "finished"
+        ? {
+            ...game,
+            finishedAt: game.finishedAt ?? now,
+            result: buildGameResult(nextTeams, now),
+          }
+        : null;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            ...(updatedFinishedGame
+              ? [
+                  this.buildGamePutTransactionItem({
+                    game: updatedFinishedGame,
+                    stored: gameItem,
+                    now,
+                  }),
+                ]
+              : []),
             {
               Put: {
                 TableName: this.tableName,
@@ -2503,6 +2780,7 @@ export class ThreeFcRepository {
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
+    const game = normalizeGamePayload(gameItem.data);
 
     const existing = await this.findGoalByEventId(
       input.gameId,
@@ -2578,12 +2856,29 @@ export class ThreeFcRepository {
       timeline: nextTimeline,
       audit,
     };
+    const updatedFinishedGame =
+      game.status === "finished"
+        ? {
+            ...game,
+            finishedAt: game.finishedAt ?? now,
+            result: buildGameResult(nextTeams, now),
+          }
+        : null;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            ...(updatedFinishedGame
+              ? [
+                  this.buildGamePutTransactionItem({
+                    game: updatedFinishedGame,
+                    stored: gameItem,
+                    now,
+                  }),
+                ]
+              : []),
             {
               Delete: {
                 TableName: this.tableName,
