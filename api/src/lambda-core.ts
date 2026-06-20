@@ -441,6 +441,7 @@ interface RepositoryContract {
     assistPlayerIds: string[];
     ownGoal: boolean;
   }): Promise<CreateGoalResult | null>;
+  listGoalEvents(gameId: string): Promise<CreateGoalResult["timeline"]>;
   updateGoal(input: {
     gameId: string;
     eventId: string;
@@ -2522,6 +2523,45 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           status = mutationResponse.statusCode;
           return mutationResponse;
+        }
+
+        const listGameGoalsMatch = route.match(/^\/v1\/games\/([^/]+)\/goals$/);
+        if (method === "GET" && listGameGoalsMatch) {
+          const gameId = decodeRouteParam(listGameGoalsMatch[1]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const access = await ensureLeagueAccess(
+            dependencies.repository,
+            game.leagueId,
+            session.email,
+          );
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${game.leagueId} is required.`,
+            );
+          }
+
+          const teams = await readGameTeams(dependencies.repository, game);
+          const timeline = await dependencies.repository.listGoalEvents(gameId);
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              scoreboard: {
+                teams,
+              },
+              timeline,
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
         }
 
         const listGameTeamsMatch = route.match(/^\/v1\/games\/([^/]+)\/teams$/);

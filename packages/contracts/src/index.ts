@@ -80,6 +80,11 @@ export interface CreateGoalResponse {
   timeline: GoalEvent[];
 }
 
+export interface GameGoalsResponse {
+  scoreboard: GameScoreboard;
+  timeline: GoalEvent[];
+}
+
 export interface UpdateGoalRequest {
   scoringTeamId?: TeamId | null;
   concedingTeamId?: TeamId;

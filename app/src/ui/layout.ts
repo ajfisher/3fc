@@ -749,6 +749,51 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             "panel-game-timer",
           )}
           ${renderPanel(
+            "Live scoring",
+            "Score goals against the running third.",
+            `<div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
+            <div data-ui="field">
+              <label for="goal-scoring-team">Scoring team</label>
+              <select id="goal-scoring-team" data-ui="input" data-testid="goal-scoring-team"></select>
+            </div>
+            <div data-ui="field">
+              <label for="goal-conceding-team">Conceding team</label>
+              <select id="goal-conceding-team" data-ui="input" data-testid="goal-conceding-team"></select>
+            </div>
+            <label data-ui="check-row" for="goal-own-goal">
+              <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
+              <span>Own goal</span>
+            </label>
+            <div data-ui="field">
+              <label for="goal-scorer">Scorer</label>
+              <select id="goal-scorer" data-ui="input" data-testid="goal-scorer"></select>
+            </div>
+            <div data-ui="field">
+              <span data-ui="field-label">Assists</span>
+              <div id="goal-assists" data-ui="assist-list" data-testid="goal-assists"></div>
+            </div>
+            <p data-ui="field-hint" id="goal-form-note">Start a third and assign players before scoring.</p>`,
+            `<div data-ui="button-row">
+              ${renderButton("Add goal", "primary", {
+                type: "button",
+                "data-action": "save-goal",
+                "data-testid": "add-goal",
+              })}
+              ${renderButton("Cancel edit", "secondary", {
+                type: "button",
+                "data-action": "cancel-goal-edit",
+                "data-testid": "cancel-goal-edit",
+              })}
+              ${renderButton("Undo last", "danger", {
+                type: "button",
+                "data-action": "undo-last-goal",
+                "data-testid": "undo-last-goal",
+              })}
+            </div>
+            <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>`,
+            "panel-game-live",
+          )}
+          ${renderPanel(
             "Roster setup",
             "Create players and assign them to game teams.",
             `${renderValidatedField({

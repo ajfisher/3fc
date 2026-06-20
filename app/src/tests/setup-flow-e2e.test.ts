@@ -76,6 +76,8 @@ interface MockTeam {
   teamId: TeamId;
   name: string;
   color: string | null;
+  scored?: number;
+  conceded?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -103,6 +105,24 @@ interface MockGamePlayer {
   updatedAt: string;
 }
 
+interface MockGoalEvent {
+  gameId: string;
+  eventId: string;
+  third: 1 | 2 | 3;
+  thirdMinute: number;
+  gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
+  scoringTeamId: TeamId | null;
+  concedingTeamId: TeamId;
+  scorerPlayerId: string;
+  assistPlayerIds: string[];
+  ownGoal: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface MockApiState {
   cookieJar: string;
   storage: Map<string, string>;
@@ -118,6 +138,8 @@ interface MockApiState {
   players: Map<string, MockPlayer>;
   gamePlayers: Map<string, MockGamePlayer>;
   roster: Map<string, MockRosterAssignment>;
+  goalEvents: Map<string, MockGoalEvent>;
+  goalSequence: number;
 }
 
 function readUiScript(fileName: string): string {
@@ -140,6 +162,8 @@ function createMockApiState(): MockApiState {
     players: new Map<string, MockPlayer>(),
     gamePlayers: new Map<string, MockGamePlayer>(),
     roster: new Map<string, MockRosterAssignment>(),
+    goalEvents: new Map<string, MockGoalEvent>(),
+    goalSequence: 0,
   };
 }
 
@@ -219,12 +243,20 @@ function ensureGameTeams(state: MockApiState, game: MockGame): MockTeam[] {
       teamId: team.teamId,
       name: team.name,
       color: team.color,
+      scored: 0,
+      conceded: 0,
       createdAt: "2026-03-28T11:00:06.000Z",
       updatedAt: "2026-03-28T11:00:06.000Z",
     });
   }
 
-  return [...state.gameTeams.values()].filter((team) => team.gameId === game.gameId);
+  return [...state.gameTeams.values()]
+    .filter((team) => team.gameId === game.gameId)
+    .map((team) => ({
+      ...team,
+      scored: team.scored ?? 0,
+      conceded: team.conceded ?? 0,
+    }));
 }
 
 function publicPlayer(player: MockPlayer): Omit<MockPlayer, "claimedByUserId"> {
@@ -234,6 +266,181 @@ function publicPlayer(player: MockPlayer): Omit<MockPlayer, "claimedByUserId"> {
     createdAt: player.createdAt,
     updatedAt: player.updatedAt,
   };
+}
+
+function sortedGoalTimeline(state: MockApiState, gameId: string): MockGoalEvent[] {
+  return [...state.goalEvents.values()]
+    .filter((goal) => goal.gameId === gameId)
+    .sort((left, right) => {
+      const thirdDelta = left.third - right.third;
+      if (thirdDelta !== 0) {
+        return thirdDelta;
+      }
+
+      const elapsedDelta = left.elapsedSeconds - right.elapsedSeconds;
+      if (elapsedDelta !== 0) {
+        return elapsedDelta;
+      }
+
+      return left.eventId.localeCompare(right.eventId);
+    });
+}
+
+function recomputeMockScoreboard(state: MockApiState, game: MockGame): MockTeam[] {
+  const teams = ensureGameTeams(state, game).map((team) => ({
+    ...team,
+    scored: 0,
+    conceded: 0,
+  }));
+  const byTeamId = new Map(teams.map((team) => [team.teamId, team]));
+
+  for (const goal of sortedGoalTimeline(state, game.gameId)) {
+    if (!goal.ownGoal && goal.scoringTeamId) {
+      const scoringTeam = byTeamId.get(goal.scoringTeamId);
+      if (scoringTeam) {
+        scoringTeam.scored = (scoringTeam.scored ?? 0) + 1;
+      }
+    }
+
+    const concedingTeam = byTeamId.get(goal.concedingTeamId);
+    if (concedingTeam) {
+      concedingTeam.conceded = (concedingTeam.conceded ?? 0) + 1;
+    }
+  }
+
+  for (const team of teams) {
+    state.gameTeams.set(`${game.gameId}:${team.teamId}`, team);
+  }
+
+  return teams;
+}
+
+function goalResponsePayload(state: MockApiState, game: MockGame, extra: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...extra,
+    scoreboard: {
+      teams: recomputeMockScoreboard(state, game),
+    },
+    timeline: sortedGoalTimeline(state, game.gameId),
+  };
+}
+
+function teamIdsForGame(state: MockApiState, game: MockGame): Set<TeamId> {
+  return new Set(ensureGameTeams(state, game).map((team) => team.teamId));
+}
+
+function rosterByPlayerId(state: MockApiState, gameId: string): Map<string, MockRosterAssignment> {
+  return new Map(
+    [...state.roster.values()]
+      .filter((assignment) => assignment.gameId === gameId)
+      .map((assignment) => [assignment.playerId, assignment]),
+  );
+}
+
+function validateMockGoalPayload(
+  state: MockApiState,
+  game: MockGame,
+  payload: {
+    scoringTeamId: TeamId | null;
+    concedingTeamId: TeamId;
+    scorerPlayerId: string;
+    assistPlayerIds: string[];
+    ownGoal: boolean;
+  },
+): Response | null {
+  const gameTeamIds = teamIdsForGame(state, game);
+  if (!gameTeamIds.has(payload.concedingTeamId)) {
+    return createJsonResponse(400, { error: "invalid_conceding_team", message: "Conceding team is invalid." });
+  }
+
+  if (payload.ownGoal && payload.scoringTeamId !== null) {
+    return createJsonResponse(400, { error: "own_goal_scoring_team", message: "Own goals require scoringTeamId=null." });
+  }
+
+  if (!payload.ownGoal && (!payload.scoringTeamId || !gameTeamIds.has(payload.scoringTeamId))) {
+    return createJsonResponse(400, { error: "invalid_scoring_team", message: "Scoring team is invalid." });
+  }
+
+  if (!payload.ownGoal && payload.scoringTeamId === payload.concedingTeamId) {
+    return createJsonResponse(400, { error: "same_team_goal", message: "Scoring and conceding teams must differ." });
+  }
+
+  const uniqueAssists = new Set(payload.assistPlayerIds);
+  if (payload.assistPlayerIds.length > 3 || uniqueAssists.size !== payload.assistPlayerIds.length) {
+    return createJsonResponse(400, { error: "invalid_assists", message: "Assists must be unique and capped at 3." });
+  }
+
+  if (uniqueAssists.has(payload.scorerPlayerId)) {
+    return createJsonResponse(400, { error: "invalid_assists", message: "Scorer cannot also assist." });
+  }
+
+  const roster = rosterByPlayerId(state, game.gameId);
+  const scorerAssignment = roster.get(payload.scorerPlayerId);
+  if (!scorerAssignment) {
+    return createJsonResponse(400, { error: "scorer_not_rostered", message: "Scorer must be rostered." });
+  }
+
+  if (!payload.ownGoal && scorerAssignment.teamId !== payload.scoringTeamId) {
+    return createJsonResponse(400, { error: "scorer_not_on_scoring_team", message: "Scorer must be on scoring team." });
+  }
+
+  if (payload.ownGoal && scorerAssignment.teamId !== payload.concedingTeamId) {
+    return createJsonResponse(400, { error: "scorer_not_on_conceding_team", message: "Own-goal scorer must be on conceding team." });
+  }
+
+  for (const assistPlayerId of payload.assistPlayerIds) {
+    if (!roster.has(assistPlayerId)) {
+      return createJsonResponse(400, { error: "assist_not_rostered", message: "Assist players must be rostered." });
+    }
+  }
+
+  return null;
+}
+
+function activeMockThird(game: MockGame): 1 | 2 | 3 | null {
+  const running = game.thirds.find((third) => third.startedAt && !third.finishedAt);
+  if (!running || (running.third !== 1 && running.third !== 2 && running.third !== 3)) {
+    return null;
+  }
+
+  return running.third;
+}
+
+function readInitHeader(init: RequestInit, headerName: string): string | null {
+  const headers = init.headers;
+  if (!headers) {
+    return null;
+  }
+
+  if (headers instanceof Headers) {
+    return headers.get(headerName);
+  }
+
+  const lowerName = headerName.toLowerCase();
+  if (Array.isArray(headers)) {
+    const found = headers.find(([name]) => name.toLowerCase() === lowerName);
+    return found?.[1] ?? null;
+  }
+
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === lowerName) {
+      return String(value);
+    }
+  }
+
+  return null;
+}
+
+function requireIdempotencyKey(init: RequestInit): Response | null {
+  const value = readInitHeader(init, "idempotency-key");
+  if (value && value.trim().length > 0) {
+    return null;
+  }
+
+  return createJsonResponse(400, {
+    error: "invalid_idempotency_key",
+    message: "Idempotency-Key header is required.",
+  });
 }
 
 function createMockFetch(state: MockApiState) {
@@ -704,6 +911,195 @@ function createMockFetch(state: MockApiState) {
       });
     }
 
+    const createGoalMatch = path.match(/^\/v1\/games\/([^/]+)\/goals$/);
+    if (method === "GET" && createGoalMatch) {
+      const gameId = decodeURIComponent(createGoalMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      return createJsonResponse(200, goalResponsePayload(state, game, {}));
+    }
+
+    if (method === "POST" && createGoalMatch) {
+      const gameId = decodeURIComponent(createGoalMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const idempotencyError = requireIdempotencyKey(init);
+      if (idempotencyError) {
+        return idempotencyError;
+      }
+
+      const third = activeMockThird(game);
+      if (!third) {
+        return createJsonResponse(409, {
+          error: "no_running_third",
+          message: "A goal can only be created while a third is running.",
+        });
+      }
+
+      const payload = {
+        scoringTeamId: body.ownGoal === true ? null : (body.scoringTeamId as TeamId | null),
+        concedingTeamId: body.concedingTeamId as TeamId,
+        scorerPlayerId: String(body.scorerPlayerId ?? ""),
+        assistPlayerIds: Array.isArray(body.assistPlayerIds)
+          ? body.assistPlayerIds.map((playerId) => String(playerId))
+          : [],
+        ownGoal: body.ownGoal === true,
+      };
+      const validationError = validateMockGoalPayload(state, game, payload);
+      if (validationError) {
+        return validationError;
+      }
+
+      state.goalSequence += 1;
+      const elapsedSeconds = state.goalSequence * 30;
+      const now = `2026-03-28T11:01:${String(state.goalSequence).padStart(2, "0")}.000Z`;
+      const goal: MockGoalEvent = {
+        gameId,
+        eventId: `goal-${state.goalSequence}`,
+        third,
+        thirdMinute: Math.floor(elapsedSeconds / 60) + 1,
+        gameMinute: Math.floor(elapsedSeconds / 60) + 1 + (third - 1) * game.thirdLengthMinutes,
+        elapsedSeconds,
+        stoppageMinute: null,
+        displayTime: `${Math.floor(elapsedSeconds / 60) + 1}'`,
+        ...payload,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.goalEvents.set(goal.eventId, goal);
+
+      return createJsonResponse(201, goalResponsePayload(state, game, { goal }));
+    }
+
+    const undoLastGoalMatch = path.match(/^\/v1\/games\/([^/]+)\/goals\/undo-last$/);
+    if (method === "POST" && undoLastGoalMatch) {
+      const gameId = decodeURIComponent(undoLastGoalMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const idempotencyError = requireIdempotencyKey(init);
+      if (idempotencyError) {
+        return idempotencyError;
+      }
+
+      const latest = sortedGoalTimeline(state, gameId).at(-1);
+      if (!latest) {
+        return createJsonResponse(404, { error: "not_found", message: "No goals found." });
+      }
+
+      if (body.expectedEventId !== latest.eventId) {
+        return createJsonResponse(409, {
+          error: "latest_goal_changed",
+          message: "Latest goal changed.",
+        });
+      }
+
+      state.goalEvents.delete(latest.eventId);
+      return createJsonResponse(
+        200,
+        goalResponsePayload(state, game, {
+          deletedGoal: latest,
+          audit: {
+            auditId: `audit-${latest.eventId}`,
+            gameId,
+            eventId: latest.eventId,
+            actorUserId: state.session?.email ?? "",
+            action: "goal_undo_last",
+            before: latest,
+            after: null,
+            createdAt: "2026-03-28T11:02:00.000Z",
+            updatedAt: "2026-03-28T11:02:00.000Z",
+          },
+        }),
+      );
+    }
+
+    const goalMatch = path.match(/^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/);
+    if ((method === "PATCH" || method === "DELETE") && goalMatch) {
+      const gameId = decodeURIComponent(goalMatch[1]);
+      const eventId = decodeURIComponent(goalMatch[2]);
+      const game = state.games.get(gameId);
+      const existing = state.goalEvents.get(eventId);
+      if (!game || !existing || existing.gameId !== gameId) {
+        return createJsonResponse(404, { error: "not_found", message: "Goal not found." });
+      }
+
+      const idempotencyError = requireIdempotencyKey(init);
+      if (idempotencyError) {
+        return idempotencyError;
+      }
+
+      if (method === "DELETE") {
+        state.goalEvents.delete(eventId);
+        return createJsonResponse(
+          200,
+          goalResponsePayload(state, game, {
+            deletedGoal: existing,
+            audit: {
+              auditId: `audit-${eventId}`,
+              gameId,
+              eventId,
+              actorUserId: state.session?.email ?? "",
+              action: "goal_deleted",
+              before: existing,
+              after: null,
+              createdAt: "2026-03-28T11:02:01.000Z",
+              updatedAt: "2026-03-28T11:02:01.000Z",
+            },
+          }),
+        );
+      }
+
+      const updated: MockGoalEvent = {
+        ...existing,
+        scoringTeamId:
+          body.ownGoal === true
+            ? null
+            : body.scoringTeamId === null
+              ? null
+              : ((body.scoringTeamId ?? existing.scoringTeamId) as TeamId | null),
+        concedingTeamId: (body.concedingTeamId ?? existing.concedingTeamId) as TeamId,
+        scorerPlayerId: typeof body.scorerPlayerId === "string" ? body.scorerPlayerId : existing.scorerPlayerId,
+        assistPlayerIds: Array.isArray(body.assistPlayerIds)
+          ? body.assistPlayerIds.map((playerId) => String(playerId))
+          : existing.assistPlayerIds,
+        ownGoal: typeof body.ownGoal === "boolean" ? body.ownGoal : existing.ownGoal,
+        updatedAt: "2026-03-28T11:02:02.000Z",
+      };
+      const validationError = validateMockGoalPayload(state, game, updated);
+      if (validationError) {
+        return validationError;
+      }
+
+      state.goalEvents.set(eventId, updated);
+      return createJsonResponse(
+        200,
+        goalResponsePayload(state, game, {
+          goal: updated,
+          previousGoal: existing,
+          audit: {
+            auditId: `audit-${eventId}`,
+            gameId,
+            eventId,
+            actorUserId: state.session?.email ?? "",
+            action: "goal_updated",
+            before: existing,
+            after: updated,
+            createdAt: "2026-03-28T11:02:02.000Z",
+            updatedAt: "2026-03-28T11:02:02.000Z",
+          },
+        }),
+      );
+    }
+
     return createJsonResponse(404, {
       error: "not_found",
       message: `Unhandled route: ${method} ${path}`,
@@ -763,6 +1159,14 @@ async function bootPage(input: {
       callback();
       return 0;
     },
+    configurable: true,
+  });
+  Object.defineProperty(window, "setInterval", {
+    value: () => 0,
+    configurable: true,
+  });
+  Object.defineProperty(window, "clearInterval", {
+    value: () => undefined,
     configurable: true,
   });
 
@@ -1212,6 +1616,196 @@ test("game page quick-creates and assigns roster players", async () => {
   const assignment = apiState.roster.get(`game-1:${createdPlayer.playerId}`);
   assert.equal(assignment?.teamId, "red");
   assert.match(rosterTeams.textContent ?? "", /Ari/);
+});
+
+test("game page runs live goal scoring, corrections, undo, and delete", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "scorekeeper@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-live-1", {
+    gameId: "game-live-1",
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const playerSeeds = [
+    { playerId: "player-ari", nickname: "Ari", teamId: "red" as TeamId },
+    { playerId: "player-bea", nickname: "Bea", teamId: "red" as TeamId },
+    { playerId: "player-cy", nickname: "Cy", teamId: "blue" as TeamId },
+  ];
+  for (const playerSeed of playerSeeds) {
+    apiState.players.set(playerSeed.playerId, {
+      playerId: playerSeed.playerId,
+      nickname: playerSeed.nickname,
+      claimedByUserId: null,
+      createdAt: "2026-03-28T11:00:07.000Z",
+      updatedAt: "2026-03-28T11:00:07.000Z",
+    });
+    apiState.gamePlayers.set(`game-live-1:${playerSeed.playerId}`, {
+      gameId: "game-live-1",
+      playerId: playerSeed.playerId,
+      createdAt: "2026-03-28T11:00:08.000Z",
+      updatedAt: "2026-03-28T11:00:08.000Z",
+    });
+    apiState.roster.set(`game-live-1:${playerSeed.playerId}`, {
+      gameId: "game-live-1",
+      playerId: playerSeed.playerId,
+      teamId: playerSeed.teamId,
+      createdAt: "2026-03-28T11:00:08.000Z",
+      updatedAt: "2026-03-28T11:00:08.000Z",
+    });
+  }
+
+  const gamePage = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-live-1" }),
+    url: "http://localhost:3000/games/game-live-1",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(gamePage.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const startThirdButton = gamePage.document.querySelector('[data-action="start-active-third"]');
+  const scoreboard = gamePage.document.getElementById("live-scoreboard");
+  const scoringTeamInput = gamePage.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = gamePage.document.getElementById("goal-conceding-team");
+  const ownGoalInput = gamePage.document.getElementById("goal-own-goal");
+  const scorerInput = gamePage.document.getElementById("goal-scorer");
+  const assistsElement = gamePage.document.getElementById("goal-assists");
+  const saveGoalButton = gamePage.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = gamePage.document.querySelector('[data-action="undo-last-goal"]');
+  const timeline = gamePage.document.getElementById("goal-timeline");
+
+  assert(startThirdButton instanceof gamePage.window.HTMLButtonElement);
+  assert(scoreboard instanceof gamePage.window.HTMLElement);
+  assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(ownGoalInput instanceof gamePage.window.HTMLInputElement);
+  assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
+  assert(assistsElement instanceof gamePage.window.HTMLElement);
+  assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(timeline instanceof gamePage.window.HTMLElement);
+
+  assert.match(scoreboard.textContent ?? "", /Red/);
+  assert.match(timeline.textContent ?? "", /No goals yet/);
+  assert.equal(undoLastGoalButton.disabled, true);
+
+  dispatchClick(startThirdButton);
+  await flushAsync();
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  const beaAssist = assistsElement.querySelector('input[value="player-bea"]');
+  assert(beaAssist instanceof gamePage.window.HTMLInputElement);
+  beaAssist.checked = true;
+  beaAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "red");
+  assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*1/);
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
+  assert.match(timeline.textContent ?? "", /Ari for Red/);
+  assert.match(timeline.textContent ?? "", /Assists: Bea/);
+  assert.equal(undoLastGoalButton.disabled, false);
+
+  const refreshedPage = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-live-1" }),
+    url: "http://localhost:3000/games/game-live-1",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  const refreshedScoreboard = refreshedPage.document.getElementById("live-scoreboard");
+  const refreshedTimeline = refreshedPage.document.getElementById("goal-timeline");
+  const refreshedUndoButton = refreshedPage.document.querySelector('[data-action="undo-last-goal"]');
+  const refreshedEditButton = refreshedPage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  assert(refreshedScoreboard instanceof refreshedPage.window.HTMLElement);
+  assert(refreshedTimeline instanceof refreshedPage.window.HTMLElement);
+  assert(refreshedUndoButton instanceof refreshedPage.window.HTMLButtonElement);
+  assert(refreshedEditButton instanceof refreshedPage.window.HTMLButtonElement);
+  assert.match(refreshedScoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*1/);
+  assert.match(refreshedScoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
+  assert.match(refreshedTimeline.textContent ?? "", /Ari for Red/);
+  assert.equal(refreshedUndoButton.disabled, false);
+
+  const editGoalButton = gamePage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  assert(editGoalButton instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  ownGoalInput.checked = true;
+  ownGoalInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.get("goal-1")?.ownGoal, true);
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, null);
+  assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*0/);
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
+  assert.match(timeline.textContent ?? "", /Cy own goal against Blue/);
+
+  ownGoalInput.checked = false;
+  ownGoalInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 2);
+  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+
+  const deleteGoalButton = gamePage.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(deleteGoalButton instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(deleteGoalButton);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.has("goal-1"), false);
+  assert.equal(apiState.goalEvents.has("goal-2"), true);
+  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Scored\s*1/);
+  assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Conceded\s*1/);
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.size, 0);
+  assert.match(timeline.textContent ?? "", /No goals yet/);
+  assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*0/);
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*0/);
 });
 
 test("setup flow resolves route ids from static shells", async () => {

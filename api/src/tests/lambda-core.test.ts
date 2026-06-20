@@ -900,6 +900,9 @@ function createHarness(config: HarnessConfig = {}) {
           timeline,
         };
       },
+      async listGoalEvents(gameId: string) {
+        return sortedGoalTimeline(gameId);
+      },
       async updateGoal(input) {
         const existing = goalEvents.get(`${input.gameId}:${input.eventId}`);
         if (!games.has(input.gameId) || !existing) {
@@ -1992,6 +1995,61 @@ test("core lambda creates goals with idempotency replay and conflict behavior", 
   });
 });
 
+test("core lambda lists existing game goals with scoreboard for page reloads", async () => {
+  const harness = createGoalHarness();
+  const createResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-list-create-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: ["player-yellow"],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(createResponse.statusCode, 201);
+  const created = JSON.parse(createResponse.body) as {
+    goal: { eventId: string };
+  };
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as {
+    scoreboard: { teams: Array<{ teamId: string; scored: number; conceded: number }> };
+    timeline: Array<{ eventId: string; assistPlayerIds: string[] }>;
+  };
+  assert.deepEqual(body.timeline.map((goal) => goal.eventId), [created.goal.eventId]);
+  assert.deepEqual(body.timeline[0]?.assistPlayerIds, ["player-yellow"]);
+  assert.deepEqual(
+    body.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+});
+
 test("core lambda updates and deletes goals with idempotency replay", async () => {
   const harness = createGoalHarness();
   const createResponse = await harness.handler(
@@ -2596,7 +2654,7 @@ test("core lambda rejects setting scheduled status after a third starts", async 
   });
 });
 
-test("core lambda team and roster read routes do not create team records", async () => {
+test("core lambda team, roster, and goal read routes do not create team records", async () => {
   const harness = createHarness({
     sessions: {
       "session-1": {
@@ -2646,6 +2704,7 @@ test("core lambda team and roster read routes do not create team records", async
     "/v1/seasons/season-1/teams",
     "/v1/games/game-1/teams",
     "/v1/games/game-1/roster",
+    "/v1/games/game-1/goals",
   ]) {
     const response = await harness.handler(
       createEvent({
@@ -2658,8 +2717,11 @@ test("core lambda team and roster read routes do not create team records", async
     );
 
     assert.equal(response.statusCode, 200);
-    const body = JSON.parse(response.body) as { teams?: Array<{ teamId: string }> };
-    assert.deepEqual(body.teams?.map((team) => team.teamId), ["red", "blue", "yellow"]);
+    const body = JSON.parse(response.body) as {
+      teams?: Array<{ teamId: string }>;
+      scoreboard?: { teams: Array<{ teamId: string }> };
+    };
+    assert.deepEqual((body.teams ?? body.scoreboard?.teams)?.map((team) => team.teamId), ["red", "blue", "yellow"]);
   }
 
   assert.equal(harness.createdSeasonTeams.length, 0);

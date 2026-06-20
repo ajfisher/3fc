@@ -196,6 +196,28 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
   /v1/games/{gameId}/goals:
+    get:
+      summary: List game goal timeline and scoreboard
+      operationId: listGameGoals
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current scoreboard and goal timeline for the game
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameGoalsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       summary: Create a goal event and update game scoring tallies
       operationId: createGoal
@@ -1379,6 +1401,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/GameTeam"
+    GameGoalsResponse:
+      type: object
+      required:
+        - scoreboard
+        - timeline
+      properties:
+        scoreboard:
+          $ref: "#/components/schemas/GameScoreboard"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoalEvent"
     CreateGoalResponse:
       type: object
       required:

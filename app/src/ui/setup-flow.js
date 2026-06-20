@@ -1058,6 +1058,17 @@
     const playerSearchInput = document.getElementById("player-search");
     const playerPoolElement = document.getElementById("player-pool");
     const rosterTeamsElement = document.getElementById("roster-teams");
+    const liveScoreboardElement = document.getElementById("live-scoreboard");
+    const goalScoringTeamInput = document.getElementById("goal-scoring-team");
+    const goalConcedingTeamInput = document.getElementById("goal-conceding-team");
+    const goalOwnGoalInput = document.getElementById("goal-own-goal");
+    const goalScorerInput = document.getElementById("goal-scorer");
+    const goalAssistsElement = document.getElementById("goal-assists");
+    const goalFormNote = document.getElementById("goal-form-note");
+    const saveGoalButton = root.querySelector('[data-action="save-goal"]');
+    const cancelGoalEditButton = root.querySelector('[data-action="cancel-goal-edit"]');
+    const undoLastGoalButton = root.querySelector('[data-action="undo-last-goal"]');
+    const goalTimelineElement = document.getElementById("goal-timeline");
 
     if (
       !(kickoffInput instanceof HTMLInputElement) ||
@@ -1079,6 +1090,9 @@
     let rosterPlayers = [];
     let rosterAssignments = [];
     let rosterSearchTimer = 0;
+    let scoreboardTeams = [];
+    let goalTimeline = [];
+    let editingGoalId = null;
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -1211,6 +1225,22 @@
       );
     }
 
+    function liveControlsAvailable() {
+      return (
+        liveScoreboardElement instanceof HTMLElement &&
+        goalScoringTeamInput instanceof HTMLSelectElement &&
+        goalConcedingTeamInput instanceof HTMLSelectElement &&
+        goalOwnGoalInput instanceof HTMLInputElement &&
+        goalScorerInput instanceof HTMLSelectElement &&
+        goalAssistsElement instanceof HTMLElement &&
+        goalFormNote instanceof HTMLElement &&
+        saveGoalButton instanceof HTMLButtonElement &&
+        cancelGoalEditButton instanceof HTMLButtonElement &&
+        undoLastGoalButton instanceof HTMLButtonElement &&
+        goalTimelineElement instanceof HTMLElement
+      );
+    }
+
     function teamById(teamId) {
       return rosterTeams.find((team) => team.teamId === teamId) ?? null;
     }
@@ -1224,8 +1254,90 @@
       return rosterPlayers.find((player) => player.playerId === playerId) ?? null;
     }
 
+    function playerNickname(playerId) {
+      return playerById(playerId)?.nickname ?? playerId;
+    }
+
+    function teamName(teamId) {
+      return teamById(teamId)?.name ?? teamId;
+    }
+
     function assignmentByPlayerId(playerId) {
       return rosterAssignments.find((assignment) => assignment.playerId === playerId) ?? null;
+    }
+
+    function rosteredPlayers() {
+      const seen = new Set();
+      const players = [];
+
+      for (const assignment of rosterAssignments) {
+        const player = assignment.player ?? playerById(assignment.playerId);
+        if (!player || seen.has(assignment.playerId)) {
+          continue;
+        }
+
+        seen.add(assignment.playerId);
+        players.push({
+          ...player,
+          teamId: assignment.teamId,
+        });
+      }
+
+      return players;
+    }
+
+    function rosteredPlayersForTeam(teamId) {
+      return rosteredPlayers().filter((player) => player.teamId === teamId);
+    }
+
+    function activeThirdNumber() {
+      if (!currentGame) {
+        return null;
+      }
+
+      return buildTimerState(currentGame).activeThird;
+    }
+
+    function normalizeScoreboardTeams(teams) {
+      return teams.map((team) => ({
+        gameId: team.gameId ?? gameId,
+        teamId: team.teamId,
+        name: team.name ?? team.teamId,
+        color: typeof team.color === "string" ? team.color : null,
+        scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
+        conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
+        createdAt: team.createdAt ?? "",
+        updatedAt: team.updatedAt ?? "",
+      }));
+    }
+
+    function scoreboardTeamsInRosterOrder() {
+      const byTeamId = new Map(scoreboardTeams.map((team) => [team.teamId, team]));
+      const ordered = rosterTeams
+        .map((team) => byTeamId.get(team.teamId) ?? normalizeScoreboardTeams([team])[0])
+        .filter(Boolean);
+
+      if (ordered.length > 0) {
+        return ordered;
+      }
+
+      return scoreboardTeams;
+    }
+
+    function sortGoalTimeline(timeline) {
+      return [...timeline].sort((left, right) => {
+        const thirdDelta = (left.third ?? 0) - (right.third ?? 0);
+        if (thirdDelta !== 0) {
+          return thirdDelta;
+        }
+
+        const elapsedDelta = (left.elapsedSeconds ?? 0) - (right.elapsedSeconds ?? 0);
+        if (elapsedDelta !== 0) {
+          return elapsedDelta;
+        }
+
+        return String(left.eventId ?? "").localeCompare(String(right.eventId ?? ""));
+      });
     }
 
     function teamSwatchStyle(team) {
@@ -1235,6 +1347,310 @@
       }
 
       return ` style="--team-color: ${escapeHtml(color)}"`;
+    }
+
+    function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select") {
+      const safeSelected = options.some((option) => option.value === selectedValue)
+        ? selectedValue
+        : (options[0]?.value ?? "");
+
+      selectElement.innerHTML =
+        options.length > 0
+          ? options
+              .map(
+                (option) =>
+                  `<option value="${escapeHtml(option.value)}"${option.value === safeSelected ? " selected" : ""}>${escapeHtml(
+                    option.label,
+                  )}</option>`,
+              )
+              .join("")
+          : `<option value="">${escapeHtml(emptyLabel)}</option>`;
+      selectElement.value = safeSelected;
+      selectElement.disabled = options.length === 0;
+    }
+
+    function renderLiveScoreboard() {
+      if (!(liveScoreboardElement instanceof HTMLElement)) {
+        return;
+      }
+
+      const teams = scoreboardTeamsInRosterOrder();
+      if (teams.length === 0) {
+        liveScoreboardElement.innerHTML = `<p data-ui="empty-note">Teams load before scoring.</p>`;
+        return;
+      }
+
+      liveScoreboardElement.innerHTML = teams
+        .map(
+          (team) => `<article data-ui="score-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
+            <header>
+              <span data-ui="team-swatch"></span>
+              <strong>${escapeHtml(team.name)}</strong>
+            </header>
+            <dl>
+              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
+              <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+            </dl>
+          </article>`,
+        )
+        .join("");
+    }
+
+    function selectedAssistPlayerIds() {
+      if (!(goalAssistsElement instanceof HTMLElement)) {
+        return [];
+      }
+
+      return [...goalAssistsElement.querySelectorAll('input[type="checkbox"]:checked')]
+        .map((input) => (input instanceof HTMLInputElement ? input.value : ""))
+        .filter((value) => value.length > 0)
+        .slice(0, 3);
+    }
+
+    function renderGoalAssistChoices(scorerPlayerId, seedAssistPlayerIds = null) {
+      if (!(goalAssistsElement instanceof HTMLElement)) {
+        return;
+      }
+
+      const rostered = rosteredPlayers().filter((player) => player.playerId !== scorerPlayerId);
+      const seeded = seedAssistPlayerIds ?? selectedAssistPlayerIds();
+      const selected = new Set(seeded.filter((playerId) => playerId !== scorerPlayerId).slice(0, 3));
+
+      if (rostered.length === 0) {
+        goalAssistsElement.innerHTML = `<p data-ui="empty-note">No assist options yet.</p>`;
+        return;
+      }
+
+      goalAssistsElement.innerHTML = rostered
+        .map((player) => {
+          const checked = selected.has(player.playerId);
+          const disabled = !checked && selected.size >= 3;
+          return `<label data-ui="check-row">
+            <input type="checkbox" value="${escapeHtml(player.playerId)}"${checked ? " checked" : ""}${
+              disabled ? " disabled" : ""
+            } />
+            <span>${escapeHtml(player.nickname)} <small>${escapeHtml(teamName(player.teamId))}</small></span>
+          </label>`;
+        })
+        .join("");
+    }
+
+    function renderGoalControls(seed = {}) {
+      if (!liveControlsAvailable()) {
+        return;
+      }
+
+      const ownGoal = seed.ownGoal ?? goalOwnGoalInput.checked;
+      const teamOptions = rosterTeams.map((team) => ({
+        value: team.teamId,
+        label: team.name,
+      }));
+      const previousScoringTeamId = seed.scoringTeamId ?? goalScoringTeamInput.value;
+      const previousConcedingTeamId = seed.concedingTeamId ?? goalConcedingTeamInput.value;
+
+      goalOwnGoalInput.checked = ownGoal;
+      if (ownGoal) {
+        goalScoringTeamInput.innerHTML = `<option value="">Own goal</option>`;
+        goalScoringTeamInput.value = "";
+        goalScoringTeamInput.disabled = true;
+      } else {
+        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "No teams");
+      }
+
+      const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
+      const concedingOptions = ownGoal
+        ? teamOptions
+        : teamOptions.filter((team) => team.value !== scoringTeamId);
+      renderSelectOptions(goalConcedingTeamInput, concedingOptions, previousConcedingTeamId, "No conceding teams");
+
+      const concedingTeamId = goalConcedingTeamInput.value;
+      const scorerPool = ownGoal
+        ? rosteredPlayersForTeam(concedingTeamId)
+        : rosteredPlayersForTeam(scoringTeamId);
+      const scorerOptions = scorerPool.map((player) => ({
+        value: player.playerId,
+        label: player.nickname,
+      }));
+      const selectedScorerId = seed.scorerPlayerId ?? goalScorerInput.value;
+      renderSelectOptions(goalScorerInput, scorerOptions, selectedScorerId, "Assign players first");
+      renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
+
+      const activeThird = activeThirdNumber();
+      saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
+      cancelGoalEditButton.hidden = editingGoalId === null;
+      cancelGoalEditButton.disabled = editingGoalId === null;
+      undoLastGoalButton.disabled = goalTimeline.length === 0;
+      undoLastGoalButton.textContent = goalTimeline.length > 0 ? "Undo last" : "Undo last";
+
+      if (!activeThird) {
+        goalFormNote.textContent = "Start a third before adding goals.";
+        return;
+      }
+
+      if (rosterTeams.length < 2) {
+        goalFormNote.textContent = "Teams load before scoring.";
+        return;
+      }
+
+      if (rosteredPlayers().length === 0) {
+        goalFormNote.textContent = "Assign players before scoring.";
+        return;
+      }
+
+      goalFormNote.textContent = editingGoalId
+        ? "Editing keeps the original timer stamp."
+        : `Goal will be added to third ${activeThird}.`;
+    }
+
+    function timelineGoalLabel(goal) {
+      const scorer = playerNickname(goal.scorerPlayerId);
+      if (goal.ownGoal) {
+        return `${scorer} own goal against ${teamName(goal.concedingTeamId)}`;
+      }
+
+      return `${scorer} for ${teamName(goal.scoringTeamId)}`;
+    }
+
+    function renderGoalTimeline() {
+      if (!(goalTimelineElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (goalTimeline.length === 0) {
+        goalTimelineElement.innerHTML = `<li data-ui="empty-note">No goals yet.</li>`;
+        return;
+      }
+
+      const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
+      goalTimelineElement.innerHTML = [...goalTimeline]
+        .reverse()
+        .map((goal) => {
+          const assists =
+            Array.isArray(goal.assistPlayerIds) && goal.assistPlayerIds.length > 0
+              ? goal.assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")
+              : "None";
+          const latest = goal.eventId === latestEventId;
+          return `<li data-ui="goal-event" data-event-id="${escapeHtml(goal.eventId)}"${
+            latest ? ' data-state="latest"' : ""
+          }>
+            <div data-ui="goal-event-main">
+              <strong>${escapeHtml(goal.displayTime)} · Third ${escapeHtml(String(goal.third))}</strong>
+              <span>${escapeHtml(timelineGoalLabel(goal))}</span>
+              <small>Assists: ${escapeHtml(assists)}</small>
+              ${goal.ownGoal ? `<small>Own goal: conceding tally only</small>` : ""}
+            </div>
+            <div data-ui="row-action-buttons">
+              ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
+              <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
+                goal.eventId,
+              )}">Edit</button>
+              <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
+                goal.eventId,
+              )}">Delete</button>
+            </div>
+          </li>`;
+        })
+        .join("");
+    }
+
+    function renderLiveScoring(seed = {}) {
+      if (!liveControlsAvailable()) {
+        return;
+      }
+
+      renderLiveScoreboard();
+      renderGoalControls(seed);
+      renderGoalTimeline();
+    }
+
+    function applyGoalMutationResult(result, fallback = {}) {
+      if (Array.isArray(result?.scoreboard?.teams)) {
+        scoreboardTeams = normalizeScoreboardTeams(result.scoreboard.teams);
+      }
+
+      if (Array.isArray(result?.timeline)) {
+        goalTimeline = sortGoalTimeline(result.timeline);
+      } else if (result?.goal) {
+        const nextGoal = result.goal;
+        goalTimeline = sortGoalTimeline([
+          ...goalTimeline.filter((goal) => goal.eventId !== nextGoal.eventId),
+          nextGoal,
+        ]);
+      } else if (fallback.deletedEventId) {
+        goalTimeline = goalTimeline.filter((goal) => goal.eventId !== fallback.deletedEventId);
+      }
+
+      editingGoalId = null;
+      renderLiveScoring();
+    }
+
+    function resetGoalForm() {
+      editingGoalId = null;
+      if (goalOwnGoalInput instanceof HTMLInputElement) {
+        goalOwnGoalInput.checked = false;
+      }
+      renderLiveScoring();
+    }
+
+    function populateGoalForm(goal) {
+      editingGoalId = goal.eventId;
+      renderLiveScoring({
+        ownGoal: Boolean(goal.ownGoal),
+        scoringTeamId: goal.scoringTeamId ?? "",
+        concedingTeamId: goal.concedingTeamId,
+        scorerPlayerId: goal.scorerPlayerId,
+        assistPlayerIds: Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : [],
+      });
+      goalScorerInput?.focus();
+    }
+
+    function buildGoalPayload() {
+      const activeThird = activeThirdNumber();
+      if (!activeThird && !editingGoalId) {
+        return {
+          error: "Start a third before adding goals.",
+        };
+      }
+
+      const ownGoal = goalOwnGoalInput.checked;
+      const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
+      const concedingTeamId = goalConcedingTeamInput.value;
+      const scorerPlayerId = goalScorerInput.value;
+      const assistPlayerIds = selectedAssistPlayerIds().filter((playerId) => playerId !== scorerPlayerId).slice(0, 3);
+
+      if (!concedingTeamId) {
+        return {
+          error: "Choose a conceding team.",
+        };
+      }
+
+      if (!ownGoal && !scoringTeamId) {
+        return {
+          error: "Choose a scoring team.",
+        };
+      }
+
+      if (!ownGoal && scoringTeamId === concedingTeamId) {
+        return {
+          error: "Scoring and conceding teams must differ.",
+        };
+      }
+
+      if (!scorerPlayerId) {
+        return {
+          error: "Choose a scorer.",
+        };
+      }
+
+      return {
+        payload: {
+          scoringTeamId,
+          concedingTeamId,
+          scorerPlayerId,
+          assistPlayerIds,
+          ownGoal,
+        },
+      };
     }
 
     function assignmentButtons(playerId, currentTeamId = null) {
@@ -1339,11 +1755,32 @@
       rosterTeams = Array.isArray(rosterPayload?.teams) ? rosterPayload.teams : [];
       rosterAssignments = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : [];
       rosterPlayers = Array.isArray(playersPayload?.players) ? playersPayload.players : [];
+      if (scoreboardTeams.length === 0 || goalTimeline.length === 0) {
+        scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
+      }
       renderRosterSetup();
+      renderLiveScoring();
 
       if (options.updateStatus !== false) {
         setStatus("Game roster ready.", "success");
       }
+    }
+
+    async function loadGameGoals() {
+      if (!liveControlsAvailable()) {
+        return;
+      }
+
+      const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals`, {
+        method: "GET",
+      });
+
+      if (Array.isArray(payload?.scoreboard?.teams)) {
+        scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
+      }
+
+      goalTimeline = Array.isArray(payload?.timeline) ? sortGoalTimeline(payload.timeline) : [];
+      renderLiveScoring();
     }
 
     async function loadGame() {
@@ -1466,6 +1903,7 @@
           { method: "POST" },
         );
         renderTimer();
+        renderLiveScoring();
         statusInput.value = currentGame.status;
         setStatus(`Third ${third} started.`, "success");
       } catch (error) {
@@ -1475,6 +1913,7 @@
       } finally {
         startThirdButton.disabled = false;
         renderTimer();
+        renderLiveScoring();
       }
     });
 
@@ -1494,6 +1933,7 @@
           { method: "POST" },
         );
         renderTimer();
+        renderLiveScoring();
         statusInput.value = currentGame.status;
         setStatus(`Third ${third} finished.`, "success");
       } catch (error) {
@@ -1503,6 +1943,7 @@
       } finally {
         finishThirdButton.disabled = false;
         renderTimer();
+        renderLiveScoring();
       }
     });
 
@@ -1615,8 +2056,167 @@
       });
     }
 
+    if (liveControlsAvailable()) {
+      goalScoringTeamInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalConcedingTeamInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalOwnGoalInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalScorerInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalAssistsElement.addEventListener("change", () => {
+        renderGoalAssistChoices(goalScorerInput.value);
+      });
+
+      saveGoalButton.addEventListener("click", async () => {
+        clearError();
+        const draft = buildGoalPayload();
+        if (draft.error || !draft.payload) {
+          showError(draft.error ?? "Goal details are incomplete.");
+          setStatus("Goal validation failed.", "error");
+          return;
+        }
+
+        saveGoalButton.disabled = true;
+        const eventId = editingGoalId;
+        const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
+        setStatus(`${actionLabel}…`, "default");
+
+        try {
+          const path = eventId
+            ? `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`
+            : `/v1/games/${encodeURIComponent(gameId)}/goals`;
+          const result = await requestJsonOrThrow(path, {
+            method: eventId ? "PATCH" : "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": createIdempotencyKey(eventId ? "update-goal" : "create-goal", `${gameId}-${eventId ?? "new"}`),
+            },
+            body: JSON.stringify(draft.payload),
+          });
+
+          applyGoalMutationResult(result);
+          setStatus(eventId ? "Goal updated." : "Goal added.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not save goal.";
+          showError(message);
+          setStatus("Goal save failed.", "error");
+        } finally {
+          saveGoalButton.disabled = false;
+          renderLiveScoring();
+        }
+      });
+
+      cancelGoalEditButton.addEventListener("click", () => {
+        resetGoalForm();
+        setStatus("Goal edit cancelled.", "default");
+      });
+
+      undoLastGoalButton.addEventListener("click", async () => {
+        const latest = goalTimeline.at(-1);
+        if (!latest) {
+          return;
+        }
+
+        undoLastGoalButton.disabled = true;
+        clearError();
+        setStatus("Undoing latest goal…", "default");
+
+        try {
+          const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": createIdempotencyKey("undo-goal", `${gameId}-${latest.eventId}`),
+            },
+            body: JSON.stringify({
+              expectedEventId: latest.eventId,
+            }),
+          });
+
+          applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          setStatus("Latest goal undone.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not undo latest goal.";
+          showError(message);
+          setStatus("Goal undo failed.", "error");
+        } finally {
+          undoLastGoalButton.disabled = false;
+          renderLiveScoring();
+        }
+      });
+
+      root.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement)) {
+          return;
+        }
+
+        const action = target.getAttribute("data-action");
+        if (action !== "edit-goal" && action !== "delete-goal") {
+          return;
+        }
+
+        const eventId = target.getAttribute("data-event-id");
+        if (!eventId) {
+          return;
+        }
+
+        const goal = goalTimeline.find((item) => item.eventId === eventId);
+        if (!goal) {
+          return;
+        }
+
+        if (action === "edit-goal") {
+          populateGoalForm(goal);
+          setStatus("Goal ready to edit.", "default");
+          return;
+        }
+
+        if (!window.confirm(`Delete goal ${eventId}?`)) {
+          return;
+        }
+
+        target.disabled = true;
+        clearError();
+        setStatus("Deleting goal…", "default");
+
+        try {
+          const result = await requestJsonOrThrow(
+            `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
+            {
+              method: "DELETE",
+              headers: {
+                "Idempotency-Key": createIdempotencyKey("delete-goal", `${gameId}-${eventId}`),
+              },
+            },
+          );
+
+          applyGoalMutationResult(result, { deletedEventId: eventId });
+          setStatus("Goal deleted.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not delete goal.";
+          showError(message);
+          setStatus("Goal deletion failed.", "error");
+        } finally {
+          target.disabled = false;
+          renderLiveScoring();
+        }
+      });
+    }
+
     await loadGame();
     await loadRosterSetup({ updateStatus: false });
+    await loadGameGoals();
 
     try {
       const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {

@@ -2262,6 +2262,47 @@ async function start(): Promise<void> {
         return;
       }
 
+      const listGameGoalsMatch = route.match(/^\/v1\/games\/([^/]+)\/goals$/);
+      if (method === "GET" && listGameGoalsMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(listGameGoalsMatch[1]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${game.leagueId} is required.`,
+          );
+          return;
+        }
+
+        const teams = await readGameTeams(game);
+        const timeline = await repository.listGoalEvents(gameId);
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          scoreboard: {
+            teams,
+          },
+          timeline,
+        });
+        return;
+      }
+
       const listGameTeamsMatch = route.match(/^\/v1\/games\/([^/]+)\/teams$/);
       if (method === "GET" && listGameTeamsMatch) {
         if (!authGate.session) {
