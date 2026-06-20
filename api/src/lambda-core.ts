@@ -2230,6 +2230,18 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
 
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
+          }
+
           let rawBody: Record<string, unknown>;
           try {
             rawBody = parseJsonBody(event);
@@ -2341,6 +2353,18 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           if (!game) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
           }
 
           let rawBody: Record<string, unknown>;
@@ -2536,6 +2560,18 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
 
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
+          }
+
           let rawBody: Record<string, unknown>;
           try {
             rawBody = parseJsonBody(event);
@@ -2718,6 +2754,19 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           if (!game) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          if (game.status === "finished") {
+            status = 409;
+            return createJsonResponse(
+              status,
+              {
+                error: "conflict",
+                code: "game_finished",
+                message: `Game ${gameId} is finished. Team overrides are locked after finish.`,
+              },
+              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            );
           }
 
           let rawBody: Record<string, unknown>;

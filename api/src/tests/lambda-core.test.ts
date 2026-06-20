@@ -235,6 +235,14 @@ function createEvent(input: {
   };
 }
 
+function completedThirdTimerSegments(): ThirdTimerSegment[] {
+  return createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-02-23T00:0${third.third}:00.000Z`,
+    finishedAt: `2026-02-23T00:0${third.third}:30.000Z`,
+  }));
+}
+
 function createHarness(config: HarnessConfig = {}) {
   const createdLeagues: CreatedLeagueInput[] = [];
   const createdSeasons: CreatedSeasonInput[] = [];
@@ -710,6 +718,24 @@ function createHarness(config: HarnessConfig = {}) {
           return null;
         }
 
+        if (input.status === "finished" && existing.status !== "finished") {
+          throw new GameTimerTransitionError(
+            "use_finish_endpoint",
+            "Use POST /v1/games/{gameId}/finish to finish a game.",
+          );
+        }
+
+        if (
+          existing.status === "finished" &&
+          input.status !== undefined &&
+          input.status !== "finished"
+        ) {
+          throw new GameTimerTransitionError(
+            "game_finished",
+            "Finished games cannot be moved back to scheduled or live.",
+          );
+        }
+
         if (
           input.thirdLengthMinutes !== undefined &&
           input.thirdLengthMinutes !== existing.thirdLengthMinutes &&
@@ -847,6 +873,16 @@ function createHarness(config: HarnessConfig = {}) {
           throw new GameTimerTransitionError(
             "third_running",
             `Third ${runningThird.third} must be finished before the game can be finished.`,
+          );
+        }
+
+        const allThirdsCompleted =
+          existing.thirds.length === 3 &&
+          existing.thirds.every((third) => third.startedAt && third.finishedAt);
+        if (!allThirdsCompleted) {
+          throw new GameTimerTransitionError(
+            "thirds_incomplete",
+            "All three thirds must be started and finished before the game can be finished.",
           );
         }
 
@@ -1169,12 +1205,14 @@ function createGoalHarness(input: {
   email?: string;
   role?: "admin" | "scorekeeper" | "viewer";
   runningThird?: boolean;
+  completedThirds?: boolean;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
   const role = input.role ?? "scorekeeper";
   const runningThird = input.runningThird ?? true;
-  const thirds = createDefaultThirdTimerSegments();
-  if (runningThird) {
+  const completedThirds = input.completedThirds ?? false;
+  const thirds = completedThirds ? completedThirdTimerSegments() : createDefaultThirdTimerSegments();
+  if (runningThird && !completedThirds) {
     thirds[0] = {
       ...thirds[0],
       startedAt: "2026-02-23T00:00:00.000Z",
@@ -1196,7 +1234,7 @@ function createGoalHarness(input: {
         leagueId: "league-1",
         seasonId: "season-1",
         sessionId: "session-1",
-        status: runningThird ? "live" : "scheduled",
+        status: runningThird || completedThirds ? "live" : "scheduled",
         gameStartTs: "2026-02-23T10:00:00.000Z",
         thirdLengthMinutes: 20,
         thirds,
@@ -1299,6 +1337,37 @@ function createGoalHarness(input: {
       },
     },
   });
+}
+
+async function completeGoalHarnessThirds(
+  harness: ReturnType<typeof createGoalHarness>,
+  input: { firstThirdAlreadyRunning?: boolean } = {},
+): Promise<void> {
+  for (const third of [1, 2, 3] as const) {
+    if (!(input.firstThirdAlreadyRunning && third === 1)) {
+      const startResponse = await harness.handler(
+        createEvent({
+          method: "POST",
+          path: `/v1/games/game-1/thirds/${third}/start`,
+          headers: {
+            Cookie: "threefc_session=session-1",
+          },
+        }),
+      );
+      assert.equal(startResponse.statusCode, 200);
+    }
+
+    const finishResponse = await harness.handler(
+      createEvent({
+        method: "POST",
+        path: `/v1/games/game-1/thirds/${third}/finish`,
+        headers: {
+          Cookie: "threefc_session=session-1",
+        },
+      }),
+    );
+    assert.equal(finishResponse.statusCode, 200);
+  }
 }
 
 test("core lambda rejects protected mutation without session cookie", async () => {
@@ -2035,16 +2104,7 @@ test("core lambda finishes a game with clear winner and idempotency replay", asy
     assert.equal(goalResponse.statusCode, 201);
   }
 
-  const finishThirdResponse = await harness.handler(
-    createEvent({
-      method: "POST",
-      path: "/v1/games/game-1/thirds/1/finish",
-      headers: {
-        Cookie: "threefc_session=session-1",
-      },
-    }),
-  );
-  assert.equal(finishThirdResponse.statusCode, 200);
+  await completeGoalHarnessThirds(harness, { firstThirdAlreadyRunning: true });
 
   const finishResponse = await harness.handler(
     createEvent({
@@ -2095,7 +2155,7 @@ test("core lambda finishes a game with clear winner and idempotency replay", asy
 });
 
 test("core lambda finishes a game with full draw result", async () => {
-  const harness = createGoalHarness({ runningThird: false });
+  const harness = createGoalHarness({ runningThird: false, completedThirds: true });
 
   const response = await harness.handler(
     createEvent({
@@ -2132,6 +2192,28 @@ test("core lambda finishes a game with full draw result", async () => {
   );
 });
 
+test("core lambda rejects finish before all thirds are completed", async () => {
+  const harness = createGoalHarness({ runningThird: false });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-incomplete-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "thirds_incomplete",
+    message: "All three thirds must be started and finished before the game can be finished.",
+  });
+});
+
 test("core lambda returns idempotency conflict for reused finish key with mismatched record", async () => {
   const harness = createGoalHarness({ runningThird: false });
   harness.idempotencyRecords.set("scorekeeper@example.com:POST:/v1/games/game-1/finish:finish-conflict", {
@@ -2163,7 +2245,7 @@ test("core lambda returns idempotency conflict for reused finish key with mismat
 });
 
 test("core lambda rejects non-admin goal creation after finish", async () => {
-  const harness = createGoalHarness({ runningThird: false });
+  const harness = createGoalHarness({ runningThird: false, completedThirds: true });
   const finishResponse = await harness.handler(
     createEvent({
       method: "POST",
@@ -2203,6 +2285,48 @@ test("core lambda rejects non-admin goal creation after finish", async () => {
   assert.equal(harness.createdGoals.length, 0);
 });
 
+test("core lambda locks team overrides after finish", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-team-override-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PUT",
+      path: "/v1/games/game-1/teams/red",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        name: "Renamed Red",
+        color: "#cc0000",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Team overrides are locked after finish.",
+  });
+  assert.equal(harness.createdGameTeams.length, 0);
+});
+
 test("core lambda allows admin goal correction after finish and refreshes result", async () => {
   const harness = createGoalHarness({ email: "admin@example.com", role: "admin" });
   const createResponse = await harness.handler(
@@ -2225,16 +2349,7 @@ test("core lambda allows admin goal correction after finish and refreshes result
   assert.equal(createResponse.statusCode, 201);
   const createdBody = JSON.parse(createResponse.body) as { goal: { eventId: string } };
 
-  const finishThirdResponse = await harness.handler(
-    createEvent({
-      method: "POST",
-      path: "/v1/games/game-1/thirds/1/finish",
-      headers: {
-        Cookie: "threefc_session=session-1",
-      },
-    }),
-  );
-  assert.equal(finishThirdResponse.statusCode, 200);
+  await completeGoalHarnessThirds(harness, { firstThirdAlreadyRunning: true });
 
   const finishResponse = await harness.handler(
     createEvent({
@@ -3050,6 +3165,71 @@ test("core lambda rejects setting scheduled status after a third starts", async 
     error: "conflict",
     code: "timer_status_locked",
     message: "Game status cannot be set back to scheduled after a third has started.",
+  });
+});
+
+test("core lambda rejects manual status finish and unfinish through patch", async () => {
+  const scheduledHarness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+  });
+  const directFinishResponse = await scheduledHarness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        status: "finished",
+      },
+    }),
+  );
+
+  assert.equal(directFinishResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(directFinishResponse.body), {
+    error: "conflict",
+    code: "use_finish_endpoint",
+    message: "Use POST /v1/games/{gameId}/finish to finish a game.",
+  });
+
+  const finishedHarness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await finishedHarness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-unfinish-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const unfinishResponse = await finishedHarness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        status: "live",
+      },
+    }),
+  );
+
+  assert.equal(unfinishResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(unfinishResponse.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Finished games cannot be moved back to scheduled or live.",
   });
 });
 

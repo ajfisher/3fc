@@ -1019,12 +1019,24 @@ test("repository locks third length after timer starts and rejects finished game
     /Third length cannot be changed after a third has started/,
   );
 
-  await repository.updateGame({
-    gameId: "game-1",
+  await assert.rejects(
+    repository.updateGame({
+      gameId: "game-1",
+      status: "finished",
+    }),
+    /Use POST \/v1\/games\/\{gameId\}\/finish/,
+  );
+
+  await repository.createGame({
+    gameId: "game-finished",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
     status: "finished",
+    gameStartTs: "2026-02-22T11:00:00Z",
   });
   await assert.rejects(
-    repository.finishGameThird({ gameId: "game-1", third: 1 }),
+    repository.finishGameThird({ gameId: "game-finished", third: 1 }),
     /Cannot finish a third after the game is finished/,
   );
 });
@@ -1148,6 +1160,15 @@ async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {
   }
 }
 
+async function completeAllThirds(repository: ThreeFcRepository, input: { firstThirdStarted?: boolean } = {}): Promise<void> {
+  for (const third of [1, 2, 3] as const) {
+    if (!(input.firstThirdStarted && third === 1)) {
+      await repository.startGameThird({ gameId: "game-1", third });
+    }
+    await repository.finishGameThird({ gameId: "game-1", third });
+  }
+}
+
 test("repository finishes a game with deterministic clear-winner result", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);
@@ -1183,7 +1204,7 @@ test("repository finishes a game with deterministic clear-winner result", async 
     assistPlayerIds: [],
     ownGoal: false,
   });
-  await repository.finishGameThird({ gameId: "game-1", third: 1 });
+  await completeAllThirds(repository, { firstThirdStarted: true });
 
   const finished = await repository.finishGame({ gameId: "game-1" });
 
@@ -1213,6 +1234,7 @@ test("repository finishes a game with deterministic clear-winner result", async 
 test("repository finishes a game with full draw result", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);
+  await completeAllThirds(repository);
 
   const finished = await repository.finishGame({ gameId: "game-1" });
 
@@ -1236,6 +1258,43 @@ test("repository finishes a game with full draw result", async () => {
   );
 });
 
+test("repository rejects finish until all thirds are completed", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+
+  await assert.rejects(
+    repository.finishGame({ gameId: "game-1" }),
+    /All three thirds must be started and finished/,
+  );
+
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  await repository.finishGameThird({ gameId: "game-1", third: 1 });
+
+  await assert.rejects(
+    repository.finishGame({ gameId: "game-1" }),
+    /All three thirds must be started and finished/,
+  );
+});
+
+test("repository rejects manual finished status changes through updateGame", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+
+  await assert.rejects(
+    repository.updateGame({ gameId: "game-1", status: "finished" }),
+    /Use POST \/v1\/games\/\{gameId\}\/finish/,
+  );
+
+  await completeAllThirds(repository);
+  const finished = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finished?.status, "finished");
+
+  await assert.rejects(
+    repository.updateGame({ gameId: "game-1", status: "live" }),
+    /Finished games cannot be moved back to scheduled or live/,
+  );
+});
+
 test("repository recomputes finished game result after goal corrections", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);
@@ -1251,7 +1310,7 @@ test("repository recomputes finished game result after goal corrections", async 
     assistPlayerIds: [],
     ownGoal: false,
   });
-  await repository.finishGameThird({ gameId: "game-1", third: 1 });
+  await completeAllThirds(repository, { firstThirdStarted: true });
   const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
   assert.equal(finishedBeforeCorrection?.result?.winnerTeamId, "red");
 

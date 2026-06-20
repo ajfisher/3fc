@@ -473,6 +473,10 @@ function isThirdStarted(game: Pick<GameRecord, "thirds">): boolean {
   return game.thirds.some((third) => third.startedAt !== null);
 }
 
+function areAllThirdsCompleted(game: Pick<GameRecord, "thirds">): boolean {
+  return game.thirds.length === 3 && game.thirds.every((third) => third.startedAt && third.finishedAt);
+}
+
 function compareTeamIds(left: TeamId, right: TeamId): number {
   return TEAM_IDS.indexOf(left) - TEAM_IDS.indexOf(right);
 }
@@ -1089,6 +1093,24 @@ export class ThreeFcRepository {
     const nextStatus = input.status ?? existing.status;
     const nextThirdLengthMinutes = input.thirdLengthMinutes ?? existing.thirdLengthMinutes;
 
+    if (input.status === "finished" && existing.status !== "finished") {
+      throw new GameTimerTransitionError(
+        "use_finish_endpoint",
+        "Use POST /v1/games/{gameId}/finish to finish a game.",
+      );
+    }
+
+    if (
+      existing.status === "finished" &&
+      input.status !== undefined &&
+      input.status !== "finished"
+    ) {
+      throw new GameTimerTransitionError(
+        "game_finished",
+        "Finished games cannot be moved back to scheduled or live.",
+      );
+    }
+
     if (
       input.thirdLengthMinutes !== undefined &&
       input.thirdLengthMinutes !== existing.thirdLengthMinutes &&
@@ -1339,6 +1361,13 @@ export class ThreeFcRepository {
       throw new GameTimerTransitionError(
         "third_running",
         `Third ${runningThird.third} must be finished before the game can be finished.`,
+      );
+    }
+
+    if (!areAllThirdsCompleted(existing)) {
+      throw new GameTimerTransitionError(
+        "thirds_incomplete",
+        "All three thirds must be started and finished before the game can be finished.",
       );
     }
 
