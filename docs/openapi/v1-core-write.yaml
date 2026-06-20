@@ -233,6 +233,111 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/games/{gameId}/goals/undo-last:
+    post:
+      summary: Delete the current most recent goal event
+      operationId: undoLastGoal
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UndoLastGoalRequest"
+      responses:
+        "200":
+          description: Latest goal deleted with updated scoreboard, timeline, and audit entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteGoalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/games/{gameId}/goals/{eventId}:
+    patch:
+      summary: Correct an existing goal event without changing its timer stamp
+      operationId: updateGoal
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateGoalRequest"
+      responses:
+        "200":
+          description: Goal updated with recalculated scoreboard, timeline, and audit entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateGoalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      summary: Delete a goal event and recompute game scoring tallies
+      operationId: deleteGoal
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Goal deleted with recalculated scoreboard, timeline, and audit entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteGoalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/seasons/{seasonId}/teams:
     get:
       summary: List season default teams
@@ -708,6 +813,47 @@ components:
             minLength: 1
         ownGoal:
           type: boolean
+    UpdateGoalRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        scoringTeamId:
+          type:
+            - string
+            - "null"
+          enum:
+            - red
+            - blue
+            - yellow
+            - null
+        concedingTeamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        scorerPlayerId:
+          type: string
+          minLength: 1
+        assistPlayerIds:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+            minLength: 1
+          uniqueItems: true
+        ownGoal:
+          type: boolean
+    UndoLastGoalRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedEventId
+      properties:
+        expectedEventId:
+          type: string
+          minLength: 1
     League:
       type: object
       required:
@@ -1118,6 +1264,112 @@ components:
         updatedAt:
           type: string
           format: date-time
+    GoalAuditSnapshot:
+      type: object
+      required:
+        - eventId
+        - third
+        - thirdMinute
+        - gameMinute
+        - elapsedSeconds
+        - stoppageMinute
+        - displayTime
+        - scoringTeamId
+        - concedingTeamId
+        - scorerPlayerId
+        - assistPlayerIds
+        - ownGoal
+      properties:
+        eventId:
+          type: string
+        third:
+          type: integer
+          enum:
+            - 1
+            - 2
+            - 3
+        thirdMinute:
+          type: integer
+          minimum: 1
+        gameMinute:
+          type: integer
+          minimum: 1
+        elapsedSeconds:
+          type: integer
+          minimum: 0
+        stoppageMinute:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        displayTime:
+          type: string
+        scoringTeamId:
+          type:
+            - string
+            - "null"
+          enum:
+            - red
+            - blue
+            - yellow
+            - null
+        concedingTeamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        scorerPlayerId:
+          type: string
+        assistPlayerIds:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+        ownGoal:
+          type: boolean
+    GoalAuditEntry:
+      type: object
+      required:
+        - auditId
+        - gameId
+        - eventId
+        - actorUserId
+        - action
+        - before
+        - after
+        - createdAt
+        - updatedAt
+      properties:
+        auditId:
+          type: string
+        gameId:
+          type: string
+        eventId:
+          type: string
+        actorUserId:
+          type: string
+        action:
+          type: string
+          enum:
+            - goal_created
+            - goal_updated
+            - goal_deleted
+            - goal_undo_last
+        before:
+          oneOf:
+            - $ref: "#/components/schemas/GoalAuditSnapshot"
+            - type: "null"
+        after:
+          oneOf:
+            - $ref: "#/components/schemas/GoalAuditSnapshot"
+            - type: "null"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     GameScoreboard:
       type: object
       required:
@@ -1142,6 +1394,45 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/GoalEvent"
+    UpdateGoalResponse:
+      type: object
+      required:
+        - goal
+        - previousGoal
+        - scoreboard
+        - timeline
+        - audit
+      properties:
+        goal:
+          $ref: "#/components/schemas/GoalEvent"
+        previousGoal:
+          $ref: "#/components/schemas/GoalEvent"
+        scoreboard:
+          $ref: "#/components/schemas/GameScoreboard"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoalEvent"
+        audit:
+          $ref: "#/components/schemas/GoalAuditEntry"
+    DeleteGoalResponse:
+      type: object
+      required:
+        - deletedGoal
+        - scoreboard
+        - timeline
+        - audit
+      properties:
+        deletedGoal:
+          $ref: "#/components/schemas/GoalEvent"
+        scoreboard:
+          $ref: "#/components/schemas/GameScoreboard"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoalEvent"
+        audit:
+          $ref: "#/components/schemas/GoalAuditEntry"
     ErrorResponse:
       type: object
       additionalProperties: true

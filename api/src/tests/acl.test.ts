@@ -83,6 +83,18 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "createGoal",
     gameId: "game-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("PATCH", "/v1/games/game-1/goals/goal-1"), {
+    operation: "updateGoal",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("DELETE", "/v1/games/game-1/goals/goal-1"), {
+    operation: "deleteGoal",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/goals/undo-last"), {
+    operation: "undoLastGoal",
+    gameId: "game-1",
+  });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
 

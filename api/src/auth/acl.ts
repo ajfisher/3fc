@@ -12,6 +12,9 @@ const ROUTES = {
   startGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/,
   finishGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/,
   createGoal: /^\/v1\/games\/([^/]+)\/goals$/,
+  updateGoal: /^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/,
+  deleteGoal: /^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/,
+  undoLastGoal: /^\/v1\/games\/([^/]+)\/goals\/undo-last$/,
 } as const;
 
 export type ProtectedMutationOperation =
@@ -25,7 +28,10 @@ export type ProtectedMutationOperation =
   | "assignRosterPlayer"
   | "startGameThird"
   | "finishGameThird"
-  | "createGoal";
+  | "createGoal"
+  | "updateGoal"
+  | "deleteGoal"
+  | "undoLastGoal";
 
 export interface ProtectedMutationRoute {
   operation: ProtectedMutationOperation;
@@ -146,6 +152,30 @@ export function resolveProtectedMutationRoute(
     return {
       operation: "createGoal",
       gameId: decodeRouteParam(createGoalMatch[1]),
+    };
+  }
+
+  const updateGoalMatch = upperMethod === "PATCH" ? route.match(ROUTES.updateGoal) : null;
+  if (updateGoalMatch) {
+    return {
+      operation: "updateGoal",
+      gameId: decodeRouteParam(updateGoalMatch[1]),
+    };
+  }
+
+  const deleteGoalMatch = upperMethod === "DELETE" ? route.match(ROUTES.deleteGoal) : null;
+  if (deleteGoalMatch) {
+    return {
+      operation: "deleteGoal",
+      gameId: decodeRouteParam(deleteGoalMatch[1]),
+    };
+  }
+
+  const undoLastGoalMatch = upperMethod === "POST" ? route.match(ROUTES.undoLastGoal) : null;
+  if (undoLastGoalMatch) {
+    return {
+      operation: "undoLastGoal",
+      gameId: decodeRouteParam(undoLastGoalMatch[1]),
     };
   }
 

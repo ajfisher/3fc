@@ -10,6 +10,7 @@ import {
   TransactWriteItemsCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
+import { randomUUID } from "node:crypto";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
@@ -30,7 +31,10 @@ import {
   gamePlayerSk,
   gameSessionIndexPk,
   gameSessionIndexSk,
+  goalAuditSk,
+  goalCorrectionOperationSk,
   goalEventIdSk,
+  goalStateSk,
   goalSk,
   idempotencyPk,
   leaguePk,
@@ -57,10 +61,17 @@ import type {
   CreateSessionGameInput,
   CreateSessionInput,
   CreateTeamInput,
+  DeleteGoalInput,
+  DeleteGoalResult,
   GameTeamRecord,
   GamePlayerRecord,
   GameRecord,
+  GoalAuditAction,
+  GoalAuditRecord,
+  GoalAuditSnapshotRecord,
+  GoalCorrectionOperationRecord,
   GoalEventRecord,
+  GoalStateRecord,
   IdempotencyRecord,
   LeagueAclRecord,
   LeagueRecord,
@@ -74,6 +85,9 @@ import type {
   TeamRecord,
   GrantLeagueAccessInput,
   ThirdTransitionInput,
+  UndoLastGoalInput,
+  UpdateGoalInput,
+  UpdateGoalResult,
 } from "./types.js";
 
 const ENTITY_TYPE = {
@@ -90,6 +104,9 @@ const ENTITY_TYPE = {
   roster: "roster",
   goal: "goal",
   goalEventId: "goalEventId",
+  goalState: "goalState",
+  goalAudit: "goalAudit",
+  goalCorrectionOperation: "goalCorrectionOperation",
   idempotency: "idempotency",
 } as const;
 
@@ -146,6 +163,30 @@ export class GoalCreationError extends Error {
   }
 }
 
+export class GoalCorrectionError extends Error {
+  constructor(
+    readonly code: string,
+    readonly statusCode: 400 | 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GoalCorrectionError";
+  }
+}
+
+type GoalRuleErrorKind = "creation" | "correction";
+
+function goalRuleError(
+  kind: GoalRuleErrorKind,
+  code: string,
+  statusCode: 400 | 409,
+  message: string,
+): GoalCreationError | GoalCorrectionError {
+  return kind === "creation"
+    ? new GoalCreationError(code, statusCode, message)
+    : new GoalCorrectionError(code, statusCode, message);
+}
+
 function requireNonEmpty(name: string, value: string): void {
   if (value.trim().length === 0) {
     throw new Error(`${name} must be a non-empty string.`);
@@ -161,6 +202,21 @@ function requireThirdNumber(third: number): asserts third is ThirdNumber {
 function requireTeamId(teamId: string | null, fieldName: string): asserts teamId is TeamId {
   if (teamId === null || !TEAM_IDS.includes(teamId as TeamId)) {
     throw new GoalCreationError(
+      "invalid_team",
+      400,
+      `${fieldName} must be red, blue, or yellow.`,
+    );
+  }
+}
+
+function requireGoalTeamId(
+  teamId: string | null,
+  fieldName: string,
+  errorKind: GoalRuleErrorKind,
+): asserts teamId is TeamId {
+  if (teamId === null || !TEAM_IDS.includes(teamId as TeamId)) {
+    throw goalRuleError(
+      errorKind,
       "invalid_team",
       400,
       `${fieldName} must be red, blue, or yellow.`,
@@ -268,6 +324,75 @@ function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "create
   };
 }
 
+function normalizeGoalStatePayload(data: unknown): Omit<GoalStateRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GoalStateRecord, "createdAt" | "updatedAt">>;
+
+  return {
+    gameId: raw.gameId ?? "",
+    latestEventId: typeof raw.latestEventId === "string" ? raw.latestEventId : null,
+    latestGoalSk: typeof raw.latestGoalSk === "string" ? raw.latestGoalSk : null,
+    revision: normalizeNonNegativeInteger(raw.revision),
+  };
+}
+
+function normalizeGoalAuditSnapshot(data: unknown): GoalAuditSnapshotRecord | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const raw = data as Partial<GoalAuditSnapshotRecord>;
+  const third = raw.third ?? 1;
+
+  return {
+    eventId: raw.eventId ?? "",
+    third,
+    thirdMinute: normalizeNonNegativeInteger(raw.thirdMinute),
+    gameMinute: normalizeNonNegativeInteger(raw.gameMinute),
+    elapsedSeconds: normalizeNonNegativeInteger(raw.elapsedSeconds),
+    stoppageMinute:
+      raw.stoppageMinute === null || Number.isInteger(raw.stoppageMinute)
+        ? (raw.stoppageMinute ?? null)
+        : null,
+    displayTime: raw.displayTime ?? String(raw.gameMinute ?? ""),
+    scoringTeamId: raw.scoringTeamId ?? null,
+    concedingTeamId: raw.concedingTeamId ?? "red",
+    scorerPlayerId: raw.scorerPlayerId ?? "",
+    assistPlayerIds: Array.isArray(raw.assistPlayerIds)
+      ? raw.assistPlayerIds.filter((playerId): playerId is string => typeof playerId === "string")
+      : [],
+    ownGoal: raw.ownGoal ?? false,
+  };
+}
+
+function normalizeGoalAuditPayload(data: unknown): Omit<GoalAuditRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GoalAuditRecord, "createdAt" | "updatedAt">>;
+
+  return {
+    auditId: raw.auditId ?? "",
+    gameId: raw.gameId ?? "",
+    eventId: raw.eventId ?? "",
+    actorUserId: raw.actorUserId ?? "",
+    action: raw.action ?? "goal_updated",
+    before: normalizeGoalAuditSnapshot(raw.before),
+    after: normalizeGoalAuditSnapshot(raw.after),
+  };
+}
+
+function normalizeGoalCorrectionOperationPayload(
+  data: unknown,
+): Omit<GoalCorrectionOperationRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GoalCorrectionOperationRecord, "createdAt" | "updatedAt">>;
+
+  return {
+    gameId: raw.gameId ?? "",
+    eventId: raw.eventId ?? "",
+    operationId: raw.operationId ?? "",
+    requestHash: raw.requestHash ?? "",
+    action: raw.action ?? "goal_updated",
+    result: raw.result as GoalCorrectionOperationRecord["result"],
+  };
+}
+
 function isThirdStarted(game: Pick<GameRecord, "thirds">): boolean {
   return game.thirds.some((third) => third.startedAt !== null);
 }
@@ -278,6 +403,46 @@ function compareTeamIds(left: TeamId, right: TeamId): number {
 
 function sortGameTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
   return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
+}
+
+function compareGoalEvents(left: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "eventId">, right: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "eventId">): number {
+  const thirdSort = left.third - right.third;
+  if (thirdSort !== 0) {
+    return thirdSort;
+  }
+
+  const minuteSort = left.gameMinute - right.gameMinute;
+  if (minuteSort !== 0) {
+    return minuteSort;
+  }
+
+  const elapsedSort = left.elapsedSeconds - right.elapsedSeconds;
+  if (elapsedSort !== 0) {
+    return elapsedSort;
+  }
+
+  return left.eventId.localeCompare(right.eventId);
+}
+
+function latestGoalEvent(goals: GoalEventRecord[]): GoalEventRecord | null {
+  return [...goals].sort(compareGoalEvents).at(-1) ?? null;
+}
+
+function goalAuditSnapshot(goal: GoalEventRecord): GoalAuditSnapshotRecord {
+  return {
+    eventId: goal.eventId,
+    third: goal.third,
+    thirdMinute: goal.thirdMinute,
+    gameMinute: goal.gameMinute,
+    elapsedSeconds: goal.elapsedSeconds,
+    stoppageMinute: goal.stoppageMinute,
+    displayTime: goal.displayTime,
+    scoringTeamId: goal.scoringTeamId,
+    concedingTeamId: goal.concedingTeamId,
+    scorerPlayerId: goal.scorerPlayerId,
+    assistPlayerIds: goal.assistPlayerIds,
+    ownGoal: goal.ownGoal,
+  };
 }
 
 function isConditionalWriteFailure(error: unknown): boolean {
@@ -1248,9 +1413,499 @@ export class ThreeFcRepository {
       );
   }
 
+  private async readGoalTeamStates(
+    gameId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<{
+    teams: GameTeamRecord[];
+    teamStatesById: Map<TeamId, { record: GameTeamRecord; rawData: string }>;
+  }> {
+    const teamItems = await this.queryByPrefix(gamePk(gameId), "TEAM#", options);
+    const teamStates = teamItems
+      .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)
+      .map((item) => ({
+        record: withTimestamps(
+          normalizeGameTeamPayload(item.data),
+          item.createdAt,
+          item.updatedAt,
+        ),
+        rawData: item.rawData,
+      }));
+
+    return {
+      teams: sortGameTeams(teamStates.map((teamState) => teamState.record)),
+      teamStatesById: new Map(teamStates.map((teamState) => [teamState.record.teamId, teamState])),
+    };
+  }
+
+  private validateGoalRules(
+    input: {
+      gameId: string;
+      scoringTeamId: TeamId | null;
+      concedingTeamId: TeamId;
+      scorerPlayerId: string;
+      assistPlayerIds: string[];
+      ownGoal: boolean;
+    },
+    teams: GameTeamRecord[],
+    roster: RosterAssignmentRecord[],
+    errorKind: GoalRuleErrorKind,
+  ): void {
+    requireGoalTeamId(input.concedingTeamId, "concedingTeamId", errorKind);
+    if (input.scoringTeamId !== null) {
+      requireGoalTeamId(input.scoringTeamId, "scoringTeamId", errorKind);
+    }
+
+    try {
+      validateAssistPlayerIds(input.scorerPlayerId, input.assistPlayerIds);
+    } catch (error) {
+      throw goalRuleError(
+        errorKind,
+        "invalid_assists",
+        400,
+        error instanceof Error ? error.message : "Assist player IDs are invalid.",
+      );
+    }
+
+    if (input.ownGoal && input.scoringTeamId !== null) {
+      throw goalRuleError(
+        errorKind,
+        "own_goal_scoring_team",
+        400,
+        "ownGoal=true requires scoringTeamId to be null.",
+      );
+    }
+
+    if (!input.ownGoal && input.scoringTeamId === null) {
+      throw goalRuleError(
+        errorKind,
+        "scoring_team_required",
+        400,
+        "scoringTeamId is required when ownGoal=false.",
+      );
+    }
+
+    if (!input.ownGoal && input.scoringTeamId === input.concedingTeamId) {
+      throw goalRuleError(
+        errorKind,
+        "same_team_goal",
+        400,
+        "scoringTeamId and concedingTeamId must be different for a standard goal.",
+      );
+    }
+
+    const teamsById = new Map(teams.map((team) => [team.teamId, team]));
+    const concedingTeam = teamsById.get(input.concedingTeamId);
+    if (!concedingTeam) {
+      throw goalRuleError(
+        errorKind,
+        "invalid_conceding_team",
+        400,
+        "concedingTeamId must be an active team for this game.",
+      );
+    }
+
+    const scoringTeam = input.scoringTeamId ? teamsById.get(input.scoringTeamId) : null;
+    if (!input.ownGoal && !scoringTeam) {
+      throw goalRuleError(
+        errorKind,
+        "invalid_scoring_team",
+        400,
+        "scoringTeamId must be an active team for this game.",
+      );
+    }
+
+    const rosterByPlayerId = new Map(roster.map((assignment) => [assignment.playerId, assignment]));
+    const scorerRoster = rosterByPlayerId.get(input.scorerPlayerId);
+    if (!scorerRoster) {
+      throw goalRuleError(
+        errorKind,
+        "scorer_not_rostered",
+        400,
+        "Scorer must be rostered in this game.",
+      );
+    }
+
+    if (!input.ownGoal && scorerRoster.teamId !== input.scoringTeamId) {
+      throw goalRuleError(
+        errorKind,
+        "scorer_not_on_scoring_team",
+        400,
+        "Scorer must be rostered on the scoring team for a standard goal.",
+      );
+    }
+
+    if (input.ownGoal && scorerRoster.teamId !== input.concedingTeamId) {
+      throw goalRuleError(
+        errorKind,
+        "scorer_not_on_conceding_team",
+        400,
+        "Own-goal scorer must be rostered on the conceding team.",
+      );
+    }
+
+    for (const assistPlayerId of input.assistPlayerIds) {
+      if (!rosterByPlayerId.has(assistPlayerId)) {
+        throw goalRuleError(
+          errorKind,
+          "assist_not_rostered",
+          400,
+          "Assist players must be rostered in this game.",
+        );
+      }
+    }
+  }
+
+  private recomputeTeamsFromGoals(
+    gameId: string,
+    teams: GameTeamRecord[],
+    timeline: GoalEventRecord[],
+    now: string,
+  ): GameTeamRecord[] {
+    const countsByTeamId = new Map<TeamId, { scored: number; conceded: number }>();
+    for (const team of teams) {
+      countsByTeamId.set(team.teamId, { scored: 0, conceded: 0 });
+    }
+
+    for (const goal of timeline) {
+      if (!goal.ownGoal && goal.scoringTeamId) {
+        const scoringCounts = countsByTeamId.get(goal.scoringTeamId);
+        if (scoringCounts) {
+          scoringCounts.scored += 1;
+        }
+      }
+
+      const concedingCounts = countsByTeamId.get(goal.concedingTeamId);
+      if (concedingCounts) {
+        concedingCounts.conceded += 1;
+      }
+    }
+
+    return sortGameTeams(
+      teams.map((team) => {
+        const counts = countsByTeamId.get(team.teamId) ?? { scored: 0, conceded: 0 };
+        const changed = team.scored !== counts.scored || team.conceded !== counts.conceded;
+        return {
+          ...team,
+          scored: counts.scored,
+          conceded: counts.conceded,
+          updatedAt: changed ? now : team.updatedAt,
+        };
+      }),
+    );
+  }
+
+  private async findGoalByEventId(
+    gameId: string,
+    eventId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<{ goal: GoalEventRecord; sk: string; stored: StoredEntity<unknown> } | null> {
+    const marker = await this.getEntity(gamePk(gameId), goalEventIdSk(eventId), options);
+    const markerGoalSk =
+      marker?.entityType === ENTITY_TYPE.goalEventId &&
+      typeof (marker.data as { goalSk?: unknown }).goalSk === "string"
+        ? (marker.data as { goalSk: string }).goalSk
+        : null;
+
+    if (markerGoalSk) {
+      const stored = await this.getEntity(gamePk(gameId), markerGoalSk, options);
+      if (stored?.entityType === ENTITY_TYPE.goal) {
+        return {
+          goal: withTimestamps(
+            normalizeGoalEventPayload(stored.data),
+            stored.createdAt,
+            stored.updatedAt,
+          ),
+          sk: stored.sk,
+          stored,
+        };
+      }
+    }
+
+    const goalItems = await this.queryByPrefix(gamePk(gameId), "GOAL#", options);
+    const stored = goalItems.find(
+      (item) =>
+        item.entityType === ENTITY_TYPE.goal &&
+        normalizeGoalEventPayload(item.data).eventId === eventId,
+    );
+
+    if (!stored) {
+      return null;
+    }
+
+    return {
+      goal: withTimestamps(normalizeGoalEventPayload(stored.data), stored.createdAt, stored.updatedAt),
+      sk: stored.sk,
+      stored,
+    };
+  }
+
+  private async getGoalState(
+    gameId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<{ state: GoalStateRecord; rawData: string } | null> {
+    const stored = await this.getEntity(gamePk(gameId), goalStateSk(), options);
+    if (!stored || stored.entityType !== ENTITY_TYPE.goalState) {
+      return null;
+    }
+
+    return {
+      state: withTimestamps(
+        normalizeGoalStatePayload(stored.data),
+        stored.createdAt,
+        stored.updatedAt,
+      ),
+      rawData: stored.rawData,
+    };
+  }
+
+  private buildGoalStateWrite(
+    gameId: string,
+    latest: GoalEventRecord | null,
+    latestGoalSk: string | null,
+    now: string,
+    existing: { state: GoalStateRecord; rawData: string } | null,
+  ) {
+    const payload = {
+      gameId,
+      latestEventId: latest?.eventId ?? null,
+      latestGoalSk,
+      revision: (existing?.state.revision ?? 0) + 1,
+    };
+    const basePut = {
+      TableName: this.tableName,
+      Item: buildItemWithTimestamps(
+        gamePk(gameId),
+        goalStateSk(),
+        ENTITY_TYPE.goalState,
+        payload,
+        existing?.state.createdAt ?? now,
+        now,
+      ),
+    };
+
+    if (!existing) {
+      return {
+        Put: {
+          ...basePut,
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        },
+      };
+    }
+
+    return {
+      Put: {
+        ...basePut,
+        ConditionExpression: "#updatedAt = :expectedGoalStateUpdatedAt AND #data = :expectedGoalStateData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedGoalStateUpdatedAt": { S: existing.state.updatedAt },
+          ":expectedGoalStateData": { S: existing.rawData },
+        },
+      },
+    };
+  }
+
+  private buildGoalAuditRecord(input: {
+    gameId: string;
+    eventId: string;
+    actorUserId: string;
+    action: GoalAuditAction;
+    before: GoalEventRecord | null;
+    after: GoalEventRecord | null;
+    now: string;
+  }): GoalAuditRecord {
+    return {
+      auditId: randomUUID(),
+      gameId: input.gameId,
+      eventId: input.eventId,
+      actorUserId: input.actorUserId,
+      action: input.action,
+      before: input.before ? goalAuditSnapshot(input.before) : null,
+      after: input.after ? goalAuditSnapshot(input.after) : null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+  }
+
+  private buildTeamPutTransactionItems(
+    teams: GameTeamRecord[],
+    originalTeamStatesById: Map<TeamId, { record: GameTeamRecord; rawData: string }>,
+    now: string,
+  ) {
+    return teams.map((team) => {
+      const original = originalTeamStatesById.get(team.teamId);
+      if (!original) {
+        throw new GoalCorrectionError(
+          "scoreboard_state_changed",
+          409,
+          "Scoreboard changed while correcting this goal. Reload the game and try again.",
+        );
+      }
+
+      return {
+        Put: {
+          TableName: this.tableName,
+          Item: buildItemWithTimestamps(
+            gamePk(team.gameId),
+            teamSk(team.teamId),
+            ENTITY_TYPE.gameTeam,
+            {
+              gameId: team.gameId,
+              teamId: team.teamId,
+              name: team.name,
+              color: team.color,
+              scored: team.scored,
+              conceded: team.conceded,
+            },
+            team.createdAt,
+            team.updatedAt === original.record.updatedAt ? original.record.updatedAt : now,
+          ),
+          ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedUpdatedAt": { S: original.record.updatedAt },
+            ":expectedData": { S: original.rawData },
+          },
+        },
+      };
+    });
+  }
+
+  private buildGoalAuditPut(audit: GoalAuditRecord) {
+    return {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItemWithTimestamps(
+          gamePk(audit.gameId),
+          goalAuditSk(audit.createdAt, audit.auditId),
+          ENTITY_TYPE.goalAudit,
+          {
+            auditId: audit.auditId,
+            gameId: audit.gameId,
+            eventId: audit.eventId,
+            actorUserId: audit.actorUserId,
+            action: audit.action,
+            before: audit.before,
+            after: audit.after,
+          },
+          audit.createdAt,
+          audit.updatedAt,
+        ),
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+      },
+    };
+  }
+
+  private normalizeCorrectionOperation(input: {
+    operationId?: string | null;
+    operationRequestHash?: string | null;
+  }): { operationId: string; requestHash: string } | null {
+    const operationId = input.operationId?.trim() ?? "";
+    const requestHash = input.operationRequestHash?.trim() ?? "";
+    if (!operationId && !requestHash) {
+      return null;
+    }
+
+    if (!operationId || !requestHash) {
+      throw new GoalCorrectionError(
+        "invalid_correction_operation",
+        400,
+        "Correction operation id and request hash must be provided together.",
+      );
+    }
+
+    return {
+      operationId,
+      requestHash,
+    };
+  }
+
+  private buildGoalCorrectionOperationPut(input: {
+    gameId: string;
+    eventId: string;
+    operationId: string;
+    requestHash: string;
+    action: Extract<GoalAuditAction, "goal_updated" | "goal_deleted" | "goal_undo_last">;
+    result: GoalCorrectionOperationRecord["result"];
+    now: string;
+  }) {
+    return {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItem(
+          gamePk(input.gameId),
+          goalCorrectionOperationSk(input.operationId),
+          ENTITY_TYPE.goalCorrectionOperation,
+          {
+            gameId: input.gameId,
+            eventId: input.eventId,
+            operationId: input.operationId,
+            requestHash: input.requestHash,
+            action: input.action,
+            result: input.result,
+          },
+          input.now,
+        ),
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+      },
+    };
+  }
+
+  private async getGoalCorrectionOperation(
+    gameId: string,
+    operationId: string,
+  ): Promise<GoalCorrectionOperationRecord | null> {
+    const stored = await this.getEntity(
+      gamePk(gameId),
+      goalCorrectionOperationSk(operationId),
+      { consistentRead: true },
+    );
+    if (!stored || stored.entityType !== ENTITY_TYPE.goalCorrectionOperation) {
+      return null;
+    }
+
+    return withTimestamps(
+      normalizeGoalCorrectionOperationPayload(stored.data),
+      stored.createdAt,
+      stored.updatedAt,
+    );
+  }
+
+  private async replayGoalCorrectionOperation<T extends UpdateGoalResult | DeleteGoalResult>(
+    gameId: string,
+    operation: { operationId: string; requestHash: string } | null,
+  ): Promise<T | null> {
+    if (!operation) {
+      return null;
+    }
+
+    const existingOperation = await this.getGoalCorrectionOperation(gameId, operation.operationId);
+    if (!existingOperation) {
+      return null;
+    }
+
+    if (existingOperation.requestHash !== operation.requestHash) {
+      throw new GoalCorrectionError(
+        "idempotency_conflict",
+        409,
+        "Correction operation id has already been used with a different request payload.",
+      );
+    }
+
+    return existingOperation.result as T;
+  }
+
   async createGoal(input: CreateGoalInput): Promise<CreateGoalResult | null> {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
+    requireNonEmpty("actorUserId", input.actorUserId);
     requireNonEmpty("concedingTeamId", input.concedingTeamId);
     requireNonEmpty("scorerPlayerId", input.scorerPlayerId);
     requireTeamId(input.concedingTeamId, "concedingTeamId");
@@ -1431,6 +2086,17 @@ export class ThreeFcRepository {
     });
     const goalSortKey = goalSk(activeThird.third, gameMinute, display.elapsedSeconds, input.eventId);
     const goalEventIdKey = goalEventIdSk(input.eventId);
+    const goal = withTimestamps(payload, now, now);
+    const existingGoalState = await this.getGoalState(input.gameId);
+    const audit = this.buildGoalAuditRecord({
+      gameId: input.gameId,
+      eventId: input.eventId,
+      actorUserId: input.actorUserId,
+      action: "goal_created",
+      before: null,
+      after: goal,
+      now,
+    });
 
     try {
       await this.client.send(
@@ -1506,6 +2172,8 @@ export class ThreeFcRepository {
                 ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
               },
             },
+            this.buildGoalStateWrite(input.gameId, goal, goalSortKey, now, existingGoalState),
+            this.buildGoalAuditPut(audit),
           ],
         }),
       );
@@ -1532,11 +2200,10 @@ export class ThreeFcRepository {
       throw new GoalCreationError(
         "scoreboard_state_changed",
         409,
-        "Scoreboard changed while creating this goal. Reload the game and try again.",
+        "Scoreboard changed while creating this goal, or goal state changed. Reload the game and try again.",
       );
     }
 
-    const goal = withTimestamps(payload, now, now);
     const persistedTimeline = await this.listGoalEvents(input.gameId);
 
     return {
@@ -1549,8 +2216,19 @@ export class ThreeFcRepository {
   }
 
   async listGoalEvents(gameId: string): Promise<GoalEventRecord[]> {
+    return this.listGoalEventsWithConsistency(gameId, true);
+  }
+
+  private async listGoalEventsForWrite(gameId: string): Promise<GoalEventRecord[]> {
+    return this.listGoalEventsWithConsistency(gameId, true);
+  }
+
+  private async listGoalEventsWithConsistency(
+    gameId: string,
+    consistentRead: boolean,
+  ): Promise<GoalEventRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "GOAL#", { consistentRead: true });
+    const items = await this.queryByPrefix(gamePk(gameId), "GOAL#", { consistentRead });
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.goal)
@@ -1561,6 +2239,388 @@ export class ThreeFcRepository {
           item.updatedAt,
         ),
       );
+  }
+
+  async listGoalAuditEntries(gameId: string): Promise<GoalAuditRecord[]> {
+    requireNonEmpty("gameId", gameId);
+    const items = await this.queryByPrefix(gamePk(gameId), "AUDIT#GOAL#");
+
+    return items
+      .filter((item) => item.entityType === ENTITY_TYPE.goalAudit)
+      .map((item) =>
+        withTimestamps(
+          normalizeGoalAuditPayload(item.data),
+          item.createdAt,
+          item.updatedAt,
+        ),
+      );
+  }
+
+  async updateGoal(input: UpdateGoalInput): Promise<UpdateGoalResult | null> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("eventId", input.eventId);
+    requireNonEmpty("actorUserId", input.actorUserId);
+    const operation = this.normalizeCorrectionOperation(input);
+    const replayed = await this.replayGoalCorrectionOperation<UpdateGoalResult>(
+      input.gameId,
+      operation,
+    );
+    if (replayed) {
+      return replayed;
+    }
+
+    const gameItem = await this.getEntity(
+      gamePk(input.gameId),
+      metadataSk(),
+      { consistentRead: true },
+    );
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = await this.findGoalByEventId(
+      input.gameId,
+      input.eventId,
+      { consistentRead: true },
+    );
+    if (!existing) {
+      return null;
+    }
+
+    const previousGoal = existing.goal;
+    const goal = {
+      ...previousGoal,
+      scoringTeamId:
+        input.scoringTeamId === undefined ? previousGoal.scoringTeamId : input.scoringTeamId,
+      concedingTeamId: input.concedingTeamId ?? previousGoal.concedingTeamId,
+      scorerPlayerId: input.scorerPlayerId ?? previousGoal.scorerPlayerId,
+      assistPlayerIds: input.assistPlayerIds ?? previousGoal.assistPlayerIds,
+      ownGoal: input.ownGoal ?? previousGoal.ownGoal,
+    };
+    const { teams, teamStatesById } = await this.readGoalTeamStates(
+      input.gameId,
+      { consistentRead: true },
+    );
+    const roster = await this.listGameRoster(input.gameId);
+    this.validateGoalRules(goal, teams, roster, "correction");
+
+    const now = this.clock.now();
+    const updatedGoal = {
+      ...goal,
+      updatedAt: now,
+    };
+    const timeline = await this.listGoalEventsForWrite(input.gameId);
+    const nextTimeline = timeline
+      .map((entry) => (entry.eventId === input.eventId ? updatedGoal : entry))
+      .sort(compareGoalEvents);
+    const nextTeams = this.recomputeTeamsFromGoals(input.gameId, teams, nextTimeline, now);
+    const latestAfter = latestGoalEvent(nextTimeline);
+    const latestGoalSk = latestAfter
+      ? goalSk(latestAfter.third, latestAfter.gameMinute, latestAfter.elapsedSeconds, latestAfter.eventId)
+      : null;
+    const existingGoalState = await this.getGoalState(input.gameId, { consistentRead: true });
+    const audit = this.buildGoalAuditRecord({
+      gameId: input.gameId,
+      eventId: input.eventId,
+      actorUserId: input.actorUserId,
+      action: "goal_updated",
+      before: previousGoal,
+      after: updatedGoal,
+      now,
+    });
+    const result: UpdateGoalResult = {
+      goal: updatedGoal,
+      previousGoal,
+      scoreboard: {
+        teams: nextTeams,
+      },
+      timeline: nextTimeline,
+      audit,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  existing.sk,
+                  ENTITY_TYPE.goal,
+                  {
+                    gameId: updatedGoal.gameId,
+                    eventId: updatedGoal.eventId,
+                    third: updatedGoal.third,
+                    thirdMinute: updatedGoal.thirdMinute,
+                    gameMinute: updatedGoal.gameMinute,
+                    elapsedSeconds: updatedGoal.elapsedSeconds,
+                    stoppageMinute: updatedGoal.stoppageMinute,
+                    displayTime: updatedGoal.displayTime,
+                    scoringTeamId: updatedGoal.scoringTeamId,
+                    concedingTeamId: updatedGoal.concedingTeamId,
+                    scorerPlayerId: updatedGoal.scorerPlayerId,
+                    assistPlayerIds: updatedGoal.assistPlayerIds,
+                    ownGoal: updatedGoal.ownGoal,
+                  },
+                  updatedGoal.createdAt,
+                  now,
+                ),
+                ConditionExpression: "#updatedAt = :expectedGoalUpdatedAt AND #data = :expectedGoalData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedGoalUpdatedAt": { S: existing.goal.updatedAt },
+                  ":expectedGoalData": { S: existing.stored.rawData },
+                },
+              },
+            },
+            this.buildGoalStateWrite(input.gameId, latestAfter, latestGoalSk, now, existingGoalState),
+            this.buildGoalAuditPut(audit),
+            ...(operation
+              ? [
+                  this.buildGoalCorrectionOperationPut({
+                    gameId: input.gameId,
+                    eventId: input.eventId,
+                    operationId: operation.operationId,
+                    requestHash: operation.requestHash,
+                    action: "goal_updated",
+                    result,
+                    now,
+                  }),
+                ]
+              : []),
+          ],
+        }),
+      );
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) {
+        throw error;
+      }
+
+      const replayedAfterConflict =
+        await this.replayGoalCorrectionOperation<UpdateGoalResult>(input.gameId, operation);
+      if (replayedAfterConflict) {
+        return replayedAfterConflict;
+      }
+
+      throw new GoalCorrectionError(
+        "goal_state_changed",
+        409,
+        "Goal or scoreboard state changed while updating this goal. Reload the game and try again.",
+      );
+    }
+
+    return result;
+  }
+
+  async deleteGoal(input: DeleteGoalInput): Promise<DeleteGoalResult | null> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("eventId", input.eventId);
+    requireNonEmpty("actorUserId", input.actorUserId);
+    const operation = this.normalizeCorrectionOperation(input);
+    const replayed = await this.replayGoalCorrectionOperation<DeleteGoalResult>(
+      input.gameId,
+      operation,
+    );
+    if (replayed) {
+      return replayed;
+    }
+
+    const gameItem = await this.getEntity(
+      gamePk(input.gameId),
+      metadataSk(),
+      { consistentRead: true },
+    );
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = await this.findGoalByEventId(
+      input.gameId,
+      input.eventId,
+      { consistentRead: true },
+    );
+    if (!existing) {
+      return null;
+    }
+
+    const timeline = await this.listGoalEventsForWrite(input.gameId);
+    const latestBefore = latestGoalEvent(timeline);
+    const existingGoalState = await this.getGoalState(input.gameId, { consistentRead: true });
+    if (
+      input.expectedLatestEventId &&
+      latestBefore?.eventId !== input.expectedLatestEventId
+    ) {
+      throw new GoalCorrectionError(
+        "latest_goal_changed",
+        409,
+        "Latest goal changed before undo could be applied. Reload the game and try again.",
+      );
+    }
+
+    if (
+      input.expectedLatestEventId &&
+      existingGoalState?.state.latestEventId !== input.expectedLatestEventId
+    ) {
+      throw new GoalCorrectionError(
+        "latest_goal_changed",
+        409,
+        "Latest goal changed before undo could be applied. Reload the game and try again.",
+      );
+    }
+
+    if (input.action === "goal_undo_last" && latestBefore?.eventId !== input.eventId) {
+      throw new GoalCorrectionError(
+        "not_latest_goal",
+        409,
+        "Undo can only delete the current most recent goal.",
+      );
+    }
+
+    const now = this.clock.now();
+    const nextTimeline = timeline
+      .filter((entry) => entry.eventId !== input.eventId)
+      .sort(compareGoalEvents);
+    const { teams, teamStatesById } = await this.readGoalTeamStates(
+      input.gameId,
+      { consistentRead: true },
+    );
+    const nextTeams = this.recomputeTeamsFromGoals(input.gameId, teams, nextTimeline, now);
+    const latestAfter = latestGoalEvent(nextTimeline);
+    const latestGoalSk = latestAfter
+      ? goalSk(latestAfter.third, latestAfter.gameMinute, latestAfter.elapsedSeconds, latestAfter.eventId)
+      : null;
+    const action = input.action ?? "goal_deleted";
+    const audit = this.buildGoalAuditRecord({
+      gameId: input.gameId,
+      eventId: input.eventId,
+      actorUserId: input.actorUserId,
+      action,
+      before: existing.goal,
+      after: null,
+      now,
+    });
+    const result: DeleteGoalResult = {
+      deletedGoal: existing.goal,
+      scoreboard: {
+        teams: nextTeams,
+      },
+      timeline: nextTimeline,
+      audit,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gamePk(input.gameId) },
+                  sk: { S: existing.sk },
+                },
+                ConditionExpression: "#updatedAt = :expectedGoalUpdatedAt AND #data = :expectedGoalData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedGoalUpdatedAt": { S: existing.goal.updatedAt },
+                  ":expectedGoalData": { S: existing.stored.rawData },
+                },
+              },
+            },
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gamePk(input.gameId) },
+                  sk: { S: goalEventIdSk(input.eventId) },
+                },
+              },
+            },
+            this.buildGoalStateWrite(input.gameId, latestAfter, latestGoalSk, now, existingGoalState),
+            this.buildGoalAuditPut(audit),
+            ...(operation
+              ? [
+                  this.buildGoalCorrectionOperationPut({
+                    gameId: input.gameId,
+                    eventId: input.eventId,
+                    operationId: operation.operationId,
+                    requestHash: operation.requestHash,
+                    action,
+                    result,
+                    now,
+                  }),
+                ]
+              : []),
+          ],
+        }),
+      );
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) {
+        throw error;
+      }
+
+      const replayedAfterConflict =
+        await this.replayGoalCorrectionOperation<DeleteGoalResult>(input.gameId, operation);
+      if (replayedAfterConflict) {
+        return replayedAfterConflict;
+      }
+
+      throw new GoalCorrectionError(
+        "goal_state_changed",
+        409,
+        "Goal or scoreboard state changed while deleting this goal. Reload the game and try again.",
+      );
+    }
+
+    return result;
+  }
+
+  async undoLastGoal(input: UndoLastGoalInput): Promise<DeleteGoalResult | null> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("actorUserId", input.actorUserId);
+    requireNonEmpty("expectedEventId", input.expectedEventId);
+    const operation = this.normalizeCorrectionOperation(input);
+    const replayed = await this.replayGoalCorrectionOperation<DeleteGoalResult>(
+      input.gameId,
+      operation,
+    );
+    if (replayed) {
+      return replayed;
+    }
+
+    const timeline = await this.listGoalEventsForWrite(input.gameId);
+    const latest = latestGoalEvent(timeline);
+    if (!latest) {
+      return null;
+    }
+
+    if (latest.eventId !== input.expectedEventId) {
+      throw new GoalCorrectionError(
+        "latest_goal_changed",
+        409,
+        "Latest goal changed before undo could be applied. Reload the game and try again.",
+      );
+    }
+
+    return this.deleteGoal({
+      gameId: input.gameId,
+      eventId: latest.eventId,
+      actorUserId: input.actorUserId,
+      operationId: input.operationId,
+      operationRequestHash: input.operationRequestHash,
+      action: "goal_undo_last",
+      expectedLatestEventId: input.expectedEventId,
+    });
   }
 
   async getIdempotencyRecord(scope: string, key: string): Promise<IdempotencyRecord | null> {
@@ -1701,7 +2761,11 @@ export class ThreeFcRepository {
     );
   }
 
-  private async getEntity(pk: string, sk: string): Promise<StoredEntity<unknown> | null> {
+  private async getEntity(
+    pk: string,
+    sk: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<StoredEntity<unknown> | null> {
     const result = (await this.client.send(
       new GetItemCommand({
         TableName: this.tableName,
@@ -1709,6 +2773,7 @@ export class ThreeFcRepository {
           pk: { S: pk },
           sk: { S: sk },
         },
+        ConsistentRead: options.consistentRead,
       }),
     )) as GetItemCommandOutput;
 
@@ -1733,6 +2798,7 @@ export class ThreeFcRepository {
           ":pk": { S: pk },
           ":skPrefix": { S: skPrefix },
         },
+        ConsistentRead: options.consistentRead,
       }),
     )) as QueryCommandOutput;
 

@@ -80,6 +80,68 @@ export interface CreateGoalResponse {
   timeline: GoalEvent[];
 }
 
+export interface UpdateGoalRequest {
+  scoringTeamId?: TeamId | null;
+  concedingTeamId?: TeamId;
+  scorerPlayerId?: string;
+  assistPlayerIds?: string[];
+  ownGoal?: boolean;
+}
+
+export interface UndoLastGoalRequest {
+  expectedEventId: string;
+}
+
+export type GoalAuditAction =
+  | "goal_created"
+  | "goal_updated"
+  | "goal_deleted"
+  | "goal_undo_last";
+
+export interface GoalAuditSnapshot {
+  eventId: string;
+  third: ThirdNumber;
+  thirdMinute: number;
+  gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
+  scoringTeamId: TeamId | null;
+  concedingTeamId: TeamId;
+  scorerPlayerId: string;
+  assistPlayerIds: string[];
+  ownGoal: boolean;
+}
+
+export interface GoalAuditEntry {
+  auditId: string;
+  gameId: string;
+  eventId: string;
+  actorUserId: string;
+  action: GoalAuditAction;
+  before: GoalAuditSnapshot | null;
+  after: GoalAuditSnapshot | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdateGoalResponse {
+  goal: GoalEvent;
+  previousGoal: GoalEvent;
+  scoreboard: GameScoreboard;
+  timeline: GoalEvent[];
+  audit: GoalAuditEntry;
+}
+
+export interface DeleteGoalResponse {
+  deletedGoal: GoalEvent;
+  scoreboard: GameScoreboard;
+  timeline: GoalEvent[];
+  audit: GoalAuditEntry;
+}
+
+export type UndoLastGoalResponse = DeleteGoalResponse;
+
 export interface ThirdTimerSegment {
   third: ThirdNumber;
   startedAt: string | null;

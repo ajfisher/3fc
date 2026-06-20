@@ -47,10 +47,12 @@ import {
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
   quickCreateGamePlayerRequestSchema,
+  undoLastGoalRequestSchema,
+  updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { GameTimerTransitionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
-import type { CreateGoalResult, GameStatus } from "./data/types.js";
+import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
+import type { CreateGoalResult, DeleteGoalResult, GameStatus, UpdateGoalResult } from "./data/types.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
 export interface ApiGatewayHttpEvent {
@@ -432,12 +434,39 @@ interface RepositoryContract {
   createGoal(input: {
     gameId: string;
     eventId: string;
+    actorUserId: string;
     scoringTeamId: TeamId | null;
     concedingTeamId: TeamId;
     scorerPlayerId: string;
     assistPlayerIds: string[];
     ownGoal: boolean;
   }): Promise<CreateGoalResult | null>;
+  updateGoal(input: {
+    gameId: string;
+    eventId: string;
+    actorUserId: string;
+    operationId?: string | null;
+    operationRequestHash?: string | null;
+    scoringTeamId?: TeamId | null;
+    concedingTeamId?: TeamId;
+    scorerPlayerId?: string;
+    assistPlayerIds?: string[];
+    ownGoal?: boolean;
+  }): Promise<UpdateGoalResult | null>;
+  deleteGoal(input: {
+    gameId: string;
+    eventId: string;
+    actorUserId: string;
+    operationId?: string | null;
+    operationRequestHash?: string | null;
+  }): Promise<DeleteGoalResult | null>;
+  undoLastGoal(input: {
+    gameId: string;
+    actorUserId: string;
+    operationId?: string | null;
+    operationRequestHash?: string | null;
+    expectedEventId: string;
+  }): Promise<DeleteGoalResult | null>;
   getLeagueAccess(
     leagueId: string,
     userId: string,
@@ -832,6 +861,22 @@ function goalCreationErrorResponse(
   );
 }
 
+function goalCorrectionErrorResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  error: GoalCorrectionError,
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    error.statusCode,
+    {
+      error: error.statusCode === 409 ? "conflict" : "bad_request",
+      code: error.code,
+      message: error.message,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
 function toPublicPlayer(player: {
   playerId: string;
   nickname: string;
@@ -1117,6 +1162,33 @@ function buildGoalEventId(input: {
     .digest("hex")
     .slice(0, 32);
   return `goal-idem-${digest}`;
+}
+
+function buildGoalCorrectionOperation(input: {
+  idempotencyKey: string | undefined;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+}): { operationId: string; operationRequestHash: string } | null {
+  const parsedIdempotencyKey = input.idempotencyKey
+    ? idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey)
+    : null;
+
+  if (!parsedIdempotencyKey?.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const digest = createHash("sha256")
+    .update(`${scope}:${parsedIdempotencyKey.data}`)
+    .digest("hex")
+    .slice(0, 32);
+
+  return {
+    operationId: `goal-correction-idem-${digest}`,
+    operationRequestHash: buildIdempotencyRequestHash(scope, input.requestPayload),
+  };
 }
 
 function parseStoredIdempotencyResponseBody(responseBody: string): unknown {
@@ -2178,6 +2250,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     method,
                     route,
                   }),
+                  actorUserId: session.email,
                   scoringTeamId: parsedBody.data.scoringTeamId,
                   concedingTeamId: parsedBody.data.concedingTeamId,
                   scorerPlayerId: parsedBody.data.scorerPlayerId,
@@ -2204,6 +2277,244 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             if (error instanceof GoalCreationError) {
               status = error.statusCode;
               return goalCreationErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+            }
+
+            throw error;
+          }
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
+        }
+
+        const updateGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/);
+        if (method === "PATCH" && updateGoalMatch) {
+          const gameId = decodeRouteParam(updateGoalMatch[1]);
+          const eventId = decodeRouteParam(updateGoalMatch[2]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = updateGoalRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          let mutationResponse: ApiGatewayHttpResponse;
+          try {
+            const correctionOperation = buildGoalCorrectionOperation({
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload: parsedBody.data,
+            });
+            mutationResponse = await executeIdempotentMutation({
+              repository: dependencies.repository,
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload: parsedBody.data,
+              origin,
+              allowedOrigins: dependencies.corsAllowedOrigins,
+              execute: async () => {
+                const result = await dependencies.repository.updateGoal({
+                  gameId,
+                  eventId,
+                  actorUserId: session.email,
+                  operationId: correctionOperation?.operationId,
+                  operationRequestHash: correctionOperation?.operationRequestHash,
+                  ...parsedBody.data,
+                });
+
+                if (!result) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Goal ${eventId} was not found for game ${gameId}.`,
+                  );
+                }
+
+                return createJsonResponse(
+                  200,
+                  result,
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              },
+            });
+          } catch (error) {
+            if (error instanceof GoalCorrectionError) {
+              status = error.statusCode;
+              return error.code === "idempotency_conflict"
+                ? idempotencyConflictResponse(origin, dependencies.corsAllowedOrigins)
+                : goalCorrectionErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+            }
+
+            throw error;
+          }
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
+        }
+
+        const deleteGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/);
+        if (method === "DELETE" && deleteGoalMatch) {
+          const gameId = decodeRouteParam(deleteGoalMatch[1]);
+          const eventId = decodeRouteParam(deleteGoalMatch[2]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          let mutationResponse: ApiGatewayHttpResponse;
+          try {
+            const requestPayload = { eventId };
+            const correctionOperation = buildGoalCorrectionOperation({
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload,
+            });
+            mutationResponse = await executeIdempotentMutation({
+              repository: dependencies.repository,
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload,
+              origin,
+              allowedOrigins: dependencies.corsAllowedOrigins,
+              execute: async () => {
+                const result = await dependencies.repository.deleteGoal({
+                  gameId,
+                  eventId,
+                  actorUserId: session.email,
+                  operationId: correctionOperation?.operationId,
+                  operationRequestHash: correctionOperation?.operationRequestHash,
+                });
+
+                if (!result) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `Goal ${eventId} was not found for game ${gameId}.`,
+                  );
+                }
+
+                return createJsonResponse(
+                  200,
+                  result,
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              },
+            });
+          } catch (error) {
+            if (error instanceof GoalCorrectionError) {
+              status = error.statusCode;
+              return error.code === "idempotency_conflict"
+                ? idempotencyConflictResponse(origin, dependencies.corsAllowedOrigins)
+                : goalCorrectionErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+            }
+
+            throw error;
+          }
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
+        }
+
+        const undoLastGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals\/undo-last$/);
+        if (method === "POST" && undoLastGoalMatch) {
+          const gameId = decodeRouteParam(undoLastGoalMatch[1]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = undoLastGoalRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          let mutationResponse: ApiGatewayHttpResponse;
+          try {
+            const correctionOperation = buildGoalCorrectionOperation({
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload: parsedBody.data,
+            });
+            mutationResponse = await executeIdempotentMutation({
+              repository: dependencies.repository,
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload: parsedBody.data,
+              origin,
+              allowedOrigins: dependencies.corsAllowedOrigins,
+              execute: async () => {
+                const result = await dependencies.repository.undoLastGoal({
+                  gameId,
+                  actorUserId: session.email,
+                  operationId: correctionOperation?.operationId,
+                  operationRequestHash: correctionOperation?.operationRequestHash,
+                  expectedEventId: parsedBody.data.expectedEventId,
+                });
+
+                if (!result) {
+                  return notFound(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    `No goal events were found for game ${gameId}.`,
+                  );
+                }
+
+                return createJsonResponse(
+                  200,
+                  result,
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              },
+            });
+          } catch (error) {
+            if (error instanceof GoalCorrectionError) {
+              status = error.statusCode;
+              return error.code === "idempotency_conflict"
+                ? idempotencyConflictResponse(origin, dependencies.corsAllowedOrigins)
+                : goalCorrectionErrorResponse(origin, dependencies.corsAllowedOrigins, error);
             }
 
             throw error;

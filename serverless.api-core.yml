@@ -179,6 +179,21 @@ functions:
           method: OPTIONS
           path: /v1/games/{gameId}/goals
       - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/goals/undo-last
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/goals/undo-last
+      - httpApi:
+          method: PATCH
+          path: /v1/games/{gameId}/goals/{eventId}
+      - httpApi:
+          method: DELETE
+          path: /v1/games/{gameId}/goals/{eventId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/goals/{eventId}
+      - httpApi:
           method: GET
           path: /v1/games/{gameId}/teams
       - httpApi:

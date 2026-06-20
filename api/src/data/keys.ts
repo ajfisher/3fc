@@ -75,6 +75,18 @@ export function goalEventIdSk(eventId: string): string {
   return `GOAL_EVENT#${eventId}`;
 }
 
+export function goalStateSk(): string {
+  return "GOAL_STATE";
+}
+
+export function goalAuditSk(createdAt: string, auditId: string): string {
+  return `AUDIT#GOAL#${createdAt}#${auditId}`;
+}
+
+export function goalCorrectionOperationSk(operationId: string): string {
+  return `GOAL_CORRECTION#${operationId}`;
+}
+
 export function goalSk(
   third: 1 | 2 | 3,
   gameMinute: number,

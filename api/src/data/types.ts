@@ -124,6 +124,59 @@ export interface GoalEventRecord {
   updatedAt: string;
 }
 
+export type GoalAuditAction =
+  | "goal_created"
+  | "goal_updated"
+  | "goal_deleted"
+  | "goal_undo_last";
+
+export interface GoalAuditSnapshotRecord {
+  eventId: string;
+  third: 1 | 2 | 3;
+  thirdMinute: number;
+  gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
+  scoringTeamId: TeamId | null;
+  concedingTeamId: TeamId;
+  scorerPlayerId: string;
+  assistPlayerIds: string[];
+  ownGoal: boolean;
+}
+
+export interface GoalAuditRecord {
+  auditId: string;
+  gameId: string;
+  eventId: string;
+  actorUserId: string;
+  action: GoalAuditAction;
+  before: GoalAuditSnapshotRecord | null;
+  after: GoalAuditSnapshotRecord | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalStateRecord {
+  gameId: string;
+  latestEventId: string | null;
+  latestGoalSk: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalCorrectionOperationRecord {
+  gameId: string;
+  eventId: string;
+  operationId: string;
+  requestHash: string;
+  action: Extract<GoalAuditAction, "goal_updated" | "goal_deleted" | "goal_undo_last">;
+  result: UpdateGoalResult | DeleteGoalResult;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface IdempotencyRecord {
   scope: string;
   key: string;
@@ -220,6 +273,7 @@ export interface AssignRosterInput {
 export interface CreateGoalInput {
   gameId: string;
   eventId: string;
+  actorUserId: string;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
@@ -233,6 +287,56 @@ export interface CreateGoalResult {
     teams: GameTeamRecord[];
   };
   timeline: GoalEventRecord[];
+}
+
+export interface UpdateGoalInput {
+  gameId: string;
+  eventId: string;
+  actorUserId: string;
+  operationId?: string | null;
+  operationRequestHash?: string | null;
+  scoringTeamId?: TeamId | null;
+  concedingTeamId?: TeamId;
+  scorerPlayerId?: string;
+  assistPlayerIds?: string[];
+  ownGoal?: boolean;
+}
+
+export interface UpdateGoalResult {
+  goal: GoalEventRecord;
+  previousGoal: GoalEventRecord;
+  scoreboard: {
+    teams: GameTeamRecord[];
+  };
+  timeline: GoalEventRecord[];
+  audit: GoalAuditRecord;
+}
+
+export interface DeleteGoalInput {
+  gameId: string;
+  eventId: string;
+  actorUserId: string;
+  operationId?: string | null;
+  operationRequestHash?: string | null;
+  action?: Extract<GoalAuditAction, "goal_deleted" | "goal_undo_last">;
+  expectedLatestEventId?: string;
+}
+
+export interface DeleteGoalResult {
+  deletedGoal: GoalEventRecord;
+  scoreboard: {
+    teams: GameTeamRecord[];
+  };
+  timeline: GoalEventRecord[];
+  audit: GoalAuditRecord;
+}
+
+export interface UndoLastGoalInput {
+  gameId: string;
+  actorUserId: string;
+  operationId?: string | null;
+  operationRequestHash?: string | null;
+  expectedEventId: string;
 }
 
 export interface ThirdTransitionInput {
