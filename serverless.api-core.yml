@@ -131,6 +131,18 @@ functions:
           method: OPTIONS
           path: /v1/seasons/{seasonId}/games
       - httpApi:
+          method: GET
+          path: /v1/seasons/{seasonId}/teams
+      - httpApi:
+          method: PUT
+          path: /v1/seasons/{seasonId}/teams/{teamId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/seasons/{seasonId}/teams/{teamId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/seasons/{seasonId}/teams
+      - httpApi:
           method: POST
           path: /v1/seasons/{seasonId}/sessions
       - httpApi:
@@ -148,6 +160,39 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/games/{gameId}
+      - httpApi:
+          method: GET
+          path: /v1/games/{gameId}/teams
+      - httpApi:
+          method: PUT
+          path: /v1/games/{gameId}/teams/{teamId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/teams
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/teams/{teamId}
+      - httpApi:
+          method: GET
+          path: /v1/games/{gameId}/players
+      - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/players
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/players
+      - httpApi:
+          method: GET
+          path: /v1/games/{gameId}/roster
+      - httpApi:
+          method: PUT
+          path: /v1/games/{gameId}/roster/{playerId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/roster
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/roster/{playerId}
       - httpApi:
           method: POST
           path: /v1/sessions/{sessionId}/games

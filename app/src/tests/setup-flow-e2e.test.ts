@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { JSDOM } from "jsdom";
+import type { TeamId } from "@3fc/contracts";
 
 import {
   renderGamePage,
@@ -61,6 +62,39 @@ interface MockGame {
   updatedAt: string;
 }
 
+interface MockTeam {
+  gameId?: string;
+  seasonId?: string;
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockPlayer {
+  playerId: string;
+  nickname: string;
+  claimedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockRosterAssignment {
+  gameId: string;
+  teamId: TeamId;
+  playerId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockGamePlayer {
+  gameId: string;
+  playerId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface MockApiState {
   cookieJar: string;
   storage: Map<string, string>;
@@ -71,6 +105,11 @@ interface MockApiState {
   seasons: Map<string, MockSeason>;
   sessions: Map<string, MockSessionEntity>;
   games: Map<string, MockGame>;
+  seasonTeams: Map<string, MockTeam>;
+  gameTeams: Map<string, MockTeam>;
+  players: Map<string, MockPlayer>;
+  gamePlayers: Map<string, MockGamePlayer>;
+  roster: Map<string, MockRosterAssignment>;
 }
 
 function readUiScript(fileName: string): string {
@@ -88,6 +127,11 @@ function createMockApiState(): MockApiState {
     seasons: new Map<string, MockSeason>(),
     sessions: new Map<string, MockSessionEntity>(),
     games: new Map<string, MockGame>(),
+    seasonTeams: new Map<string, MockTeam>(),
+    gameTeams: new Map<string, MockTeam>(),
+    players: new Map<string, MockPlayer>(),
+    gamePlayers: new Map<string, MockGamePlayer>(),
+    roster: new Map<string, MockRosterAssignment>(),
   };
 }
 
@@ -111,6 +155,62 @@ function isValidEmail(value: unknown): value is string {
 
 function isAuthenticated(state: MockApiState): boolean {
   return Boolean(state.session && state.cookieJar.includes(`threefc_session=${state.session.sessionId}`));
+}
+
+const DEFAULT_MOCK_TEAMS: Array<{ teamId: TeamId; name: string; color: string }> = [
+  { teamId: "red", name: "Red", color: "#d83b36" },
+  { teamId: "blue", name: "Blue", color: "#2364d2" },
+  { teamId: "yellow", name: "Yellow", color: "#e0a612" },
+];
+
+function ensureSeasonTeams(state: MockApiState, seasonId: string): MockTeam[] {
+  for (const team of DEFAULT_MOCK_TEAMS) {
+    const key = `${seasonId}:${team.teamId}`;
+    if (state.seasonTeams.has(key)) {
+      continue;
+    }
+
+    state.seasonTeams.set(key, {
+      seasonId,
+      teamId: team.teamId,
+      name: team.name,
+      color: team.color,
+      createdAt: "2026-03-28T11:00:05.000Z",
+      updatedAt: "2026-03-28T11:00:05.000Z",
+    });
+  }
+
+  return [...state.seasonTeams.values()].filter((team) => team.seasonId === seasonId);
+}
+
+function ensureGameTeams(state: MockApiState, game: MockGame): MockTeam[] {
+  const seasonTeams = ensureSeasonTeams(state, game.seasonId);
+  for (const team of seasonTeams) {
+    const key = `${game.gameId}:${team.teamId}`;
+    if (state.gameTeams.has(key)) {
+      continue;
+    }
+
+    state.gameTeams.set(key, {
+      gameId: game.gameId,
+      teamId: team.teamId,
+      name: team.name,
+      color: team.color,
+      createdAt: "2026-03-28T11:00:06.000Z",
+      updatedAt: "2026-03-28T11:00:06.000Z",
+    });
+  }
+
+  return [...state.gameTeams.values()].filter((team) => team.gameId === game.gameId);
+}
+
+function publicPlayer(player: MockPlayer): Omit<MockPlayer, "claimedByUserId"> {
+  return {
+    playerId: player.playerId,
+    nickname: player.nickname,
+    createdAt: player.createdAt,
+    updatedAt: player.updatedAt,
+  };
 }
 
 function createMockFetch(state: MockApiState) {
@@ -319,6 +419,7 @@ function createMockFetch(state: MockApiState) {
         updatedAt: now,
       };
       state.games.set(gameId, game);
+      ensureGameTeams(state, game);
       return createJsonResponse(201, game);
     }
 
@@ -330,6 +431,111 @@ function createMockFetch(state: MockApiState) {
       }
 
       return createJsonResponse(200, game);
+    }
+
+    const gameRosterMatch = path.match(/^\/v1\/games\/([^/]+)\/roster$/);
+    if (method === "GET" && gameRosterMatch) {
+      const game = state.games.get(decodeURIComponent(gameRosterMatch[1]));
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const teams = ensureGameTeams(state, game);
+      const roster = [...state.roster.values()]
+        .filter((assignment) => assignment.gameId === game.gameId)
+        .map((assignment) => ({
+          ...assignment,
+          player: state.players.get(assignment.playerId)
+            ? publicPlayer(state.players.get(assignment.playerId) as MockPlayer)
+            : null,
+        }));
+
+      return createJsonResponse(200, {
+        teams,
+        roster,
+      });
+    }
+
+    const gamePlayersMatch = path.match(/^\/v1\/games\/([^/]+)\/players$/);
+    if (method === "GET" && gamePlayersMatch) {
+      const game = state.games.get(decodeURIComponent(gamePlayersMatch[1]));
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const search = target.searchParams.get("search")?.toLowerCase() ?? "";
+      const linkedPlayerIds = new Set(
+        [...state.gamePlayers.values()]
+          .filter((link) => link.gameId === game.gameId)
+          .map((link) => link.playerId),
+      );
+      const players = [...state.players.values()]
+        .filter((player) => linkedPlayerIds.has(player.playerId))
+        .filter((player) => search.length === 0 || player.nickname.toLowerCase().includes(search))
+        .map((player) => publicPlayer(player));
+      return createJsonResponse(200, {
+        players,
+      });
+    }
+
+    if (method === "POST" && gamePlayersMatch) {
+      const game = state.games.get(decodeURIComponent(gamePlayersMatch[1]));
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const playerId = String(body.playerId ?? "");
+      const now = "2026-03-28T11:00:07.000Z";
+      const player: MockPlayer = {
+        playerId,
+        nickname: String(body.nickname ?? ""),
+        claimedByUserId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.players.set(playerId, player);
+      state.gamePlayers.set(`${game.gameId}:${playerId}`, {
+        gameId: game.gameId,
+        playerId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return createJsonResponse(201, publicPlayer(player));
+    }
+
+    const rosterAssignMatch = path.match(/^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/);
+    if (method === "PUT" && rosterAssignMatch) {
+      const gameId = decodeURIComponent(rosterAssignMatch[1]);
+      const playerId = decodeURIComponent(rosterAssignMatch[2]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const player = state.players.get(playerId);
+      if (!player) {
+        return createJsonResponse(404, { error: "not_found", message: "Player not found." });
+      }
+
+      const now = "2026-03-28T11:00:08.000Z";
+      const assignment: MockRosterAssignment = {
+        gameId,
+        playerId,
+        teamId: body.teamId as TeamId,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.roster.set(`${gameId}:${playerId}`, assignment);
+      state.gamePlayers.set(`${gameId}:${playerId}`, {
+        gameId,
+        playerId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return createJsonResponse(200, {
+        ...assignment,
+        player: publicPlayer(player),
+      });
     }
 
     return createJsonResponse(404, {
@@ -655,6 +861,72 @@ test("setup happy path runs from sign-in to created game context", async () => {
   assert.equal(leagueId?.textContent, "three-sided-football-club");
   assert.equal(seasonId?.textContent, "autumn-cup");
   assert.equal(createAnotherLink?.getAttribute("href"), "/seasons/autumn-cup");
+});
+
+test("game page quick-creates and assigns roster players", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "scorekeeper@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-1", {
+    gameId: "game-1",
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const gamePage = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-1" }),
+    url: "http://localhost:3000/games/game-1",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const nicknameInput = gamePage.document.getElementById("player-nickname");
+  const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
+  const rosterTeams = gamePage.document.getElementById("roster-teams");
+  assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
+  assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
+  assert(rosterTeams instanceof gamePage.window.HTMLElement);
+  assert.match(rosterTeams.textContent ?? "", /Red/);
+
+  nicknameInput.value = "Ari";
+  nicknameInput.dispatchEvent(new gamePage.window.Event("input", { bubbles: true }));
+  dispatchClick(quickCreateButton);
+  await flushAsync();
+
+  const createdPlayer = [...apiState.players.values()][0];
+  assert(createdPlayer);
+  assert.equal(createdPlayer.nickname, "Ari");
+
+  const assignRedButton = gamePage.document.querySelector(
+    `[data-action="assign-player"][data-player-id="${createdPlayer.playerId}"][data-team-id="red"]`,
+  );
+  assert(assignRedButton instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(assignRedButton);
+  await flushAsync();
+
+  const assignment = apiState.roster.get(`game-1:${createdPlayer.playerId}`);
+  assert.equal(assignment?.teamId, "red");
+  assert.match(rosterTeams.textContent ?? "", /Ari/);
 });
 
 test("setup flow resolves route ids from static shells", async () => {

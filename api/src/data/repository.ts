@@ -14,6 +14,7 @@ import { validateAssistPlayerIds } from "@3fc/contracts";
 import {
   aclSk,
   gamePk,
+  gamePlayerSk,
   gameSessionIndexPk,
   gameSessionIndexSk,
   goalSk,
@@ -31,6 +32,7 @@ import {
 } from "./keys.js";
 import type {
   AssignRosterInput,
+  CreateGameTeamInput,
   CreateGameInput,
   CreateGoalEventInput,
   CreateIdempotencyRecordInput,
@@ -40,11 +42,15 @@ import type {
   CreateSessionGameInput,
   CreateSessionInput,
   CreateTeamInput,
+  GameTeamRecord,
+  GamePlayerRecord,
   GameRecord,
   GoalEventRecord,
   IdempotencyRecord,
   LeagueAclRecord,
   LeagueRecord,
+  ListPlayersInput,
+  LinkGamePlayerInput,
   PlayerRecord,
   RosterAssignmentRecord,
   SeasonRecord,
@@ -60,6 +66,8 @@ const ENTITY_TYPE = {
   team: "team",
   session: "session",
   game: "game",
+  gameTeam: "gameTeam",
+  gamePlayer: "gamePlayer",
   sessionGame: "sessionGame",
   player: "player",
   acl: "acl",
@@ -333,6 +341,45 @@ export class ThreeFcRepository {
       .map((item) =>
         withTimestamps(
           item.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
+          item.createdAt,
+          item.updatedAt,
+        ),
+      );
+  }
+
+  async createGameTeamOverride(input: CreateGameTeamInput): Promise<GameTeamRecord> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("name", input.name);
+
+    const now = this.clock.now();
+    const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId));
+    const payload = {
+      gameId: input.gameId,
+      teamId: input.teamId,
+      name: input.name,
+      color: input.color ?? null,
+    };
+
+    await this.putEntityWithTimestamps(
+      gamePk(input.gameId),
+      teamSk(input.teamId),
+      ENTITY_TYPE.gameTeam,
+      payload,
+      existing?.createdAt ?? now,
+      now,
+    );
+    return withTimestamps(payload, existing?.createdAt ?? now, now);
+  }
+
+  async listTeamsForGame(gameId: string): Promise<GameTeamRecord[]> {
+    requireNonEmpty("gameId", gameId);
+    const items = await this.queryByPrefix(gamePk(gameId), "TEAM#");
+
+    return items
+      .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)
+      .map((item) =>
+        withTimestamps(
+          item.data as Omit<GameTeamRecord, "createdAt" | "updatedAt">,
           item.createdAt,
           item.updatedAt,
         ),
@@ -648,6 +695,69 @@ export class ThreeFcRepository {
     return withTimestamps(item.data as Omit<PlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
   }
 
+  async listPlayers(input: ListPlayersInput = {}): Promise<PlayerRecord[]> {
+    const rawSearch = input.search?.trim().toLowerCase() ?? "";
+    const limit = Math.max(1, Math.min(input.limit ?? 20, 50));
+    const scanResult = (await this.client.send(
+      new ScanCommand({
+        TableName: this.tableName,
+      }),
+    )) as ScanCommandOutput;
+
+    return (scanResult.Items ?? [])
+      .filter((item) => item.entityType?.S === ENTITY_TYPE.player)
+      .map((item) => parseStoredEntity<Omit<PlayerRecord, "createdAt" | "updatedAt">>(item))
+      .map((item) => withTimestamps(item.data, item.createdAt, item.updatedAt))
+      .filter((player) => rawSearch.length === 0 || player.nickname.toLowerCase().includes(rawSearch))
+      .sort((left, right) => {
+        const updatedSort = right.updatedAt.localeCompare(left.updatedAt);
+        if (updatedSort !== 0) {
+          return updatedSort;
+        }
+
+        return left.nickname.localeCompare(right.nickname);
+      })
+      .slice(0, limit);
+  }
+
+  async linkGamePlayer(input: LinkGamePlayerInput): Promise<GamePlayerRecord> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("playerId", input.playerId);
+
+    const now = this.clock.now();
+    const existing = await this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId));
+    const payload = {
+      gameId: input.gameId,
+      playerId: input.playerId,
+    };
+
+    await this.putEntityWithTimestamps(
+      gamePk(input.gameId),
+      gamePlayerSk(input.playerId),
+      ENTITY_TYPE.gamePlayer,
+      payload,
+      existing?.createdAt ?? now,
+      now,
+    );
+
+    return withTimestamps(payload, existing?.createdAt ?? now, now);
+  }
+
+  async listGamePlayers(gameId: string): Promise<GamePlayerRecord[]> {
+    requireNonEmpty("gameId", gameId);
+    const items = await this.queryByPrefix(gamePk(gameId), "PLAYER#");
+
+    return items
+      .filter((item) => item.entityType === ENTITY_TYPE.gamePlayer)
+      .map((item) =>
+        withTimestamps(
+          item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">,
+          item.createdAt,
+          item.updatedAt,
+        ),
+      );
+  }
+
   async grantLeagueAccess(input: GrantLeagueAccessInput): Promise<LeagueAclRecord> {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("userId", input.userId);
@@ -700,6 +810,17 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("playerId", input.playerId);
 
+    const existingAssignments = await this.listGameRoster(input.gameId);
+    const currentAssignmentsForPlayer = existingAssignments.filter(
+      (assignment) => assignment.playerId === input.playerId,
+    );
+    const existingAssignment = currentAssignmentsForPlayer.find(
+      (assignment) => assignment.teamId === input.teamId,
+    );
+    if (existingAssignment) {
+      return existingAssignment;
+    }
+
     const now = this.clock.now();
     const payload = {
       gameId: input.gameId,
@@ -707,6 +828,15 @@ export class ThreeFcRepository {
       playerId: input.playerId,
     };
 
+    await Promise.all(
+      currentAssignmentsForPlayer.map((assignment) =>
+        this.deleteEntity(gamePk(input.gameId), rosterSk(assignment.teamId, assignment.playerId)),
+      ),
+    );
+    await this.linkGamePlayer({
+      gameId: input.gameId,
+      playerId: input.playerId,
+    });
     await this.putEntity(
       gamePk(input.gameId),
       rosterSk(input.teamId, input.playerId),

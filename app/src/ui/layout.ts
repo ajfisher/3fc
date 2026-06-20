@@ -692,6 +692,38 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             </div>`,
             "panel-game-details",
           )}
+          ${renderPanel(
+            "Roster setup",
+            "Create players and assign them to game teams.",
+            `${renderValidatedField({
+              id: "player-nickname",
+              label: "Player nickname",
+              placeholder: "Ari",
+            })}
+            <div data-ui="button-row">
+              ${renderButton("Create player", "primary", {
+                type: "button",
+                "data-action": "quick-create-player",
+                "data-testid": "quick-create-player",
+              })}
+            </div>
+            <div data-ui="field">
+              <label for="player-search">Search players</label>
+              <input data-ui="input" id="player-search" name="player-search" type="search" placeholder="Nickname" autocomplete="off" />
+            </div>
+            <div data-ui="roster-workspace" data-testid="roster-workspace">
+              <section data-ui="player-pool" aria-labelledby="player-pool-title">
+                <h3 id="player-pool-title">Players</h3>
+                <div id="player-pool" data-ui="player-list" data-testid="player-pool"></div>
+              </section>
+              <section data-ui="roster-board" aria-labelledby="roster-board-title">
+                <h3 id="roster-board-title">Teams</h3>
+                <div id="roster-teams" data-ui="roster-grid" data-testid="roster-teams"></div>
+              </section>
+            </div>`,
+            "",
+            "panel-game-roster",
+          )}
         </section>
       </section>
     </main>

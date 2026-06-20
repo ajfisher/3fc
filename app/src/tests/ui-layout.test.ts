@@ -173,4 +173,7 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);
+  assert.match(html, /data-testid="panel-game-roster"/);
+  assert.match(html, /data-testid="quick-create-player"/);
+  assert.match(html, /data-testid="roster-teams"/);
 });

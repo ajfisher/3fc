@@ -55,6 +55,14 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
     return true;
   }
 
+  if (method === "GET" && /^\/v1\/seasons\/[^/]+\/teams$/.test(route)) {
+    return true;
+  }
+
+  if (method === "PUT" && /^\/v1\/seasons\/[^/]+\/teams\/[^/]+$/.test(route)) {
+    return true;
+  }
+
   if (method === "DELETE" && /^\/v1\/seasons\/[^/]+$/.test(route)) {
     return true;
   }
@@ -68,6 +76,30 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
   }
 
   if (method === "DELETE" && /^\/v1\/games\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/games\/[^/]+\/teams$/.test(route)) {
+    return true;
+  }
+
+  if (method === "PUT" && /^\/v1\/games\/[^/]+\/teams\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/games\/[^/]+\/players$/.test(route)) {
+    return true;
+  }
+
+  if (method === "POST" && /^\/v1\/games\/[^/]+\/players$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/games\/[^/]+\/roster$/.test(route)) {
+    return true;
+  }
+
+  if (method === "PUT" && /^\/v1\/games\/[^/]+\/roster\/[^/]+$/.test(route)) {
     return true;
   }
 

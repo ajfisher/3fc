@@ -6,6 +6,7 @@ import {
   type ApiGatewayHttpEvent,
 } from "../lambda-core.js";
 import type { RateLimitDecision } from "../auth/rate-limit.js";
+import type { TeamId } from "@3fc/contracts";
 
 interface MockSessionRecord {
   sessionId: string;
@@ -58,6 +59,47 @@ interface MockGameRecord {
   sessionId: string;
   status: "scheduled" | "live" | "finished";
   gameStartTs: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockSeasonTeamRecord {
+  seasonId: string;
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockGameTeamRecord {
+  gameId: string;
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockPlayerRecord {
+  playerId: string;
+  nickname: string;
+  claimedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockRosterAssignmentRecord {
+  gameId: string;
+  teamId: TeamId;
+  playerId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockGamePlayerRecord {
+  gameId: string;
+  playerId: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -118,6 +160,11 @@ interface HarnessConfig {
   seasons?: Record<string, MockSeasonRecord>;
   seasonSessions?: Record<string, MockSessionEntity>;
   games?: Record<string, MockGameRecord>;
+  seasonTeams?: Record<string, MockSeasonTeamRecord>;
+  gameTeams?: Record<string, MockGameTeamRecord>;
+  players?: Record<string, MockPlayerRecord>;
+  rosterAssignments?: Record<string, MockRosterAssignmentRecord>;
+  gamePlayers?: Record<string, MockGamePlayerRecord>;
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
@@ -153,6 +200,11 @@ function createHarness(config: HarnessConfig = {}) {
   const createdSessions: CreatedSessionInput[] = [];
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
+  const createdSeasonTeams: Array<{ seasonId: string; teamId: TeamId; name: string; color?: string | null }> = [];
+  const createdGameTeams: Array<{ gameId: string; teamId: TeamId; name: string; color?: string | null }> = [];
+  const createdPlayers: Array<{ playerId: string; nickname: string; claimedByUserId?: string | null }> = [];
+  const assignedRosterPlayers: Array<{ gameId: string; teamId: TeamId; playerId: string }> = [];
+  const linkedGamePlayers: Array<{ gameId: string; playerId: string }> = [];
   const magicLinkStarts: string[] = [];
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
@@ -163,6 +215,17 @@ function createHarness(config: HarnessConfig = {}) {
     Object.entries(config.seasonSessions ?? {}),
   );
   const games = new Map<string, MockGameRecord>(Object.entries(config.games ?? {}));
+  const seasonTeams = new Map<string, MockSeasonTeamRecord>(
+    Object.entries(config.seasonTeams ?? {}),
+  );
+  const gameTeams = new Map<string, MockGameTeamRecord>(Object.entries(config.gameTeams ?? {}));
+  const players = new Map<string, MockPlayerRecord>(Object.entries(config.players ?? {}));
+  const rosterAssignments = new Map<string, MockRosterAssignmentRecord>(
+    Object.entries(config.rosterAssignments ?? {}),
+  );
+  const gamePlayers = new Map<string, MockGamePlayerRecord>(
+    Object.entries(config.gamePlayers ?? {}),
+  );
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
@@ -245,6 +308,40 @@ function createHarness(config: HarnessConfig = {}) {
         seasons.set(input.seasonId, record);
         return record;
       },
+      async createTeam(input) {
+        createdSeasonTeams.push(input);
+        const existing = seasonTeams.get(`${input.seasonId}:${input.teamId}`);
+        const record = {
+          seasonId: input.seasonId,
+          teamId: input.teamId,
+          name: input.name,
+          color: input.color ?? null,
+          createdAt: existing?.createdAt ?? "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        seasonTeams.set(`${input.seasonId}:${input.teamId}`, record);
+        return record;
+      },
+      async listTeamsForSeason(seasonId: string) {
+        return [...seasonTeams.values()].filter((team) => team.seasonId === seasonId);
+      },
+      async createGameTeamOverride(input) {
+        createdGameTeams.push(input);
+        const existing = gameTeams.get(`${input.gameId}:${input.teamId}`);
+        const record = {
+          gameId: input.gameId,
+          teamId: input.teamId,
+          name: input.name,
+          color: input.color ?? null,
+          createdAt: existing?.createdAt ?? "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        gameTeams.set(`${input.gameId}:${input.teamId}`, record);
+        return record;
+      },
+      async listTeamsForGame(gameId: string) {
+        return [...gameTeams.values()].filter((team) => team.gameId === gameId);
+      },
       async createSession(input) {
         createdSessions.push(input);
         const record = {
@@ -304,6 +401,74 @@ function createHarness(config: HarnessConfig = {}) {
       async deleteLeague(leagueId: string) {
         return leagues.delete(leagueId);
       },
+      async createPlayer(input) {
+        createdPlayers.push(input);
+        const record = {
+          playerId: input.playerId,
+          nickname: input.nickname,
+          claimedByUserId: input.claimedByUserId ?? null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        players.set(input.playerId, record);
+        return record;
+      },
+      async getPlayer(playerId: string) {
+        return players.get(playerId) ?? null;
+      },
+      async listPlayers(input = {}) {
+        const search = input.search?.toLowerCase() ?? "";
+        return [...players.values()]
+          .filter((player) => search.length === 0 || player.nickname.toLowerCase().includes(search))
+          .slice(0, input.limit ?? 20);
+      },
+      async linkGamePlayer(input) {
+        linkedGamePlayers.push(input);
+        const existing = gamePlayers.get(`${input.gameId}:${input.playerId}`);
+        const record = {
+          gameId: input.gameId,
+          playerId: input.playerId,
+          createdAt: existing?.createdAt ?? "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        gamePlayers.set(`${input.gameId}:${input.playerId}`, record);
+        return record;
+      },
+      async listGamePlayers(gameId: string) {
+        return [...gamePlayers.values()].filter((player) => player.gameId === gameId);
+      },
+      async assignRosterPlayer(input) {
+        assignedRosterPlayers.push(input);
+        for (const [key, assignment] of rosterAssignments.entries()) {
+          if (assignment.gameId === input.gameId && assignment.playerId === input.playerId) {
+            rosterAssignments.delete(key);
+          }
+        }
+
+        linkedGamePlayers.push({
+          gameId: input.gameId,
+          playerId: input.playerId,
+        });
+        const existingGamePlayer = gamePlayers.get(`${input.gameId}:${input.playerId}`);
+        gamePlayers.set(`${input.gameId}:${input.playerId}`, {
+          gameId: input.gameId,
+          playerId: input.playerId,
+          createdAt: existingGamePlayer?.createdAt ?? "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        });
+        const record = {
+          gameId: input.gameId,
+          teamId: input.teamId,
+          playerId: input.playerId,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        rosterAssignments.set(`${input.gameId}:${input.playerId}`, record);
+        return record;
+      },
+      async listGameRoster(gameId: string) {
+        return [...rosterAssignments.values()].filter((assignment) => assignment.gameId === gameId);
+      },
       async getLeagueAccess(leagueId: string, userId: string) {
         return config.leagueAccess?.[`${leagueId}:${userId}`] ?? null;
       },
@@ -340,6 +505,11 @@ function createHarness(config: HarnessConfig = {}) {
     createdSessions,
     createdGames,
     createdSessionGames,
+    createdSeasonTeams,
+    createdGameTeams,
+    createdPlayers,
+    assignedRosterPlayers,
+    linkedGamePlayers,
     magicLinkStarts,
     magicLinkCompletes,
     magicLinkRateLimitChecks,
@@ -716,6 +886,357 @@ test("core lambda creates game for admin with resolved ACL scope", async () => {
   assert.equal(harness.createdGames[0].leagueId, "league-1");
   assert.equal(harness.createdGames[0].seasonId, "season-1");
   assert.equal(harness.createdGames[0].sessionId, "session-abc");
+  assert.deepEqual(
+    harness.createdSeasonTeams.map((team) => team.teamId),
+    ["red", "blue", "yellow"],
+  );
+  assert.deepEqual(
+    harness.createdGameTeams.map((team) => team.teamId),
+    ["red", "blue", "yellow"],
+  );
+});
+
+test("core lambda lets scorekeepers quick-create and assign roster players", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "scorekeeper@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:scorekeeper@example.com": {
+        leagueId: "league-1",
+        userId: "scorekeeper@example.com",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const createPlayerResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "player-create-1",
+      },
+      body: {
+        playerId: "player-ari",
+        nickname: "Ari",
+      },
+    }),
+  );
+
+  assert.equal(createPlayerResponse.statusCode, 201);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.deepEqual(JSON.parse(createPlayerResponse.body), {
+    playerId: "player-ari",
+    nickname: "Ari",
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
+  });
+  assert.deepEqual(harness.linkedGamePlayers[0], {
+    gameId: "game-1",
+    playerId: "player-ari",
+  });
+
+  const assignResponse = await harness.handler(
+    createEvent({
+      method: "PUT",
+      path: "/v1/games/game-1/roster/player-ari",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        teamId: "red",
+      },
+    }),
+  );
+
+  assert.equal(assignResponse.statusCode, 200);
+  assert.equal(harness.assignedRosterPlayers.length, 1);
+  assert.equal(harness.assignedRosterPlayers[0].teamId, "red");
+
+  const rosterResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/roster",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(rosterResponse.statusCode, 200);
+  const rosterBody = JSON.parse(rosterResponse.body) as {
+    teams: Array<{ teamId: string }>;
+    roster: Array<{ playerId: string; teamId: string; player: { nickname: string } | null }>;
+  };
+  assert.deepEqual(rosterBody.teams.map((team) => team.teamId), ["red", "blue", "yellow"]);
+  assert.deepEqual(rosterBody.roster, [
+    {
+      gameId: "game-1",
+      teamId: "red",
+      playerId: "player-ari",
+      createdAt: "2026-02-23T00:00:00.000Z",
+      updatedAt: "2026-02-23T00:00:00.000Z",
+      player: {
+        playerId: "player-ari",
+        nickname: "Ari",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  ]);
+});
+
+test("core lambda team and roster read routes do not create team records", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  for (const path of [
+    "/v1/seasons/season-1/teams",
+    "/v1/games/game-1/teams",
+    "/v1/games/game-1/roster",
+  ]) {
+    const response = await harness.handler(
+      createEvent({
+        method: "GET",
+        path,
+        headers: {
+          Cookie: "threefc_session=session-1",
+        },
+      }),
+    );
+
+    assert.equal(response.statusCode, 200);
+    const body = JSON.parse(response.body) as { teams?: Array<{ teamId: string }> };
+    assert.deepEqual(body.teams?.map((team) => team.teamId), ["red", "blue", "yellow"]);
+  }
+
+  assert.equal(harness.createdSeasonTeams.length, 0);
+  assert.equal(harness.createdGameTeams.length, 0);
+});
+
+test("core lambda game player list is game-scoped and public", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "scorekeeper@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-2": {
+        gameId: "game-2",
+        leagueId: "league-2",
+        seasonId: "season-2",
+        sessionId: "session-2",
+        status: "scheduled",
+        gameStartTs: "2026-02-24T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "season-2": {
+        leagueId: "league-2",
+        seasonId: "season-2",
+        name: "Season 2",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:scorekeeper@example.com": {
+        leagueId: "league-1",
+        userId: "scorekeeper@example.com",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    players: {
+      "player-game-1": {
+        playerId: "player-game-1",
+        nickname: "Ari",
+        claimedByUserId: "ari@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "player-game-2": {
+        playerId: "player-game-2",
+        nickname: "Bao",
+        claimedByUserId: "bao@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "player-unlinked": {
+        playerId: "player-unlinked",
+        nickname: "Cy",
+        claimedByUserId: "cy@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    gamePlayers: {
+      "game-1:player-game-1": {
+        gameId: "game-1",
+        playerId: "player-game-1",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-2:player-game-2": {
+        gameId: "game-2",
+        playerId: "player-game-2",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    rosterAssignments: {
+      "game-1:player-game-1": {
+        gameId: "game-1",
+        playerId: "player-game-1",
+        teamId: "red",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const playersResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(playersResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(playersResponse.body), {
+    players: [
+      {
+        playerId: "player-game-1",
+        nickname: "Ari",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    ],
+  });
+  assert.equal(playersResponse.body.includes("claimedByUserId"), false);
+
+  const rosterResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/roster",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(rosterResponse.statusCode, 200);
+  assert.equal(rosterResponse.body.includes("claimedByUserId"), false);
 });
 
 test("core lambda deduplicates repeated create league request by idempotency key", async () => {
