@@ -59,6 +59,7 @@ export interface SessionRecord {
 
 export interface GameRecord {
   gameId: string;
+  joinCode: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -78,6 +79,13 @@ export interface SessionGameRecord {
   gameStartTs: string;
   leagueId: string;
   seasonId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameJoinCodeRecord {
+  joinCode: string;
+  gameId: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -236,6 +244,7 @@ export interface CreateSessionInput {
 
 export interface CreateGameInput {
   gameId: string;
+  joinCode?: string | null;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -272,6 +281,18 @@ export interface LinkGamePlayerInput {
   gameId: string;
   playerId: string;
   allowFinished?: boolean;
+}
+
+export interface JoinGameByCodeInput {
+  joinCode: string;
+  playerId: string;
+  nickname: string;
+}
+
+export interface JoinGameByCodeResult {
+  game: GameRecord;
+  player: PlayerRecord;
+  link: GamePlayerRecord;
 }
 
 export interface GrantLeagueAccessInput {

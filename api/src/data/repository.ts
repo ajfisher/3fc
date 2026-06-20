@@ -11,7 +11,7 @@ import {
   type AttributeValue,
   type TransactWriteItem,
 } from "@aws-sdk/client-dynamodb";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
@@ -39,6 +39,7 @@ import {
   goalStateSk,
   goalSk,
   idempotencyPk,
+  joinCodePk,
   leaguePk,
   metadataSk,
   playerPk,
@@ -67,6 +68,7 @@ import type {
   DeleteGoalInput,
   DeleteGoalResult,
   FinishGameInput,
+  GameJoinCodeRecord,
   GameTeamRecord,
   GamePlayerRecord,
   GameRecord,
@@ -77,6 +79,8 @@ import type {
   GoalEventRecord,
   GoalStateRecord,
   IdempotencyRecord,
+  JoinGameByCodeInput,
+  JoinGameByCodeResult,
   LeagueAclRecord,
   LeagueRecord,
   ListPlayersInput,
@@ -102,6 +106,7 @@ const ENTITY_TYPE = {
   game: "game",
   gameTeam: "gameTeam",
   gamePlayer: "gamePlayer",
+  gameJoinCode: "gameJoinCode",
   sessionGame: "sessionGame",
   player: "player",
   acl: "acl",
@@ -185,6 +190,24 @@ export class GameMutationStateError extends Error {
   ) {
     super(message);
     this.name = "GameMutationStateError";
+  }
+}
+
+export class GameJoinCodeCollisionError extends Error {
+  constructor(message = "Join code is already assigned to another game.") {
+    super(message);
+    this.name = "GameJoinCodeCollisionError";
+  }
+}
+
+export class GameJoinRegistrationError extends Error {
+  constructor(
+    readonly code: "game_finished" | "join_state_changed",
+    readonly statusCode: 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GameJoinRegistrationError";
   }
 }
 
@@ -277,6 +300,24 @@ function isValidTimestamp(value: unknown): value is string {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
+const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const JOIN_CODE_LENGTH = 8;
+
+export function buildJoinCodeForGameId(gameId: string): string {
+  const digest = createHash("sha256").update(`3fc:join:${gameId}`).digest();
+  let joinCode = "";
+
+  for (let index = 0; index < JOIN_CODE_LENGTH; index += 1) {
+    joinCode += JOIN_CODE_ALPHABET[digest[index] % JOIN_CODE_ALPHABET.length];
+  }
+
+  return joinCode;
+}
+
+function normalizeJoinCode(joinCode: string): string {
+  return joinCode.trim().toUpperCase();
+}
+
 function normalizeGameResultPayload(value: unknown): GameResult | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -333,6 +374,10 @@ function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "up
 
   return {
     gameId: raw.gameId ?? "",
+    joinCode:
+      typeof raw.joinCode === "string" && raw.joinCode.trim().length > 0
+        ? normalizeJoinCode(raw.joinCode)
+        : buildJoinCodeForGameId(raw.gameId ?? ""),
     leagueId: raw.leagueId ?? "",
     seasonId: raw.seasonId ?? "",
     sessionId: raw.sessionId ?? "",
@@ -1223,8 +1268,12 @@ export class ThreeFcRepository {
     }
 
     const now = this.clock.now();
+    const joinCode = normalizeJoinCode(
+      input.joinCode?.trim() ? input.joinCode : buildJoinCodeForGameId(input.gameId),
+    );
     const payload = {
       gameId: input.gameId,
+      joinCode,
       leagueId: input.leagueId,
       seasonId: input.seasonId,
       sessionId: input.sessionId,
@@ -1236,7 +1285,43 @@ export class ThreeFcRepository {
       result: null,
     };
 
-    await this.putEntity(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now);
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  joinCodePk(joinCode),
+                  metadataSk(),
+                  ENTITY_TYPE.gameJoinCode,
+                  {
+                    joinCode,
+                    gameId: input.gameId,
+                  },
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameJoinCodeCollisionError();
+      }
+
+      throw error;
+    }
     return withTimestamps(payload, now, now);
   }
 
@@ -1249,6 +1334,144 @@ export class ThreeFcRepository {
     }
 
     return withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
+  }
+
+  async getGameByJoinCode(joinCode: string): Promise<GameRecord | null> {
+    const normalizedJoinCode = normalizeJoinCode(joinCode);
+    requireNonEmpty("joinCode", normalizedJoinCode);
+
+    const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk());
+    if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+      const joinCodeRecord = withTimestamps(
+        joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
+        joinCodeItem.createdAt,
+        joinCodeItem.updatedAt,
+      );
+      const game = await this.getGame(joinCodeRecord.gameId);
+
+      if (game && normalizeJoinCode(game.joinCode) === normalizedJoinCode) {
+        return game;
+      }
+    }
+
+    return null;
+  }
+
+  async joinGameByCode(input: JoinGameByCodeInput): Promise<JoinGameByCodeResult | null> {
+    const normalizedJoinCode = normalizeJoinCode(input.joinCode);
+    requireNonEmpty("joinCode", normalizedJoinCode);
+    requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("nickname", input.nickname);
+
+    const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk(), {
+      consistentRead: true,
+    });
+    if (!joinCodeItem || joinCodeItem.entityType !== ENTITY_TYPE.gameJoinCode) {
+      return null;
+    }
+
+    const joinCodeRecord = withTimestamps(
+      joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
+      joinCodeItem.createdAt,
+      joinCodeItem.updatedAt,
+    );
+    const gameItem = await this.getEntity(gamePk(joinCodeRecord.gameId), metadataSk(), {
+      consistentRead: true,
+    });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const game = withTimestamps(
+      normalizeGamePayload(gameItem.data),
+      gameItem.createdAt,
+      gameItem.updatedAt,
+    );
+    if (normalizeJoinCode(game.joinCode) !== normalizedJoinCode) {
+      return null;
+    }
+
+    if (game.status === "finished") {
+      throw new GameJoinRegistrationError(
+        "game_finished",
+        409,
+        `Game ${game.gameId} is finished. Join registration is closed.`,
+      );
+    }
+
+    const now = this.clock.now();
+    const playerPayload = {
+      playerId: input.playerId,
+      nickname: input.nickname,
+      claimedByUserId: null,
+    };
+    const linkPayload = {
+      gameId: game.gameId,
+      playerId: input.playerId,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gamePk(game.gameId) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedGameUpdatedAt": { S: game.updatedAt },
+                  ":expectedGameData": { S: gameItem.rawData },
+                },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, playerPayload, now),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  gamePk(game.gameId),
+                  gamePlayerSk(input.playerId),
+                  ENTITY_TYPE.gamePlayer,
+                  linkPayload,
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameJoinRegistrationError(
+          "join_state_changed",
+          409,
+          "Game join state changed while registering this player. Reload and try again.",
+        );
+      }
+
+      throw error;
+    }
+
+    return {
+      game,
+      player: withTimestamps(playerPayload, now, now),
+      link: withTimestamps(linkPayload, now, now),
+    };
   }
 
   async createSessionGame(input: CreateSessionGameInput): Promise<SessionGameRecord> {
@@ -1724,38 +1947,75 @@ export class ThreeFcRepository {
       return false;
     }
 
+    const joinCodeItem = await this.getEntity(joinCodePk(game.joinCode), metadataSk(), {
+      consistentRead: true,
+    });
+    const joinCodeRecord =
+      joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode
+        ? withTimestamps(
+            joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
+            joinCodeItem.createdAt,
+            joinCodeItem.updatedAt,
+          )
+        : null;
+    const deletesJoinCodeLookup =
+      joinCodeItem !== null &&
+      joinCodeRecord?.gameId === gameId &&
+      normalizeJoinCode(joinCodeRecord.joinCode) === normalizeJoinCode(game.joinCode);
+    const transactionItems: TransactWriteItem[] = [
+      {
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gamePk(gameId) },
+            sk: { S: metadataSk() },
+          },
+          ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedGameUpdatedAt": { S: gameItem.updatedAt },
+            ":expectedGameData": { S: gameItem.rawData },
+          },
+        },
+      },
+      {
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gameSessionIndexPk(game.sessionId) },
+            sk: { S: gameSessionIndexSk(game.gameStartTs, game.gameId) },
+          },
+        },
+      },
+    ];
+    if (deletesJoinCodeLookup && joinCodeItem) {
+      transactionItems.push({
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: joinCodePk(game.joinCode) },
+            sk: { S: metadataSk() },
+          },
+          ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedJoinCodeUpdatedAt": { S: joinCodeItem.updatedAt },
+            ":expectedJoinCodeData": { S: joinCodeItem.rawData },
+          },
+        },
+      });
+    }
+
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
-            {
-              Delete: {
-                TableName: this.tableName,
-                Key: {
-                  pk: { S: gamePk(gameId) },
-                  sk: { S: metadataSk() },
-                },
-                ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
-                ExpressionAttributeNames: {
-                  "#updatedAt": "updatedAt",
-                  "#data": "data",
-                },
-                ExpressionAttributeValues: {
-                  ":expectedGameUpdatedAt": { S: gameItem.updatedAt },
-                  ":expectedGameData": { S: gameItem.rawData },
-                },
-              },
-            },
-            {
-              Delete: {
-                TableName: this.tableName,
-                Key: {
-                  pk: { S: gameSessionIndexPk(game.sessionId) },
-                  sk: { S: gameSessionIndexSk(game.gameStartTs, game.gameId) },
-                },
-              },
-            },
-          ],
+          TransactItems: transactionItems,
         }),
       );
     } catch (error) {

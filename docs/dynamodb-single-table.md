@@ -33,7 +33,11 @@ This document defines the baseline key structure and access patterns for the
 - Game metadata:
   - `pk=GAME#{gameId}`
   - `sk=METADATA`
-  - stores game status, timer segments, `finishedAt`, and final `result`
+  - stores deterministic `joinCode`, game status, timer segments, `finishedAt`, and final `result`
+- Join code lookup:
+  - `pk=JOIN_CODE#{joinCode}`
+  - `sk=METADATA`
+  - maps an active QR/join code to its `gameId`
 - Goal event timeline:
   - `pk=GAME#{gameId}`
   - `sk=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}`
@@ -85,6 +89,7 @@ without schema rewrites at this stage.
 - Create/list teams for a season.
 - Create/list sessions for a season.
 - Create/read game metadata.
+- Resolve join code to game for player self-registration.
 - Finish game and store deterministic winner/draw result on game metadata.
 - Link/list games for a session (`SESSION#{sessionId}` query).
 - Create/read player profile.

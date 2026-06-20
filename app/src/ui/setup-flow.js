@@ -1035,6 +1035,7 @@
     const gameSeasonLink = document.getElementById("game-season-link");
 
     const gameIdValue = document.getElementById("game-id-value");
+    const gameJoinCodeValue = document.getElementById("game-join-code-value");
     const gameLeagueId = document.getElementById("game-league-id");
     const gameSeasonId = document.getElementById("game-season-id");
 
@@ -2078,6 +2079,10 @@
 
       if (gameIdValue) {
         gameIdValue.textContent = game.gameId;
+      }
+      if (gameJoinCodeValue) {
+        gameJoinCodeValue.textContent =
+          typeof game.joinCode === "string" && game.joinCode.length > 0 ? game.joinCode : "Unavailable";
       }
       if (gameLeagueId) {
         gameLeagueId.textContent = game.leagueId;

@@ -3,14 +3,57 @@ info:
   title: 3FC Core API
   version: 0.1.0
   description: |
-    Authenticated core routes for league/season/session/game creation, M2 roster setup,
-    third timer control, goal scoring reads and writes, and game finish.
+    Core routes for public join-code registration plus authenticated league/season/session/game creation,
+    M2 roster setup, third timer control, goal scoring reads and writes, and game finish.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/join:
+    post:
+      summary: Reject join registration without a join code
+      operationId: rejectMissingJoinCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinGameRequest"
+      responses:
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /v1/join/{joinCode}:
+    post:
+      summary: Register a nickname player into a game by join code
+      operationId: joinGameByCode
+      parameters:
+        - name: joinCode
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinGameRequest"
+      responses:
+        "201":
+          description: Player registered for the game
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinGameResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/leagues:
     post:
       summary: Create league
@@ -814,6 +857,15 @@ components:
         nickname:
           type: string
           minLength: 1
+    JoinGameRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - nickname
+      properties:
+        nickname:
+          type: string
+          minLength: 1
     AssignRosterPlayerRequest:
       type: object
       additionalProperties: false
@@ -1001,6 +1053,7 @@ components:
       type: object
       required:
         - gameId
+        - joinCode
         - leagueId
         - seasonId
         - sessionId
@@ -1015,6 +1068,8 @@ components:
         - updatedAt
       properties:
         gameId:
+          type: string
+        joinCode:
           type: string
         leagueId:
           type: string
@@ -1291,6 +1346,19 @@ components:
         updatedAt:
           type: string
           format: date-time
+    JoinGameResponse:
+      type: object
+      required:
+        - gameId
+        - joinCode
+        - player
+      properties:
+        gameId:
+          type: string
+        joinCode:
+          type: string
+        player:
+          $ref: "#/components/schemas/Player"
     RosterAssignment:
       type: object
       required:

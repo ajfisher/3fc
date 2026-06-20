@@ -193,6 +193,7 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-shell"/);
   assert.match(html, /data-page="game"/);
   assert.match(html, /game-20260223-a1b2c3d4/);
+  assert.match(html, /data-testid="game-join-code-value"/);
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);

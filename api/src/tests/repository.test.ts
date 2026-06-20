@@ -17,7 +17,14 @@ import {
   type TeamId,
 } from "@3fc/contracts";
 
-import { GameMutationStateError, GameTimerTransitionError, ThreeFcRepository } from "../data/repository.js";
+import {
+  buildJoinCodeForGameId,
+  GameJoinCodeCollisionError,
+  GameJoinRegistrationError,
+  GameMutationStateError,
+  GameTimerTransitionError,
+  ThreeFcRepository,
+} from "../data/repository.js";
 
 type Item = Record<string, AttributeValue>;
 
@@ -476,6 +483,9 @@ test("repository supports round-trip create/read for core entities", async () =>
     gameStartTs: "2026-02-22T10:00:00Z",
   });
   assert.deepEqual(await repository.getGame("game-1"), game);
+  assert.equal(game.joinCode, buildJoinCodeForGameId("game-1"));
+  assert.deepEqual(await repository.getGameByJoinCode(game.joinCode), game);
+  assert.deepEqual(await repository.getGameByJoinCode(game.joinCode.toLowerCase()), game);
 
   const gameTeam = await repository.createGameTeamOverride({
     gameId: "game-1",
@@ -498,6 +508,16 @@ test("repository supports round-trip create/read for core entities", async () =>
   });
   assert.deepEqual(await repository.listGamePlayers("game-1"), [gamePlayer]);
 
+  const joinResult = await repository.joinGameByCode({
+    joinCode: game.joinCode.toLowerCase(),
+    playerId: "player-join",
+    nickname: "Nia",
+  });
+  assert.ok(joinResult);
+  assert.equal(joinResult.game.gameId, "game-1");
+  assert.deepEqual(await repository.getPlayer("player-join"), joinResult.player);
+  assert.deepEqual(await repository.listGamePlayers("game-1"), [gamePlayer, joinResult.link]);
+
   const accessGrant = await repository.grantLeagueAccess({
     leagueId: "league-1",
     userId: "user-scorekeeper",
@@ -518,7 +538,7 @@ test("repository supports round-trip create/read for core entities", async () =>
     playerId: "player-1",
   });
   assert.deepEqual(await repository.listGameRoster("game-1"), [rosterAssignment]);
-  assert.equal((await repository.listGamePlayers("game-1")).length, 1);
+  assert.equal((await repository.listGamePlayers("game-1")).length, 2);
 
   const reassignedRoster = await repository.assignRosterPlayer({
     gameId: "game-1",
@@ -546,6 +566,32 @@ test("repository rejects creating games directly as finished", async () => {
       error.code === "invalid_status_transition" &&
       /cannot be created directly as finished/.test(error.message),
   );
+});
+
+test("repository rejects duplicate join code lookup records", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-join-a",
+    joinCode: "SHARED01",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-join-b",
+      joinCode: "SHARED01",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T11:00:00Z",
+    }),
+    GameJoinCodeCollisionError,
+  );
+  assert.equal(await repository.getGame("game-join-b"), null);
 });
 
 test("repository query supports deterministic session->games ordering", async () => {
@@ -1246,6 +1292,34 @@ test("repository gives legacy games default timer state", async () => {
   const game = await repository.getGame("game-legacy");
   assert.equal(game?.thirdLengthMinutes, DEFAULT_THIRD_LENGTH_MINUTES);
   assert.deepEqual(game?.thirds, createDefaultThirdTimerSegments());
+  assert.equal(game?.joinCode, buildJoinCodeForGameId("game-legacy"));
+  assert.equal(await repository.getGameByJoinCode(buildJoinCodeForGameId("game-legacy")), null);
+});
+
+test("repository rejects join registration for finished games without creating a player", async () => {
+  const repository = createRepository();
+  const game = await repository.createGame({
+    gameId: "game-finished-join",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "finished",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-late",
+      nickname: "Late",
+    }),
+    (error) =>
+      error instanceof GameJoinRegistrationError &&
+      error.code === "game_finished" &&
+      error.statusCode === 409,
+  );
+  assert.equal(await repository.getPlayer("player-late"), null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
 });
 
 test("repository enforces third timer transitions in order", async () => {

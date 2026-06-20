@@ -64,6 +64,12 @@ export const quickCreateGamePlayerRequestSchema = z
   })
   .strict();
 
+export const joinGameRequestSchema = z
+  .object({
+    nickname: nonEmptyTrimmedString,
+  })
+  .strict();
+
 export const assignRosterPlayerRequestSchema = z
   .object({
     teamId: teamIdSchema,
@@ -190,6 +196,7 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 export type CreateGameRequest = z.infer<typeof createGameRequestSchema>;
 export type UpsertTeamRequest = z.infer<typeof upsertTeamRequestSchema>;
 export type QuickCreateGamePlayerRequest = z.infer<typeof quickCreateGamePlayerRequestSchema>;
+export type JoinGameRequest = z.infer<typeof joinGameRequestSchema>;
 export type AssignRosterPlayerRequest = z.infer<typeof assignRosterPlayerRequestSchema>;
 export type CreateGoalRequest = z.infer<typeof createGoalRequestSchema>;
 export type UpdateGoalRequest = z.infer<typeof updateGoalRequestSchema>;

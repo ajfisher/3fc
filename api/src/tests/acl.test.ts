@@ -36,8 +36,9 @@ class InMemoryAclLookup implements AclLookup {
   }
 }
 
-function defaultGameStateFields(): Pick<GameRecord, "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> {
+function defaultGameStateFields(): Pick<GameRecord, "joinCode" | "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> {
   return {
+    joinCode: "JOIN1234",
     thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
     thirds: createDefaultThirdTimerSegments(),
     finishedAt: null,

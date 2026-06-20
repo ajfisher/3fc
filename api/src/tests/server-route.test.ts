@@ -93,12 +93,14 @@ const result: GameResult = {
 
 function gameRecord(input: {
   status?: "scheduled" | "live" | "finished";
+  joinCode?: string;
   finishedAt?: string | null;
   result?: GameResult | null;
   thirds?: ThirdTimerSegment[];
 } = {}) {
   return {
     gameId: "game-1",
+    joinCode: input.joinCode ?? "JOIN1234",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",

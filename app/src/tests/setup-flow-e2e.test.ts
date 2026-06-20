@@ -60,6 +60,7 @@ interface MockSessionEntity {
 
 interface MockGame {
   gameId: string;
+  joinCode?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -821,6 +822,7 @@ function createMockFetch(state: MockApiState) {
       const now = "2026-03-28T11:00:04.000Z";
       const game: MockGame = {
         gameId,
+        joinCode: `JOIN${gameId.slice(-4).toUpperCase()}`,
         leagueId: season.leagueId,
         seasonId: season.seasonId,
         sessionId,
@@ -1843,6 +1845,7 @@ test("game page quick-creates and assigns roster players", async () => {
   });
   apiState.games.set("game-1", {
     gameId: "game-1",
+    joinCode: "JOIN0001",
     leagueId: "three-sided-football-club",
     seasonId: "autumn-cup",
     sessionId: "20260328",
@@ -2999,6 +3002,7 @@ test("setup smoke completes live game through finish", async () => {
   });
   apiState.games.set("game-smoke-1", {
     gameId: "game-smoke-1",
+    joinCode: "SMOKE123",
     leagueId: "three-sided-football-club",
     seasonId: "autumn-cup",
     sessionId: "20260328",
@@ -3035,6 +3039,7 @@ test("setup smoke completes live game through finish", async () => {
   const undoLastGoalButton = gamePage.document.querySelector('[data-action="undo-last-goal"]');
   const deleteGameButton = gamePage.document.querySelector('[data-action="delete-game"]');
   const statusInput = gamePage.document.getElementById("game-edit-status");
+  const joinCodeValue = gamePage.document.getElementById("game-join-code-value");
   const scoreboard = gamePage.document.getElementById("live-scoreboard");
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
   const resultSummary = gamePage.document.getElementById("game-result-summary");
@@ -3051,10 +3056,12 @@ test("setup smoke completes live game through finish", async () => {
   assert(undoLastGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(deleteGameButton instanceof gamePage.window.HTMLButtonElement);
   assert(statusInput instanceof gamePage.window.HTMLSelectElement);
+  assert(joinCodeValue instanceof gamePage.window.HTMLElement);
   assert(scoreboard instanceof gamePage.window.HTMLElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
   assert(resultSummary instanceof gamePage.window.HTMLElement);
   assert.equal(finishGameButton.disabled, true);
+  assert.equal(joinCodeValue.textContent, "SMOKE123");
   assert.equal(resultSummary.hidden, true);
 
   nicknameInput.value = "Ari";

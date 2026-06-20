@@ -965,6 +965,41 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
+      const joinCode = (await page.getByTestId("game-join-code-value").innerText()).trim();
+      expect(joinCode).toMatch(/^[A-Z2-9]{8}$/);
+
+      const joinResult = await page.evaluate(
+        async ({ apiBaseUrl: browserApiBaseUrl, joinCode: browserJoinCode }) => {
+          const response = await fetch(`${browserApiBaseUrl}/v1/join/${encodeURIComponent(browserJoinCode)}`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ nickname: "Cy" }),
+          });
+          const body = (await response.json()) as {
+            gameId?: string;
+            joinCode?: string;
+            player?: { nickname?: string; playerId?: string };
+          };
+          return {
+            status: response.status,
+            body,
+          };
+        },
+        { apiBaseUrl, joinCode },
+      );
+      expect(joinResult.status).toBe(201);
+      expect(joinResult.body.gameId).toBe(gameId);
+      expect(joinResult.body.joinCode).toBe(joinCode);
+      expect(joinResult.body.player?.nickname).toBe("Cy");
+      if (joinResult.body.player?.playerId) {
+        playerIds.push(joinResult.body.player.playerId);
+      }
+
+      await page.locator("#player-search").fill("Cy");
+      await expect(page.locator('[data-ui="roster-player"]').filter({ hasText: "Cy" })).toBeVisible();
+      await page.locator("#player-search").fill("");
 
       const ariPlayerId = await createAndAssignPlayer(page, ariNickname, "red", (playerId) => {
         playerIds.push(playerId);

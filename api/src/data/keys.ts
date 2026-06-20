@@ -4,6 +4,7 @@ export const ENTITY_PK_PREFIX = {
   game: "GAME#",
   session: "SESSION#",
   player: "PLAYER#",
+  joinCode: "JOIN_CODE#",
   idempotency: "IDEMPOTENCY#",
 } as const;
 
@@ -37,6 +38,10 @@ export function gamePk(gameId: string): string {
 
 export function playerPk(playerId: string): string {
   return `${ENTITY_PK_PREFIX.player}${playerId}`;
+}
+
+export function joinCodePk(joinCode: string): string {
+  return `${ENTITY_PK_PREFIX.joinCode}${joinCode}`;
 }
 
 export function idempotencyPk(scope: string, key: string): string {

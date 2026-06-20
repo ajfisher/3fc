@@ -58,12 +58,14 @@ import {
   assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
+  joinGameRequestSchema,
   quickCreateGamePlayerRequestSchema,
   undoLastGoalRequestSchema,
   updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
 import {
+  GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
   GoalCorrectionError,
@@ -375,6 +377,7 @@ function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
 
 function buildGameResponse(game: {
   gameId: string;
+  joinCode: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -494,6 +497,46 @@ function finishedGameDeleteConflict(
     error: "conflict",
     code: "game_finished",
     message: `Game ${gameId} is finished. Finished games cannot be deleted.`,
+  });
+  return 409;
+}
+
+function joinCodeRequired(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 400, {
+    error: "bad_request",
+    code: "join_code_required",
+    message: "Join code is required.",
+  });
+  return 400;
+}
+
+function invalidJoinCode(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 404, {
+    error: "not_found",
+    code: "invalid_join_code",
+    message: "Join code was not found.",
+  });
+  return 404;
+}
+
+function finishedGameJoinConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_finished",
+    message: `Game ${gameId} is finished. Join registration is closed.`,
+  });
+  return 409;
+}
+
+function joinStateChangedConflict(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "join_state_changed",
+    message: "Game join state changed while registering this player. Reload and try again.",
   });
   return 409;
 }
@@ -1957,6 +2000,70 @@ async function start(): Promise<void> {
 
       if (method === "POST" && route === "/v1/auth/magic/complete") {
         status = await handleMagicLinkComplete(request, response);
+        return;
+      }
+
+      const missingJoinCodeMatch = route.match(/^\/v1\/join\/?$/);
+      if (method === "POST" && missingJoinCodeMatch) {
+        status = joinCodeRequired(request, response);
+        return;
+      }
+
+      const joinGameMatch = route.match(/^\/v1\/join\/([^/]+)$/);
+      if (method === "POST" && joinGameMatch) {
+        const joinCode = decodeURIComponent(joinGameMatch[1]).trim();
+        if (joinCode.length === 0) {
+          status = joinCodeRequired(request, response);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = joinGameRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
+        try {
+          joinResult = await repository.joinGameByCode({
+            joinCode,
+            playerId: `player-${randomUUID()}`,
+            nickname: parsedBody.data.nickname,
+          });
+        } catch (error) {
+          if (error instanceof GameJoinRegistrationError) {
+            if (error.code === "game_finished") {
+              const game = await repository.getGameByJoinCode(joinCode);
+              status = finishedGameJoinConflict(request, response, game?.gameId ?? "unknown");
+              return;
+            }
+
+            status = joinStateChangedConflict(request, response);
+            return;
+          }
+
+          throw error;
+        }
+
+        if (!joinResult) {
+          status = invalidJoinCode(request, response);
+          return;
+        }
+
+        status = 201;
+        sendJsonWithCors(request, response, status, {
+          gameId: joinResult.game.gameId,
+          joinCode: joinResult.game.joinCode,
+          player: toPublicPlayer(joinResult.player),
+        });
         return;
       }
 

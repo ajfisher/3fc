@@ -17,6 +17,8 @@ import {
   type ThirdTimerSegment,
 } from "@3fc/contracts";
 import {
+  buildJoinCodeForGameId,
+  GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
   GoalCorrectionError,
@@ -69,6 +71,7 @@ interface MockSessionEntity {
 
 interface MockGameRecord {
   gameId: string;
+  joinCode: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -82,8 +85,8 @@ interface MockGameRecord {
   updatedAt: string;
 }
 
-type MockGameInput = Omit<MockGameRecord, "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> &
-  Partial<Pick<MockGameRecord, "thirdLengthMinutes" | "thirds" | "finishedAt" | "result">>;
+type MockGameInput = Omit<MockGameRecord, "joinCode" | "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> &
+  Partial<Pick<MockGameRecord, "joinCode" | "thirdLengthMinutes" | "thirds" | "finishedAt" | "result">>;
 
 interface MockSeasonTeamRecord {
   seasonId: string;
@@ -173,6 +176,7 @@ interface CreatedSessionInput {
 
 interface CreatedGameInput {
   gameId: string;
+  joinCode?: string | null;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -326,6 +330,7 @@ function createHarness(config: HarnessConfig = {}) {
       gameId,
       {
         ...game,
+        joinCode: game.joinCode ?? buildJoinCodeForGameId(game.gameId),
         thirdLengthMinutes: game.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
         thirds: game.thirds ?? createDefaultThirdTimerSegments(),
         finishedAt: game.finishedAt ?? null,
@@ -819,6 +824,7 @@ function createHarness(config: HarnessConfig = {}) {
         createdGames.push(input);
         const record = {
           gameId: input.gameId,
+          joinCode: input.joinCode ?? buildJoinCodeForGameId(input.gameId),
           leagueId: input.leagueId,
           seasonId: input.seasonId,
           sessionId: input.sessionId,
@@ -863,6 +869,62 @@ function createHarness(config: HarnessConfig = {}) {
           }
         }
         return game;
+      },
+      async getGameByJoinCode(joinCode: string) {
+        const normalizedJoinCode = joinCode.trim().toUpperCase();
+        return (
+          [...games.values()].find(
+            (game) => game.joinCode.trim().toUpperCase() === normalizedJoinCode,
+          ) ?? null
+        );
+      },
+      async joinGameByCode(input) {
+        const normalizedJoinCode = input.joinCode.trim().toUpperCase();
+        const game =
+          [...games.values()].find(
+            (candidate) => candidate.joinCode.trim().toUpperCase() === normalizedJoinCode,
+          ) ?? null;
+        if (!game) {
+          return null;
+        }
+
+        if (game.status === "finished") {
+          throw new GameJoinRegistrationError(
+            "game_finished",
+            409,
+            `Game ${game.gameId} is finished. Join registration is closed.`,
+          );
+        }
+
+        const player = {
+          playerId: input.playerId,
+          nickname: input.nickname,
+          claimedByUserId: null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        const link = {
+          gameId: game.gameId,
+          playerId: input.playerId,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        createdPlayers.push({
+          playerId: input.playerId,
+          nickname: input.nickname,
+          claimedByUserId: null,
+        });
+        linkedGamePlayers.push({
+          gameId: game.gameId,
+          playerId: input.playerId,
+        });
+        players.set(input.playerId, player);
+        gamePlayers.set(`${game.gameId}:${input.playerId}`, link);
+
+        return {
+          game,
+          player,
+        };
       },
       async updateGame(input) {
         const existing = games.get(input.gameId);
@@ -1863,6 +1925,173 @@ test("core lambda completes magic-link auth and returns a session cookie", async
       expiresAt: "2026-02-24T00:00:00.000Z",
     },
   });
+});
+
+test("core lambda lets players join an active game by join code and appear in the player pool", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "scorekeeper@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "JOINABCD",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:scorekeeper@example.com": {
+        leagueId: "league-1",
+        userId: "scorekeeper@example.com",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const joinResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/joinabcd",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(joinResponse.statusCode, 201);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
+  const joinBody = JSON.parse(joinResponse.body) as {
+    gameId: string;
+    joinCode: string;
+    player: { playerId: string; nickname: string; createdAt: string; updatedAt: string };
+  };
+  assert.equal(joinBody.gameId, "game-1");
+  assert.equal(joinBody.joinCode, "JOINABCD");
+  assert.equal(joinBody.player.nickname, "Nia");
+  assert.match(joinBody.player.playerId, /^player-/);
+  assert.deepEqual(harness.linkedGamePlayers[0], {
+    gameId: "game-1",
+    playerId: joinBody.player.playerId,
+  });
+
+  const playerPoolResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(playerPoolResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(playerPoolResponse.body), {
+    players: [joinBody.player],
+  });
+});
+
+test("core lambda returns stable errors for invalid and missing join codes", async () => {
+  const harness = createHarness();
+
+  const invalidResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/NOPE1234",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(invalidResponse.statusCode, 404);
+  assert.deepEqual(JSON.parse(invalidResponse.body), {
+    error: "not_found",
+    code: "invalid_join_code",
+    message: "Join code was not found.",
+  });
+
+  const missingResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(missingResponse.statusCode, 400);
+  assert.deepEqual(JSON.parse(missingResponse.body), {
+    error: "bad_request",
+    code: "join_code_required",
+    message: "Join code is required.",
+  });
+  assert.equal(harness.createdPlayers.length, 0);
+  assert.equal(harness.linkedGamePlayers.length, 0);
+});
+
+test("core lambda rejects join registration for finished games", async () => {
+  const harness = createHarness({
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "FINISHED",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/FINISHED",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "Late",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Join registration is closed.",
+  });
+  assert.equal(harness.createdPlayers.length, 0);
+  assert.equal(harness.linkedGamePlayers.length, 0);
 });
 
 test("core lambda accepts session cookie from API Gateway cookies array", async () => {

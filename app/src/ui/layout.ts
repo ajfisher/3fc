@@ -678,6 +678,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             "Edit core game metadata.",
             `<dl data-ui="id-preview" data-testid="game-context-details">
               <div><dt>Game ID</dt><dd id="game-id-value">${gameHeading}</dd></div>
+              <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
               <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
               <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
             </dl>

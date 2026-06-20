@@ -89,6 +89,18 @@ functions:
           method: OPTIONS
           path: /v1/auth/session
       - httpApi:
+          method: POST
+          path: /v1/join
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join
+      - httpApi:
+          method: POST
+          path: /v1/join/{joinCode}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join/{joinCode}
+      - httpApi:
           method: GET
           path: /v1/leagues
       - httpApi:

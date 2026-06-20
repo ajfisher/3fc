@@ -48,12 +48,14 @@ import {
   assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
+  joinGameRequestSchema,
   quickCreateGamePlayerRequestSchema,
   undoLastGoalRequestSchema,
   updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
 import {
+  GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
   GoalCorrectionError,
@@ -123,6 +125,7 @@ interface MagicLinkServiceContract extends SessionLookup {
 
 interface RepositoryGameRecord {
   gameId: string;
+  joinCode: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -260,6 +263,7 @@ interface RepositoryContract {
   createSession(input: { seasonId: string; sessionId: string; sessionDate: string }): Promise<unknown>;
   createGame(input: {
     gameId: string;
+    joinCode?: string | null;
     leagueId: string;
     seasonId: string;
     sessionId: string;
@@ -279,6 +283,21 @@ interface RepositoryContract {
     gameId: string,
     options?: { consistentRead?: boolean },
   ): Promise<RepositoryGameRecord | null>;
+  getGameByJoinCode(joinCode: string): Promise<RepositoryGameRecord | null>;
+  joinGameByCode(input: {
+    joinCode: string;
+    playerId: string;
+    nickname: string;
+  }): Promise<{
+    game: RepositoryGameRecord;
+    player: {
+      playerId: string;
+      nickname: string;
+      claimedByUserId: string | null;
+      createdAt: string;
+      updatedAt: string;
+    };
+  } | null>;
   updateGame(input: {
     gameId: string;
     status?: "scheduled" | "live" | "finished";
@@ -824,6 +843,67 @@ function finishedGameDeleteConflictResponse(
       error: "conflict",
       code: "game_finished",
       message: `Game ${gameId} is finished. Finished games cannot be deleted.`,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function joinCodeRequiredResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    400,
+    {
+      error: "bad_request",
+      code: "join_code_required",
+      message: "Join code is required.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function invalidJoinCodeResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    404,
+    {
+      error: "not_found",
+      code: "invalid_join_code",
+      message: "Join code was not found.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function finishedGameJoinConflictResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  gameId: string,
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "game_finished",
+      message: `Game ${gameId} is finished. Join registration is closed.`,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function joinStateChangedResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "join_state_changed",
+      message: "Game join state changed while registering this player. Reload and try again.",
     },
     buildCorsHeaders(origin, allowedOrigins),
   );
@@ -1651,6 +1731,80 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           throw error;
         }
+      }
+
+      const missingJoinCodeMatch = route.match(/^\/v1\/join\/?$/);
+      if (method === "POST" && missingJoinCodeMatch) {
+        status = 400;
+        return joinCodeRequiredResponse(origin, dependencies.corsAllowedOrigins);
+      }
+
+      const joinGameMatch = route.match(/^\/v1\/join\/([^/]+)$/);
+      if (method === "POST" && joinGameMatch) {
+        const joinCode = decodeRouteParam(joinGameMatch[1]).trim();
+        if (joinCode.length === 0) {
+          status = 400;
+          return joinCodeRequiredResponse(origin, dependencies.corsAllowedOrigins);
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = parseJsonBody(event);
+        } catch {
+          status = 400;
+          return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+        }
+
+        const parsedBody = joinGameRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = 400;
+          return badRequest(
+            origin,
+            dependencies.corsAllowedOrigins,
+            formatSchemaValidationError(parsedBody.error),
+          );
+        }
+
+        let joinResult: Awaited<ReturnType<RepositoryContract["joinGameByCode"]>>;
+        try {
+          joinResult = await dependencies.repository.joinGameByCode({
+            joinCode,
+            playerId: `player-${randomUUID()}`,
+            nickname: parsedBody.data.nickname,
+          });
+        } catch (error) {
+          if (error instanceof GameJoinRegistrationError) {
+            status = error.statusCode;
+            if (error.code === "game_finished") {
+              const game = await dependencies.repository.getGameByJoinCode(joinCode);
+              return finishedGameJoinConflictResponse(
+                origin,
+                dependencies.corsAllowedOrigins,
+                game?.gameId ?? "unknown",
+              );
+            }
+
+            return joinStateChangedResponse(origin, dependencies.corsAllowedOrigins);
+          }
+
+          throw error;
+        }
+
+        if (!joinResult) {
+          status = 404;
+          return invalidJoinCodeResponse(origin, dependencies.corsAllowedOrigins);
+        }
+
+        status = 201;
+        return createJsonResponse(
+          status,
+          {
+            gameId: joinResult.game.gameId,
+            joinCode: joinResult.game.joinCode,
+            player: toPublicPlayer(joinResult.player),
+          },
+          buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+        );
       }
 
       let session: AuthSessionRecord | null = null;
