@@ -7,14 +7,18 @@ import {
   type QueryCommandOutput,
   ScanCommand,
   type ScanCommandOutput,
+  TransactWriteItemsCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
+  formatThirdDisplayTime,
   isThirdLengthMinutes,
   THIRD_NUMBERS,
   validateAssistPlayerIds,
+  TEAM_IDS,
+  type TeamId,
   type ThirdLengthMinutes,
   type ThirdNumber,
   type ThirdTimerSegment,
@@ -26,6 +30,7 @@ import {
   gamePlayerSk,
   gameSessionIndexPk,
   gameSessionIndexSk,
+  goalEventIdSk,
   goalSk,
   idempotencyPk,
   leaguePk,
@@ -43,7 +48,8 @@ import type {
   AssignRosterInput,
   CreateGameTeamInput,
   CreateGameInput,
-  CreateGoalEventInput,
+  CreateGoalInput,
+  CreateGoalResult,
   CreateIdempotencyRecordInput,
   CreateLeagueInput,
   CreatePlayerInput,
@@ -83,6 +89,7 @@ const ENTITY_TYPE = {
   acl: "acl",
   roster: "roster",
   goal: "goal",
+  goalEventId: "goalEventId",
   idempotency: "idempotency",
 } as const;
 
@@ -124,21 +131,36 @@ export class GameTimerTransitionError extends Error {
   }
 }
 
+export class GoalCreationError extends Error {
+  constructor(
+    readonly code: string,
+    readonly statusCode: 400 | 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GoalCreationError";
+  }
+}
+
 function requireNonEmpty(name: string, value: string): void {
   if (value.trim().length === 0) {
     throw new Error(`${name} must be a non-empty string.`);
   }
 }
 
-function requireGameMinute(gameMinute: number): void {
-  if (!Number.isInteger(gameMinute) || gameMinute < 0) {
-    throw new Error("gameMinute must be an integer greater than or equal to zero.");
-  }
-}
-
 function requireThirdNumber(third: number): asserts third is ThirdNumber {
   if (!THIRD_NUMBERS.includes(third as ThirdNumber)) {
     throw new Error("third must be 1, 2, or 3.");
+  }
+}
+
+function requireTeamId(teamId: string | null, fieldName: string): asserts teamId is TeamId {
+  if (teamId === null || !TEAM_IDS.includes(teamId as TeamId)) {
+    throw new GoalCreationError(
+      "invalid_team",
+      400,
+      `${fieldName} must be red, blue, or yellow.`,
+    );
   }
 }
 
@@ -182,8 +204,70 @@ function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "up
   };
 }
 
+function normalizeNonNegativeInteger(value: unknown): number {
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0;
+}
+
+function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GameTeamRecord, "createdAt" | "updatedAt">>;
+
+  return {
+    gameId: raw.gameId ?? "",
+    teamId: raw.teamId ?? "red",
+    name: raw.name ?? "",
+    color: raw.color ?? null,
+    scored: normalizeNonNegativeInteger(raw.scored),
+    conceded: normalizeNonNegativeInteger(raw.conceded),
+  };
+}
+
+function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GoalEventRecord, "createdAt" | "updatedAt">>;
+  const third = raw.third ?? 1;
+  const thirdMinute = normalizeNonNegativeInteger(raw.thirdMinute);
+  const gameMinute = normalizeNonNegativeInteger(raw.gameMinute);
+  const elapsedSeconds = normalizeNonNegativeInteger(raw.elapsedSeconds);
+
+  return {
+    gameId: raw.gameId ?? "",
+    eventId: raw.eventId ?? "",
+    third,
+    thirdMinute,
+    gameMinute,
+    elapsedSeconds,
+    stoppageMinute:
+      raw.stoppageMinute === null || Number.isInteger(raw.stoppageMinute)
+        ? (raw.stoppageMinute ?? null)
+        : null,
+    displayTime: raw.displayTime ?? String(gameMinute),
+    scoringTeamId: raw.scoringTeamId ?? null,
+    concedingTeamId: raw.concedingTeamId ?? "red",
+    scorerPlayerId: raw.scorerPlayerId ?? "",
+    assistPlayerIds: Array.isArray(raw.assistPlayerIds)
+      ? raw.assistPlayerIds.filter((playerId): playerId is string => typeof playerId === "string")
+      : [],
+    ownGoal: raw.ownGoal ?? false,
+  };
+}
+
 function isThirdStarted(game: Pick<GameRecord, "thirds">): boolean {
   return game.thirds.some((third) => third.startedAt !== null);
+}
+
+function compareTeamIds(left: TeamId, right: TeamId): number {
+  return TEAM_IDS.indexOf(left) - TEAM_IDS.indexOf(right);
+}
+
+function sortGameTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
+  return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
+}
+
+function isConditionalWriteFailure(error: unknown): boolean {
+  const awsError = error as { name?: string };
+  return (
+    awsError.name === "ConditionalCheckFailedException" ||
+    awsError.name === "TransactionCanceledException"
+  );
 }
 
 function readString(value: AttributeValue | undefined, field: string): string {
@@ -425,11 +509,14 @@ export class ThreeFcRepository {
 
     const now = this.clock.now();
     const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId));
+    const existingPayload = existing ? normalizeGameTeamPayload(existing.data) : null;
     const payload = {
       gameId: input.gameId,
       teamId: input.teamId,
       name: input.name,
       color: input.color ?? null,
+      scored: existingPayload?.scored ?? 0,
+      conceded: existingPayload?.conceded ?? 0,
     };
 
     await this.putEntityWithTimestamps(
@@ -447,15 +534,17 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", gameId);
     const items = await this.queryByPrefix(gamePk(gameId), "TEAM#");
 
-    return items
+    const teams = items
       .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)
       .map((item) =>
         withTimestamps(
-          item.data as Omit<GameTeamRecord, "createdAt" | "updatedAt">,
+          normalizeGameTeamPayload(item.data),
           item.createdAt,
           item.updatedAt,
         ),
       );
+
+    return sortGameTeams(teams);
   }
 
   async createSession(input: CreateSessionInput): Promise<SessionRecord> {
@@ -1126,29 +1215,156 @@ export class ThreeFcRepository {
       );
   }
 
-  async createGoalEvent(input: CreateGoalEventInput): Promise<GoalEventRecord> {
+  async createGoal(input: CreateGoalInput): Promise<CreateGoalResult | null> {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
+    requireNonEmpty("concedingTeamId", input.concedingTeamId);
     requireNonEmpty("scorerPlayerId", input.scorerPlayerId);
-    requireThirdNumber(input.third);
-    requireGameMinute(input.gameMinute);
+    requireTeamId(input.concedingTeamId, "concedingTeamId");
+    if (input.scoringTeamId !== null) {
+      requireTeamId(input.scoringTeamId, "scoringTeamId");
+    }
 
-    validateAssistPlayerIds(input.scorerPlayerId, input.assistPlayerIds);
+    try {
+      validateAssistPlayerIds(input.scorerPlayerId, input.assistPlayerIds);
+    } catch (error) {
+      throw new GoalCreationError(
+        "invalid_assists",
+        400,
+        error instanceof Error ? error.message : "Assist player IDs are invalid.",
+      );
+    }
 
     if (input.ownGoal && input.scoringTeamId !== null) {
-      throw new Error("ownGoal=true requires scoringTeamId to be null.");
+      throw new GoalCreationError(
+        "own_goal_scoring_team",
+        400,
+        "ownGoal=true requires scoringTeamId to be null.",
+      );
     }
 
     if (!input.ownGoal && input.scoringTeamId === null) {
-      throw new Error("scoringTeamId is required when ownGoal=false.");
+      throw new GoalCreationError(
+        "scoring_team_required",
+        400,
+        "scoringTeamId is required when ownGoal=false.",
+      );
+    }
+
+    if (!input.ownGoal && input.scoringTeamId === input.concedingTeamId) {
+      throw new GoalCreationError(
+        "same_team_goal",
+        400,
+        "scoringTeamId and concedingTeamId must be different for a standard goal.",
+      );
+    }
+
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const game = normalizeGamePayload(gameItem.data);
+    const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
+    if (!activeThird?.startedAt) {
+      throw new GoalCreationError(
+        "no_active_third",
+        409,
+        "A goal can only be created while a third is running.",
+      );
+    }
+
+    const teamItems = await this.queryByPrefix(gamePk(input.gameId), "TEAM#");
+    const teamStates = teamItems
+      .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)
+      .map((item) => ({
+        record: withTimestamps(
+          normalizeGameTeamPayload(item.data),
+          item.createdAt,
+          item.updatedAt,
+        ),
+        rawData: item.rawData,
+      }));
+    const teams = sortGameTeams(teamStates.map((teamState) => teamState.record));
+    const teamsById = new Map(teams.map((team) => [team.teamId, team]));
+    const teamStatesById = new Map(teamStates.map((teamState) => [teamState.record.teamId, teamState]));
+    const concedingTeam = teamsById.get(input.concedingTeamId);
+    if (!concedingTeam) {
+      throw new GoalCreationError(
+        "invalid_conceding_team",
+        400,
+        "concedingTeamId must be an active team for this game.",
+      );
+    }
+
+    const scoringTeam = input.scoringTeamId ? teamsById.get(input.scoringTeamId) : null;
+    if (!input.ownGoal && !scoringTeam) {
+      throw new GoalCreationError(
+        "invalid_scoring_team",
+        400,
+        "scoringTeamId must be an active team for this game.",
+      );
+    }
+
+    const roster = await this.listGameRoster(input.gameId);
+    const rosterByPlayerId = new Map(roster.map((assignment) => [assignment.playerId, assignment]));
+    const scorerRoster = rosterByPlayerId.get(input.scorerPlayerId);
+    if (!scorerRoster) {
+      throw new GoalCreationError(
+        "scorer_not_rostered",
+        400,
+        "Scorer must be rostered in this game.",
+      );
+    }
+
+    if (!input.ownGoal && scorerRoster.teamId !== input.scoringTeamId) {
+      throw new GoalCreationError(
+        "scorer_not_on_scoring_team",
+        400,
+        "Scorer must be rostered on the scoring team for a standard goal.",
+      );
+    }
+
+    if (input.ownGoal && scorerRoster.teamId !== input.concedingTeamId) {
+      throw new GoalCreationError(
+        "scorer_not_on_conceding_team",
+        400,
+        "Own-goal scorer must be rostered on the conceding team.",
+      );
+    }
+
+    for (const assistPlayerId of input.assistPlayerIds) {
+      if (!rosterByPlayerId.has(assistPlayerId)) {
+        throw new GoalCreationError(
+          "assist_not_rostered",
+          400,
+          "Assist players must be rostered in this game.",
+        );
+      }
     }
 
     const now = this.clock.now();
+    const startedAtMs = Date.parse(activeThird.startedAt);
+    const nowMs = Date.parse(now);
+    const elapsedSeconds =
+      Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
+        ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
+        : 0;
+    const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
+    const thirdMinute =
+      display.phase === "stoppage"
+        ? game.thirdLengthMinutes
+        : Math.floor(display.elapsedSeconds / 60) + 1;
+    const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
     const payload = {
       gameId: input.gameId,
       eventId: input.eventId,
-      third: input.third,
-      gameMinute: input.gameMinute,
+      third: activeThird.third,
+      thirdMinute,
+      gameMinute,
+      elapsedSeconds: display.elapsedSeconds,
+      stoppageMinute: display.stoppageMinute,
+      displayTime: display.displayTime,
       scoringTeamId: input.scoringTeamId,
       concedingTeamId: input.concedingTeamId,
       scorerPlayerId: input.scorerPlayerId,
@@ -1156,14 +1372,145 @@ export class ThreeFcRepository {
       ownGoal: input.ownGoal,
     };
 
-    await this.putEntity(
-      gamePk(input.gameId),
-      goalSk(input.third, input.gameMinute, input.eventId),
-      ENTITY_TYPE.goal,
-      payload,
-      now,
-    );
-    return withTimestamps(payload, now, now);
+    const nextTeams = teams.map((team) => {
+      const scored = !input.ownGoal && team.teamId === input.scoringTeamId
+        ? team.scored + 1
+        : team.scored;
+      const conceded = team.teamId === input.concedingTeamId
+        ? team.conceded + 1
+        : team.conceded;
+
+      return {
+        ...team,
+        scored,
+        conceded,
+        updatedAt:
+          scored !== team.scored || conceded !== team.conceded
+            ? now
+            : team.updatedAt,
+      };
+    });
+    const changedTeams = nextTeams.filter((team) => {
+      const original = teamsById.get(team.teamId);
+      return original ? team.scored !== original.scored || team.conceded !== original.conceded : false;
+    });
+    const goalSortKey = goalSk(activeThird.third, gameMinute, display.elapsedSeconds, input.eventId);
+    const goalEventIdKey = goalEventIdSk(input.eventId);
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            ...changedTeams.map((team) => {
+              const original = teamStatesById.get(team.teamId);
+              if (!original) {
+                throw new GoalCreationError(
+                  "scoreboard_state_changed",
+                  409,
+                  "Scoreboard changed while creating this goal. Reload the game and try again.",
+                );
+              }
+
+              return {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItemWithTimestamps(
+                    gamePk(team.gameId),
+                    teamSk(team.teamId),
+                    ENTITY_TYPE.gameTeam,
+                    {
+                      gameId: team.gameId,
+                      teamId: team.teamId,
+                      name: team.name,
+                      color: team.color,
+                      scored: team.scored,
+                      conceded: team.conceded,
+                    },
+                    team.createdAt,
+                    now,
+                  ),
+                  ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+                  ExpressionAttributeNames: {
+                    "#updatedAt": "updatedAt",
+                    "#data": "data",
+                  },
+                  ExpressionAttributeValues: {
+                    ":expectedUpdatedAt": { S: original.record.updatedAt },
+                    ":expectedData": { S: original.rawData },
+                  },
+                },
+              };
+            }),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  gamePk(input.gameId),
+                  goalSortKey,
+                  ENTITY_TYPE.goal,
+                  payload,
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  gamePk(input.gameId),
+                  goalEventIdKey,
+                  ENTITY_TYPE.goalEventId,
+                  {
+                    gameId: input.gameId,
+                    eventId: input.eventId,
+                    goalSk: goalSortKey,
+                  },
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) {
+        throw error;
+      }
+
+      const [existingGoal, existingGoalEventId] = await Promise.all([
+        this.getEntity(gamePk(input.gameId), goalSortKey),
+        this.getEntity(gamePk(input.gameId), goalEventIdKey),
+      ]);
+      if (
+        existingGoal?.entityType === ENTITY_TYPE.goal ||
+        existingGoalEventId?.entityType === ENTITY_TYPE.goalEventId
+      ) {
+        throw new GoalCreationError(
+          "goal_already_created",
+          409,
+          "Goal event has already been created for this request.",
+        );
+      }
+
+      throw new GoalCreationError(
+        "scoreboard_state_changed",
+        409,
+        "Scoreboard changed while creating this goal. Reload the game and try again.",
+      );
+    }
+
+    const goal = withTimestamps(payload, now, now);
+    const persistedTimeline = await this.listGoalEvents(input.gameId);
+
+    return {
+      goal,
+      scoreboard: {
+        teams: sortGameTeams(nextTeams),
+      },
+      timeline: persistedTimeline,
+    };
   }
 
   async listGoalEvents(gameId: string): Promise<GoalEventRecord[]> {
@@ -1174,7 +1521,7 @@ export class ThreeFcRepository {
       .filter((item) => item.entityType === ENTITY_TYPE.goal)
       .map((item) =>
         withTimestamps(
-          item.data as Omit<GoalEventRecord, "createdAt" | "updatedAt">,
+          normalizeGoalEventPayload(item.data),
           item.createdAt,
           item.updatedAt,
         ),

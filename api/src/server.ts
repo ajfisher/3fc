@@ -49,6 +49,7 @@ import {
 } from "./auth/session.js";
 import {
   createGameRequestSchema,
+  createGoalRequestSchema,
   createLeagueRequestSchema,
   createSeasonRequestSchema,
   createSessionRequestSchema,
@@ -58,7 +59,7 @@ import {
   quickCreateGamePlayerRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { GameTimerTransitionError, ThreeFcRepository } from "./data/repository.js";
+import { GameTimerTransitionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -376,6 +377,19 @@ function timerTransitionConflict(
   return 409;
 }
 
+function goalCreationError(
+  request: IncomingMessage,
+  response: ServerResponse,
+  error: GoalCreationError,
+): number {
+  sendJsonWithCors(request, response, error.statusCode, {
+    error: error.statusCode === 409 ? "conflict" : "bad_request",
+    code: error.code,
+    message: error.message,
+  });
+  return error.statusCode;
+}
+
 function toPublicPlayer(player: {
   playerId: string;
   nickname: string;
@@ -507,6 +521,8 @@ async function readGameTeams(game: {
       teamId: seasonTeam.teamId,
       name: seasonTeam.name,
       color: seasonTeam.color,
+      scored: 0,
+      conceded: 0,
       createdAt: game.createdAt,
       updatedAt: game.updatedAt,
     });
@@ -646,6 +662,29 @@ function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
   return createHash("sha256")
     .update(`${scope}:${JSON.stringify(normalizePayloadForHashing(payload))}`)
     .digest("hex");
+}
+
+function buildGoalEventId(input: {
+  request: IncomingMessage;
+  sessionEmail: string;
+  method: string;
+  route: string;
+}): string {
+  const rawIdempotencyKey = readHeaderValue(input.request, "idempotency-key");
+  const parsedIdempotencyKey = rawIdempotencyKey
+    ? idempotencyKeyHeaderSchema.safeParse(rawIdempotencyKey)
+    : null;
+
+  if (!parsedIdempotencyKey?.success) {
+    return `goal-${randomUUID()}`;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const digest = createHash("sha256")
+    .update(`${scope}:${parsedIdempotencyKey.data}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `goal-idem-${digest}`;
 }
 
 function parseStoredIdempotencyResponseBody(responseBody: string): unknown {
@@ -1824,6 +1863,110 @@ async function start(): Promise<void> {
 
         status = 200;
         sendJsonWithCors(request, response, status, buildGameResponse(updated));
+        return;
+      }
+
+      const createGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals$/);
+      if (method === "POST" && createGoalMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(createGoalMatch[1]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = createGoalRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        try {
+          const sessionEmail = authGate.session.email;
+          status = await executeIdempotentMutation({
+            request,
+            response,
+            sessionEmail,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              if (!currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
+                throw new GoalCreationError(
+                  "no_active_third",
+                  409,
+                  "A goal can only be created while a third is running.",
+                );
+              }
+
+              await ensureGameTeamsForGame(currentGame);
+              const result = await repository.createGoal({
+                gameId,
+                eventId: buildGoalEventId({
+                  request,
+                  sessionEmail,
+                  method,
+                  route,
+                }),
+                scoringTeamId: parsedBody.data.scoringTeamId,
+                concedingTeamId: parsedBody.data.concedingTeamId,
+                scorerPlayerId: parsedBody.data.scorerPlayerId,
+                assistPlayerIds: parsedBody.data.assistPlayerIds,
+                ownGoal: parsedBody.data.ownGoal,
+              });
+
+              if (!result) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              return {
+                statusCode: 201,
+                payload: result,
+              };
+            },
+          });
+        } catch (error) {
+          if (error instanceof GoalCreationError) {
+            status = goalCreationError(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
         return;
       }
 

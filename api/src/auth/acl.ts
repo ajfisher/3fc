@@ -11,6 +11,7 @@ const ROUTES = {
   assignRosterPlayer: /^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/,
   startGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/,
   finishGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/,
+  createGoal: /^\/v1\/games\/([^/]+)\/goals$/,
 } as const;
 
 export type ProtectedMutationOperation =
@@ -23,7 +24,8 @@ export type ProtectedMutationOperation =
   | "createGamePlayer"
   | "assignRosterPlayer"
   | "startGameThird"
-  | "finishGameThird";
+  | "finishGameThird"
+  | "createGoal";
 
 export interface ProtectedMutationRoute {
   operation: ProtectedMutationOperation;
@@ -136,6 +138,14 @@ export function resolveProtectedMutationRoute(
     return {
       operation: "finishGameThird",
       gameId: decodeRouteParam(finishGameThirdMatch[1]),
+    };
+  }
+
+  const createGoalMatch = upperMethod === "POST" ? route.match(ROUTES.createGoal) : null;
+  if (createGoalMatch) {
+    return {
+      operation: "createGoal",
+      gameId: decodeRouteParam(createGoalMatch[1]),
     };
   }
 

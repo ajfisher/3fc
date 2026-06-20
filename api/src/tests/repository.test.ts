@@ -8,6 +8,7 @@ import {
   type AttributeValue,
   PutItemCommand,
   QueryCommand,
+  TransactWriteItemsCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
   createDefaultThirdTimerSegments,
@@ -112,6 +113,60 @@ class InMemoryDynamoClient {
       const pk = this.readString(key.pk, "pk");
       const sk = this.readString(key.sk, "sk");
       this.items.delete(`${pk}|${sk}`);
+      return {};
+    }
+
+    if (command instanceof TransactWriteItemsCommand) {
+      const puts = (command.input.TransactItems ?? []).flatMap((item) => {
+        if (!item.Put) {
+          throw new Error("Test client only supports Put transaction items.");
+        }
+
+        return [item.Put];
+      });
+
+      if (this.beforeNextPut) {
+        const callback = this.beforeNextPut;
+        this.beforeNextPut = null;
+        callback();
+      }
+
+      for (const put of puts) {
+        const item = put.Item;
+        if (!item) {
+          throw new Error("TransactWriteItemsCommand Put is missing Item.");
+        }
+
+        const pk = this.readString(item.pk, "pk");
+        const sk = this.readString(item.sk, "sk");
+        const id = `${pk}|${sk}`;
+
+        if (
+          put.ConditionExpression &&
+          !this.conditionMatches(
+            put.ConditionExpression,
+            this.items.get(id),
+            put.ExpressionAttributeNames ?? {},
+            put.ExpressionAttributeValues ?? {},
+          )
+        ) {
+          const error = new Error("Conditional transaction request failed.");
+          (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+          throw error;
+        }
+      }
+
+      for (const put of puts) {
+        const item = put.Item;
+        if (!item) {
+          throw new Error("TransactWriteItemsCommand Put is missing Item.");
+        }
+
+        const pk = this.readString(item.pk, "pk");
+        const sk = this.readString(item.sk, "sk");
+        this.items.set(`${pk}|${sk}`, item);
+      }
+
       return {};
     }
 
@@ -311,49 +366,135 @@ test("repository query supports deterministic session->games ordering", async ()
 });
 
 test("repository query supports deterministic game timeline ordering", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
-  await repository.createGoalEvent({
-    gameId: "game-1",
-    eventId: "goal-3",
-    third: 2,
-    gameMinute: 10,
-    scoringTeamId: "yellow",
-    concedingTeamId: "blue",
-    scorerPlayerId: "player-3",
-    assistPlayerIds: [],
-    ownGoal: false,
-  });
-
-  await repository.createGoalEvent({
-    gameId: "game-1",
-    eventId: "goal-1",
-    third: 1,
-    gameMinute: 2,
-    scoringTeamId: "red",
-    concedingTeamId: "yellow",
-    scorerPlayerId: "player-1",
-    assistPlayerIds: [],
-    ownGoal: false,
-  });
-
-  await repository.createGoalEvent({
-    gameId: "game-1",
-    eventId: "goal-2",
-    third: 1,
-    gameMinute: 8,
-    scoringTeamId: "blue",
-    concedingTeamId: "red",
-    scorerPlayerId: "player-2",
-    assistPlayerIds: ["player-4"],
-    ownGoal: false,
-  });
+  for (const goal of [
+    {
+      eventId: "goal-3",
+      sk: "GOAL#2#0030#0000550#goal-3",
+      third: 2,
+      thirdMinute: 10,
+      gameMinute: 30,
+      elapsedSeconds: 550,
+      displayTime: "09:10",
+      scoringTeamId: "yellow",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-3",
+      assistPlayerIds: [],
+      ownGoal: false,
+    },
+    {
+      eventId: "goal-1",
+      sk: "GOAL#1#0002#0000070#goal-1",
+      third: 1,
+      thirdMinute: 2,
+      gameMinute: 2,
+      elapsedSeconds: 70,
+      displayTime: "01:10",
+      scoringTeamId: "red",
+      concedingTeamId: "yellow",
+      scorerPlayerId: "player-1",
+      assistPlayerIds: [],
+      ownGoal: false,
+    },
+    {
+      eventId: "goal-2",
+      sk: "GOAL#1#0008#0000430#goal-2",
+      third: 1,
+      thirdMinute: 8,
+      gameMinute: 8,
+      elapsedSeconds: 430,
+      displayTime: "07:10",
+      scoringTeamId: "blue",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-2",
+      assistPlayerIds: ["player-4"],
+      ownGoal: false,
+    },
+  ] as const) {
+    client.seedItem({
+      pk: { S: "GAME#game-1" },
+      sk: { S: goal.sk },
+      entityType: { S: "goal" },
+      createdAt: { S: "2026-02-22T00:00:00.000Z" },
+      updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          gameId: "game-1",
+          eventId: goal.eventId,
+          third: goal.third,
+          thirdMinute: goal.thirdMinute,
+          gameMinute: goal.gameMinute,
+          elapsedSeconds: goal.elapsedSeconds,
+          stoppageMinute: null,
+          displayTime: goal.displayTime,
+          scoringTeamId: goal.scoringTeamId,
+          concedingTeamId: goal.concedingTeamId,
+          scorerPlayerId: goal.scorerPlayerId,
+          assistPlayerIds: goal.assistPlayerIds,
+          ownGoal: goal.ownGoal,
+        }),
+      },
+    });
+  }
 
   const timeline = await repository.listGoalEvents("game-1");
   assert.equal(timeline.length, 3);
   assert.deepEqual(
     timeline.map((goal) => goal.eventId),
     ["goal-1", "goal-2", "goal-3"],
+  );
+});
+
+test("repository orders stoppage goals by elapsed time before event ID", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  for (const goal of [
+    {
+      eventId: "goal-z-later",
+      sk: "GOAL#1#0020#0001265#goal-z-later",
+      elapsedSeconds: 1265,
+      stoppageMinute: 2,
+      displayTime: "20+02",
+    },
+    {
+      eventId: "goal-a-earlier",
+      sk: "GOAL#1#0020#0001205#goal-a-earlier",
+      elapsedSeconds: 1205,
+      stoppageMinute: 1,
+      displayTime: "20+01",
+    },
+  ] as const) {
+    client.seedItem({
+      pk: { S: "GAME#game-1" },
+      sk: { S: goal.sk },
+      entityType: { S: "goal" },
+      createdAt: { S: "2026-02-22T00:00:00.000Z" },
+      updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          gameId: "game-1",
+          eventId: goal.eventId,
+          third: 1,
+          thirdMinute: 20,
+          gameMinute: 20,
+          elapsedSeconds: goal.elapsedSeconds,
+          stoppageMinute: goal.stoppageMinute,
+          displayTime: goal.displayTime,
+          scoringTeamId: "red",
+          concedingTeamId: "blue",
+          scorerPlayerId: "player-red",
+          assistPlayerIds: [],
+          ownGoal: false,
+        }),
+      },
+    });
+  }
+
+  const timeline = await repository.listGoalEvents("game-1");
+  assert.deepEqual(
+    timeline.map((goal) => goal.eventId),
+    ["goal-a-earlier", "goal-z-later"],
   );
 });
 
@@ -734,6 +875,282 @@ test("repository supports idempotency record create/get semantics", async () => 
   assert.equal(record?.responseBody, JSON.stringify({ leagueId: "league-1" }));
 });
 
+async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  for (const team of [
+    { teamId: "red" as const, name: "Red" },
+    { teamId: "blue" as const, name: "Blue" },
+    { teamId: "yellow" as const, name: "Yellow" },
+  ]) {
+    await repository.createGameTeamOverride({
+      gameId: "game-1",
+      teamId: team.teamId,
+      name: team.name,
+      color: null,
+    });
+  }
+  for (const player of [
+    { playerId: "player-red", nickname: "Red Player", teamId: "red" as const },
+    { playerId: "player-blue", nickname: "Blue Player", teamId: "blue" as const },
+    { playerId: "player-yellow", nickname: "Yellow Player", teamId: "yellow" as const },
+  ]) {
+    await repository.createPlayer({
+      playerId: player.playerId,
+      nickname: player.nickname,
+    });
+    await repository.assignRosterPlayer({
+      gameId: "game-1",
+      teamId: player.teamId,
+      playerId: player.playerId,
+    });
+  }
+}
+
+test("repository creates standard goals with timer stamping, mixed-team assists, and persisted tallies", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-1",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: ["player-blue", "player-yellow"],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.third, 1);
+  assert.equal(result.goal.thirdMinute, 1);
+  assert.equal(result.goal.gameMinute, 1);
+  assert.equal(result.goal.displayTime, "00:01");
+  assert.equal(result.goal.stoppageMinute, null);
+  assert.deepEqual(result.goal.assistPlayerIds, ["player-blue", "player-yellow"]);
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+  assert.deepEqual(
+    (await repository.listTeamsForGame("game-1")).map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-1"]);
+});
+
+test("repository rejects duplicate goal event IDs without double-counting tallies", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-idem-duplicate",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-idem-duplicate",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Goal event has already been created/,
+  );
+
+  assert.deepEqual(
+    (await repository.listTeamsForGame("game-1")).map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+  assert.deepEqual((await repository.listGoalEvents("game-1")).map((goal) => goal.eventId), [
+    "goal-idem-duplicate",
+  ]);
+});
+
+test("repository rejects stale scoreboard writes without creating the goal", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem("GAME#game-1", "TEAM#blue");
+    if (!item?.data?.S) {
+      throw new Error("Expected blue team item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      conceded: number;
+    };
+    data.conceded = 7;
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:00:99.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-stale",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Scoreboard changed while creating this goal/,
+  );
+
+  assert.deepEqual(await repository.listGoalEvents("game-1"), []);
+  assert.equal((await repository.listTeamsForGame("game-1")).find((team) => team.teamId === "blue")?.conceded, 7);
+});
+
+test("repository own goals increment conceding only and require scorer on conceding team", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-own",
+    scoringTeamId: null,
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-blue",
+    assistPlayerIds: [],
+    ownGoal: true,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.scoringTeamId, null);
+  assert.equal(result.goal.ownGoal, true);
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-own-invalid",
+      scoringTeamId: null,
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: true,
+    }),
+    /Own-goal scorer must be rostered on the conceding team/,
+  );
+});
+
+test("repository rejects goal creation unless a third is running", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-no-timer",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /only be created while a third is running/,
+  );
+});
+
+test("repository validates goal roster and team rules", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-unrostered-scorer",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-missing",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Scorer must be rostered/,
+  );
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-wrong-team",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-blue",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Scorer must be rostered on the scoring team/,
+  );
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-unrostered-assist",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: ["player-missing"],
+      ownGoal: false,
+    }),
+    /Assist players must be rostered/,
+  );
+});
+
 test("repository rejects missing partition-key inputs", async () => {
   const repository = createRepository();
 
@@ -756,11 +1173,9 @@ test("repository enforces goal validation rules", async () => {
   const repository = createRepository();
 
   await assert.rejects(
-    repository.createGoalEvent({
+    repository.createGoal({
       gameId: "game-1",
       eventId: "goal-invalid",
-      third: 1,
-      gameMinute: 1,
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-1",
@@ -771,11 +1186,9 @@ test("repository enforces goal validation rules", async () => {
   );
 
   await assert.rejects(
-    repository.createGoalEvent({
+    repository.createGoal({
       gameId: "game-1",
       eventId: "goal-own",
-      third: 1,
-      gameMinute: 1,
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-1",

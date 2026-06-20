@@ -54,7 +54,8 @@ gameId.
 - Game (metadata): PK=GAME#{gameId} SK=METADATA (leagueId, seasonId, sessionId,
   date, location, thirdLength, status).
 - GoalEvent (timeline): PK=GAME#{gameId}
-  SK=GOAL#{third}#{gameMinuteSortable}#{eventId}
+  SK=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}
+- GoalEvent id marker: PK=GAME#{gameId} SK=GOAL_EVENT#{eventId}
 - Roster assignment: PK=GAME#{gameId} SK=ROSTER#{teamId}#{playerId}
 - Session→Game index: PK=SESSION#{sessionId} SK=GAME#{gameStartTs}#{gameId}
 - Player: PK=PLAYER#{playerId} SK=PROFILE

@@ -173,6 +173,12 @@ functions:
           method: OPTIONS
           path: /v1/games/{gameId}/thirds/{third}/finish
       - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/goals
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/goals
+      - httpApi:
           method: GET
           path: /v1/games/{gameId}/teams
       - httpApi:

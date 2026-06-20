@@ -37,6 +37,8 @@ export interface GameTeamRecord {
   teamId: TeamId;
   name: string;
   color: string | null;
+  scored: number;
+  conceded: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -108,7 +110,11 @@ export interface GoalEventRecord {
   gameId: string;
   eventId: string;
   third: 1 | 2 | 3;
+  thirdMinute: number;
   gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
@@ -211,16 +217,22 @@ export interface AssignRosterInput {
   playerId: string;
 }
 
-export interface CreateGoalEventInput {
+export interface CreateGoalInput {
   gameId: string;
   eventId: string;
-  third: ThirdNumber;
-  gameMinute: number;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+}
+
+export interface CreateGoalResult {
+  goal: GoalEventRecord;
+  scoreboard: {
+    teams: GameTeamRecord[];
+  };
+  timeline: GoalEventRecord[];
 }
 
 export interface ThirdTransitionInput {

@@ -35,12 +35,50 @@ export const DEFAULT_TEAMS = [
 
 export interface GoalEventInput {
   gameId: string;
-  third: 1 | 2 | 3;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+}
+
+export interface GoalEvent {
+  gameId: string;
+  eventId: string;
+  third: ThirdNumber;
+  thirdMinute: number;
+  gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
+  scoringTeamId: TeamId | null;
+  concedingTeamId: TeamId;
+  scorerPlayerId: string;
+  assistPlayerIds: string[];
+  ownGoal: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameScoreboardTeam {
+  gameId: string;
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  scored: number;
+  conceded: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameScoreboard {
+  teams: GameScoreboardTeam[];
+}
+
+export interface CreateGoalResponse {
+  goal: GoalEvent;
+  scoreboard: GameScoreboard;
+  timeline: GoalEvent[];
 }
 
 export interface ThirdTimerSegment {
