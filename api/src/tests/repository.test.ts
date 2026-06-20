@@ -9,6 +9,11 @@ import {
   PutItemCommand,
   QueryCommand,
 } from "@aws-sdk/client-dynamodb";
+import {
+  createDefaultThirdTimerSegments,
+  DEFAULT_THIRD_LENGTH_MINUTES,
+  formatThirdDisplayTime,
+} from "@3fc/contracts";
 
 import { ThreeFcRepository } from "../data/repository.js";
 
@@ -16,11 +21,20 @@ type Item = Record<string, AttributeValue>;
 
 class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
+  private beforeNextPut: (() => void) | null = null;
 
   seedItem(item: Item): void {
     const pk = this.readString(item.pk, "pk");
     const sk = this.readString(item.sk, "sk");
     this.items.set(`${pk}|${sk}`, item);
+  }
+
+  readItem(pk: string, sk: string): Item | undefined {
+    return this.items.get(`${pk}|${sk}`);
+  }
+
+  runBeforeNextPut(callback: () => void): void {
+    this.beforeNextPut = callback;
   }
 
   async send(command: unknown): Promise<unknown> {
@@ -34,7 +48,21 @@ class InMemoryDynamoClient {
       const sk = this.readString(item.sk, "sk");
       const id = `${pk}|${sk}`;
 
-      if (command.input.ConditionExpression && this.items.has(id)) {
+      if (this.beforeNextPut) {
+        const callback = this.beforeNextPut;
+        this.beforeNextPut = null;
+        callback();
+      }
+
+      if (
+        command.input.ConditionExpression &&
+        !this.conditionMatches(
+        command.input.ConditionExpression,
+          this.items.get(id),
+          command.input.ExpressionAttributeNames ?? {},
+          command.input.ExpressionAttributeValues ?? {},
+        )
+      ) {
         const error = new Error("Conditional request failed.");
         (error as Error & { name: string }).name = "ConditionalCheckFailedException";
         throw error;
@@ -96,6 +124,44 @@ class InMemoryDynamoClient {
     }
 
     return value.S;
+  }
+
+  private conditionMatches(
+    expression: string,
+    existing: Item | undefined,
+    attributeNames: Record<string, string>,
+    attributeValues: Record<string, AttributeValue>,
+  ): boolean {
+    return expression.split(/\s+AND\s+/).every((clause) => {
+      const attributeNotExists = clause.match(/^attribute_not_exists\(([^)]+)\)$/);
+      if (attributeNotExists) {
+        const attributeName = this.resolveAttributeName(attributeNotExists[1], attributeNames);
+        return !existing || existing[attributeName] === undefined;
+      }
+
+      const equality = clause.match(/^(.+?)\s*=\s*(.+)$/);
+      if (equality) {
+        const attributeName = this.resolveAttributeName(equality[1], attributeNames);
+        const expected = attributeValues[equality[2].trim()];
+        const actual = existing?.[attributeName];
+        return this.attributeValueEquals(actual, expected);
+      }
+
+      throw new Error(`Unsupported condition expression in test client: ${expression}`);
+    });
+  }
+
+  private resolveAttributeName(value: string, attributeNames: Record<string, string>): string {
+    const trimmed = value.trim();
+    return attributeNames[trimmed] ?? trimmed;
+  }
+
+  private attributeValueEquals(left: AttributeValue | undefined, right: AttributeValue | undefined): boolean {
+    if (!left || !right) {
+      return false;
+    }
+
+    return JSON.stringify(left) === JSON.stringify(right);
   }
 }
 
@@ -396,6 +462,208 @@ test("repository supports update and delete of games", async () => {
   assert.equal(deleted, true);
   assert.equal(await repository.getGame("game-1"), null);
   assert.deepEqual(await repository.listSessionsForSeason("season-1"), []);
+});
+
+test("repository gives legacy games default timer state", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const game = await repository.getGame("game-legacy");
+  assert.equal(game?.thirdLengthMinutes, DEFAULT_THIRD_LENGTH_MINUTES);
+  assert.deepEqual(game?.thirds, createDefaultThirdTimerSegments());
+});
+
+test("repository enforces third timer transitions in order", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    thirdLengthMinutes: 25,
+  });
+
+  await assert.rejects(
+    repository.finishGameThird({ gameId: "game-1", third: 1 }),
+    /cannot be finished before it is started/,
+  );
+
+  const startedFirst = await repository.startGameThird({ gameId: "game-1", third: 1 });
+  assert.equal(startedFirst?.status, "live");
+  assert.equal(startedFirst?.thirdLengthMinutes, 25);
+  assert.equal(startedFirst?.thirds[0].startedAt, "2026-02-22T00:00:01.000Z");
+  assert.equal(startedFirst?.thirds[0].finishedAt, null);
+
+  await assert.rejects(
+    repository.startGameThird({ gameId: "game-1", third: 1 }),
+    /already been started/,
+  );
+  await assert.rejects(
+    repository.startGameThird({ gameId: "game-1", third: 2 }),
+    /Third 1 must be finished before another third can start/,
+  );
+
+  const finishedFirst = await repository.finishGameThird({ gameId: "game-1", third: 1 });
+  assert.equal(finishedFirst?.thirds[0].finishedAt, "2026-02-22T00:00:02.000Z");
+
+  const startedSecond = await repository.startGameThird({ gameId: "game-1", third: 2 });
+  assert.equal(startedSecond?.thirds[1].startedAt, "2026-02-22T00:00:03.000Z");
+});
+
+test("repository rejects stale timer transition writes without overwriting newer state", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem("GAME#game-1", "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected seeded game item.");
+    }
+    const data = JSON.parse(item.data.S) as {
+      status: "scheduled" | "live" | "finished";
+      thirds: Array<{ third: number; startedAt: string | null; finishedAt: string | null }>;
+    };
+    data.status = "live";
+    data.thirds[0].startedAt = "2026-02-22T00:00:99.000Z";
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:00:99.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.startGameThird({ gameId: "game-1", third: 1 }),
+    /Timer state changed while applying this transition/,
+  );
+  const externallyStarted = await repository.getGame("game-1");
+  assert.equal(externallyStarted?.thirds[0].startedAt, "2026-02-22T00:00:99.000Z");
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem("GAME#game-1", "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected seeded game item.");
+    }
+    const data = JSON.parse(item.data.S) as {
+      thirds: Array<{ third: number; startedAt: string | null; finishedAt: string | null }>;
+    };
+    data.thirds[0].finishedAt = "2026-02-22T00:01:99.000Z";
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:01:99.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.finishGameThird({ gameId: "game-1", third: 1 }),
+    /Timer state changed while applying this transition/,
+  );
+  const externallyFinished = await repository.getGame("game-1");
+  assert.equal(externallyFinished?.thirds[0].finishedAt, "2026-02-22T00:01:99.000Z");
+});
+
+test("timer display formatting switches to stoppage after nominal length", () => {
+  assert.deepEqual(formatThirdDisplayTime(1199, 20), {
+    displayTime: "19:59",
+    phase: "regulation",
+    elapsedSeconds: 1199,
+    stoppageSeconds: 0,
+    stoppageMinute: null,
+  });
+  assert.deepEqual(formatThirdDisplayTime(1200, 20), {
+    displayTime: "20+01",
+    phase: "stoppage",
+    elapsedSeconds: 1200,
+    stoppageSeconds: 0,
+    stoppageMinute: 1,
+  });
+  assert.deepEqual(formatThirdDisplayTime(1260, 20), {
+    displayTime: "20+02",
+    phase: "stoppage",
+    elapsedSeconds: 1260,
+    stoppageSeconds: 60,
+    stoppageMinute: 2,
+  });
+});
+
+test("repository locks third length after timer starts and rejects finished games", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  const rescheduled = await repository.updateGame({
+    gameId: "game-1",
+    thirdLengthMinutes: 30,
+  });
+  assert.equal(rescheduled?.thirdLengthMinutes, 30);
+
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  await assert.rejects(
+    repository.updateGame({
+      gameId: "game-1",
+      thirdLengthMinutes: 20,
+    }),
+    /Third length cannot be changed after a third has started/,
+  );
+
+  await repository.updateGame({
+    gameId: "game-1",
+    status: "finished",
+  });
+  await assert.rejects(
+    repository.finishGameThird({ gameId: "game-1", third: 1 }),
+    /Cannot finish a third after the game is finished/,
+  );
+});
+
+test("repository rejects third length changes on finished games even before timer starts", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "finished",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  await assert.rejects(
+    repository.updateGame({
+      gameId: "game-1",
+      thirdLengthMinutes: 30,
+    }),
+    /Third length cannot be changed after the game is finished/,
+  );
 });
 
 test("repository blocks deleting season or league while descendants exist", async () => {

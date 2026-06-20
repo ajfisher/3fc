@@ -161,6 +161,18 @@ functions:
           method: OPTIONS
           path: /v1/games/{gameId}
       - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/thirds/{third}/start
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/thirds/{third}/start
+      - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/thirds/{third}/finish
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/thirds/{third}/finish
+      - httpApi:
           method: GET
           path: /v1/games/{gameId}/teams
       - httpApi:

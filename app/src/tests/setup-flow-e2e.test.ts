@@ -5,7 +5,13 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { JSDOM } from "jsdom";
-import type { TeamId } from "@3fc/contracts";
+import {
+  createDefaultThirdTimerSegments,
+  DEFAULT_THIRD_LENGTH_MINUTES,
+  type TeamId,
+  type ThirdLengthMinutes,
+  type ThirdTimerSegment,
+} from "@3fc/contracts";
 
 import {
   renderGamePage,
@@ -58,6 +64,8 @@ interface MockGame {
   sessionId: string;
   status: "scheduled" | "live" | "finished";
   gameStartTs: string;
+  thirdLengthMinutes: ThirdLengthMinutes;
+  thirds: ThirdTimerSegment[];
   createdAt: string;
   updatedAt: string;
 }
@@ -449,6 +457,11 @@ function createMockFetch(state: MockApiState) {
         sessionId,
         status: body.status === "live" || body.status === "finished" ? body.status : "scheduled",
         gameStartTs: String(body.gameStartTs ?? ""),
+        thirdLengthMinutes:
+          body.thirdLengthMinutes === 25 || body.thirdLengthMinutes === 30
+            ? body.thirdLengthMinutes
+            : DEFAULT_THIRD_LENGTH_MINUTES,
+        thirds: createDefaultThirdTimerSegments(),
         createdAt: now,
         updatedAt: now,
       };
@@ -465,6 +478,90 @@ function createMockFetch(state: MockApiState) {
       }
 
       return createJsonResponse(200, game);
+    }
+
+    if (method === "PATCH" && gameMatch) {
+      const gameId = decodeURIComponent(gameMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const updated: MockGame = {
+        ...game,
+        status:
+          body.status === "scheduled" || body.status === "live" || body.status === "finished"
+            ? body.status
+            : game.status,
+        gameStartTs: typeof body.gameStartTs === "string" ? body.gameStartTs : game.gameStartTs,
+        thirdLengthMinutes:
+          body.thirdLengthMinutes === 20 || body.thirdLengthMinutes === 25 || body.thirdLengthMinutes === 30
+            ? body.thirdLengthMinutes
+            : game.thirdLengthMinutes,
+        updatedAt: "2026-03-28T11:00:09.000Z",
+      };
+      state.games.set(gameId, updated);
+      return createJsonResponse(200, updated);
+    }
+
+    const startThirdMatch = path.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]+)\/start$/);
+    if (method === "POST" && startThirdMatch) {
+      const gameId = decodeURIComponent(startThirdMatch[1]);
+      const thirdNumber = Number.parseInt(decodeURIComponent(startThirdMatch[2]), 10);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const thirds = game.thirds.map((third) => ({ ...third }));
+      const target = thirds.find((third) => third.third === thirdNumber);
+      if (!target) {
+        return createJsonResponse(400, { error: "Third must be 1, 2, or 3." });
+      }
+      if (target.startedAt) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          message: `Third ${thirdNumber} has already been started.`,
+        });
+      }
+
+      target.startedAt = "2026-03-28T11:00:10.000Z";
+      const updated: MockGame = {
+        ...game,
+        status: "live",
+        thirds,
+        updatedAt: "2026-03-28T11:00:10.000Z",
+      };
+      state.games.set(gameId, updated);
+      return createJsonResponse(200, updated);
+    }
+
+    const finishThirdMatch = path.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]+)\/finish$/);
+    if (method === "POST" && finishThirdMatch) {
+      const gameId = decodeURIComponent(finishThirdMatch[1]);
+      const thirdNumber = Number.parseInt(decodeURIComponent(finishThirdMatch[2]), 10);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const thirds = game.thirds.map((third) => ({ ...third }));
+      const target = thirds.find((third) => third.third === thirdNumber);
+      if (!target?.startedAt) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          message: `Third ${thirdNumber} cannot be finished before it is started.`,
+        });
+      }
+
+      target.finishedAt = "2026-03-28T11:00:11.000Z";
+      const updated: MockGame = {
+        ...game,
+        thirds,
+        updatedAt: "2026-03-28T11:00:11.000Z",
+      };
+      state.games.set(gameId, updated);
+      return createJsonResponse(200, updated);
     }
 
     const gameRosterMatch = path.match(/^\/v1\/games\/([^/]+)\/roster$/);
@@ -1009,6 +1106,8 @@ test("game page quick-creates and assigns roster players", async () => {
     sessionId: "20260328",
     status: "scheduled",
     gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
     createdAt: "2026-03-28T11:00:03.000Z",
     updatedAt: "2026-03-28T11:00:03.000Z",
   });
@@ -1023,10 +1122,33 @@ test("game page quick-creates and assigns roster players", async () => {
   const nicknameInput = gamePage.document.getElementById("player-nickname");
   const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
   const rosterTeams = gamePage.document.getElementById("roster-teams");
+  const thirdLengthInput = gamePage.document.getElementById("game-edit-third-length");
+  const timerDisplay = gamePage.document.getElementById("timer-display-value");
+  const startThirdButton = gamePage.document.querySelector('[data-action="start-active-third"]');
+  const finishThirdButton = gamePage.document.querySelector('[data-action="finish-active-third"]');
   assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
   assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
+  assert(thirdLengthInput instanceof gamePage.window.HTMLSelectElement);
+  assert(timerDisplay instanceof gamePage.window.HTMLElement);
+  assert(startThirdButton instanceof gamePage.window.HTMLButtonElement);
+  assert(finishThirdButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(thirdLengthInput.value, "20");
+  assert.equal(timerDisplay.textContent, "00:00");
+  assert.equal(startThirdButton.textContent, "Start Third 1");
   assert.match(rosterTeams.textContent ?? "", /Red/);
+
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  assert.equal(apiState.games.get("game-1")?.status, "live");
+  assert.equal(apiState.games.get("game-1")?.thirds[0].startedAt, "2026-03-28T11:00:10.000Z");
+  assert.equal(thirdLengthInput.disabled, true);
+  assert.equal(finishThirdButton.textContent, "Finish Third 1");
+
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+  assert.equal(apiState.games.get("game-1")?.thirds[0].finishedAt, "2026-03-28T11:00:11.000Z");
+  assert.equal(startThirdButton.textContent, "Start Third 2");
 
   nicknameInput.value = "Ari";
   nicknameInput.dispatchEvent(new gamePage.window.Event("input", { bubbles: true }));
@@ -1084,6 +1206,8 @@ test("setup flow resolves route ids from static shells", async () => {
     sessionId: "20260328",
     status: "scheduled",
     gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
     createdAt: "2026-03-28T11:00:03.000Z",
     updatedAt: "2026-03-28T11:00:03.000Z",
   });

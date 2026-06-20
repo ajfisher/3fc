@@ -9,7 +9,16 @@ import {
   type ScanCommandOutput,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
-import { validateAssistPlayerIds } from "@3fc/contracts";
+import {
+  createDefaultThirdTimerSegments,
+  DEFAULT_THIRD_LENGTH_MINUTES,
+  isThirdLengthMinutes,
+  THIRD_NUMBERS,
+  validateAssistPlayerIds,
+  type ThirdLengthMinutes,
+  type ThirdNumber,
+  type ThirdTimerSegment,
+} from "@3fc/contracts";
 
 import {
   aclSk,
@@ -58,6 +67,7 @@ import type {
   SessionRecord,
   TeamRecord,
   GrantLeagueAccessInput,
+  ThirdTransitionInput,
 } from "./types.js";
 
 const ENTITY_TYPE = {
@@ -94,12 +104,23 @@ interface StoredEntity<T> {
   entityType: EntityType;
   createdAt: string;
   updatedAt: string;
+  rawData: string;
   data: T;
 }
 
 class DefaultClock implements Clock {
   now(): string {
     return new Date().toISOString();
+  }
+}
+
+export class GameTimerTransitionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GameTimerTransitionError";
   }
 }
 
@@ -113,6 +134,56 @@ function requireGameMinute(gameMinute: number): void {
   if (!Number.isInteger(gameMinute) || gameMinute < 0) {
     throw new Error("gameMinute must be an integer greater than or equal to zero.");
   }
+}
+
+function requireThirdNumber(third: number): asserts third is ThirdNumber {
+  if (!THIRD_NUMBERS.includes(third as ThirdNumber)) {
+    throw new Error("third must be 1, 2, or 3.");
+  }
+}
+
+function normalizeThirdLengthMinutes(value: unknown): ThirdLengthMinutes {
+  return typeof value === "number" && isThirdLengthMinutes(value)
+    ? value
+    : DEFAULT_THIRD_LENGTH_MINUTES;
+}
+
+function normalizeThirdTimerSegments(value: unknown): ThirdTimerSegment[] {
+  const source = Array.isArray(value) ? value : [];
+
+  return THIRD_NUMBERS.map((third) => {
+    const matchingSegment = source.find(
+      (segment): segment is Partial<ThirdTimerSegment> =>
+        typeof segment === "object" &&
+        segment !== null &&
+        (segment as { third?: unknown }).third === third,
+    );
+
+    return {
+      third,
+      startedAt: typeof matchingSegment?.startedAt === "string" ? matchingSegment.startedAt : null,
+      finishedAt: typeof matchingSegment?.finishedAt === "string" ? matchingSegment.finishedAt : null,
+    };
+  });
+}
+
+function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+
+  return {
+    gameId: raw.gameId ?? "",
+    leagueId: raw.leagueId ?? "",
+    seasonId: raw.seasonId ?? "",
+    sessionId: raw.sessionId ?? "",
+    status: raw.status ?? "scheduled",
+    gameStartTs: raw.gameStartTs ?? "",
+    thirdLengthMinutes: normalizeThirdLengthMinutes(raw.thirdLengthMinutes),
+    thirds: normalizeThirdTimerSegments(raw.thirds),
+  };
+}
+
+function isThirdStarted(game: Pick<GameRecord, "thirds">): boolean {
+  return game.thirds.some((third) => third.startedAt !== null);
 }
 
 function readString(value: AttributeValue | undefined, field: string): string {
@@ -159,6 +230,7 @@ function parseStoredEntity<T>(item: Item): StoredEntity<T> {
     entityType: readString(item.entityType, "entityType") as EntityType,
     createdAt: readString(item.createdAt, "createdAt"),
     updatedAt: readString(item.updatedAt, "updatedAt"),
+    rawData,
     data: JSON.parse(rawData) as T,
   };
 }
@@ -454,6 +526,8 @@ export class ThreeFcRepository {
       sessionId: input.sessionId,
       status: input.status ?? "scheduled",
       gameStartTs: input.gameStartTs,
+      thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
+      thirds: createDefaultThirdTimerSegments(),
     };
 
     await this.putEntity(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now);
@@ -468,7 +542,7 @@ export class ThreeFcRepository {
       return null;
     }
 
-    return withTimestamps(item.data as Omit<GameRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
+    return withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
   }
 
   async createSessionGame(input: CreateSessionGameInput): Promise<SessionGameRecord> {
@@ -543,10 +617,15 @@ export class ThreeFcRepository {
     gameId: string;
     status?: GameRecord["status"];
     gameStartTs?: string;
+    thirdLengthMinutes?: ThirdLengthMinutes;
   }): Promise<GameRecord | null> {
     requireNonEmpty("gameId", input.gameId);
 
-    if (input.status === undefined && input.gameStartTs === undefined) {
+    if (
+      input.status === undefined &&
+      input.gameStartTs === undefined &&
+      input.thirdLengthMinutes === undefined
+    ) {
       throw new Error("At least one game field must be updated.");
     }
 
@@ -555,26 +634,60 @@ export class ThreeFcRepository {
       return null;
     }
 
-    const existing = gameItem.data as Omit<GameRecord, "createdAt" | "updatedAt">;
+    const existing = normalizeGamePayload(gameItem.data);
     const nextGameStartTs = input.gameStartTs ?? existing.gameStartTs;
     const nextStatus = input.status ?? existing.status;
+    const nextThirdLengthMinutes = input.thirdLengthMinutes ?? existing.thirdLengthMinutes;
+
+    if (
+      input.thirdLengthMinutes !== undefined &&
+      input.thirdLengthMinutes !== existing.thirdLengthMinutes &&
+      existing.status === "finished"
+    ) {
+      throw new GameTimerTransitionError(
+        "game_finished",
+        "Third length cannot be changed after the game is finished.",
+      );
+    }
+
+    if (
+      input.thirdLengthMinutes !== undefined &&
+      input.thirdLengthMinutes !== existing.thirdLengthMinutes &&
+      isThirdStarted(existing)
+    ) {
+      throw new GameTimerTransitionError(
+        "third_length_locked",
+        "Third length cannot be changed after a third has started.",
+      );
+    }
 
     const updatedPayload = {
       ...existing,
       gameStartTs: nextGameStartTs,
       status: nextStatus,
+      thirdLengthMinutes: nextThirdLengthMinutes,
     };
 
     const now = this.clock.now();
 
-    await this.putEntityWithTimestamps(
+    const gameUpdated = await this.putEntityWithTimestampsIfUnchanged(
       gamePk(existing.gameId),
       metadataSk(),
       ENTITY_TYPE.game,
       updatedPayload,
       gameItem.createdAt,
       now,
+      {
+        updatedAt: gameItem.updatedAt,
+        rawData: gameItem.rawData,
+      },
     );
+    if (!gameUpdated) {
+      throw new GameTimerTransitionError(
+        "game_state_changed",
+        "Game state changed while applying this update. Reload and try again.",
+      );
+    }
 
     const oldSessionGameSk = gameSessionIndexSk(existing.gameStartTs, existing.gameId);
     const oldSessionGameItem = await this.getEntity(
@@ -605,6 +718,150 @@ export class ThreeFcRepository {
     return withTimestamps(updatedPayload, gameItem.createdAt, now);
   }
 
+  async startGameThird(input: ThirdTransitionInput): Promise<GameRecord | null> {
+    requireNonEmpty("gameId", input.gameId);
+    requireThirdNumber(input.third);
+
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = normalizeGamePayload(gameItem.data);
+    if (existing.status === "finished") {
+      throw new GameTimerTransitionError(
+        "game_finished",
+        "Cannot start a third after the game is finished.",
+      );
+    }
+
+    const thirds = existing.thirds.map((third) => ({ ...third }));
+    const target = thirds.find((third) => third.third === input.third);
+    if (!target) {
+      throw new GameTimerTransitionError("invalid_third", "Third must be 1, 2, or 3.");
+    }
+
+    if (target.startedAt) {
+      throw new GameTimerTransitionError(
+        "third_already_started",
+        `Third ${input.third} has already been started.`,
+      );
+    }
+
+    const runningThird = thirds.find((third) => third.startedAt && !third.finishedAt);
+    if (runningThird) {
+      throw new GameTimerTransitionError(
+        "third_already_running",
+        `Third ${runningThird.third} must be finished before another third can start.`,
+      );
+    }
+
+    const previousThirds = thirds.filter((third) => third.third < input.third);
+    const unfinishedPreviousThird = previousThirds.find((third) => !third.finishedAt);
+    if (unfinishedPreviousThird) {
+      throw new GameTimerTransitionError(
+        "previous_third_unfinished",
+        `Third ${unfinishedPreviousThird.third} must be finished before third ${input.third} can start.`,
+      );
+    }
+
+    const now = this.clock.now();
+    target.startedAt = now;
+    const updatedPayload = {
+      ...existing,
+      status: "live" as const,
+      thirds,
+    };
+
+    const transitionApplied = await this.putEntityWithTimestampsIfUnchanged(
+      gamePk(existing.gameId),
+      metadataSk(),
+      ENTITY_TYPE.game,
+      updatedPayload,
+      gameItem.createdAt,
+      now,
+      {
+        updatedAt: gameItem.updatedAt,
+        rawData: gameItem.rawData,
+      },
+    );
+    if (!transitionApplied) {
+      throw new GameTimerTransitionError(
+        "timer_state_changed",
+        "Timer state changed while applying this transition. Reload the game and try again.",
+      );
+    }
+
+    return withTimestamps(updatedPayload, gameItem.createdAt, now);
+  }
+
+  async finishGameThird(input: ThirdTransitionInput): Promise<GameRecord | null> {
+    requireNonEmpty("gameId", input.gameId);
+    requireThirdNumber(input.third);
+
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = normalizeGamePayload(gameItem.data);
+    if (existing.status === "finished") {
+      throw new GameTimerTransitionError(
+        "game_finished",
+        "Cannot finish a third after the game is finished.",
+      );
+    }
+
+    const thirds = existing.thirds.map((third) => ({ ...third }));
+    const target = thirds.find((third) => third.third === input.third);
+    if (!target) {
+      throw new GameTimerTransitionError("invalid_third", "Third must be 1, 2, or 3.");
+    }
+
+    if (!target.startedAt) {
+      throw new GameTimerTransitionError(
+        "third_not_started",
+        `Third ${input.third} cannot be finished before it is started.`,
+      );
+    }
+
+    if (target.finishedAt) {
+      throw new GameTimerTransitionError(
+        "third_already_finished",
+        `Third ${input.third} has already been finished.`,
+      );
+    }
+
+    const now = this.clock.now();
+    target.finishedAt = now;
+    const updatedPayload = {
+      ...existing,
+      status: existing.status === "scheduled" ? ("live" as const) : existing.status,
+      thirds,
+    };
+
+    const transitionApplied = await this.putEntityWithTimestampsIfUnchanged(
+      gamePk(existing.gameId),
+      metadataSk(),
+      ENTITY_TYPE.game,
+      updatedPayload,
+      gameItem.createdAt,
+      now,
+      {
+        updatedAt: gameItem.updatedAt,
+        rawData: gameItem.rawData,
+      },
+    );
+    if (!transitionApplied) {
+      throw new GameTimerTransitionError(
+        "timer_state_changed",
+        "Timer state changed while applying this transition. Reload the game and try again.",
+      );
+    }
+
+    return withTimestamps(updatedPayload, gameItem.createdAt, now);
+  }
+
   async deleteGame(gameId: string): Promise<boolean> {
     requireNonEmpty("gameId", gameId);
 
@@ -613,7 +870,7 @@ export class ThreeFcRepository {
       return false;
     }
 
-    const game = gameItem.data as Omit<GameRecord, "createdAt" | "updatedAt">;
+    const game = normalizeGamePayload(gameItem.data);
 
     await this.deleteEntity(gamePk(gameId), metadataSk());
     await this.deleteEntity(
@@ -866,6 +1123,7 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
     requireNonEmpty("scorerPlayerId", input.scorerPlayerId);
+    requireThirdNumber(input.third);
     requireGameMinute(input.gameMinute);
 
     validateAssistPlayerIds(input.scorerPlayerId, input.assistPlayerIds);
@@ -1004,6 +1262,42 @@ export class ThreeFcRepository {
         Item: buildItemWithTimestamps(pk, sk, entityType, payload, createdAt, updatedAt),
       }),
     );
+  }
+
+  private async putEntityWithTimestampsIfUnchanged<T>(
+    pk: string,
+    sk: string,
+    entityType: EntityType,
+    payload: T,
+    createdAt: string,
+    updatedAt: string,
+    expected: { updatedAt: string; rawData: string },
+  ): Promise<boolean> {
+    try {
+      await this.client.send(
+        new PutItemCommand({
+          TableName: this.tableName,
+          Item: buildItemWithTimestamps(pk, sk, entityType, payload, createdAt, updatedAt),
+          ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedUpdatedAt": { S: expected.updatedAt },
+            ":expectedData": { S: expected.rawData },
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      const awsError = error as { name?: string };
+      if (awsError.name === "ConditionalCheckFailedException") {
+        return false;
+      }
+
+      throw error;
+    }
   }
 
   private async deleteEntity(pk: string, sk: string): Promise<void> {

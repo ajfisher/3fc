@@ -3,7 +3,7 @@ info:
   title: 3FC Core Write API
   version: 0.1.0
   description: |
-    Authenticated core write routes for league/season/session/game creation and M2 roster setup.
+    Authenticated core write routes for league/season/session/game creation, M2 roster setup, and third timer control.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
@@ -139,6 +139,62 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/games/{gameId}/thirds/{third}/start:
+    post:
+      summary: Start a game third timer
+      operationId: startGameThird
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/ThirdNumber"
+      responses:
+        "200":
+          description: Third started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/games/{gameId}/thirds/{third}/finish:
+    post:
+      summary: Finish a game third timer
+      operationId: finishGameThird
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/ThirdNumber"
+      responses:
+        "200":
+          description: Third finished
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/seasons/{seasonId}/teams:
     get:
       summary: List season default teams
@@ -411,6 +467,16 @@ components:
           - red
           - blue
           - yellow
+    ThirdNumber:
+      name: third
+      in: path
+      required: true
+      schema:
+        type: integer
+        enum:
+          - 1
+          - 2
+          - 3
   responses:
     BadRequest:
       description: Request body or headers failed validation
@@ -432,6 +498,12 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     NotFound:
       description: Referenced parent entity not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: State transition rejected
       content:
         application/json:
           schema:
@@ -517,6 +589,13 @@ components:
             - scheduled
             - live
             - finished
+        thirdLengthMinutes:
+          type: integer
+          enum:
+            - 20
+            - 25
+            - 30
+          default: 20
     UpsertTeamRequest:
       type: object
       additionalProperties: false
@@ -646,6 +725,9 @@ components:
         - sessionId
         - status
         - gameStartTs
+        - thirdLengthMinutes
+        - thirds
+        - timer
         - createdAt
         - updatedAt
       properties:
@@ -665,12 +747,98 @@ components:
             - finished
         gameStartTs:
           type: string
+        thirdLengthMinutes:
+          type: integer
+          enum:
+            - 20
+            - 25
+            - 30
+        thirds:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/ThirdTimerSegment"
+        timer:
+          $ref: "#/components/schemas/GameTimerState"
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
+    ThirdTimerSegment:
+      type: object
+      required:
+        - third
+        - startedAt
+        - finishedAt
+      properties:
+        third:
+          type: integer
+          enum:
+            - 1
+            - 2
+            - 3
+        startedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        finishedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    ThirdTimerState:
+      allOf:
+        - $ref: "#/components/schemas/ThirdTimerSegment"
+        - type: object
+          required:
+            - status
+          properties:
+            status:
+              type: string
+              enum:
+                - not_started
+                - running
+                - finished
+    GameTimerState:
+      type: object
+      required:
+        - thirdLengthMinutes
+        - activeThird
+        - status
+        - thirds
+      properties:
+        thirdLengthMinutes:
+          type: integer
+          enum:
+            - 20
+            - 25
+            - 30
+        activeThird:
+          type:
+            - integer
+            - "null"
+          enum:
+            - 1
+            - 2
+            - 3
+            - null
+        status:
+          type: string
+          enum:
+            - not_started
+            - running
+            - between_thirds
+            - complete
+        thirds:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/ThirdTimerState"
     SeasonTeam:
       type: object
       required:
