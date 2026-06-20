@@ -11,6 +11,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && rm -rf dist-tests && tsc -p tsconfig.test.json && node --test dist-tests/src/tests/**/*.test.js",
+    "smoke:m2": "npm run build && rm -rf dist-tests && tsc -p tsconfig.test.json && node --test --test-name-pattern \"setup smoke completes live game through finish\" dist-tests/src/tests/setup-flow-e2e.test.js",
     "clean": "rm -rf dist dist-tests"
   },
   "dependencies": {

@@ -1053,6 +1053,8 @@
     const thirdStatusList = document.getElementById("third-status-list");
     const startThirdButton = root.querySelector('[data-action="start-active-third"]');
     const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
+    const finishGameButton = root.querySelector('[data-action="finish-game"]');
+    const gameResultSummaryElement = document.getElementById("game-result-summary");
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerSearchInput = document.getElementById("player-search");
@@ -1077,7 +1079,9 @@
       !(saveButton instanceof HTMLButtonElement) ||
       !(deleteButton instanceof HTMLButtonElement) ||
       !(startThirdButton instanceof HTMLButtonElement) ||
-      !(finishThirdButton instanceof HTMLButtonElement)
+      !(finishThirdButton instanceof HTMLButtonElement) ||
+      !(finishGameButton instanceof HTMLButtonElement) ||
+      !(gameResultSummaryElement instanceof HTMLElement)
     ) {
       return;
     }
@@ -1099,6 +1103,10 @@
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
     });
+
+    function isGameFinished() {
+      return currentGame?.status === "finished";
+    }
 
     function nextStartableThird(timer) {
       if (timer.status === "running" || timer.status === "complete") {
@@ -1143,6 +1151,8 @@
       const segment = displaySegmentForTimer(timer);
       const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
       const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      const gameFinished = isGameFinished();
+      const allThirdsFinished = timer.status === "complete";
       const display = segment?.startedAt
         ? formatTimerDisplay(
             elapsedSeconds(segment.startedAt, segment.finishedAt),
@@ -1152,7 +1162,10 @@
       const nextThird = nextStartableThird(timer);
 
       thirdLengthInput.value = String(timer.thirdLengthMinutes);
-      thirdLengthInput.disabled = hasStarted;
+      thirdLengthInput.disabled = gameFinished || hasStarted;
+      kickoffInput.disabled = gameFinished;
+      statusInput.disabled = gameFinished;
+      saveButton.disabled = gameFinished;
       syncStatusOptions(hasStarted);
 
       if (timerThirdLabel) {
@@ -1194,11 +1207,12 @@
           .join("");
       }
 
-      const gameFinished = currentGame.status === "finished";
       startThirdButton.disabled = gameFinished || nextThird === null;
       finishThirdButton.disabled = gameFinished || !activeSegment;
+      finishGameButton.disabled = gameFinished || !allThirdsFinished;
       startThirdButton.textContent = nextThird ? `Start Third ${nextThird}` : "Start Third";
       finishThirdButton.textContent = activeSegment ? `Finish Third ${activeSegment.third}` : "Finish Third";
+      finishGameButton.textContent = gameFinished ? "Game finished" : "Finish game";
       if (nextThird) {
         startThirdButton.setAttribute("data-third", String(nextThird));
       } else {
@@ -1209,12 +1223,18 @@
       } else {
         finishThirdButton.removeAttribute("data-third");
       }
+      if (allThirdsFinished && !gameFinished) {
+        finishGameButton.setAttribute("data-state", "ready");
+      } else {
+        finishGameButton.removeAttribute("data-state");
+      }
 
       window.clearInterval(timerTickInterval);
       timerTickInterval = 0;
-      if (activeSegment) {
+      if (activeSegment && !gameFinished) {
         timerTickInterval = window.setInterval(renderTimer, 1000);
       }
+      renderGameResult();
     }
 
     function rosterControlsAvailable() {
@@ -1361,6 +1381,69 @@
       return ` style="--team-color: ${escapeHtml(color)}"`;
     }
 
+    function resultTeams() {
+      const teams = currentGame?.result?.teams;
+      if (!Array.isArray(teams)) {
+        return [];
+      }
+
+      return teams.map((team) => ({
+        teamId: team.teamId,
+        name: team.name ?? team.teamId,
+        color: typeof team.color === "string" ? team.color : null,
+        scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
+        conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
+        rank: Number.isInteger(team.rank) && team.rank > 0 ? team.rank : 0,
+        outcome: team.outcome ?? "loss",
+      }));
+    }
+
+    function renderGameResult() {
+      if (!(gameResultSummaryElement instanceof HTMLElement)) {
+        return;
+      }
+
+      const result = currentGame?.result;
+      const teams = resultTeams();
+      if (!isGameFinished() || !result || teams.length === 0) {
+        gameResultSummaryElement.hidden = true;
+        gameResultSummaryElement.innerHTML = "";
+        return;
+      }
+
+      const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
+      const outcomeText = winner ? `${winner.name} win` : "Draw";
+      const computedAt = typeof result.computedAt === "string" ? result.computedAt : "";
+
+      gameResultSummaryElement.hidden = false;
+      gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(result.outcome ?? "draw")}">
+        <header>
+          <span>Final result</span>
+          <strong data-testid="game-result-outcome">${escapeHtml(outcomeText)}</strong>
+          ${computedAt ? `<small>Computed ${escapeHtml(computedAt)}</small>` : ""}
+        </header>
+        <div data-ui="result-team-list" data-testid="game-result-teams">
+          ${teams
+            .map(
+              (team) => `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}" data-outcome="${escapeHtml(
+                team.outcome,
+              )}"${teamSwatchStyle(team)}>
+                <header>
+                  <span data-ui="team-swatch"></span>
+                  <strong>${escapeHtml(team.name)}</strong>
+                  ${team.rank > 0 ? `<span data-ui="rank-chip">#${escapeHtml(String(team.rank))}</span>` : ""}
+                </header>
+                <dl>
+                  <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+                  <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
+                </dl>
+              </article>`,
+            )
+            .join("")}
+        </div>
+      </section>`;
+    }
+
     function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select", missingSelectedLabel = null) {
       const selectedExists = options.some((option) => option.value === selectedValue);
       const preservesMissingSelection =
@@ -1443,7 +1526,7 @@
       goalAssistsElement.innerHTML = rostered
         .map((player) => {
           const checked = selected.has(player.playerId);
-          const disabled = !checked && selected.size >= 3;
+          const disabled = isGameFinished() || (!checked && selected.size >= 3);
           return `<label data-ui="check-row">
             <input type="checkbox" value="${escapeHtml(player.playerId)}"${checked ? " checked" : ""}${
               disabled ? " disabled" : ""
@@ -1513,11 +1596,29 @@
       renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
 
       const activeThird = activeThirdNumber();
+      const gameFinished = isGameFinished();
       saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
       cancelGoalEditButton.hidden = editingGoalId === null;
-      cancelGoalEditButton.disabled = editingGoalId === null;
-      undoLastGoalButton.disabled = goalTimeline.length === 0;
+      cancelGoalEditButton.disabled = gameFinished || editingGoalId === null;
+      undoLastGoalButton.disabled = gameFinished || goalTimeline.length === 0;
       undoLastGoalButton.textContent = "Undo last";
+
+      if (gameFinished) {
+        goalScoringTeamInput.disabled = true;
+        goalConcedingTeamInput.disabled = true;
+        goalOwnGoalInput.disabled = true;
+        goalScorerInput.disabled = true;
+        saveGoalButton.disabled = true;
+        for (const input of goalAssistsElement.querySelectorAll("input")) {
+          if (input instanceof HTMLInputElement) {
+            input.disabled = true;
+          }
+        }
+        goalFormNote.textContent = "Game finished. Live scoring is locked.";
+        return;
+      }
+
+      saveGoalButton.disabled = false;
 
       if (rosterTeams.length < 2) {
         saveGoalButton.disabled = true;
@@ -1573,6 +1674,7 @@
       }
 
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
+      const locked = isGameFinished();
       goalTimelineElement.innerHTML = [...goalTimeline]
         .reverse()
         .map((goal) => {
@@ -1594,10 +1696,10 @@
               ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
               <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
                 goal.eventId,
-              )}">Edit</button>
+              )}"${locked ? " disabled" : ""}>Edit</button>
               <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
                 goal.eventId,
-              )}">Delete</button>
+              )}"${locked ? " disabled" : ""}>Delete</button>
             </div>
           </li>`;
         })
@@ -1656,6 +1758,12 @@
     }
 
     function buildGoalPayload() {
+      if (isGameFinished()) {
+        return {
+          error: "Game finished. Live scoring is locked.",
+        };
+      }
+
       const activeThird = activeThirdNumber();
       if (!activeThird && !editingGoalId) {
         return {
@@ -1754,12 +1862,13 @@
     }
 
     function assignmentButtons(playerId, currentTeamId = null) {
+      const disabled = isGameFinished() ? " disabled" : "";
       return rosterTeams
         .map((team) => {
           const active = currentTeamId === team.teamId ? ' data-state="active" aria-pressed="true"' : "";
           return `<button data-ui="row-action" type="button" data-action="assign-player" data-player-id="${escapeHtml(
             playerId,
-          )}" data-team-id="${escapeHtml(team.teamId)}"${active}>${escapeHtml(team.name)}</button>`;
+          )}" data-team-id="${escapeHtml(team.teamId)}"${active}${disabled}>${escapeHtml(team.name)}</button>`;
         })
         .join("");
     }
@@ -1834,6 +1943,13 @@
     }
 
     function renderRosterSetup() {
+      const gameFinished = isGameFinished();
+      if (quickCreatePlayerButton instanceof HTMLButtonElement) {
+        quickCreatePlayerButton.disabled = gameFinished;
+      }
+      if (playerNicknameInput instanceof HTMLInputElement) {
+        playerNicknameInput.disabled = gameFinished;
+      }
       renderPlayerPool();
       renderRosterTeams();
     }
@@ -1937,6 +2053,10 @@
     }
 
     saveButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        return;
+      }
+
       clearError();
 
       const kickoffIso = toIsoTimestamp(kickoffInput.value.trim());
@@ -1970,7 +2090,7 @@
         showError(message);
         setStatus("Game update failed.", "error");
       } finally {
-        saveButton.disabled = false;
+        saveButton.disabled = isGameFinished();
       }
     });
 
@@ -1998,6 +2118,10 @@
     });
 
     startThirdButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        return;
+      }
+
       const third = startThirdButton.getAttribute("data-third");
       if (!third) {
         return;
@@ -2028,6 +2152,10 @@
     });
 
     finishThirdButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        return;
+      }
+
       const third = finishThirdButton.getAttribute("data-third");
       if (!third) {
         return;
@@ -2057,6 +2185,46 @@
       }
     });
 
+    finishGameButton.addEventListener("click", async () => {
+      if (!currentGame || isGameFinished()) {
+        return;
+      }
+
+      const timer = buildTimerState(currentGame);
+      if (timer.status !== "complete") {
+        return;
+      }
+
+      finishGameButton.disabled = true;
+      clearError();
+      setStatus("Finishing game…", "default");
+
+      try {
+        currentGame = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/finish`, {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": createIdempotencyKey("finish-game", gameId),
+          },
+        });
+        if (Array.isArray(currentGame?.result?.teams)) {
+          scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
+        }
+        statusInput.value = currentGame.status;
+        renderTimer();
+        renderRosterSetup();
+        renderLiveScoring();
+        setStatus("Game finished.", "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not finish game.";
+        showError(message);
+        setStatus("Game finish failed.", "error");
+      } finally {
+        renderTimer();
+        renderRosterSetup();
+        renderLiveScoring();
+      }
+    });
+
     if (rosterControlsAvailable()) {
       playerNicknameInput.addEventListener("input", () => {
         setFieldMessage("player-nickname");
@@ -2074,6 +2242,10 @@
       });
 
       quickCreatePlayerButton.addEventListener("click", async () => {
+        if (isGameFinished()) {
+          return;
+        }
+
         clearError();
 
         const nickname = playerNicknameInput.value.trim();
@@ -2111,7 +2283,7 @@
           showError(message);
           setStatus("Player creation failed.", "error");
         } finally {
-          quickCreatePlayerButton.disabled = false;
+          quickCreatePlayerButton.disabled = isGameFinished();
         }
       });
 
@@ -2122,6 +2294,10 @@
         }
 
         if (target.getAttribute("data-action") !== "assign-player") {
+          return;
+        }
+
+        if (isGameFinished()) {
           return;
         }
 
@@ -2188,6 +2364,11 @@
       });
 
       saveGoalButton.addEventListener("click", async () => {
+        if (isGameFinished()) {
+          renderLiveScoring();
+          return;
+        }
+
         clearError();
         const draft = buildGoalPayload();
         if (draft.error || !draft.payload) {
@@ -2242,6 +2423,11 @@
       });
 
       undoLastGoalButton.addEventListener("click", async () => {
+        if (isGameFinished()) {
+          renderLiveScoring();
+          return;
+        }
+
         const latest = goalTimeline.at(-1);
         if (!latest) {
           return;
@@ -2285,6 +2471,11 @@
 
         const action = target.getAttribute("data-action");
         if (action !== "edit-goal" && action !== "delete-goal") {
+          return;
+        }
+
+        if (isGameFinished()) {
+          renderLiveScoring();
           return;
         }
 

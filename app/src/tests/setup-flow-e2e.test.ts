@@ -8,6 +8,7 @@ import { JSDOM } from "jsdom";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdTimerSegment,
@@ -66,6 +67,8 @@ interface MockGame {
   gameStartTs: string;
   thirdLengthMinutes: ThirdLengthMinutes;
   thirds: ThirdTimerSegment[];
+  finishedAt?: string | null;
+  result?: GameResult | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -323,6 +326,74 @@ function recomputeMockScoreboard(state: MockApiState, game: MockGame): MockTeam[
   }
 
   return teams;
+}
+
+function compareMockTeamIds(left: TeamId, right: TeamId): number {
+  const leftIndex = DEFAULT_MOCK_TEAMS.findIndex((team) => team.teamId === left);
+  const rightIndex = DEFAULT_MOCK_TEAMS.findIndex((team) => team.teamId === right);
+  const leftSort = leftIndex >= 0 ? leftIndex : Number.MAX_SAFE_INTEGER;
+  const rightSort = rightIndex >= 0 ? rightIndex : Number.MAX_SAFE_INTEGER;
+  const orderDelta = leftSort - rightSort;
+  return orderDelta !== 0 ? orderDelta : left.localeCompare(right);
+}
+
+function compareMockResultTeams(left: MockTeam, right: MockTeam): number {
+  const concededDelta = (left.conceded ?? 0) - (right.conceded ?? 0);
+  if (concededDelta !== 0) {
+    return concededDelta;
+  }
+
+  const scoredDelta = (right.scored ?? 0) - (left.scored ?? 0);
+  if (scoredDelta !== 0) {
+    return scoredDelta;
+  }
+
+  return compareMockTeamIds(left.teamId, right.teamId);
+}
+
+function sameMockResultPosition(left: MockTeam, right: MockTeam): boolean {
+  return (left.conceded ?? 0) === (right.conceded ?? 0) && (left.scored ?? 0) === (right.scored ?? 0);
+}
+
+function buildMockGameResult(state: MockApiState, game: MockGame, computedAt: string): GameResult {
+  const rankedTeams = recomputeMockScoreboard(state, game).sort(compareMockResultTeams);
+  const topTeam = rankedTeams[0] ?? null;
+  const topTiedTeams = topTeam ? rankedTeams.filter((team) => sameMockResultPosition(team, topTeam)) : [];
+  const winnerTeamId = topTiedTeams.length === 1 ? topTiedTeams[0].teamId : null;
+
+  let previousTeam: MockTeam | null = null;
+  let previousRank = 0;
+  const teams = rankedTeams.map((team, index) => {
+    const rank = previousTeam && sameMockResultPosition(team, previousTeam) ? previousRank : index + 1;
+    previousTeam = team;
+    previousRank = rank;
+
+    const outcome: GameResult["teams"][number]["outcome"] = winnerTeamId
+      ? team.teamId === winnerTeamId
+        ? "win"
+        : "loss"
+      : topTeam && sameMockResultPosition(team, topTeam)
+        ? "draw"
+        : "loss";
+
+    return {
+      teamId: team.teamId,
+      name: team.name,
+      color: team.color,
+      scored: team.scored ?? 0,
+      conceded: team.conceded ?? 0,
+      rank,
+      outcome,
+    };
+  });
+
+  return {
+    winnerTeamId,
+    outcome: winnerTeamId ? "win" : "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt,
+    teams,
+  };
 }
 
 function goalResponsePayload(state: MockApiState, game: MockGame, extra: Record<string, unknown>): Record<string, unknown> {
@@ -694,6 +765,8 @@ function createMockFetch(state: MockApiState) {
             ? body.thirdLengthMinutes
             : DEFAULT_THIRD_LENGTH_MINUTES,
         thirds: createDefaultThirdTimerSegments(),
+        finishedAt: null,
+        result: null,
         createdAt: now,
         updatedAt: now,
       };
@@ -811,6 +884,43 @@ function createMockFetch(state: MockApiState) {
         ...game,
         thirds,
         updatedAt: "2026-03-28T11:00:11.000Z",
+      };
+      state.games.set(gameId, updated);
+      return createJsonResponse(200, updated);
+    }
+
+    const finishGameMatch = path.match(/^\/v1\/games\/([^/]+)\/finish$/);
+    if (method === "POST" && finishGameMatch) {
+      const gameId = decodeURIComponent(finishGameMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+
+      const idempotencyError = requireIdempotencyKey(init);
+      if (idempotencyError) {
+        return idempotencyError;
+      }
+
+      if (game.status === "finished" && game.finishedAt && game.result) {
+        return createJsonResponse(200, game);
+      }
+
+      const unfinishedThird = game.thirds.find((third) => !third.finishedAt);
+      if (unfinishedThird) {
+        return createJsonResponse(409, {
+          error: "thirds_not_finished",
+          message: "All thirds must be finished before finishing the game.",
+        });
+      }
+
+      const finishedAt = "2026-03-28T11:00:12.000Z";
+      const updated: MockGame = {
+        ...game,
+        status: "finished",
+        finishedAt,
+        result: buildMockGameResult(state, game, finishedAt),
+        updatedAt: finishedAt,
       };
       state.games.set(gameId, updated);
       return createJsonResponse(200, updated);
@@ -2649,6 +2759,188 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert.match(timeline.textContent ?? "", /No goals yet/);
   assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*0/);
   assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*0/);
+});
+
+test("setup smoke completes live game through finish", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "scorekeeper@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-smoke-1", {
+    gameId: "game-smoke-1",
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const gamePage = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-smoke-1" }),
+    url: "http://localhost:3000/games/game-smoke-1",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const nicknameInput = gamePage.document.getElementById("player-nickname");
+  const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
+  const startThirdButton = gamePage.document.querySelector('[data-action="start-active-third"]');
+  const finishThirdButton = gamePage.document.querySelector('[data-action="finish-active-third"]');
+  const finishGameButton = gamePage.document.querySelector('[data-action="finish-game"]');
+  const scoringTeamInput = gamePage.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = gamePage.document.getElementById("goal-conceding-team");
+  const scorerInput = gamePage.document.getElementById("goal-scorer");
+  const saveGoalButton = gamePage.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = gamePage.document.querySelector('[data-action="undo-last-goal"]');
+  const statusInput = gamePage.document.getElementById("game-edit-status");
+  const scoreboard = gamePage.document.getElementById("live-scoreboard");
+  const goalFormNote = gamePage.document.getElementById("goal-form-note");
+  const resultSummary = gamePage.document.getElementById("game-result-summary");
+
+  assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
+  assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
+  assert(startThirdButton instanceof gamePage.window.HTMLButtonElement);
+  assert(finishThirdButton instanceof gamePage.window.HTMLButtonElement);
+  assert(finishGameButton instanceof gamePage.window.HTMLButtonElement);
+  assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(statusInput instanceof gamePage.window.HTMLSelectElement);
+  assert(scoreboard instanceof gamePage.window.HTMLElement);
+  assert(goalFormNote instanceof gamePage.window.HTMLElement);
+  assert(resultSummary instanceof gamePage.window.HTMLElement);
+  assert.equal(finishGameButton.disabled, true);
+  assert.equal(resultSummary.hidden, true);
+
+  nicknameInput.value = "Ari";
+  nicknameInput.dispatchEvent(new gamePage.window.Event("input", { bubbles: true }));
+  dispatchClick(quickCreateButton);
+  await flushAsync();
+  const ari = [...apiState.players.values()].find((player) => player.nickname === "Ari");
+  assert(ari);
+
+  const assignAriRedButton = gamePage.document.querySelector(
+    `[data-action="assign-player"][data-player-id="${ari.playerId}"][data-team-id="red"]`,
+  );
+  assert(assignAriRedButton instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(assignAriRedButton);
+  await flushAsync();
+
+  nicknameInput.value = "Cy";
+  nicknameInput.dispatchEvent(new gamePage.window.Event("input", { bubbles: true }));
+  dispatchClick(quickCreateButton);
+  await flushAsync();
+  const cy = [...apiState.players.values()].find((player) => player.nickname === "Cy");
+  assert(cy);
+
+  const assignCyBlueButton = gamePage.document.querySelector(
+    `[data-action="assign-player"][data-player-id="${cy.playerId}"][data-team-id="blue"]`,
+  );
+  assert(assignCyBlueButton instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(assignCyBlueButton);
+  await flushAsync();
+
+  dispatchClick(startThirdButton);
+  await flushAsync();
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scorerInput.value = ari.playerId;
+  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "red");
+  assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*1/);
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
+
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+
+  assert.equal(apiState.games.get("game-smoke-1")?.thirds.every((third) => third.finishedAt), true);
+  assert.equal(finishGameButton.disabled, false);
+
+  dispatchClick(finishGameButton);
+  await flushAsync();
+
+  const finishedGame = apiState.games.get("game-smoke-1");
+  assert.equal(finishedGame?.status, "finished");
+  assert.equal(finishedGame?.result?.winnerTeamId, "red");
+  assert.equal(finishedGame?.result?.outcome, "win");
+  assert.equal(finishedGame?.result?.comparator, "fewest_conceded_then_most_scored");
+  assert.equal(statusInput.value, "finished");
+  assert.equal(finishGameButton.disabled, true);
+  assert.equal(finishGameButton.textContent, "Game finished");
+  assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", /Red win/);
+  assert.match(resultSummary.querySelector('[data-team-id="red"]')?.textContent ?? "", /Conceded\s*0/);
+  assert.match(resultSummary.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*1/);
+  assert.match(resultSummary.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
+  assert.equal(startThirdButton.disabled, true);
+  assert.equal(finishThirdButton.disabled, true);
+  assert.equal(saveGoalButton.disabled, true);
+  assert.equal(undoLastGoalButton.disabled, true);
+  assert.equal(quickCreateButton.disabled, true);
+  assert.match(goalFormNote.textContent ?? "", /locked/);
+
+  const editGoalButton = gamePage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const deleteGoalButton = gamePage.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  const lockedAssignButton = gamePage.document.querySelector(
+    `[data-action="assign-player"][data-player-id="${ari.playerId}"][data-team-id="blue"]`,
+  );
+  assert(editGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(deleteGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(lockedAssignButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(editGoalButton.disabled, true);
+  assert.equal(deleteGoalButton.disabled, true);
+  assert.equal(lockedAssignButton.disabled, true);
+
+  const repeatFinishResponse = await createMockFetch(apiState)(
+    "http://localhost:3001/v1/games/game-smoke-1/finish",
+    {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": "finish-game-smoke-repeat",
+      },
+    },
+  );
+  const repeatFinishBody = (await repeatFinishResponse.json()) as MockGame;
+  assert.equal(repeatFinishResponse.status, 200);
+  assert.equal(repeatFinishBody.status, "finished");
+  assert.equal(repeatFinishBody.result?.winnerTeamId, "red");
+  assert.equal(repeatFinishBody.finishedAt, finishedGame?.finishedAt);
 });
 
 test("setup flow resolves route ids from static shells", async () => {

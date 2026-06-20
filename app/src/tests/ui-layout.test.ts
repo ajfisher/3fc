@@ -200,6 +200,8 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="third-timer"/);
   assert.match(html, /data-testid="start-third"/);
   assert.match(html, /data-testid="finish-third"/);
+  assert.match(html, /data-testid="finish-game"/);
+  assert.match(html, /data-testid="game-result-summary"/);
   assert.match(html, /data-testid="game-edit-third-length"/);
   assert.ok(
     html.indexOf('data-testid="panel-game-roster"') < html.indexOf('data-testid="panel-game-live"'),

@@ -745,7 +745,13 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
                 "data-action": "finish-active-third",
                 "data-testid": "finish-third",
               })}
-            </div>`,
+              ${renderButton("Finish game", "primary", {
+                type: "button",
+                "data-action": "finish-game",
+                "data-testid": "finish-game",
+              })}
+            </div>
+            <div data-ui="game-result-summary" id="game-result-summary" data-testid="game-result-summary" hidden></div>`,
             "panel-game-timer",
           )}
           ${renderPanel(
