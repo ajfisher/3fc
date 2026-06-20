@@ -2812,6 +2812,7 @@ test("setup smoke completes live game through finish", async () => {
   const scorerInput = gamePage.document.getElementById("goal-scorer");
   const saveGoalButton = gamePage.document.querySelector('[data-action="save-goal"]');
   const undoLastGoalButton = gamePage.document.querySelector('[data-action="undo-last-goal"]');
+  const deleteGameButton = gamePage.document.querySelector('[data-action="delete-game"]');
   const statusInput = gamePage.document.getElementById("game-edit-status");
   const scoreboard = gamePage.document.getElementById("live-scoreboard");
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
@@ -2827,6 +2828,7 @@ test("setup smoke completes live game through finish", async () => {
   assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
   assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(deleteGameButton instanceof gamePage.window.HTMLButtonElement);
   assert(statusInput instanceof gamePage.window.HTMLSelectElement);
   assert(scoreboard instanceof gamePage.window.HTMLElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
@@ -2903,6 +2905,7 @@ test("setup smoke completes live game through finish", async () => {
   assert.equal(statusInput.value, "finished");
   assert.equal(finishGameButton.disabled, true);
   assert.equal(finishGameButton.textContent, "Game finished");
+  assert.equal(deleteGameButton.disabled, true);
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /Red win/);
   assert.match(resultSummary.querySelector('[data-team-id="red"]')?.textContent ?? "", /Conceded\s*0/);

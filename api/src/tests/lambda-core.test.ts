@@ -262,6 +262,7 @@ function createHarness(config: HarnessConfig = {}) {
     assistPlayerIds: string[];
     ownGoal: boolean;
   }> = [];
+  const deletedGames: string[] = [];
   const assignedRosterPlayers: Array<{ gameId: string; teamId: TeamId; playerId: string }> = [];
   const linkedGamePlayers: Array<{ gameId: string; playerId: string }> = [];
   const magicLinkStarts: string[] = [];
@@ -898,6 +899,7 @@ function createHarness(config: HarnessConfig = {}) {
         return updated;
       },
       async deleteGame(gameId: string) {
+        deletedGames.push(gameId);
         return games.delete(gameId);
       },
       async deleteSeason(seasonId: string) {
@@ -1191,6 +1193,7 @@ function createHarness(config: HarnessConfig = {}) {
     createdGameTeams,
     createdPlayers,
     createdGoals,
+    deletedGames,
     assignedRosterPlayers,
     linkedGamePlayers,
     magicLinkStarts,
@@ -2126,10 +2129,22 @@ test("core lambda finishes a game with clear winner and idempotency replay", asy
       },
     }),
   );
+  const freshKeyReplayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-game-2",
+      },
+    }),
+  );
 
   assert.equal(finishResponse.statusCode, 200);
   assert.equal(replayResponse.statusCode, 200);
+  assert.equal(freshKeyReplayResponse.statusCode, 200);
   assert.deepEqual(JSON.parse(replayResponse.body), JSON.parse(finishResponse.body));
+  assert.deepEqual(JSON.parse(freshKeyReplayResponse.body), JSON.parse(finishResponse.body));
   const body = JSON.parse(finishResponse.body) as {
     status: string;
     finishedAt: string | null;
@@ -2325,6 +2340,107 @@ test("core lambda locks team overrides after finish", async () => {
     message: "Game game-1 is finished. Team overrides are locked after finish.",
   });
   assert.equal(harness.createdGameTeams.length, 0);
+});
+
+test("core lambda locks admin player and roster mutations after finish", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-roster-lock-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const playerResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finished-player-create-1",
+      },
+      body: {
+        playerId: "player-late",
+        nickname: "Late",
+      },
+    }),
+  );
+
+  assert.equal(playerResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(playerResponse.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Roster and player mutations are locked after finish.",
+  });
+  assert.equal(harness.createdPlayers.length, 0);
+
+  const rosterResponse = await harness.handler(
+    createEvent({
+      method: "PUT",
+      path: "/v1/games/game-1/roster/player-red",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        teamId: "blue",
+      },
+    }),
+  );
+
+  assert.equal(rosterResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(rosterResponse.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Roster and player mutations are locked after finish.",
+  });
+});
+
+test("core lambda locks admin game deletion after finish", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-delete-lock-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const deleteResponse = await harness.handler(
+    createEvent({
+      method: "DELETE",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(deleteResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(deleteResponse.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Finished games cannot be deleted.",
+  });
+  assert.deepEqual(harness.deletedGames, []);
 });
 
 test("core lambda allows admin goal correction after finish and refreshes result", async () => {

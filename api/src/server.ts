@@ -158,6 +158,8 @@ type LocalUpdateGameTeamRouteRepository = Pick<
   "getGame" | "listTeamsForSeason" | "createTeam" | "listTeamsForGame" | "createGameTeamOverride"
 >;
 
+type LocalDeleteGameRouteRepository = Pick<ThreeFcRepository, "getGame" | "getLeagueAccess" | "deleteGame">;
+
 type LocalIdempotencyRepository = Pick<
   ThreeFcRepository,
   "getIdempotencyRecord" | "createIdempotencyRecord"
@@ -331,8 +333,12 @@ async function ensureLeagueAccess(
   };
 }
 
-async function ensureLeagueAdmin(leagueId: string, userId: string): Promise<boolean> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
+async function ensureLeagueAdmin(
+  leagueId: string,
+  userId: string,
+  repositoryClient: Pick<ThreeFcRepository, "getLeagueAccess"> = repository,
+): Promise<boolean> {
+  const access = await repositoryClient.getLeagueAccess(leagueId, userId);
   return access?.role === "admin";
 }
 
@@ -465,6 +471,32 @@ function finishedGameTeamOverrideConflict(
     error: "conflict",
     code: "game_finished",
     message: `Game ${gameId} is finished. Team overrides are locked after finish.`,
+  });
+  return 409;
+}
+
+function finishedGameRosterMutationConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_finished",
+    message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
+  });
+  return 409;
+}
+
+function finishedGameDeleteConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_finished",
+    message: `Game ${gameId} is finished. Finished games cannot be deleted.`,
   });
   return 409;
 }
@@ -944,18 +976,6 @@ export async function handleLocalFinishGameRoute(input: {
           };
         }
 
-        const finishedBlock = await buildFinishedGameMutationBlock(
-          currentGame,
-          input.sessionEmail,
-          repositoryClient,
-        );
-        if (finishedBlock) {
-          return {
-            statusCode: finishedBlock.statusCode,
-            payload: finishedBlock.payload,
-          };
-        }
-
         await ensureGameTeamsForGame(currentGame, repositoryClient);
         const result = await repositoryClient.finishGame({ gameId: input.gameId });
         if (!result) {
@@ -1021,6 +1041,38 @@ export async function handleLocalUpdateGameTeamRoute(input: {
   });
   sendJsonWithCors(input.request, input.response, 200, team);
   return 200;
+}
+
+export async function handleLocalDeleteGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  gameId: string;
+  sessionEmail: string;
+  repositoryClient?: LocalDeleteGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const game = await repositoryClient.getGame(input.gameId);
+  if (!game) {
+    return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+  }
+
+  const isAdmin = await ensureLeagueAdmin(game.leagueId, input.sessionEmail, repositoryClient);
+  if (!isAdmin) {
+    return forbidden(
+      input.request,
+      input.response,
+      "admin_required",
+      `Admin role is required for league ${game.leagueId}.`,
+    );
+  }
+
+  if (game.status === "finished") {
+    return finishedGameDeleteConflict(input.request, input.response, input.gameId);
+  }
+
+  await repositoryClient.deleteGame(input.gameId);
+  sendNoContentWithCors(input.request, input.response);
+  return 204;
 }
 
 interface AclGateResult {
@@ -2830,14 +2882,14 @@ async function start(): Promise<void> {
               };
             }
 
-            const finishedBlock = await buildFinishedGameMutationBlock(
-              currentGame,
-              sessionEmail,
-            );
-            if (finishedBlock) {
+            if (currentGame.status === "finished") {
               return {
-                statusCode: finishedBlock.statusCode,
-                payload: finishedBlock.payload,
+                statusCode: 409,
+                payload: {
+                  error: "conflict",
+                  code: "game_finished",
+                  message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
+                },
               };
             }
 
@@ -2913,14 +2965,8 @@ async function start(): Promise<void> {
           return;
         }
 
-        const finishedLock = await ensureFinishedGameMutationAllowed(
-          request,
-          response,
-          game,
-          authGate.session.email,
-        );
-        if (!finishedLock.allowed) {
-          status = finishedLock.status;
+        if (game.status === "finished") {
+          status = finishedGameRosterMutationConflict(request, response, gameId);
           return;
         }
 
@@ -3048,27 +3094,12 @@ async function start(): Promise<void> {
           return;
         }
 
-        const gameId = decodeURIComponent(deleteGameMatch[1]);
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-
-        const isAdmin = await ensureLeagueAdmin(game.leagueId, authGate.session.email);
-        if (!isAdmin) {
-          status = forbidden(
-            request,
-            response,
-            "admin_required",
-            `Admin role is required for league ${game.leagueId}.`,
-          );
-          return;
-        }
-
-        await repository.deleteGame(gameId);
-        status = 204;
-        sendNoContentWithCors(request, response);
+        status = await handleLocalDeleteGameRoute({
+          request,
+          response,
+          gameId: decodeURIComponent(deleteGameMatch[1]),
+          sessionEmail: authGate.session.email,
+        });
         return;
       }
 

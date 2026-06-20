@@ -1166,6 +1166,7 @@
       kickoffInput.disabled = gameFinished;
       statusInput.disabled = gameFinished;
       saveButton.disabled = gameFinished;
+      deleteButton.disabled = gameFinished;
       syncStatusOptions(hasStarted);
 
       if (timerThirdLabel) {
@@ -2095,6 +2096,11 @@
     });
 
     deleteButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        setStatus("Finished games are locked.", "error");
+        return;
+      }
+
       if (!window.confirm(`Delete game ${gameId}?`)) {
         return;
       }
@@ -2113,7 +2119,7 @@
         showError(message);
         setStatus("Game deletion failed.", "error");
       } finally {
-        deleteButton.disabled = false;
+        deleteButton.disabled = isGameFinished();
       }
     });
 

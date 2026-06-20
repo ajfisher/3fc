@@ -6,6 +6,7 @@ import type { GameResult, TeamId, ThirdTimerSegment } from "@3fc/contracts";
 import { createDefaultThirdTimerSegments } from "@3fc/contracts";
 
 import {
+  handleLocalDeleteGameRoute,
   handleLocalFinishGameRoute,
   handleLocalUpdateGameTeamRoute,
 } from "../server.js";
@@ -197,6 +198,64 @@ test("local server finish route returns finished game result", async () => {
   assert.equal(body.result.winnerTeamId, "red");
 });
 
+test("local server finish route returns existing result for already-finished games", async () => {
+  const request = createMockRequest({
+    headers: {
+      "idempotency-key": "finish-local-existing-1",
+    },
+  });
+  const response = createMockResponse();
+  const finished = gameRecord({
+    status: "finished",
+    finishedAt: "2026-02-23T00:05:00.000Z",
+    result,
+  });
+  const repositoryClient = {
+    async getGame() {
+      return finished;
+    },
+    async finishGame() {
+      return finished;
+    },
+    async getLeagueAccess() {
+      return scorekeeperAccess;
+    },
+    async getIdempotencyRecord() {
+      return null;
+    },
+    async createIdempotencyRecord() {
+      return true;
+    },
+    async listTeamsForSeason() {
+      return seasonTeams;
+    },
+    async createTeam() {
+      throw new Error("season teams should already exist");
+    },
+    async listTeamsForGame() {
+      return gameTeams;
+    },
+    async createGameTeamOverride() {
+      throw new Error("game teams should already exist");
+    },
+  };
+
+  const status = await handleLocalFinishGameRoute({
+    request,
+    response,
+    method: "POST",
+    route: "/v1/games/game-1/finish",
+    gameId: "game-1",
+    sessionEmail: "scorekeeper@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 200);
+  const body = JSON.parse(response.body) as { status: string; result: GameResult };
+  assert.equal(body.status, "finished");
+  assert.equal(body.result.winnerTeamId, "red");
+});
+
 test("local server finish route maps incomplete thirds to conflict", async () => {
   const request = createMockRequest({
     headers: {
@@ -303,5 +362,50 @@ test("local server team override route locks finished games", async () => {
     error: "conflict",
     code: "game_finished",
     message: "Game game-1 is finished. Team overrides are locked after finish.",
+  });
+});
+
+test("local server delete game route locks finished games", async () => {
+  const request = createMockRequest();
+  const response = createMockResponse();
+  let deletedGames = 0;
+  const repositoryClient = {
+    async getGame() {
+      return gameRecord({
+        status: "finished",
+        finishedAt: "2026-02-23T00:05:00.000Z",
+        result,
+      });
+    },
+    async getLeagueAccess() {
+      return {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin" as const,
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+    },
+    async deleteGame() {
+      deletedGames += 1;
+      throw new Error("finished games should not be deleted");
+    },
+  };
+
+  const status = await handleLocalDeleteGameRoute({
+    request,
+    response,
+    gameId: "game-1",
+    sessionEmail: "admin@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 409);
+  assert.equal(deletedGames, 0);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Finished games cannot be deleted.",
   });
 });

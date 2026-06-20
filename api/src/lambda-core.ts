@@ -776,6 +776,22 @@ function goalCorrectionErrorResponse(
   );
 }
 
+function finishedGameDeleteConflictResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  gameId: string,
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "game_finished",
+      message: `Game ${gameId} is finished. Finished games cannot be deleted.`,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
 async function buildFinishedGameMutationBlock(input: {
   repository: RepositoryContract;
   game: Pick<RepositoryGameRecord, "gameId" | "leagueId" | "status">;
@@ -2176,17 +2192,6 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
-                const finishedBlock = await buildFinishedGameMutationBlock({
-                  repository: dependencies.repository,
-                  game: currentGame,
-                  sessionEmail: session.email,
-                  origin,
-                  allowedOrigins: dependencies.corsAllowedOrigins,
-                });
-                if (finishedBlock) {
-                  return finishedBlock;
-                }
-
                 await ensureGameTeamsForGame(dependencies.repository, currentGame);
                 const result = await dependencies.repository.finishGame({ gameId });
                 if (!result) {
@@ -2908,15 +2913,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 );
               }
 
-              const finishedBlock = await buildFinishedGameMutationBlock({
-                repository: dependencies.repository,
-                game: currentGame,
-                sessionEmail: session.email,
-                origin,
-                allowedOrigins: dependencies.corsAllowedOrigins,
-              });
-              if (finishedBlock) {
-                return finishedBlock;
+              if (currentGame.status === "finished") {
+                return createJsonResponse(
+                  409,
+                  {
+                    error: "conflict",
+                    code: "game_finished",
+                    message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
+                  },
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
               }
 
               const player = await dependencies.repository.createPlayer({
@@ -2983,16 +2989,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
 
-          const finishedBlock = await buildFinishedGameMutationBlock({
-            repository: dependencies.repository,
-            game,
-            sessionEmail: session.email,
-            origin,
-            allowedOrigins: dependencies.corsAllowedOrigins,
-          });
-          if (finishedBlock) {
-            status = finishedBlock.statusCode;
-            return finishedBlock;
+          if (game.status === "finished") {
+            status = 409;
+            return createJsonResponse(
+              status,
+              {
+                error: "conflict",
+                code: "game_finished",
+                message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
+              },
+              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            );
           }
 
           let rawBody: Record<string, unknown>;
@@ -3138,6 +3145,15 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               dependencies.corsAllowedOrigins,
               "admin_required",
               `Admin role is required for league ${game.leagueId}.`,
+            );
+          }
+
+          if (game.status === "finished") {
+            status = 409;
+            return finishedGameDeleteConflictResponse(
+              origin,
+              dependencies.corsAllowedOrigins,
+              gameId,
             );
           }
 
