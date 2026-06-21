@@ -1,9 +1,14 @@
 import { z } from "zod";
-import { TEAM_IDS } from "@3fc/contracts";
+import { TEAM_IDS, THIRD_LENGTH_MINUTES } from "@3fc/contracts";
 
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
 const teamIdSchema = z.enum(TEAM_IDS);
+const thirdLengthMinutesSchema = z.union([
+  z.literal(THIRD_LENGTH_MINUTES[0]),
+  z.literal(THIRD_LENGTH_MINUTES[1]),
+  z.literal(THIRD_LENGTH_MINUTES[2]),
+]);
 
 export const idempotencyKeyHeaderSchema = z
   .string()
@@ -41,6 +46,7 @@ export const createGameRequestSchema = z
     gameId: nonEmptyTrimmedString,
     gameStartTs: nonEmptyTrimmedString,
     status: z.enum(["scheduled", "live", "finished"]).optional(),
+    thirdLengthMinutes: thirdLengthMinutesSchema.optional(),
   })
   .strict();
 

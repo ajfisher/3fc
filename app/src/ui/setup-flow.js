@@ -250,6 +250,102 @@
     return localNow.toISOString().slice(0, 10);
   }
 
+  function parseThirdLengthMinutes(value) {
+    const parsed = Number.parseInt(String(value), 10);
+    return [20, 25, 30].includes(parsed) ? parsed : 20;
+  }
+
+  function defaultTimerThirds() {
+    return [1, 2, 3].map((third) => ({
+      third,
+      startedAt: null,
+      finishedAt: null,
+      status: "not_started",
+    }));
+  }
+
+  function buildTimerState(game) {
+    if (game?.timer && Array.isArray(game.timer.thirds)) {
+      return game.timer;
+    }
+
+    const thirdLengthMinutes = parseThirdLengthMinutes(game?.thirdLengthMinutes);
+    const sourceThirds = Array.isArray(game?.thirds) ? game.thirds : defaultTimerThirds();
+    const thirdsByNumber = new Map(sourceThirds.map((third) => [third.third, third]));
+    const thirds = [1, 2, 3].map((third) => {
+      const segment = thirdsByNumber.get(third) ?? {
+        third,
+        startedAt: null,
+        finishedAt: null,
+      };
+      const status = segment.finishedAt ? "finished" : segment.startedAt ? "running" : "not_started";
+      return {
+        third,
+        startedAt: segment.startedAt ?? null,
+        finishedAt: segment.finishedAt ?? null,
+        status,
+      };
+    });
+    const activeThird = thirds.find((third) => third.status === "running")?.third ?? null;
+    const anyStarted = thirds.some((third) => third.startedAt !== null);
+    const allFinished = thirds.every((third) => third.status === "finished");
+    const status = activeThird
+      ? "running"
+      : allFinished
+        ? "complete"
+        : anyStarted
+          ? "between_thirds"
+          : "not_started";
+
+    return {
+      thirdLengthMinutes,
+      activeThird,
+      status,
+      thirds,
+    };
+  }
+
+  function elapsedSeconds(startedAt, finishedAt = null) {
+    const started = new Date(startedAt);
+    const finished = finishedAt ? new Date(finishedAt) : new Date();
+    if (Number.isNaN(started.getTime()) || Number.isNaN(finished.getTime())) {
+      return 0;
+    }
+
+    return Math.max(0, Math.floor((finished.getTime() - started.getTime()) / 1000));
+  }
+
+  function formatTimerDisplay(totalSeconds, thirdLengthMinutes) {
+    const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+    const nominalSeconds = thirdLengthMinutes * 60;
+    if (safeSeconds < nominalSeconds) {
+      const minutes = Math.floor(safeSeconds / 60);
+      const seconds = safeSeconds % 60;
+      return {
+        displayTime: `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`,
+        phase: "regulation",
+      };
+    }
+
+    const stoppageSeconds = safeSeconds - nominalSeconds;
+    const stoppageMinute = Math.floor(stoppageSeconds / 60) + 1;
+    return {
+      displayTime: `${thirdLengthMinutes}+${String(stoppageMinute).padStart(2, "0")}`,
+      phase: "stoppage",
+    };
+  }
+
+  function humanTimerStatus(value) {
+    const labels = {
+      not_started: "Not started",
+      running: "Running",
+      between_thirds: "Between thirds",
+      complete: "All thirds finished",
+      finished: "Finished",
+    };
+    return labels[value] ?? value;
+  }
+
   function syncKickoffFromDate(dateInput, kickoffInput) {
     const gameDate = dateInput.value.trim();
     if (!gameDate) {
@@ -679,6 +775,7 @@
 
     const gameDateInput = document.getElementById("game-date");
     const gameKickoffInput = document.getElementById("game-kickoff");
+    const gameThirdLengthInput = document.getElementById("game-third-length");
     const gameIdDisplay = document.getElementById("game-id-display");
     const createGameButton = root.querySelector('[data-action="create-game"]');
 
@@ -691,6 +788,7 @@
     if (
       !(gameDateInput instanceof HTMLInputElement) ||
       !(gameKickoffInput instanceof HTMLInputElement) ||
+      !(gameThirdLengthInput instanceof HTMLSelectElement) ||
       !(createGameButton instanceof HTMLButtonElement) ||
       !(gamesBody instanceof HTMLElement)
     ) {
@@ -843,6 +941,7 @@
             gameId,
             gameStartTs: kickoffIso,
             status: "scheduled",
+            thirdLengthMinutes: parseThirdLengthMinutes(gameThirdLengthInput.value),
           }),
         });
 
@@ -941,9 +1040,19 @@
 
     const kickoffInput = document.getElementById("game-edit-kickoff");
     const statusInput = document.getElementById("game-edit-status");
+    const thirdLengthInput = document.getElementById("game-edit-third-length");
     const saveButton = root.querySelector('[data-action="save-game"]');
     const deleteButton = root.querySelector('[data-action="delete-game"]');
     const createAnotherLink = document.getElementById("create-another-game-link");
+    const timerThirdLabel = document.getElementById("timer-third-label");
+    const timerDisplayValue = document.getElementById("timer-display-value");
+    const timerPhaseLabel = document.getElementById("timer-phase-label");
+    const timerThirdLength = document.getElementById("timer-third-length");
+    const timerStatus = document.getElementById("timer-status");
+    const timerActiveThird = document.getElementById("timer-active-third");
+    const thirdStatusList = document.getElementById("third-status-list");
+    const startThirdButton = root.querySelector('[data-action="start-active-third"]');
+    const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerSearchInput = document.getElementById("player-search");
@@ -953,14 +1062,19 @@
     if (
       !(kickoffInput instanceof HTMLInputElement) ||
       !(statusInput instanceof HTMLSelectElement) ||
+      !(thirdLengthInput instanceof HTMLSelectElement) ||
       !(saveButton instanceof HTMLButtonElement) ||
-      !(deleteButton instanceof HTMLButtonElement)
+      !(deleteButton instanceof HTMLButtonElement) ||
+      !(startThirdButton instanceof HTMLButtonElement) ||
+      !(finishThirdButton instanceof HTMLButtonElement)
     ) {
       return;
     }
 
     let currentLeagueId = "";
     let currentSeasonId = "";
+    let currentGame = null;
+    let timerTickInterval = 0;
     let rosterTeams = [];
     let rosterPlayers = [];
     let rosterAssignments = [];
@@ -969,6 +1083,123 @@
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
     });
+
+    function nextStartableThird(timer) {
+      if (timer.status === "running" || timer.status === "complete") {
+        return null;
+      }
+
+      const next = timer.thirds.find((third) => third.status === "not_started");
+      if (!next) {
+        return null;
+      }
+
+      return next.third;
+    }
+
+    function displaySegmentForTimer(timer) {
+      const running = timer.thirds.find((third) => third.status === "running");
+      if (running) {
+        return running;
+      }
+
+      const finished = [...timer.thirds].reverse().find((third) => third.status === "finished");
+      return finished ?? timer.thirds[0] ?? null;
+    }
+
+    function syncStatusOptions(hasStarted) {
+      const scheduledOption = statusInput.querySelector('option[value="scheduled"]');
+      if (scheduledOption instanceof HTMLOptionElement) {
+        scheduledOption.disabled = hasStarted;
+      }
+
+      if (hasStarted && statusInput.value === "scheduled") {
+        statusInput.value = currentGame.status === "finished" ? "finished" : "live";
+      }
+    }
+
+    function renderTimer() {
+      if (!currentGame) {
+        return;
+      }
+
+      const timer = buildTimerState(currentGame);
+      const segment = displaySegmentForTimer(timer);
+      const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
+      const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      const display = segment?.startedAt
+        ? formatTimerDisplay(
+            elapsedSeconds(segment.startedAt, segment.finishedAt),
+            timer.thirdLengthMinutes,
+          )
+        : { displayTime: "00:00", phase: "regulation" };
+      const nextThird = nextStartableThird(timer);
+
+      thirdLengthInput.value = String(timer.thirdLengthMinutes);
+      thirdLengthInput.disabled = hasStarted;
+      syncStatusOptions(hasStarted);
+
+      if (timerThirdLabel) {
+        timerThirdLabel.textContent = segment ? `Third ${segment.third}` : "Third 1";
+      }
+      if (timerDisplayValue) {
+        timerDisplayValue.textContent = display.displayTime;
+      }
+      if (timerPhaseLabel) {
+        timerPhaseLabel.textContent =
+          timer.status === "running" && display.phase === "stoppage"
+            ? "Stoppage"
+            : humanTimerStatus(timer.status);
+      }
+      if (timerThirdLength) {
+        timerThirdLength.textContent = `${timer.thirdLengthMinutes} minutes`;
+      }
+      if (timerStatus) {
+        timerStatus.textContent = humanTimerStatus(timer.status);
+      }
+      if (timerActiveThird) {
+        timerActiveThird.textContent = timer.activeThird ? `Third ${timer.activeThird}` : "-";
+      }
+      if (thirdStatusList) {
+        thirdStatusList.innerHTML = timer.thirds
+          .map((third) => {
+            const status = humanTimerStatus(third.status);
+            const detail = third.finishedAt
+              ? `Finished ${third.finishedAt}`
+              : third.startedAt
+                ? `Started ${third.startedAt}`
+                : "Waiting";
+            return `<li data-ui="third-status-item" data-state="${escapeHtml(third.status)}">
+              <strong>Third ${third.third}</strong>
+              <span>${escapeHtml(status)}</span>
+              <small>${escapeHtml(detail)}</small>
+            </li>`;
+          })
+          .join("");
+      }
+
+      const gameFinished = currentGame.status === "finished";
+      startThirdButton.disabled = gameFinished || nextThird === null;
+      finishThirdButton.disabled = gameFinished || !activeSegment;
+      startThirdButton.textContent = nextThird ? `Start Third ${nextThird}` : "Start Third";
+      finishThirdButton.textContent = activeSegment ? `Finish Third ${activeSegment.third}` : "Finish Third";
+      if (nextThird) {
+        startThirdButton.setAttribute("data-third", String(nextThird));
+      } else {
+        startThirdButton.removeAttribute("data-third");
+      }
+      if (activeSegment) {
+        finishThirdButton.setAttribute("data-third", String(activeSegment.third));
+      } else {
+        finishThirdButton.removeAttribute("data-third");
+      }
+
+      window.clearInterval(timerTickInterval);
+      timerTickInterval = 0;
+      if (activeSegment) {
+        timerTickInterval = window.setInterval(renderTimer, 1000);
+      }
+    }
 
     function rosterControlsAvailable() {
       return (
@@ -1120,6 +1351,7 @@
         method: "GET",
       });
 
+      currentGame = game;
       currentLeagueId = game.leagueId;
       currentSeasonId = game.seasonId;
 
@@ -1143,6 +1375,8 @@
 
       kickoffInput.value = toLocalDateTimeInput(game.gameStartTs);
       statusInput.value = game.status;
+      thirdLengthInput.value = String(parseThirdLengthMinutes(game.thirdLengthMinutes ?? game.timer?.thirdLengthMinutes));
+      renderTimer();
 
       if (gameLeagueLink instanceof HTMLAnchorElement) {
         gameLeagueLink.href = `/leagues/${encodeURIComponent(game.leagueId)}`;
@@ -1178,6 +1412,7 @@
           body: JSON.stringify({
             gameStartTs: kickoffIso,
             status: statusInput.value,
+            thirdLengthMinutes: parseThirdLengthMinutes(thirdLengthInput.value),
           }),
         });
 
@@ -1212,6 +1447,62 @@
         setStatus("Game deletion failed.", "error");
       } finally {
         deleteButton.disabled = false;
+      }
+    });
+
+    startThirdButton.addEventListener("click", async () => {
+      const third = startThirdButton.getAttribute("data-third");
+      if (!third) {
+        return;
+      }
+
+      startThirdButton.disabled = true;
+      clearError();
+      setStatus(`Starting third ${third}…`, "default");
+
+      try {
+        currentGame = await requestJsonOrThrow(
+          `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/start`,
+          { method: "POST" },
+        );
+        renderTimer();
+        statusInput.value = currentGame.status;
+        setStatus(`Third ${third} started.`, "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not start third.";
+        showError(message);
+        setStatus("Third start failed.", "error");
+      } finally {
+        startThirdButton.disabled = false;
+        renderTimer();
+      }
+    });
+
+    finishThirdButton.addEventListener("click", async () => {
+      const third = finishThirdButton.getAttribute("data-third");
+      if (!third) {
+        return;
+      }
+
+      finishThirdButton.disabled = true;
+      clearError();
+      setStatus(`Finishing third ${third}…`, "default");
+
+      try {
+        currentGame = await requestJsonOrThrow(
+          `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/finish`,
+          { method: "POST" },
+        );
+        renderTimer();
+        statusInput.value = currentGame.status;
+        setStatus(`Third ${third} finished.`, "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not finish third.";
+        showError(message);
+        setStatus("Third finish failed.", "error");
+      } finally {
+        finishThirdButton.disabled = false;
+        renderTimer();
       }
     });
 

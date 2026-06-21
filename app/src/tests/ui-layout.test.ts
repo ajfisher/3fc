@@ -139,6 +139,7 @@ test("season page includes game create form and games table", () => {
   assert.match(html, /data-page="season"/);
   assert.match(html, /data-season-id="season-1"/);
   assert.match(html, /Game date/);
+  assert.match(html, /data-testid="game-third-length"/);
   assert.match(html, /season-games-body/);
   assert.match(html, /data-testid="create-game"/);
   assert.match(html, /data-testid="delete-season"/);
@@ -195,6 +196,11 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);
+  assert.match(html, /data-testid="panel-game-timer"/);
+  assert.match(html, /data-testid="third-timer"/);
+  assert.match(html, /data-testid="start-third"/);
+  assert.match(html, /data-testid="finish-third"/);
+  assert.match(html, /data-testid="game-edit-third-length"/);
   assert.match(html, /data-testid="panel-game-roster"/);
   assert.match(html, /data-testid="quick-create-player"/);
   assert.match(html, /data-testid="roster-teams"/);

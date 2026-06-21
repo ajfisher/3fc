@@ -1,4 +1,4 @@
-import type { TeamId } from "@3fc/contracts";
+import type { TeamId, ThirdLengthMinutes, ThirdNumber, ThirdTimerSegment } from "@3fc/contracts";
 
 export type GameStatus = "scheduled" | "live" | "finished";
 export type LeagueRole = "admin" | "scorekeeper" | "viewer";
@@ -56,6 +56,8 @@ export interface GameRecord {
   sessionId: string;
   status: GameStatus;
   gameStartTs: string;
+  thirdLengthMinutes: ThirdLengthMinutes;
+  thirds: ThirdTimerSegment[];
   createdAt: string;
   updatedAt: string;
 }
@@ -169,6 +171,7 @@ export interface CreateGameInput {
   sessionId: string;
   status?: GameStatus;
   gameStartTs: string;
+  thirdLengthMinutes?: ThirdLengthMinutes;
 }
 
 export interface CreateSessionGameInput {
@@ -211,13 +214,18 @@ export interface AssignRosterInput {
 export interface CreateGoalEventInput {
   gameId: string;
   eventId: string;
-  third: 1 | 2 | 3;
+  third: ThirdNumber;
   gameMinute: number;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+}
+
+export interface ThirdTransitionInput {
+  gameId: string;
+  third: ThirdNumber;
 }
 
 export interface CreateIdempotencyRecordInput {

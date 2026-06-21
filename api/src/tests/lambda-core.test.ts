@@ -6,7 +6,14 @@ import {
   type ApiGatewayHttpEvent,
 } from "../lambda-core.js";
 import type { RateLimitDecision } from "../auth/rate-limit.js";
-import type { TeamId } from "@3fc/contracts";
+import {
+  createDefaultThirdTimerSegments,
+  DEFAULT_THIRD_LENGTH_MINUTES,
+  type TeamId,
+  type ThirdLengthMinutes,
+  type ThirdTimerSegment,
+} from "@3fc/contracts";
+import { GameTimerTransitionError } from "../data/repository.js";
 
 interface MockSessionRecord {
   sessionId: string;
@@ -59,9 +66,14 @@ interface MockGameRecord {
   sessionId: string;
   status: "scheduled" | "live" | "finished";
   gameStartTs: string;
+  thirdLengthMinutes: ThirdLengthMinutes;
+  thirds: ThirdTimerSegment[];
   createdAt: string;
   updatedAt: string;
 }
+
+type MockGameInput = Omit<MockGameRecord, "thirdLengthMinutes" | "thirds"> &
+  Partial<Pick<MockGameRecord, "thirdLengthMinutes" | "thirds">>;
 
 interface MockSeasonTeamRecord {
   seasonId: string;
@@ -133,6 +145,7 @@ interface CreatedGameInput {
   sessionId: string;
   status?: "scheduled" | "live" | "finished";
   gameStartTs: string;
+  thirdLengthMinutes?: ThirdLengthMinutes;
 }
 
 interface CreatedSessionGameInput {
@@ -159,7 +172,7 @@ interface HarnessConfig {
   leagues?: Record<string, MockLeagueRecord>;
   seasons?: Record<string, MockSeasonRecord>;
   seasonSessions?: Record<string, MockSessionEntity>;
-  games?: Record<string, MockGameRecord>;
+  games?: Record<string, MockGameInput>;
   seasonTeams?: Record<string, MockSeasonTeamRecord>;
   gameTeams?: Record<string, MockGameTeamRecord>;
   players?: Record<string, MockPlayerRecord>;
@@ -214,7 +227,16 @@ function createHarness(config: HarnessConfig = {}) {
   const sessionEntities = new Map<string, MockSessionEntity>(
     Object.entries(config.seasonSessions ?? {}),
   );
-  const games = new Map<string, MockGameRecord>(Object.entries(config.games ?? {}));
+  const games = new Map<string, MockGameRecord>(
+    Object.entries(config.games ?? {}).map(([gameId, game]) => [
+      gameId,
+      {
+        ...game,
+        thirdLengthMinutes: game.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
+        thirds: game.thirds ?? createDefaultThirdTimerSegments(),
+      },
+    ]),
+  );
   const seasonTeams = new Map<string, MockSeasonTeamRecord>(
     Object.entries(config.seasonTeams ?? {}),
   );
@@ -361,6 +383,8 @@ function createHarness(config: HarnessConfig = {}) {
           sessionId: input.sessionId,
           status: input.status ?? "scheduled",
           gameStartTs: input.gameStartTs,
+          thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
+          thirds: createDefaultThirdTimerSegments(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
@@ -383,11 +407,124 @@ function createHarness(config: HarnessConfig = {}) {
           return null;
         }
 
+        if (
+          input.thirdLengthMinutes !== undefined &&
+          input.thirdLengthMinutes !== existing.thirdLengthMinutes &&
+          existing.status === "finished"
+        ) {
+          throw new GameTimerTransitionError(
+            "game_finished",
+            "Third length cannot be changed after the game is finished.",
+          );
+        }
+
+        if (
+          input.thirdLengthMinutes !== undefined &&
+          input.thirdLengthMinutes !== existing.thirdLengthMinutes &&
+          existing.thirds.some((third) => third.startedAt !== null)
+        ) {
+          throw new GameTimerTransitionError(
+            "third_length_locked",
+            "Third length cannot be changed after a third has started.",
+          );
+        }
+
+        if (input.status === "scheduled" && existing.thirds.some((third) => third.startedAt !== null)) {
+          throw new GameTimerTransitionError(
+            "timer_status_locked",
+            "Game status cannot be set back to scheduled after a third has started.",
+          );
+        }
+
         const updated = {
           ...existing,
           status: input.status ?? existing.status,
           gameStartTs: input.gameStartTs ?? existing.gameStartTs,
+          thirdLengthMinutes: input.thirdLengthMinutes ?? existing.thirdLengthMinutes,
           updatedAt: "2026-02-23T00:00:01.000Z",
+        };
+        games.set(input.gameId, updated);
+        return updated;
+      },
+      async startGameThird(input) {
+        const existing = games.get(input.gameId);
+        if (!existing) {
+          return null;
+        }
+
+        if (existing.status === "finished") {
+          throw new GameTimerTransitionError("game_finished", "Cannot start a third after the game is finished.");
+        }
+
+        const thirds = existing.thirds.map((third) => ({ ...third }));
+        const target = thirds.find((third) => third.third === input.third);
+        if (!target) {
+          throw new GameTimerTransitionError("invalid_third", "Third must be 1, 2, or 3.");
+        }
+        if (target.startedAt) {
+          throw new GameTimerTransitionError("third_already_started", `Third ${input.third} has already been started.`);
+        }
+        const runningThird = thirds.find((third) => third.startedAt && !third.finishedAt);
+        if (runningThird) {
+          throw new GameTimerTransitionError(
+            "third_already_running",
+            `Third ${runningThird.third} must be finished before another third can start.`,
+          );
+        }
+        const unfinishedPreviousThird = thirds
+          .filter((third) => third.third < input.third)
+          .find((third) => !third.finishedAt);
+        if (unfinishedPreviousThird) {
+          throw new GameTimerTransitionError(
+            "previous_third_unfinished",
+            `Third ${unfinishedPreviousThird.third} must be finished before third ${input.third} can start.`,
+          );
+        }
+
+        target.startedAt = "2026-02-23T00:00:01.000Z";
+        const updated = {
+          ...existing,
+          status: "live" as const,
+          thirds,
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        };
+        games.set(input.gameId, updated);
+        return updated;
+      },
+      async finishGameThird(input) {
+        const existing = games.get(input.gameId);
+        if (!existing) {
+          return null;
+        }
+
+        if (existing.status === "finished") {
+          throw new GameTimerTransitionError("game_finished", "Cannot finish a third after the game is finished.");
+        }
+
+        const thirds = existing.thirds.map((third) => ({ ...third }));
+        const target = thirds.find((third) => third.third === input.third);
+        if (!target) {
+          throw new GameTimerTransitionError("invalid_third", "Third must be 1, 2, or 3.");
+        }
+        if (!target.startedAt) {
+          throw new GameTimerTransitionError(
+            "third_not_started",
+            `Third ${input.third} cannot be finished before it is started.`,
+          );
+        }
+        if (target.finishedAt) {
+          throw new GameTimerTransitionError(
+            "third_already_finished",
+            `Third ${input.third} has already been finished.`,
+          );
+        }
+
+        target.finishedAt = "2026-02-23T00:00:02.000Z";
+        const updated = {
+          ...existing,
+          status: existing.status === "scheduled" ? ("live" as const) : existing.status,
+          thirds,
+          updatedAt: "2026-02-23T00:00:02.000Z",
         };
         games.set(input.gameId, updated);
         return updated;
@@ -1018,6 +1155,313 @@ test("core lambda lets scorekeepers quick-create and assign roster players", asy
       },
     },
   ]);
+});
+
+test("core lambda lets scorekeepers start and finish thirds", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "scorekeeper@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        thirdLengthMinutes: 30,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:scorekeeper@example.com": {
+        leagueId: "league-1",
+        userId: "scorekeeper@example.com",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const startResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/1/start",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(startResponse.statusCode, 200);
+  const startBody = JSON.parse(startResponse.body) as {
+    status: string;
+    thirdLengthMinutes: number;
+    timer: { status: string; activeThird: number | null; thirdLengthMinutes: number };
+    thirds: Array<{ third: number; startedAt: string | null }>;
+  };
+  assert.equal(startBody.status, "live");
+  assert.equal(startBody.thirdLengthMinutes, 30);
+  assert.equal(startBody.timer.thirdLengthMinutes, 30);
+  assert.equal(startBody.timer.activeThird, 1);
+  assert.equal(startBody.timer.status, "running");
+  assert.equal(startBody.thirds[0].startedAt, "2026-02-23T00:00:01.000Z");
+
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(finishResponse.statusCode, 200);
+  const finishBody = JSON.parse(finishResponse.body) as {
+    timer: { status: string; activeThird: number | null; thirds: Array<{ status: string }> };
+    thirds: Array<{ finishedAt: string | null }>;
+  };
+  assert.equal(finishBody.timer.status, "between_thirds");
+  assert.equal(finishBody.timer.activeThird, null);
+  assert.equal(finishBody.timer.thirds[0].status, "finished");
+  assert.equal(finishBody.thirds[0].finishedAt, "2026-02-23T00:00:02.000Z");
+
+  const invalidFinishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/2/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(invalidFinishResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(invalidFinishResponse.body), {
+    error: "conflict",
+    code: "third_not_started",
+    message: "Third 2 cannot be finished before it is started.",
+  });
+
+  for (const invalidThird of ["1abc", "1.9", "01", ""]) {
+    const invalidStartResponse = await harness.handler(
+      createEvent({
+        method: "POST",
+        path: `/v1/games/game-1/thirds/${invalidThird}/start`,
+        headers: {
+          Cookie: "threefc_session=session-1",
+        },
+      }),
+    );
+
+    assert.equal(invalidStartResponse.statusCode, 400);
+    assert.deepEqual(JSON.parse(invalidStartResponse.body), {
+      error: "Third must be 1, 2, or 3.",
+    });
+  }
+});
+
+test("core lambda rejects viewer third timer mutations through ACL", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/1/start",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "forbidden",
+    code: "scorekeeper_required",
+    message: "Admin or scorekeeper role is required for league league-1.",
+  });
+});
+
+test("core lambda rejects third length changes on finished games", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        thirdLengthMinutes: 30,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Third length cannot be changed after the game is finished.",
+  });
+});
+
+test("core lambda rejects setting scheduled status after a third starts", async () => {
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-02-23T00:00:01.000Z",
+  };
+
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        thirds,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        status: "scheduled",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "timer_status_locked",
+    message: "Game status cannot be set back to scheduled after a third has started.",
+  });
 });
 
 test("core lambda team and roster read routes do not create team records", async () => {

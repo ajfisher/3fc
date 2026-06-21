@@ -330,6 +330,12 @@ body {
       border-color: #862e25;
     }
   }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    transform: none;
+  }
 }
 
 [data-ui="button-link"] {
@@ -456,6 +462,76 @@ body {
 [data-ui="roster-workspace"] {
   display: grid;
   gap: 0.85rem;
+}
+
+[data-ui="timer-board"] {
+  display: grid;
+  gap: 0.75rem;
+}
+
+[data-ui="timer-display"] {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid #c6ddd5;
+  border-radius: 10px;
+  padding: 0.75rem;
+  background: #f7fcfa;
+
+  span {
+    color: var(--ink-soft);
+    font-weight: 700;
+    font-size: 0.82rem;
+  }
+
+  strong {
+    font-family: var(--font-display);
+    font-size: 2.4rem;
+    line-height: 1;
+  }
+}
+
+[data-ui="third-status-list"] {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-ui="third-status-item"] {
+  display: grid;
+  gap: 0.12rem;
+  border: 1px solid #d3e5df;
+  border-radius: 8px;
+  padding: 0.5rem;
+  background: #ffffff;
+
+  strong,
+  span,
+  small {
+    overflow-wrap: anywhere;
+  }
+
+  span {
+    color: #31534f;
+    font-weight: 700;
+    font-size: 0.84rem;
+  }
+
+  small {
+    color: var(--ink-soft);
+    font-size: 0.76rem;
+  }
+
+  &[data-state="running"] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  &[data-state="finished"] {
+    border-color: #abcfc1;
+    background: #f3faf7;
+  }
 }
 
 [data-ui="player-pool"],

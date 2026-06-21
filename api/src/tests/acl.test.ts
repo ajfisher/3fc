@@ -7,6 +7,7 @@ import {
   type AclLookup,
 } from "../auth/acl.js";
 import type { GameRecord, LeagueAclRecord, SeasonRecord, SessionRecord } from "../data/types.js";
+import { createDefaultThirdTimerSegments, DEFAULT_THIRD_LENGTH_MINUTES } from "@3fc/contracts";
 
 interface AclHarnessInput {
   leagueAccess?: Record<string, LeagueAclRecord>;
@@ -35,6 +36,13 @@ class InMemoryAclLookup implements AclLookup {
   }
 }
 
+function defaultTimerFields(): Pick<GameRecord, "thirdLengthMinutes" | "thirds"> {
+  return {
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+  };
+}
+
 test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
   assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/leagues"), {
     operation: "createLeague",
@@ -61,6 +69,14 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
   });
   assert.deepEqual(resolveProtectedMutationRoute("PUT", "/v1/games/game-1/roster/player-1"), {
     operation: "assignRosterPlayer",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/thirds/1/start"), {
+    operation: "startGameThird",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/thirds/1/finish"), {
+    operation: "finishGameThird",
     gameId: "game-1",
   });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
@@ -169,6 +185,7 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
+          ...defaultTimerFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -207,6 +224,59 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
   });
 });
 
+test("game-scoped timer mutation allows scorekeepers", async () => {
+  const result = await authorizeProtectedMutation(
+    "POST",
+    "/v1/games/game-1/thirds/1/start",
+    "scorekeeper-user",
+    new InMemoryAclLookup({
+      games: {
+        "game-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          sessionId: "session-1",
+          gameId: "game-1",
+          status: "scheduled",
+          gameStartTs: "2026-02-23T10:00:00.000Z",
+          ...defaultTimerFields(),
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      seasons: {
+        "season-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          name: "Season 1",
+          slug: null,
+          startsOn: null,
+          endsOn: null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      leagueAccess: {
+        "league-1:scorekeeper-user": {
+          leagueId: "league-1",
+          userId: "scorekeeper-user",
+          role: "scorekeeper",
+          grantedByUserId: "admin-user",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.operation, "startGameThird");
+  assert.deepEqual(result.scope, {
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+  });
+});
+
 test("game team override mutation rejects scorekeepers", async () => {
   const result = await authorizeProtectedMutation(
     "PUT",
@@ -221,6 +291,7 @@ test("game team override mutation rejects scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
+          ...defaultTimerFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -269,6 +340,7 @@ test("game player creation mutation rejects viewers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
+          ...defaultTimerFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },

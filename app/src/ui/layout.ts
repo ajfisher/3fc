@@ -321,7 +321,16 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
       label: "Kickoff time",
       type: "datetime-local",
       required: true,
-    })}<dl data-ui="id-preview"><div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div></dl>`,
+    })}
+    <div data-ui="field">
+      <label for="game-third-length">Third length</label>
+      <select id="game-third-length" data-ui="input" data-testid="game-third-length">
+        <option value="20" selected>20 minutes</option>
+        <option value="25">25 minutes</option>
+        <option value="30">30 minutes</option>
+      </select>
+    </div>
+    <dl data-ui="id-preview"><div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div></dl>`,
     `<div data-ui="button-row">${renderButton("Create game", "primary", {
       type: "button",
       "data-action": "create-game",
@@ -685,6 +694,14 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
                 <option value="live">Live</option>
                 <option value="finished">Finished</option>
               </select>
+            </div>
+            <div data-ui="field">
+              <label for="game-edit-third-length">Third length</label>
+              <select id="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length">
+                <option value="20">20 minutes</option>
+                <option value="25">25 minutes</option>
+                <option value="30">30 minutes</option>
+              </select>
             </div>`,
             `<div data-ui="button-row">
               ${renderButton("Save changes", "primary", {
@@ -700,6 +717,36 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               <a id="create-another-game-link" href="/setup" data-ui="button-link" data-variant="secondary" data-testid="create-another-game">Create another game</a>
             </div>`,
             "panel-game-details",
+          )}
+          ${renderPanel(
+            "Third timer",
+            "Start and finish thirds in order.",
+            `<div data-ui="timer-board" data-testid="third-timer">
+              <div data-ui="timer-display">
+                <span id="timer-third-label">Third 1</span>
+                <strong id="timer-display-value">00:00</strong>
+                <span id="timer-phase-label">Not started</span>
+              </div>
+              <dl data-ui="id-preview" data-testid="timer-context-details">
+                <div><dt>Length</dt><dd id="timer-third-length">20 minutes</dd></div>
+                <div><dt>Status</dt><dd id="timer-status">Not started</dd></div>
+                <div><dt>Active third</dt><dd id="timer-active-third">-</dd></div>
+              </dl>
+              <ol data-ui="third-status-list" id="third-status-list" data-testid="third-status-list"></ol>
+            </div>`,
+            `<div data-ui="button-row">
+              ${renderButton("Start Third 1", "primary", {
+                type: "button",
+                "data-action": "start-active-third",
+                "data-testid": "start-third",
+              })}
+              ${renderButton("Finish Third", "secondary", {
+                type: "button",
+                "data-action": "finish-active-third",
+                "data-testid": "finish-third",
+              })}
+            </div>`,
+            "panel-game-timer",
           )}
           ${renderPanel(
             "Roster setup",

@@ -9,7 +9,16 @@ import {
   GetItemCommand,
   PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
-import { DEFAULT_TEAMS, TEAM_IDS, type TeamId } from "@3fc/contracts";
+import {
+  buildGameTimerState,
+  DEFAULT_TEAMS,
+  isThirdLengthMinutes,
+  isThirdNumber,
+  TEAM_IDS,
+  type TeamId,
+  type ThirdLengthMinutes,
+  type ThirdNumber,
+} from "@3fc/contracts";
 
 import {
   isMagicLinkEmailLike,
@@ -49,7 +58,7 @@ import {
   quickCreateGamePlayerRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { ThreeFcRepository } from "./data/repository.js";
+import { GameTimerTransitionError, ThreeFcRepository } from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -320,6 +329,53 @@ function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
   return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
 }
 
+function buildGameResponse(game: {
+  gameId: string;
+  leagueId: string;
+  seasonId: string;
+  sessionId: string;
+  status: "scheduled" | "live" | "finished";
+  gameStartTs: string;
+  thirdLengthMinutes: ThirdLengthMinutes;
+  thirds: Array<{
+    third: ThirdNumber;
+    startedAt: string | null;
+    finishedAt: string | null;
+  }>;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    ...game,
+    timer: buildGameTimerState({
+      thirdLengthMinutes: game.thirdLengthMinutes,
+      thirds: game.thirds,
+    }),
+  };
+}
+
+function parseThirdRouteParam(value: string): ThirdNumber | null {
+  if (value === "1" || value === "2" || value === "3") {
+    const parsed = Number.parseInt(value, 10);
+    return isThirdNumber(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function timerTransitionConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  error: GameTimerTransitionError,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: error.code,
+    message: error.message,
+  });
+  return 409;
+}
+
 function toPublicPlayer(player: {
   playerId: string;
   nickname: string;
@@ -502,10 +558,12 @@ async function buildRosterResponse(game: {
 function parseGamePatchBody(rawBody: Record<string, unknown>): {
   status?: "scheduled" | "live" | "finished";
   gameStartTs?: string;
+  thirdLengthMinutes?: ThirdLengthMinutes;
 } | null {
   const parsed: {
     status?: "scheduled" | "live" | "finished";
     gameStartTs?: string;
+    thirdLengthMinutes?: ThirdLengthMinutes;
   } = {};
 
   if (rawBody.status !== undefined) {
@@ -527,7 +585,19 @@ function parseGamePatchBody(rawBody: Record<string, unknown>): {
     parsed.gameStartTs = rawBody.gameStartTs;
   }
 
-  if (parsed.status === undefined && parsed.gameStartTs === undefined) {
+  if (rawBody.thirdLengthMinutes !== undefined) {
+    if (typeof rawBody.thirdLengthMinutes !== "number" || !isThirdLengthMinutes(rawBody.thirdLengthMinutes)) {
+      return null;
+    }
+
+    parsed.thirdLengthMinutes = rawBody.thirdLengthMinutes;
+  }
+
+  if (
+    parsed.status === undefined &&
+    parsed.gameStartTs === undefined &&
+    parsed.thirdLengthMinutes === undefined
+  ) {
     return null;
   }
 
@@ -877,6 +947,7 @@ async function handleCreateGame(
         sessionId: scope.sessionId,
         status: parsedBody.data.status,
         gameStartTs: parsedBody.data.gameStartTs,
+        thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
       });
 
       await repository.createSessionGame({
@@ -890,7 +961,7 @@ async function handleCreateGame(
 
       return {
         statusCode: 201,
-        payload: game,
+        payload: buildGameResponse(game),
       };
     },
   });
@@ -1511,7 +1582,7 @@ async function start(): Promise<void> {
         const games = await repository.listGamesForSeason(seasonId);
         status = 200;
         sendJsonWithCors(request, response, status, {
-          games,
+          games: games.map((game) => buildGameResponse(game)),
         });
         return;
       }
@@ -1690,7 +1761,69 @@ async function start(): Promise<void> {
         }
 
         status = 200;
-        sendJsonWithCors(request, response, status, game);
+        sendJsonWithCors(request, response, status, buildGameResponse(game));
+        return;
+      }
+
+      const startThirdMatch = route.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/);
+      if (method === "POST" && startThirdMatch) {
+        const gameId = decodeURIComponent(startThirdMatch[1]);
+        const third = parseThirdRouteParam(decodeURIComponent(startThirdMatch[2]));
+        if (!third) {
+          status = badRequest(request, response, "Third must be 1, 2, or 3.");
+          return;
+        }
+
+        let updated;
+        try {
+          updated = await repository.startGameThird({ gameId, third });
+        } catch (error) {
+          if (error instanceof GameTimerTransitionError) {
+            status = timerTransitionConflict(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
+
+        if (!updated) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, buildGameResponse(updated));
+        return;
+      }
+
+      const finishThirdMatch = route.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/);
+      if (method === "POST" && finishThirdMatch) {
+        const gameId = decodeURIComponent(finishThirdMatch[1]);
+        const third = parseThirdRouteParam(decodeURIComponent(finishThirdMatch[2]));
+        if (!third) {
+          status = badRequest(request, response, "Third must be 1, 2, or 3.");
+          return;
+        }
+
+        let updated;
+        try {
+          updated = await repository.finishGameThird({ gameId, third });
+        } catch (error) {
+          if (error instanceof GameTimerTransitionError) {
+            status = timerTransitionConflict(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
+
+        if (!updated) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, buildGameResponse(updated));
         return;
       }
 
@@ -2021,16 +2154,27 @@ async function start(): Promise<void> {
           status = badRequest(
             request,
             response,
-            "PATCH /v1/games/{gameId} accepts status and/or gameStartTs.",
+            "PATCH /v1/games/{gameId} accepts status, gameStartTs, and/or thirdLengthMinutes.",
           );
           return;
         }
 
-        const updated = await repository.updateGame({
-          gameId,
-          status: parsedPatch.status,
-          gameStartTs: parsedPatch.gameStartTs,
-        });
+        let updated;
+        try {
+          updated = await repository.updateGame({
+            gameId,
+            status: parsedPatch.status,
+            gameStartTs: parsedPatch.gameStartTs,
+            thirdLengthMinutes: parsedPatch.thirdLengthMinutes,
+          });
+        } catch (error) {
+          if (error instanceof GameTimerTransitionError) {
+            status = timerTransitionConflict(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
 
         if (!updated) {
           status = notFound(request, response, `Game ${gameId} was not found.`);
@@ -2038,7 +2182,7 @@ async function start(): Promise<void> {
         }
 
         status = 200;
-        sendJsonWithCors(request, response, status, updated);
+        sendJsonWithCors(request, response, status, buildGameResponse(updated));
         return;
       }
 
