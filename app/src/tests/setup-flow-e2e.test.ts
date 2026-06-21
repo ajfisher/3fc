@@ -328,6 +328,23 @@ function createMockFetch(state: MockApiState) {
       return createJsonResponse(200, league);
     }
 
+    if (method === "DELETE" && leagueMatch) {
+      const leagueId = decodeURIComponent(leagueMatch[1]);
+      if (![...state.leagues.keys()].includes(leagueId)) {
+        return createJsonResponse(404, { error: "not_found", message: "League not found." });
+      }
+
+      if ([...state.seasons.values()].some((season) => season.leagueId === leagueId)) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          message: "Cannot delete league with existing seasons.",
+        });
+      }
+
+      state.leagues.delete(leagueId);
+      return new Response(null, { status: 204 });
+    }
+
     const leagueSeasonsMatch = path.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
     if (method === "GET" && leagueSeasonsMatch) {
       const leagueId = decodeURIComponent(leagueSeasonsMatch[1]);
@@ -366,6 +383,23 @@ function createMockFetch(state: MockApiState) {
       }
 
       return createJsonResponse(200, season);
+    }
+
+    if (method === "DELETE" && seasonMatch) {
+      const seasonId = decodeURIComponent(seasonMatch[1]);
+      if (![...state.seasons.keys()].includes(seasonId)) {
+        return createJsonResponse(404, { error: "not_found", message: "Season not found." });
+      }
+
+      if ([...state.games.values()].some((game) => game.seasonId === seasonId)) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          message: "Cannot delete season with existing games.",
+        });
+      }
+
+      state.seasons.delete(seasonId);
+      return new Response(null, { status: 204 });
     }
 
     const seasonGamesMatch = path.match(/^\/v1\/seasons\/([^/]+)\/games$/);
@@ -861,6 +895,92 @@ test("setup happy path runs from sign-in to created game context", async () => {
   assert.equal(leagueId?.textContent, "three-sided-football-club");
   assert.equal(seasonId?.textContent, "autumn-cup");
   assert.equal(createAnotherLink?.getAttribute("href"), "/seasons/autumn-cup");
+});
+
+test("league page header delete button deletes an empty league", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("empty-league", {
+    leagueId: "empty-league",
+    name: "Empty League",
+    slug: "empty-league",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "empty-league"),
+    url: "http://localhost:3000/leagues/empty-league",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const deleteLeagueButton = page.document.querySelector('[data-testid="delete-league"]');
+  assert(deleteLeagueButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteLeagueButton);
+  await flushAsync();
+
+  assert.equal(apiState.leagues.has("empty-league"), false);
+  assert.equal(page.navigations.at(-1)?.url, "/setup");
+});
+
+test("season page header delete button deletes an empty season", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("three-sided-football-club", {
+    leagueId: "three-sided-football-club",
+    name: "Three Sided Football Club",
+    slug: "three-sided-football-club",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
+    url: "http://localhost:3000/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const deleteSeasonButton = page.document.querySelector('[data-testid="delete-season"]');
+  assert(deleteSeasonButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteSeasonButton);
+  await flushAsync();
+
+  assert.equal(apiState.seasons.has("autumn-cup"), false);
+  assert.equal(page.navigations.at(-1)?.url, "/leagues/three-sided-football-club");
 });
 
 test("game page quick-creates and assigns roster players", async () => {

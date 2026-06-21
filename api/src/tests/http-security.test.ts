@@ -39,6 +39,7 @@ test("CORS headers are returned only for allowed origins", () => {
   const allowed = buildCorsHeaders("https://qa.3fc.football", allowlist);
   assert.equal(allowed["Access-Control-Allow-Origin"], "https://qa.3fc.football");
   assert.equal(allowed["Access-Control-Allow-Credentials"], "true");
+  assert.equal(allowed["Access-Control-Allow-Methods"], "GET,POST,PATCH,PUT,DELETE,OPTIONS");
   assert.equal(
     allowed["Access-Control-Allow-Headers"],
     "content-type,x-csrf-token,idempotency-key",

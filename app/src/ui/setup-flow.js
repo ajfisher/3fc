@@ -468,7 +468,7 @@
 
     const title = document.getElementById("league-title");
     const subtitle = document.getElementById("league-subtitle");
-    const deleteLeagueButton = root.querySelector('[data-action="delete-league"]');
+    const deleteLeagueButton = document.querySelector('[data-testid="delete-league"]');
 
     const seasonNameInput = document.getElementById("season-name");
     const seasonFriendlyUrlInput = document.getElementById("season-friendly-url");
@@ -682,7 +682,7 @@
     const gameIdDisplay = document.getElementById("game-id-display");
     const createGameButton = root.querySelector('[data-action="create-game"]');
 
-    const deleteSeasonButton = root.querySelector('[data-action="delete-season"]');
+    const deleteSeasonButton = document.querySelector('[data-testid="delete-season"]');
 
     const gamesBody = document.getElementById("season-games-body");
     const gamesTableWrap = document.querySelector('[data-testid="season-games-table"]');
