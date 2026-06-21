@@ -98,6 +98,28 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /https:\/\/qa-api\.3fc\.football/);
 });
 
+test("setup pages can version UI asset URLs for deployments", () => {
+  const previousVersion = process.env.THREEFC_ASSET_VERSION;
+  process.env.THREEFC_ASSET_VERSION = "abc1234";
+
+  try {
+    const setupHtml = renderSetupHomePage("https://qa-api.3fc.football");
+    const signInHtml = renderSignInPage("https://qa-api.3fc.football", "/setup");
+    const componentHtml = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+    assert.match(setupHtml, /href="\/ui\/styles\.css\?v=abc1234"/);
+    assert.match(setupHtml, /<script src="\/ui\/setup-flow\.js\?v=abc1234" defer><\/script>/);
+    assert.match(signInHtml, /<script src="\/ui\/auth-flow\.js\?v=abc1234" defer><\/script>/);
+    assert.match(componentHtml, /<script src="\/ui\/modal\.js\?v=abc1234" defer><\/script>/);
+  } finally {
+    if (previousVersion === undefined) {
+      delete process.env.THREEFC_ASSET_VERSION;
+    } else {
+      process.env.THREEFC_ASSET_VERSION = previousVersion;
+    }
+  }
+});
+
 test("league page includes season create form and seasons table", () => {
   const html = renderLeaguePage("https://qa-api.3fc.football", "league-1");
 
@@ -173,4 +195,7 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);
+  assert.match(html, /data-testid="panel-game-roster"/);
+  assert.match(html, /data-testid="quick-create-player"/);
+  assert.match(html, /data-testid="roster-teams"/);
 });

@@ -3,7 +3,7 @@ info:
   title: 3FC Core Write API
   version: 0.1.0
   description: |
-    Authenticated core write routes for league/season/session/game creation.
+    Authenticated core write routes for league/season/session/game creation and M2 roster setup.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
@@ -139,6 +139,257 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/seasons/{seasonId}/teams:
+    get:
+      summary: List season default teams
+      operationId: listSeasonTeams
+      parameters:
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Season teams
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - teams
+                properties:
+                  teams:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SeasonTeam"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/seasons/{seasonId}/teams/{teamId}:
+    put:
+      summary: Upsert season default team
+      operationId: upsertSeasonTeam
+      parameters:
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertTeamRequest"
+      responses:
+        "200":
+          description: Season team upserted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeasonTeam"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/games/{gameId}/teams:
+    get:
+      summary: List game teams
+      operationId: listGameTeams
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Game teams
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - teams
+                properties:
+                  teams:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GameTeam"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/games/{gameId}/teams/{teamId}:
+    put:
+      summary: Upsert game team override
+      operationId: upsertGameTeam
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/TeamId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertTeamRequest"
+      responses:
+        "200":
+          description: Game team upserted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameTeam"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/games/{gameId}/players:
+    get:
+      summary: List recent/searchable players for a game roster
+      operationId: listGamePlayers
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Player list
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - players
+                properties:
+                  players:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Player"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      summary: Quick-create a nickname player in game setup
+      operationId: quickCreateGamePlayer
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuickCreateGamePlayerRequest"
+      responses:
+        "201":
+          description: Player created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Player"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+  /v1/games/{gameId}/roster:
+    get:
+      summary: Read game roster
+      operationId: listGameRoster
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Game roster with teams and player nicknames
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameRosterResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/games/{gameId}/roster/{playerId}:
+    put:
+      summary: Assign or reassign a player to a game team
+      operationId: assignRosterPlayer
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: playerId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignRosterPlayerRequest"
+      responses:
+        "200":
+          description: Roster assignment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterAssignment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
   parameters:
     IdempotencyKey:
@@ -150,6 +401,16 @@ components:
         minLength: 1
         maxLength: 128
       description: Optional idempotency key for replay-safe writes.
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          - red
+          - blue
+          - yellow
   responses:
     BadRequest:
       description: Request body or headers failed validation
@@ -256,6 +517,43 @@ components:
             - scheduled
             - live
             - finished
+    UpsertTeamRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+        color:
+          type:
+            - string
+            - "null"
+    QuickCreateGamePlayerRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - nickname
+      properties:
+        playerId:
+          type: string
+          minLength: 1
+        nickname:
+          type: string
+          minLength: 1
+    AssignRosterPlayerRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - teamId
+      properties:
+        teamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
     League:
       type: object
       required:
@@ -373,6 +671,127 @@ components:
         updatedAt:
           type: string
           format: date-time
+    SeasonTeam:
+      type: object
+      required:
+        - seasonId
+        - teamId
+        - name
+        - color
+        - createdAt
+        - updatedAt
+      properties:
+        seasonId:
+          type: string
+        teamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        name:
+          type: string
+        color:
+          type:
+            - string
+            - "null"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    GameTeam:
+      type: object
+      required:
+        - gameId
+        - teamId
+        - name
+        - color
+        - createdAt
+        - updatedAt
+      properties:
+        gameId:
+          type: string
+        teamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        name:
+          type: string
+        color:
+          type:
+            - string
+            - "null"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    Player:
+      type: object
+      required:
+        - playerId
+        - nickname
+        - createdAt
+        - updatedAt
+      properties:
+        playerId:
+          type: string
+        nickname:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RosterAssignment:
+      type: object
+      required:
+        - gameId
+        - teamId
+        - playerId
+        - createdAt
+        - updatedAt
+      properties:
+        gameId:
+          type: string
+        teamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        playerId:
+          type: string
+        player:
+          anyOf:
+            - $ref: "#/components/schemas/Player"
+            - type: "null"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    GameRosterResponse:
+      type: object
+      required:
+        - teams
+        - roster
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: "#/components/schemas/GameTeam"
+        roster:
+          type: array
+          items:
+            $ref: "#/components/schemas/RosterAssignment"
     ErrorResponse:
       type: object
       additionalProperties: true

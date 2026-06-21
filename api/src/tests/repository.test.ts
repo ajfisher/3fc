@@ -168,11 +168,26 @@ test("repository supports round-trip create/read for core entities", async () =>
   });
   assert.deepEqual(await repository.getGame("game-1"), game);
 
+  const gameTeam = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Game Red",
+    color: "#d83b36",
+  });
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), [gameTeam]);
+
   const player = await repository.createPlayer({
     playerId: "player-1",
     nickname: "AJ",
   });
   assert.deepEqual(await repository.getPlayer("player-1"), player);
+  assert.deepEqual(await repository.listPlayers({ search: "aj" }), [player]);
+
+  const gamePlayer = await repository.linkGamePlayer({
+    gameId: "game-1",
+    playerId: "player-1",
+  });
+  assert.deepEqual(await repository.listGamePlayers("game-1"), [gamePlayer]);
 
   const accessGrant = await repository.grantLeagueAccess({
     leagueId: "league-1",
@@ -194,6 +209,15 @@ test("repository supports round-trip create/read for core entities", async () =>
     playerId: "player-1",
   });
   assert.deepEqual(await repository.listGameRoster("game-1"), [rosterAssignment]);
+  assert.equal((await repository.listGamePlayers("game-1")).length, 1);
+
+  const reassignedRoster = await repository.assignRosterPlayer({
+    gameId: "game-1",
+    teamId: "blue",
+    playerId: "player-1",
+  });
+  assert.deepEqual(await repository.listGameRoster("game-1"), [reassignedRoster]);
+  assert.equal(reassignedRoster.teamId, "blue");
 });
 
 test("repository query supports deterministic session->games ordering", async () => {

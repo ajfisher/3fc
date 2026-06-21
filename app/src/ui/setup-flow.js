@@ -51,6 +51,18 @@
       .slice(0, 48);
   }
 
+  function initialsForName(value) {
+    const initials = value
+      .trim()
+      .split(/\s+/)
+      .filter((segment) => segment.length > 0)
+      .slice(0, 2)
+      .map((segment) => segment[0]?.toUpperCase() ?? "")
+      .join("");
+
+    return initials || "P";
+  }
+
   function setStatus(text, state = "default") {
     if (!statusElement) {
       return;
@@ -456,7 +468,7 @@
 
     const title = document.getElementById("league-title");
     const subtitle = document.getElementById("league-subtitle");
-    const deleteLeagueButton = root.querySelector('[data-action="delete-league"]');
+    const deleteLeagueButton = document.querySelector('[data-testid="delete-league"]');
 
     const seasonNameInput = document.getElementById("season-name");
     const seasonFriendlyUrlInput = document.getElementById("season-friendly-url");
@@ -670,7 +682,7 @@
     const gameIdDisplay = document.getElementById("game-id-display");
     const createGameButton = root.querySelector('[data-action="create-game"]');
 
-    const deleteSeasonButton = root.querySelector('[data-action="delete-season"]');
+    const deleteSeasonButton = document.querySelector('[data-testid="delete-season"]');
 
     const gamesBody = document.getElementById("season-games-body");
     const gamesTableWrap = document.querySelector('[data-testid="season-games-table"]');
@@ -932,6 +944,11 @@
     const saveButton = root.querySelector('[data-action="save-game"]');
     const deleteButton = root.querySelector('[data-action="delete-game"]');
     const createAnotherLink = document.getElementById("create-another-game-link");
+    const playerNicknameInput = document.getElementById("player-nickname");
+    const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
+    const playerSearchInput = document.getElementById("player-search");
+    const playerPoolElement = document.getElementById("player-pool");
+    const rosterTeamsElement = document.getElementById("roster-teams");
 
     if (
       !(kickoffInput instanceof HTMLInputElement) ||
@@ -944,10 +961,159 @@
 
     let currentLeagueId = "";
     let currentSeasonId = "";
+    let rosterTeams = [];
+    let rosterPlayers = [];
+    let rosterAssignments = [];
+    let rosterSearchTimer = 0;
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
     });
+
+    function rosterControlsAvailable() {
+      return (
+        playerNicknameInput instanceof HTMLInputElement &&
+        quickCreatePlayerButton instanceof HTMLButtonElement &&
+        playerSearchInput instanceof HTMLInputElement &&
+        playerPoolElement instanceof HTMLElement &&
+        rosterTeamsElement instanceof HTMLElement
+      );
+    }
+
+    function teamById(teamId) {
+      return rosterTeams.find((team) => team.teamId === teamId) ?? null;
+    }
+
+    function playerById(playerId) {
+      const rosterPlayer = rosterAssignments.find((assignment) => assignment.playerId === playerId)?.player;
+      if (rosterPlayer) {
+        return rosterPlayer;
+      }
+
+      return rosterPlayers.find((player) => player.playerId === playerId) ?? null;
+    }
+
+    function assignmentByPlayerId(playerId) {
+      return rosterAssignments.find((assignment) => assignment.playerId === playerId) ?? null;
+    }
+
+    function teamSwatchStyle(team) {
+      const color = typeof team.color === "string" && team.color.length > 0 ? team.color : "#d9f0e8";
+      if (!/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+        return "";
+      }
+
+      return ` style="--team-color: ${escapeHtml(color)}"`;
+    }
+
+    function assignmentButtons(playerId, currentTeamId = null) {
+      return rosterTeams
+        .map((team) => {
+          const active = currentTeamId === team.teamId ? ' data-state="active" aria-pressed="true"' : "";
+          return `<button data-ui="row-action" type="button" data-action="assign-player" data-player-id="${escapeHtml(
+            playerId,
+          )}" data-team-id="${escapeHtml(team.teamId)}"${active}>${escapeHtml(team.name)}</button>`;
+        })
+        .join("");
+    }
+
+    function renderPlayerPool() {
+      if (!(playerPoolElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (rosterPlayers.length === 0) {
+        playerPoolElement.innerHTML = `<p data-ui="empty-note">No players found.</p>`;
+        return;
+      }
+
+      playerPoolElement.innerHTML = rosterPlayers
+        .map((player) => {
+          const assignment = assignmentByPlayerId(player.playerId);
+          const assignedTeam = assignment ? teamById(assignment.teamId) : null;
+          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
+          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
+            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
+            <div data-ui="roster-player-main">
+              <strong>${escapeHtml(player.nickname)}</strong>
+              <span>${escapeHtml(statusText)}</span>
+            </div>
+            <div data-ui="row-action-buttons">
+              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
+            </div>
+          </article>`;
+        })
+        .join("");
+    }
+
+    function renderRosterTeams() {
+      if (!(rosterTeamsElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (rosterTeams.length === 0) {
+        rosterTeamsElement.innerHTML = `<p data-ui="empty-note">No teams found.</p>`;
+        return;
+      }
+
+      rosterTeamsElement.innerHTML = rosterTeams
+        .map((team) => {
+          const assignments = rosterAssignments.filter((assignment) => assignment.teamId === team.teamId);
+          const players = assignments
+            .map((assignment) => {
+              const player = assignment.player ?? playerById(assignment.playerId);
+              const nickname = player?.nickname ?? assignment.playerId;
+              return `<li data-ui="roster-member">
+                <span>${escapeHtml(nickname)}</span>
+                <div data-ui="row-action-buttons">
+                  ${assignmentButtons(assignment.playerId, team.teamId)}
+                </div>
+              </li>`;
+            })
+            .join("");
+
+          return `<article data-ui="roster-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
+            <header>
+              <span data-ui="team-swatch"></span>
+              <h4>${escapeHtml(team.name)}</h4>
+              <span data-ui="roster-count">${assignments.length}</span>
+            </header>
+            <ul>
+              ${players || `<li data-ui="empty-note">No players assigned.</li>`}
+            </ul>
+          </article>`;
+        })
+        .join("");
+    }
+
+    function renderRosterSetup() {
+      renderPlayerPool();
+      renderRosterTeams();
+    }
+
+    async function loadRosterSetup(options = {}) {
+      if (!rosterControlsAvailable()) {
+        return;
+      }
+
+      const search = playerSearchInput.value.trim();
+      const searchQuery = search ? `?search=${encodeURIComponent(search)}` : "";
+      const [rosterPayload, playersPayload] = await Promise.all([
+        requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET" }),
+        requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players${searchQuery}`, {
+          method: "GET",
+        }),
+      ]);
+
+      rosterTeams = Array.isArray(rosterPayload?.teams) ? rosterPayload.teams : [];
+      rosterAssignments = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : [];
+      rosterPlayers = Array.isArray(playersPayload?.players) ? playersPayload.players : [];
+      renderRosterSetup();
+
+      if (options.updateStatus !== false) {
+        setStatus("Game roster ready.", "success");
+      }
+    }
 
     async function loadGame() {
       const game = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
@@ -1049,7 +1215,117 @@
       }
     });
 
+    if (rosterControlsAvailable()) {
+      playerNicknameInput.addEventListener("input", () => {
+        setFieldMessage("player-nickname");
+      });
+
+      playerSearchInput.addEventListener("input", () => {
+        window.clearTimeout(rosterSearchTimer);
+        rosterSearchTimer = window.setTimeout(() => {
+          void loadRosterSetup({ updateStatus: false }).catch((error) => {
+            const message = error instanceof Error ? error.message : "Could not search players.";
+            showError(message);
+            setStatus("Player search failed.", "error");
+          });
+        }, 160);
+      });
+
+      quickCreatePlayerButton.addEventListener("click", async () => {
+        clearError();
+
+        const nickname = playerNicknameInput.value.trim();
+        if (!nickname) {
+          setFieldMessage("player-nickname", "invalid", "Player nickname is required.");
+          playerNicknameInput.focus();
+          return;
+        }
+
+        const nicknameSlug = slugify(nickname) || "player";
+        const playerId = `player-${nicknameSlug}-${randomSuffix(6)}`;
+        quickCreatePlayerButton.disabled = true;
+        setStatus("Creating player…", "default");
+
+        try {
+          await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": createIdempotencyKey("create-player", `${gameId}-${playerId}`),
+            },
+            body: JSON.stringify({
+              playerId,
+              nickname,
+            }),
+          });
+
+          playerNicknameInput.value = "";
+          playerSearchInput.value = "";
+          setFieldMessage("player-nickname", "valid", "Player created.");
+          await loadRosterSetup({ updateStatus: false });
+          setStatus("Player created.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not create player.";
+          showError(message);
+          setStatus("Player creation failed.", "error");
+        } finally {
+          quickCreatePlayerButton.disabled = false;
+        }
+      });
+
+      root.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement)) {
+          return;
+        }
+
+        if (target.getAttribute("data-action") !== "assign-player") {
+          return;
+        }
+
+        const playerId = target.getAttribute("data-player-id");
+        const teamId = target.getAttribute("data-team-id");
+        if (!playerId || !teamId) {
+          return;
+        }
+
+        target.disabled = true;
+        clearError();
+        setStatus("Assigning player…", "default");
+
+        try {
+          await requestJsonOrThrow(
+            `/v1/games/${encodeURIComponent(gameId)}/roster/${encodeURIComponent(playerId)}`,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                teamId,
+              }),
+            },
+          );
+
+          await loadRosterSetup({ updateStatus: false });
+          const player = playerById(playerId);
+          const team = teamById(teamId);
+          setStatus(
+            `${player?.nickname ?? "Player"} assigned to ${team?.name ?? teamId}.`,
+            "success",
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not assign player.";
+          showError(message);
+          setStatus("Roster assignment failed.", "error");
+        } finally {
+          target.disabled = false;
+        }
+      });
+    }
+
     await loadGame();
+    await loadRosterSetup({ updateStatus: false });
 
     try {
       const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {

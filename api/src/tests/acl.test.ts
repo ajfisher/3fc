@@ -6,12 +6,13 @@ import {
   resolveProtectedMutationRoute,
   type AclLookup,
 } from "../auth/acl.js";
-import type { LeagueAclRecord, SeasonRecord, SessionRecord } from "../data/types.js";
+import type { GameRecord, LeagueAclRecord, SeasonRecord, SessionRecord } from "../data/types.js";
 
 interface AclHarnessInput {
   leagueAccess?: Record<string, LeagueAclRecord>;
   seasons?: Record<string, SeasonRecord>;
   sessions?: Record<string, SessionRecord>;
+  games?: Record<string, GameRecord>;
 }
 
 class InMemoryAclLookup implements AclLookup {
@@ -27,6 +28,10 @@ class InMemoryAclLookup implements AclLookup {
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     return this.input.sessions?.[sessionId] ?? null;
+  }
+
+  async getGame(gameId: string): Promise<GameRecord | null> {
+    return this.input.games?.[gameId] ?? null;
   }
 }
 
@@ -45,6 +50,18 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
   assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/sessions/session-1/games"), {
     operation: "createGame",
     sessionId: "session-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/players"), {
+    operation: "createGamePlayer",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("PUT", "/v1/games/game-1/teams/red"), {
+    operation: "updateGameTeam",
+    gameId: "game-1",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("PUT", "/v1/games/game-1/roster/player-1"), {
+    operation: "assignRosterPlayer",
+    gameId: "game-1",
   });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
@@ -136,4 +153,152 @@ test("session-scoped mutation returns not_found when acl scope cannot be resolve
   assert.equal(result.allowed, false);
   assert.equal(result.statusCode, 404);
   assert.equal(result.error?.code, "acl_scope_not_found");
+});
+
+test("game-scoped roster mutation allows scorekeepers", async () => {
+  const result = await authorizeProtectedMutation(
+    "PUT",
+    "/v1/games/game-1/roster/player-1",
+    "scorekeeper-user",
+    new InMemoryAclLookup({
+      games: {
+        "game-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          sessionId: "session-1",
+          gameId: "game-1",
+          status: "scheduled",
+          gameStartTs: "2026-02-23T10:00:00.000Z",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      seasons: {
+        "season-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          name: "Season 1",
+          slug: null,
+          startsOn: null,
+          endsOn: null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      leagueAccess: {
+        "league-1:scorekeeper-user": {
+          leagueId: "league-1",
+          userId: "scorekeeper-user",
+          role: "scorekeeper",
+          grantedByUserId: "admin-user",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.operation, "assignRosterPlayer");
+  assert.deepEqual(result.scope, {
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+  });
+});
+
+test("game team override mutation rejects scorekeepers", async () => {
+  const result = await authorizeProtectedMutation(
+    "PUT",
+    "/v1/games/game-1/teams/red",
+    "scorekeeper-user",
+    new InMemoryAclLookup({
+      games: {
+        "game-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          sessionId: "session-1",
+          gameId: "game-1",
+          status: "scheduled",
+          gameStartTs: "2026-02-23T10:00:00.000Z",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      seasons: {
+        "season-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          name: "Season 1",
+          slug: null,
+          startsOn: null,
+          endsOn: null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      leagueAccess: {
+        "league-1:scorekeeper-user": {
+          leagueId: "league-1",
+          userId: "scorekeeper-user",
+          role: "scorekeeper",
+          grantedByUserId: "admin-user",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.allowed, false);
+  assert.equal(result.statusCode, 403);
+  assert.equal(result.error?.code, "admin_required");
+});
+
+test("game player creation mutation rejects viewers", async () => {
+  const result = await authorizeProtectedMutation(
+    "POST",
+    "/v1/games/game-1/players",
+    "viewer-user",
+    new InMemoryAclLookup({
+      games: {
+        "game-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          sessionId: "session-1",
+          gameId: "game-1",
+          status: "scheduled",
+          gameStartTs: "2026-02-23T10:00:00.000Z",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      seasons: {
+        "season-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          name: "Season 1",
+          slug: null,
+          startsOn: null,
+          endsOn: null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      leagueAccess: {
+        "league-1:viewer-user": {
+          leagueId: "league-1",
+          userId: "viewer-user",
+          role: "viewer",
+          grantedByUserId: "admin-user",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.allowed, false);
+  assert.equal(result.statusCode, 403);
+  assert.equal(result.error?.code, "scorekeeper_required");
 });

@@ -1,5 +1,31 @@
 export type TeamId = "red" | "blue" | "yellow";
 
+export const TEAM_IDS = ["red", "blue", "yellow"] as const satisfies readonly TeamId[];
+
+export interface DefaultTeamDefinition {
+  teamId: TeamId;
+  name: string;
+  color: string;
+}
+
+export const DEFAULT_TEAMS = [
+  {
+    teamId: "red",
+    name: "Red",
+    color: "#d83b36",
+  },
+  {
+    teamId: "blue",
+    name: "Blue",
+    color: "#2364d2",
+  },
+  {
+    teamId: "yellow",
+    name: "Yellow",
+    color: "#e0a612",
+  },
+] as const satisfies readonly DefaultTeamDefinition[];
+
 export interface GoalEventInput {
   gameId: string;
   third: 1 | 2 | 3;

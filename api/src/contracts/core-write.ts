@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { TEAM_IDS } from "@3fc/contracts";
 
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
+const teamIdSchema = z.enum(TEAM_IDS);
 
 export const idempotencyKeyHeaderSchema = z
   .string()
@@ -42,10 +44,33 @@ export const createGameRequestSchema = z
   })
   .strict();
 
+export const upsertTeamRequestSchema = z
+  .object({
+    name: nonEmptyTrimmedString,
+    color: optionalNullableString,
+  })
+  .strict();
+
+export const quickCreateGamePlayerRequestSchema = z
+  .object({
+    playerId: nonEmptyTrimmedString.optional(),
+    nickname: nonEmptyTrimmedString,
+  })
+  .strict();
+
+export const assignRosterPlayerRequestSchema = z
+  .object({
+    teamId: teamIdSchema,
+  })
+  .strict();
+
 export type CreateLeagueRequest = z.infer<typeof createLeagueRequestSchema>;
 export type CreateSeasonRequest = z.infer<typeof createSeasonRequestSchema>;
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 export type CreateGameRequest = z.infer<typeof createGameRequestSchema>;
+export type UpsertTeamRequest = z.infer<typeof upsertTeamRequestSchema>;
+export type QuickCreateGamePlayerRequest = z.infer<typeof quickCreateGamePlayerRequestSchema>;
+export type AssignRosterPlayerRequest = z.infer<typeof assignRosterPlayerRequestSchema>;
 
 export function formatSchemaValidationError(error: z.ZodError): string {
   if (error.issues.length === 0) {

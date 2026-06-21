@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { DEFAULT_TEAMS, TEAM_IDS, type TeamId } from "@3fc/contracts";
 
 import { authorizeProtectedMutation } from "./auth/acl.js";
 import {
@@ -32,8 +33,11 @@ import {
   createLeagueRequestSchema,
   createSeasonRequestSchema,
   createSessionRequestSchema,
+  assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
+  quickCreateGamePlayerRequestSchema,
+  upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
 import { ThreeFcRepository } from "./data/repository.js";
 import type { GameStatus } from "./data/types.js";
@@ -41,6 +45,7 @@ import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
 export interface ApiGatewayHttpEvent {
   rawPath?: string;
+  rawQueryString?: string;
   body?: string | null;
   cookies?: string[];
   headers?: Record<string, string | undefined>;
@@ -144,7 +149,62 @@ interface RepositoryContract {
     slug?: string | null;
     startsOn?: string | null;
     endsOn?: string | null;
-  }): Promise<unknown>;
+  }): Promise<{
+    leagueId: string;
+    seasonId: string;
+    name: string;
+    slug: string | null;
+    startsOn: string | null;
+    endsOn: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  createTeam(input: {
+    seasonId: string;
+    teamId: TeamId;
+    name: string;
+    color?: string | null;
+  }): Promise<{
+    seasonId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  listTeamsForSeason(seasonId: string): Promise<
+    Array<{
+      seasonId: string;
+      teamId: TeamId;
+      name: string;
+      color: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>
+  >;
+  createGameTeamOverride(input: {
+    gameId: string;
+    teamId: TeamId;
+    name: string;
+    color?: string | null;
+  }): Promise<{
+    gameId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  listTeamsForGame(gameId: string): Promise<
+    Array<{
+      gameId: string;
+      teamId: TeamId;
+      name: string;
+      color: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>
+  >;
   createSession(input: { seasonId: string; sessionId: string; sessionDate: string }): Promise<unknown>;
   createGame(input: {
     gameId: string;
@@ -216,6 +276,78 @@ interface RepositoryContract {
   deleteGame(gameId: string): Promise<boolean>;
   deleteSeason(seasonId: string): Promise<boolean>;
   deleteLeague(leagueId: string): Promise<boolean>;
+  createPlayer(input: {
+    playerId: string;
+    nickname: string;
+    claimedByUserId?: string | null;
+  }): Promise<{
+    playerId: string;
+    nickname: string;
+    claimedByUserId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  getPlayer(
+    playerId: string,
+  ): Promise<
+    | {
+        playerId: string;
+        nickname: string;
+        claimedByUserId: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }
+    | null
+  >;
+  listPlayers(input?: {
+    search?: string | null;
+    limit?: number;
+  }): Promise<
+    Array<{
+      playerId: string;
+      nickname: string;
+      claimedByUserId: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>
+  >;
+  linkGamePlayer(input: {
+    gameId: string;
+    playerId: string;
+  }): Promise<{
+    gameId: string;
+    playerId: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  listGamePlayers(gameId: string): Promise<
+    Array<{
+      gameId: string;
+      playerId: string;
+      createdAt: string;
+      updatedAt: string;
+    }>
+  >;
+  assignRosterPlayer(input: {
+    gameId: string;
+    teamId: TeamId;
+    playerId: string;
+  }): Promise<{
+    gameId: string;
+    teamId: TeamId;
+    playerId: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  listGameRoster(gameId: string): Promise<
+    Array<{
+      gameId: string;
+      teamId: TeamId;
+      playerId: string;
+      createdAt: string;
+      updatedAt: string;
+    }>
+  >;
   getLeagueAccess(
     leagueId: string,
     userId: string,
@@ -322,6 +454,15 @@ function getCookieHeader(event: ApiGatewayHttpEvent): string | undefined {
   }
 
   return undefined;
+}
+
+function getQueryParam(event: ApiGatewayHttpEvent, name: string): string | null {
+  const query = event.rawQueryString ?? "";
+  if (query.length === 0) {
+    return null;
+  }
+
+  return new URLSearchParams(query).get(name);
 }
 
 function getClientIp(event: ApiGatewayHttpEvent): string {
@@ -511,6 +652,219 @@ async function ensureLeagueAdmin(
 ): Promise<boolean> {
   const access = await repository.getLeagueAccess(leagueId, userId);
   return access?.role === "admin";
+}
+
+async function ensureLeagueRole(
+  repository: RepositoryContract,
+  leagueId: string,
+  userId: string,
+  allowedRoles: ReadonlySet<"admin" | "scorekeeper" | "viewer">,
+): Promise<boolean> {
+  const access = await repository.getLeagueAccess(leagueId, userId);
+  return access ? allowedRoles.has(access.role) : false;
+}
+
+function parseTeamId(value: string): TeamId | null {
+  return TEAM_IDS.includes(value as TeamId) ? (value as TeamId) : null;
+}
+
+function compareTeamIds(left: TeamId, right: TeamId): number {
+  return TEAM_IDS.indexOf(left) - TEAM_IDS.indexOf(right);
+}
+
+function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
+  return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
+}
+
+function toPublicPlayer(player: {
+  playerId: string;
+  nickname: string;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    playerId: player.playerId,
+    nickname: player.nickname,
+    createdAt: player.createdAt,
+    updatedAt: player.updatedAt,
+  };
+}
+
+function buildReadOnlySeasonTeams(
+  season: {
+    seasonId: string;
+    createdAt: string;
+    updatedAt: string;
+  },
+  existingTeams: Array<{
+    seasonId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>,
+) {
+  const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
+
+  for (const defaultTeam of DEFAULT_TEAMS) {
+    if (teamsById.has(defaultTeam.teamId)) {
+      continue;
+    }
+
+    teamsById.set(defaultTeam.teamId, {
+      seasonId: season.seasonId,
+      teamId: defaultTeam.teamId,
+      name: defaultTeam.name,
+      color: defaultTeam.color,
+      createdAt: season.createdAt,
+      updatedAt: season.updatedAt,
+    });
+  }
+
+  return sortTeams([...teamsById.values()]);
+}
+
+async function readSeasonTeams(
+  repository: RepositoryContract,
+  season: {
+    seasonId: string;
+    createdAt: string;
+    updatedAt: string;
+  },
+) {
+  const existingTeams = await repository.listTeamsForSeason(season.seasonId);
+  return buildReadOnlySeasonTeams(season, existingTeams);
+}
+
+async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId: string) {
+  const existingTeams = await repository.listTeamsForSeason(seasonId);
+  const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
+
+  for (const defaultTeam of DEFAULT_TEAMS) {
+    if (teamsById.has(defaultTeam.teamId)) {
+      continue;
+    }
+
+    const createdTeam = await repository.createTeam({
+      seasonId,
+      teamId: defaultTeam.teamId,
+      name: defaultTeam.name,
+      color: defaultTeam.color,
+    });
+    teamsById.set(createdTeam.teamId, createdTeam);
+  }
+
+  return sortTeams([...teamsById.values()]);
+}
+
+async function ensureGameTeamsForGame(
+  repository: RepositoryContract,
+  game: {
+    gameId: string;
+    seasonId: string;
+  },
+) {
+  const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId);
+  const existingGameTeams = await repository.listTeamsForGame(game.gameId);
+  const gameTeamsById = new Map(existingGameTeams.map((team) => [team.teamId, team]));
+
+  for (const seasonTeam of seasonTeams) {
+    if (gameTeamsById.has(seasonTeam.teamId)) {
+      continue;
+    }
+
+    const gameTeam = await repository.createGameTeamOverride({
+      gameId: game.gameId,
+      teamId: seasonTeam.teamId,
+      name: seasonTeam.name,
+      color: seasonTeam.color,
+    });
+    gameTeamsById.set(gameTeam.teamId, gameTeam);
+  }
+
+  return sortTeams([...gameTeamsById.values()]);
+}
+
+async function readGameTeams(
+  repository: RepositoryContract,
+  game: {
+    gameId: string;
+    seasonId: string;
+    createdAt: string;
+    updatedAt: string;
+  },
+) {
+  const season = await repository.getSeason(game.seasonId);
+  const existingGameTeams = await repository.listTeamsForGame(game.gameId);
+  const gameTeamsById = new Map(existingGameTeams.map((team) => [team.teamId, team]));
+  const seasonTeams = season
+    ? await readSeasonTeams(repository, season)
+    : DEFAULT_TEAMS.map((team) => ({
+        seasonId: game.seasonId,
+        teamId: team.teamId,
+        name: team.name,
+        color: team.color,
+        createdAt: game.createdAt,
+        updatedAt: game.updatedAt,
+      }));
+
+  for (const seasonTeam of seasonTeams) {
+    if (gameTeamsById.has(seasonTeam.teamId)) {
+      continue;
+    }
+
+    gameTeamsById.set(seasonTeam.teamId, {
+      gameId: game.gameId,
+      teamId: seasonTeam.teamId,
+      name: seasonTeam.name,
+      color: seasonTeam.color,
+      createdAt: game.createdAt,
+      updatedAt: game.updatedAt,
+    });
+  }
+
+  return sortTeams([...gameTeamsById.values()]);
+}
+
+async function buildRosterResponse(repository: RepositoryContract, game: {
+  gameId: string;
+  seasonId: string;
+  createdAt: string;
+  updatedAt: string;
+}) {
+  const teams = await readGameTeams(repository, game);
+  const roster = await repository.listGameRoster(game.gameId);
+  const playersById = new Map(
+    (
+      await Promise.all(
+        [...new Set(roster.map((assignment) => assignment.playerId))].map((playerId) =>
+          repository.getPlayer(playerId),
+        ),
+      )
+    )
+      .filter((player) => player !== null)
+      .map((player) => [player.playerId, toPublicPlayer(player)]),
+  );
+
+  return {
+    teams,
+    roster: roster
+      .map((assignment) => ({
+        ...assignment,
+        player: playersById.get(assignment.playerId) ?? null,
+      }))
+      .sort((left, right) => {
+        const teamSort = compareTeamIds(left.teamId, right.teamId);
+        if (teamSort !== 0) {
+          return teamSort;
+        }
+
+        const leftName = left.player?.nickname ?? left.playerId;
+        const rightName = right.player?.nickname ?? right.playerId;
+        return leftName.localeCompare(rightName);
+      }),
+  };
 }
 
 function parseGamePatchBody(rawBody: Record<string, unknown>): {
@@ -1076,6 +1430,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 startsOn: parsedBody.data.startsOn ?? null,
                 endsOn: parsedBody.data.endsOn ?? null,
               });
+              await ensureSeasonDefaultTeams(dependencies.repository, createdSeason.seasonId);
 
               return createJsonResponse(
                 201,
@@ -1266,6 +1621,83 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        const listSeasonTeamsMatch = route.match(/^\/v1\/seasons\/([^/]+)\/teams$/);
+        if (method === "GET" && listSeasonTeamsMatch) {
+          const seasonId = decodeRouteParam(listSeasonTeamsMatch[1]);
+          const season = await dependencies.repository.getSeason(seasonId);
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          const access = await ensureLeagueAccess(
+            dependencies.repository,
+            season.leagueId,
+            session.email,
+          );
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${season.leagueId} is required.`,
+            );
+          }
+
+          const teams = await readSeasonTeams(dependencies.repository, season);
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              teams,
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const updateSeasonTeamMatch = route.match(/^\/v1\/seasons\/([^/]+)\/teams\/([^/]+)$/);
+        if (method === "PUT" && updateSeasonTeamMatch) {
+          const seasonId = decodeRouteParam(updateSeasonTeamMatch[1]);
+          const teamId = parseTeamId(decodeRouteParam(updateSeasonTeamMatch[2]));
+          if (!teamId) {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Team ID must be red, blue, or yellow.");
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = upsertTeamRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          await ensureSeasonDefaultTeams(dependencies.repository, seasonId);
+          const team = await dependencies.repository.createTeam({
+            seasonId,
+            teamId,
+            name: parsedBody.data.name,
+            color: parsedBody.data.color ?? null,
+          });
+          status = 200;
+          return createJsonResponse(
+            status,
+            team,
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
         const deleteSeasonMatch = route.match(/^\/v1\/seasons\/([^/]+)$/);
         if (method === "DELETE" && deleteSeasonMatch) {
           const seasonId = decodeRouteParam(deleteSeasonMatch[1]);
@@ -1364,6 +1796,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 leagueId: createdGame.leagueId,
                 seasonId: createdGame.seasonId,
               });
+              await ensureGameTeamsForGame(dependencies.repository, createdGame);
 
               return createJsonResponse(
                 201,
@@ -1405,6 +1838,296 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           return createJsonResponse(
             status,
             game,
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const listGameTeamsMatch = route.match(/^\/v1\/games\/([^/]+)\/teams$/);
+        if (method === "GET" && listGameTeamsMatch) {
+          const gameId = decodeRouteParam(listGameTeamsMatch[1]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const access = await ensureLeagueAccess(
+            dependencies.repository,
+            game.leagueId,
+            session.email,
+          );
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${game.leagueId} is required.`,
+            );
+          }
+
+          const teams = await readGameTeams(dependencies.repository, game);
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              teams,
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const updateGameTeamMatch = route.match(/^\/v1\/games\/([^/]+)\/teams\/([^/]+)$/);
+        if (method === "PUT" && updateGameTeamMatch) {
+          const gameId = decodeRouteParam(updateGameTeamMatch[1]);
+          const teamId = parseTeamId(decodeRouteParam(updateGameTeamMatch[2]));
+          if (!teamId) {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Team ID must be red, blue, or yellow.");
+          }
+
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = upsertTeamRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          await ensureGameTeamsForGame(dependencies.repository, game);
+          const team = await dependencies.repository.createGameTeamOverride({
+            gameId,
+            teamId,
+            name: parsedBody.data.name,
+            color: parsedBody.data.color ?? null,
+          });
+          status = 200;
+          return createJsonResponse(
+            status,
+            team,
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const listGamePlayersMatch = route.match(/^\/v1\/games\/([^/]+)\/players$/);
+        if (method === "GET" && listGamePlayersMatch) {
+          const gameId = decodeRouteParam(listGamePlayersMatch[1]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const canManageRoster = await ensureLeagueRole(
+            dependencies.repository,
+            game.leagueId,
+            session.email,
+            new Set(["admin", "scorekeeper"]),
+          );
+          if (!canManageRoster) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "scorekeeper_required",
+              `Admin or scorekeeper role is required for league ${game.leagueId}.`,
+            );
+          }
+
+          const search = getQueryParam(event, "search")?.trim().toLowerCase() ?? "";
+          const playerLinks = await dependencies.repository.listGamePlayers(gameId);
+          const players = (
+            await Promise.all(
+              playerLinks.map(async (link) => ({
+                link,
+                player: await dependencies.repository.getPlayer(link.playerId),
+              })),
+            )
+          )
+            .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player }] : []))
+            .filter((entry) =>
+              search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
+            )
+            .sort((left, right) => {
+              const updatedSort = right.link.updatedAt.localeCompare(left.link.updatedAt);
+              if (updatedSort !== 0) {
+                return updatedSort;
+              }
+
+              return left.player.nickname.localeCompare(right.player.nickname);
+            })
+            .slice(0, 20)
+            .map((entry) => toPublicPlayer(entry.player));
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              players,
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const createGamePlayerMatch = route.match(/^\/v1\/games\/([^/]+)\/players$/);
+        if (method === "POST" && createGamePlayerMatch) {
+          const gameId = decodeRouteParam(createGamePlayerMatch[1]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = quickCreateGamePlayerRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          const playerId = parsedBody.data.playerId ?? `player-${randomUUID()}`;
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              const player = await dependencies.repository.createPlayer({
+                playerId,
+                nickname: parsedBody.data.nickname,
+              });
+              await dependencies.repository.linkGamePlayer({
+                gameId,
+                playerId: player.playerId,
+              });
+
+              return createJsonResponse(
+                201,
+                toPublicPlayer(player),
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
+          });
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
+        }
+
+        const listGameRosterMatch = route.match(/^\/v1\/games\/([^/]+)\/roster$/);
+        if (method === "GET" && listGameRosterMatch) {
+          const gameId = decodeRouteParam(listGameRosterMatch[1]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          const access = await ensureLeagueAccess(
+            dependencies.repository,
+            game.leagueId,
+            session.email,
+          );
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${game.leagueId} is required.`,
+            );
+          }
+
+          const rosterResponse = await buildRosterResponse(dependencies.repository, game);
+          status = 200;
+          return createJsonResponse(
+            status,
+            rosterResponse,
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const assignRosterPlayerMatch = route.match(/^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/);
+        if (method === "PUT" && assignRosterPlayerMatch) {
+          const gameId = decodeRouteParam(assignRosterPlayerMatch[1]);
+          const playerId = decodeRouteParam(assignRosterPlayerMatch[2]);
+          const game = await dependencies.repository.getGame(gameId);
+          if (!game) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = assignRosterPlayerRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          const teams = await ensureGameTeamsForGame(dependencies.repository, game);
+          if (!teams.some((team) => team.teamId === parsedBody.data.teamId)) {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Team ID must be active for this game.");
+          }
+
+          const player = await dependencies.repository.getPlayer(playerId);
+          if (!player) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Player ${playerId} was not found.`);
+          }
+
+          const assignment = await dependencies.repository.assignRosterPlayer({
+            gameId,
+            teamId: parsedBody.data.teamId,
+            playerId,
+          });
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              ...assignment,
+              player: toPublicPlayer(player),
+            },
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
         }

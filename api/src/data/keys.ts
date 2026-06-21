@@ -59,6 +59,10 @@ export function rosterSk(teamId: string, playerId: string): string {
   return `ROSTER#${teamId}#${playerId}`;
 }
 
+export function gamePlayerSk(playerId: string): string {
+  return `PLAYER#${playerId}`;
+}
+
 export function gameSessionIndexPk(sessionId: string): string {
   return sessionPk(sessionId);
 }

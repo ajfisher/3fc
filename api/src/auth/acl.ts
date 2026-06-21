@@ -1,34 +1,44 @@
-import type { LeagueAclRecord, SeasonRecord, SessionRecord } from "../data/types.js";
+import type { GameRecord, LeagueAclRecord, SeasonRecord, SessionRecord } from "../data/types.js";
 
 const ROUTES = {
   createLeague: /^\/v1\/leagues$/,
   createSeason: /^\/v1\/leagues\/([^/]+)\/seasons$/,
   createSession: /^\/v1\/seasons\/([^/]+)\/sessions$/,
   createGame: /^\/v1\/sessions\/([^/]+)\/games$/,
+  updateSeasonTeam: /^\/v1\/seasons\/([^/]+)\/teams\/([^/]+)$/,
+  updateGameTeam: /^\/v1\/games\/([^/]+)\/teams\/([^/]+)$/,
+  createGamePlayer: /^\/v1\/games\/([^/]+)\/players$/,
+  assignRosterPlayer: /^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/,
 } as const;
 
 export type ProtectedMutationOperation =
   | "createLeague"
   | "createSeason"
   | "createSession"
-  | "createGame";
+  | "createGame"
+  | "updateSeasonTeam"
+  | "updateGameTeam"
+  | "createGamePlayer"
+  | "assignRosterPlayer";
 
 export interface ProtectedMutationRoute {
   operation: ProtectedMutationOperation;
   leagueId?: string;
   seasonId?: string;
   sessionId?: string;
+  gameId?: string;
 }
 
 export interface AclLookup {
   getLeagueAccess(leagueId: string, userId: string): Promise<LeagueAclRecord | null>;
   getSeason(seasonId: string): Promise<SeasonRecord | null>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
+  getGame(gameId: string): Promise<GameRecord | null>;
 }
 
 export interface AclErrorResponse {
   error: "forbidden" | "not_found";
-  code: "admin_required" | "acl_scope_not_found";
+  code: "admin_required" | "scorekeeper_required" | "acl_scope_not_found";
   message: string;
 }
 
@@ -49,15 +59,11 @@ export function resolveProtectedMutationRoute(
   route: string,
 ): ProtectedMutationRoute | null {
   const upperMethod = method.toUpperCase();
-  if (upperMethod !== "POST") {
-    return null;
-  }
-
-  if (ROUTES.createLeague.test(route)) {
+  if (upperMethod === "POST" && ROUTES.createLeague.test(route)) {
     return { operation: "createLeague" };
   }
 
-  const seasonMatch = route.match(ROUTES.createSeason);
+  const seasonMatch = upperMethod === "POST" ? route.match(ROUTES.createSeason) : null;
   if (seasonMatch) {
     return {
       operation: "createSeason",
@@ -65,7 +71,7 @@ export function resolveProtectedMutationRoute(
     };
   }
 
-  const sessionMatch = route.match(ROUTES.createSession);
+  const sessionMatch = upperMethod === "POST" ? route.match(ROUTES.createSession) : null;
   if (sessionMatch) {
     return {
       operation: "createSession",
@@ -73,11 +79,43 @@ export function resolveProtectedMutationRoute(
     };
   }
 
-  const gameMatch = route.match(ROUTES.createGame);
-  if (gameMatch) {
+  const createGameMatch = upperMethod === "POST" ? route.match(ROUTES.createGame) : null;
+  if (createGameMatch) {
     return {
       operation: "createGame",
-      sessionId: decodeRouteParam(gameMatch[1]),
+      sessionId: decodeRouteParam(createGameMatch[1]),
+    };
+  }
+
+  const updateSeasonTeamMatch = upperMethod === "PUT" ? route.match(ROUTES.updateSeasonTeam) : null;
+  if (updateSeasonTeamMatch) {
+    return {
+      operation: "updateSeasonTeam",
+      seasonId: decodeRouteParam(updateSeasonTeamMatch[1]),
+    };
+  }
+
+  const updateGameTeamMatch = upperMethod === "PUT" ? route.match(ROUTES.updateGameTeam) : null;
+  if (updateGameTeamMatch) {
+    return {
+      operation: "updateGameTeam",
+      gameId: decodeRouteParam(updateGameTeamMatch[1]),
+    };
+  }
+
+  const createGamePlayerMatch = upperMethod === "POST" ? route.match(ROUTES.createGamePlayer) : null;
+  if (createGamePlayerMatch) {
+    return {
+      operation: "createGamePlayer",
+      gameId: decodeRouteParam(createGamePlayerMatch[1]),
+    };
+  }
+
+  const assignRosterPlayerMatch = upperMethod === "PUT" ? route.match(ROUTES.assignRosterPlayer) : null;
+  if (assignRosterPlayerMatch) {
+    return {
+      operation: "assignRosterPlayer",
+      gameId: decodeRouteParam(assignRosterPlayerMatch[1]),
     };
   }
 
@@ -98,7 +136,21 @@ function forbiddenAdminRequired(leagueId: string): AclAuthorizationResult {
   };
 }
 
-function missingScope(scopeType: "season" | "session", scopeId: string): AclAuthorizationResult {
+function forbiddenScorekeeperRequired(leagueId: string): AclAuthorizationResult {
+  return {
+    allowed: false,
+    statusCode: 403,
+    operation: null,
+    scope: null,
+    error: {
+      error: "forbidden",
+      code: "scorekeeper_required",
+      message: `Admin or scorekeeper role is required for league ${leagueId}.`,
+    },
+  };
+}
+
+function missingScope(scopeType: "game" | "season" | "session", scopeId: string): AclAuthorizationResult {
   return {
     allowed: false,
     statusCode: 404,
@@ -119,6 +171,42 @@ async function verifyLeagueAdmin(
 ): Promise<boolean> {
   const access = await aclLookup.getLeagueAccess(leagueId, userId);
   return access?.role === "admin";
+}
+
+async function verifyLeagueRole(
+  userId: string,
+  leagueId: string,
+  aclLookup: AclLookup,
+  allowedRoles: ReadonlySet<LeagueAclRecord["role"]>,
+): Promise<boolean> {
+  const access = await aclLookup.getLeagueAccess(leagueId, userId);
+  return access ? allowedRoles.has(access.role) : false;
+}
+
+async function resolveGameScope(
+  gameId: string,
+  aclLookup: AclLookup,
+): Promise<
+  | { found: true; game: GameRecord; leagueId: string; seasonId: string; sessionId: string }
+  | { found: false; scopeType: "game" | "season"; scopeId: string }
+> {
+  const game = await aclLookup.getGame(gameId);
+  if (!game) {
+    return { found: false, scopeType: "game", scopeId: gameId };
+  }
+
+  const season = await aclLookup.getSeason(game.seasonId);
+  if (!season) {
+    return { found: false, scopeType: "season", scopeId: game.seasonId };
+  }
+
+  return {
+    found: true,
+    game,
+    leagueId: game.leagueId,
+    seasonId: game.seasonId,
+    sessionId: game.sessionId,
+  };
 }
 
 export async function authorizeProtectedMutation(
@@ -190,20 +278,92 @@ export async function authorizeProtectedMutation(
     };
   }
 
-  const sessionId = resolvedRoute.sessionId as string;
-  const session = await aclLookup.getSession(sessionId);
-  if (!session) {
-    return missingScope("session", sessionId);
+  if (resolvedRoute.operation === "createGame") {
+    const sessionId = resolvedRoute.sessionId as string;
+    const session = await aclLookup.getSession(sessionId);
+    if (!session) {
+      return missingScope("session", sessionId);
+    }
+
+    const season = await aclLookup.getSeason(session.seasonId);
+    if (!season) {
+      return missingScope("season", session.seasonId);
+    }
+
+    const isAdmin = await verifyLeagueAdmin(userId, season.leagueId, aclLookup);
+    if (!isAdmin) {
+      return forbiddenAdminRequired(season.leagueId);
+    }
+
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: {
+        leagueId: season.leagueId,
+        seasonId: session.seasonId,
+        sessionId,
+      },
+      error: null,
+    };
   }
 
-  const season = await aclLookup.getSeason(session.seasonId);
-  if (!season) {
-    return missingScope("season", session.seasonId);
+  if (resolvedRoute.operation === "updateSeasonTeam") {
+    const seasonId = resolvedRoute.seasonId as string;
+    const season = await aclLookup.getSeason(seasonId);
+    if (!season) {
+      return missingScope("season", seasonId);
+    }
+
+    const isAdmin = await verifyLeagueAdmin(userId, season.leagueId, aclLookup);
+    if (!isAdmin) {
+      return forbiddenAdminRequired(season.leagueId);
+    }
+
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: {
+        leagueId: season.leagueId,
+        seasonId,
+      },
+      error: null,
+    };
   }
 
-  const isAdmin = await verifyLeagueAdmin(userId, season.leagueId, aclLookup);
-  if (!isAdmin) {
-    return forbiddenAdminRequired(season.leagueId);
+  const gameScope = await resolveGameScope(resolvedRoute.gameId as string, aclLookup);
+  if (!gameScope.found) {
+    return missingScope(gameScope.scopeType, gameScope.scopeId);
+  }
+
+  if (resolvedRoute.operation === "updateGameTeam") {
+    const isAdmin = await verifyLeagueAdmin(userId, gameScope.leagueId, aclLookup);
+    if (!isAdmin) {
+      return forbiddenAdminRequired(gameScope.leagueId);
+    }
+
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: {
+        leagueId: gameScope.leagueId,
+        seasonId: gameScope.seasonId,
+        sessionId: gameScope.sessionId,
+      },
+      error: null,
+    };
+  }
+
+  const canOperateRoster = await verifyLeagueRole(
+    userId,
+    gameScope.leagueId,
+    aclLookup,
+    new Set(["admin", "scorekeeper"]),
+  );
+  if (!canOperateRoster) {
+    return forbiddenScorekeeperRequired(gameScope.leagueId);
   }
 
   return {
@@ -211,9 +371,9 @@ export async function authorizeProtectedMutation(
     statusCode: 200,
     operation: resolvedRoute.operation,
     scope: {
-      leagueId: season.leagueId,
-      seasonId: session.seasonId,
-      sessionId,
+      leagueId: gameScope.leagueId,
+      seasonId: gameScope.seasonId,
+      sessionId: gameScope.sessionId,
     },
     error: null,
   };

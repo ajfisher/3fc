@@ -32,6 +32,15 @@ export interface TeamRecord {
   updatedAt: string;
 }
 
+export interface GameTeamRecord {
+  gameId: string;
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SessionRecord {
   seasonId: string;
   sessionId: string;
@@ -65,6 +74,13 @@ export interface PlayerRecord {
   playerId: string;
   nickname: string;
   claimedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GamePlayerRecord {
+  gameId: string;
+  playerId: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,6 +149,13 @@ export interface CreateTeamInput {
   color?: string | null;
 }
 
+export interface CreateGameTeamInput {
+  gameId: string;
+  teamId: TeamId;
+  name: string;
+  color?: string | null;
+}
+
 export interface CreateSessionInput {
   seasonId: string;
   sessionId: string;
@@ -160,6 +183,16 @@ export interface CreatePlayerInput {
   playerId: string;
   nickname: string;
   claimedByUserId?: string | null;
+}
+
+export interface ListPlayersInput {
+  search?: string | null;
+  limit?: number;
+}
+
+export interface LinkGamePlayerInput {
+  gameId: string;
+  playerId: string;
 }
 
 export interface GrantLeagueAccessInput {

@@ -63,7 +63,7 @@ export function buildCorsHeaders(
     "Access-Control-Allow-Origin": origin as string,
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Headers": "content-type,x-csrf-token,idempotency-key",
-    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
     Vary: "Origin",
   };
 }
