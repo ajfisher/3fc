@@ -429,6 +429,13 @@ function createHarness(config: HarnessConfig = {}) {
           );
         }
 
+        if (input.status === "scheduled" && existing.thirds.some((third) => third.startedAt !== null)) {
+          throw new GameTimerTransitionError(
+            "timer_status_locked",
+            "Game status cannot be set back to scheduled after a third has started.",
+          );
+        }
+
         const updated = {
           ...existing,
           status: input.status ?? existing.status,
@@ -1392,6 +1399,68 @@ test("core lambda rejects third length changes on finished games", async () => {
     error: "conflict",
     code: "game_finished",
     message: "Third length cannot be changed after the game is finished.",
+  });
+});
+
+test("core lambda rejects setting scheduled status after a third starts", async () => {
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-02-23T00:00:01.000Z",
+  };
+
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        thirds,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        status: "scheduled",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "timer_status_locked",
+    message: "Game status cannot be set back to scheduled after a third has started.",
   });
 });
 

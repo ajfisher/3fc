@@ -1107,6 +1107,17 @@
       return finished ?? timer.thirds[0] ?? null;
     }
 
+    function syncStatusOptions(hasStarted) {
+      const scheduledOption = statusInput.querySelector('option[value="scheduled"]');
+      if (scheduledOption instanceof HTMLOptionElement) {
+        scheduledOption.disabled = hasStarted;
+      }
+
+      if (hasStarted && statusInput.value === "scheduled") {
+        statusInput.value = currentGame.status === "finished" ? "finished" : "live";
+      }
+    }
+
     function renderTimer() {
       if (!currentGame) {
         return;
@@ -1126,6 +1137,7 @@
 
       thirdLengthInput.value = String(timer.thirdLengthMinutes);
       thirdLengthInput.disabled = hasStarted;
+      syncStatusOptions(hasStarted);
 
       if (timerThirdLabel) {
         timerThirdLabel.textContent = segment ? `Third ${segment.third}` : "Third 1";

@@ -487,6 +487,14 @@ function createMockFetch(state: MockApiState) {
         return createJsonResponse(404, { error: "not_found", message: "Game not found." });
       }
 
+      if (body.status === "scheduled" && game.thirds.some((third) => third.startedAt !== null)) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          code: "timer_status_locked",
+          message: "Game status cannot be set back to scheduled after a third has started.",
+        });
+      }
+
       const updated: MockGame = {
         ...game,
         status:
@@ -1122,17 +1130,23 @@ test("game page quick-creates and assigns roster players", async () => {
   const nicknameInput = gamePage.document.getElementById("player-nickname");
   const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
   const rosterTeams = gamePage.document.getElementById("roster-teams");
+  const statusInput = gamePage.document.getElementById("game-edit-status");
   const thirdLengthInput = gamePage.document.getElementById("game-edit-third-length");
   const timerDisplay = gamePage.document.getElementById("timer-display-value");
   const startThirdButton = gamePage.document.querySelector('[data-action="start-active-third"]');
   const finishThirdButton = gamePage.document.querySelector('[data-action="finish-active-third"]');
+  const scheduledStatusOption = statusInput?.querySelector('option[value="scheduled"]');
   assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
   assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
+  assert(statusInput instanceof gamePage.window.HTMLSelectElement);
+  assert(scheduledStatusOption instanceof gamePage.window.HTMLOptionElement);
   assert(thirdLengthInput instanceof gamePage.window.HTMLSelectElement);
   assert(timerDisplay instanceof gamePage.window.HTMLElement);
   assert(startThirdButton instanceof gamePage.window.HTMLButtonElement);
   assert(finishThirdButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(statusInput.value, "scheduled");
+  assert.equal(scheduledStatusOption.disabled, false);
   assert.equal(thirdLengthInput.value, "20");
   assert.equal(timerDisplay.textContent, "00:00");
   assert.equal(startThirdButton.textContent, "Start Third 1");
@@ -1142,6 +1156,8 @@ test("game page quick-creates and assigns roster players", async () => {
   await flushAsync();
   assert.equal(apiState.games.get("game-1")?.status, "live");
   assert.equal(apiState.games.get("game-1")?.thirds[0].startedAt, "2026-03-28T11:00:10.000Z");
+  assert.equal(statusInput.value, "live");
+  assert.equal(scheduledStatusOption.disabled, true);
   assert.equal(thirdLengthInput.disabled, true);
   assert.equal(finishThirdButton.textContent, "Finish Third 1");
 

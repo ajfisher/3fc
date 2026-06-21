@@ -630,6 +630,13 @@ test("repository locks third length after timer starts and rejects finished game
   await assert.rejects(
     repository.updateGame({
       gameId: "game-1",
+      status: "scheduled",
+    }),
+    /Game status cannot be set back to scheduled after a third has started/,
+  );
+  await assert.rejects(
+    repository.updateGame({
+      gameId: "game-1",
       thirdLengthMinutes: 20,
     }),
     /Third length cannot be changed after a third has started/,

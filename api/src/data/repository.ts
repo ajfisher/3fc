@@ -661,6 +661,13 @@ export class ThreeFcRepository {
       );
     }
 
+    if (input.status === "scheduled" && isThirdStarted(existing)) {
+      throw new GameTimerTransitionError(
+        "timer_status_locked",
+        "Game status cannot be set back to scheduled after a third has started.",
+      );
+    }
+
     const updatedPayload = {
       ...existing,
       gameStartTs: nextGameStartTs,
