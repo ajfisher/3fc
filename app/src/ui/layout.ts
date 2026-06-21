@@ -19,20 +19,29 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+function renderAssetPath(path: string): string {
+  const version = process.env.THREEFC_ASSET_VERSION?.trim();
+  if (!version) {
+    return path;
+  }
+
+  return `${path}?v=${encodeURIComponent(version)}`;
+}
+
 function renderStylesheetLink(): string {
-  return '<link rel="stylesheet" href="/ui/styles.css" />';
+  return `<link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/styles.css"))}" />`;
 }
 
 function renderModalScriptTag(): string {
-  return '<script src="/ui/modal.js" defer></script>';
+  return `<script src="${escapeHtml(renderAssetPath("/ui/modal.js"))}" defer></script>`;
 }
 
 function renderSetupScriptTag(): string {
-  return '<script src="/ui/setup-flow.js" defer></script>';
+  return `<script src="${escapeHtml(renderAssetPath("/ui/setup-flow.js"))}" defer></script>`;
 }
 
 function renderAuthScriptTag(): string {
-  return '<script src="/ui/auth-flow.js" defer></script>';
+  return `<script src="${escapeHtml(renderAssetPath("/ui/auth-flow.js"))}" defer></script>`;
 }
 
 function renderSetupFoundationPanels(): string {

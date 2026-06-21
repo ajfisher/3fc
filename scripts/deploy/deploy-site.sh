@@ -29,6 +29,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 PROJECT_NAME="${PROJECT_NAME:-3fc}"
+COMMIT_SHA="$(git rev-parse --short HEAD)"
 
 case "$ENV" in
   qa)
@@ -54,7 +55,7 @@ echo "[deploy] Building workspaces"
 make build >/dev/null
 
 echo "[deploy] Exporting static site for ${ENV}"
-API_BASE_URL="$API_BASE_URL" STATIC_SITE_OUTPUT_DIR="$STATIC_SITE_OUTPUT_DIR" npm run export:static -w @3fc/app >/dev/null
+API_BASE_URL="$API_BASE_URL" THREEFC_ASSET_VERSION="$COMMIT_SHA" STATIC_SITE_OUTPUT_DIR="$STATIC_SITE_OUTPUT_DIR" npm run export:static -w @3fc/app >/dev/null
 
 if [[ ! -f "${STATIC_SITE_OUTPUT_DIR}/index.html" ]]; then
   echo "Static site export did not produce ${STATIC_SITE_OUTPUT_DIR}/index.html" >&2
@@ -103,7 +104,6 @@ aws cloudfront wait invalidation-completed \
   --distribution-id "$SITE_DISTRIBUTION_ID" \
   --id "$INVALIDATION_ID"
 
-COMMIT_SHA="$(git rev-parse --short HEAD)"
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 SITE_URL="https://${SITE_DOMAIN}"
 
