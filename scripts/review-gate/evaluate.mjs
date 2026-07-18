@@ -141,19 +141,30 @@ function evaluateCheckGroups(policy, requirements, input, blockers, pending) {
 export function classifyCodexReview(reviews, codexActivity, headSha, reviewerLogins) {
   const reviewerSet = new Set(reviewerLogins.map((login) => login.toLowerCase()));
   const codexReviews = reviews
-    .filter((review) => reviewerSet.has((review.login ?? review.user?.login ?? "").toLowerCase()))
+    .filter((review) => {
+      const login = (review.login ?? review.user?.login ?? "").toLowerCase();
+      const state = (review.state ?? "").toUpperCase();
+      return reviewerSet.has(login) && !["DISMISSED", "PENDING"].includes(state);
+    })
     .sort((left, right) => (right.submittedAt ?? right.submitted_at ?? "").localeCompare(left.submittedAt ?? left.submitted_at ?? ""));
 
   if (codexReviews.length > 0) {
-    const latest = codexReviews[0];
-    const reviewedSha = latest.commitId ?? latest.commit_id ?? null;
-    if (!reviewedSha) {
-      return { state: "unknown", reviewedSha: null };
+    const current = codexReviews.find(
+      (review) => (review.commitId ?? review.commit_id) === headSha,
+    );
+    if (current) {
+      return { state: "current", reviewedSha: headSha };
     }
-    return {
-      state: reviewedSha === headSha ? "current" : "stale",
-      reviewedSha,
-    };
+    const verified = codexReviews.find(
+      (review) => review.commitId ?? review.commit_id,
+    );
+    if (verified) {
+      return {
+        state: "stale",
+        reviewedSha: verified.commitId ?? verified.commit_id,
+      };
+    }
+    return { state: "unknown", reviewedSha: null };
   }
 
   const hasActivity = codexActivity.some((activity) =>

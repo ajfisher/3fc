@@ -331,6 +331,44 @@ test("Codex activity without a reviewed SHA is unknown, never current", () => {
   assert.deepEqual(result, { state: "unknown", reviewedSha: null });
 });
 
+test("Codex prefers a verified current-head review over newer unverified activity", () => {
+  const result = classifyCodexReview(
+    [
+      {
+        login: "chatgpt-codex-connector[bot]",
+        state: "COMMENTED",
+        commitId: "head-123",
+        submittedAt: "2026-07-18T01:00:00Z",
+      },
+      {
+        login: "chatgpt-codex-connector[bot]",
+        state: "COMMENTED",
+        commitId: null,
+        submittedAt: "2026-07-18T02:00:00Z",
+      },
+    ],
+    [],
+    "head-123",
+    policy.codex.reviewer_logins,
+  );
+  assert.deepEqual(result, { state: "current", reviewedSha: "head-123" });
+});
+
+test("dismissed Codex reviews do not count as current", () => {
+  const result = classifyCodexReview(
+    [{
+      login: "chatgpt-codex-connector[bot]",
+      state: "DISMISSED",
+      commitId: "head-123",
+      submittedAt: "2026-07-18T02:00:00Z",
+    }],
+    [],
+    "head-123",
+    policy.codex.reviewer_logins,
+  );
+  assert.deepEqual(result, { state: "missing", reviewedSha: null });
+});
+
 test("unresolved non-outdated review thread blocks", () => {
   const result = evaluateReview(policy, state({
     reviewThreads: [{ isResolved: false, isOutdated: false }],
