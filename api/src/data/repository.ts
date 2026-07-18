@@ -231,7 +231,7 @@ function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdA
 
   return {
     gameId: raw.gameId ?? "",
-    teamId: raw.teamId ?? "red",
+    teamId: isTeamId(raw.teamId) ? raw.teamId : "red",
     name: raw.name ?? "",
     color: raw.color ?? null,
     scored: normalizeNonNegativeInteger(raw.scored),

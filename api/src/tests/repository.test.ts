@@ -561,6 +561,33 @@ test("repository normalizes partial legacy goal records to documented response b
   assert.equal(goal.concedingTeamId, "red");
 });
 
+test("repository normalizes malformed game team records to documented response bounds", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "TEAM#green" },
+    entityType: { S: "gameTeam" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        teamId: "green",
+        name: "Legacy Team",
+        color: null,
+        scored: -1,
+        conceded: -2,
+      }),
+    },
+  });
+
+  const [team] = await repository.listTeamsForGame("game-legacy");
+  assert.equal(team.teamId, "red");
+  assert.equal(team.scored, 0);
+  assert.equal(team.conceded, 0);
+});
+
 test("repository supports league discovery by user ACL", async () => {
   const repository = createRepository();
 
