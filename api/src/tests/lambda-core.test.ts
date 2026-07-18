@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -230,6 +231,12 @@ interface HarnessConfig {
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
+  beforeIdempotencyRecordRead?: (input: {
+    scope: string;
+    key: string;
+    readCount: number;
+    records: Map<string, StoredIdempotencyRecord>;
+  }) => void;
 }
 
 function createEvent(input: {
@@ -254,6 +261,29 @@ function createEvent(input: {
       },
     },
   };
+}
+
+function normalizePayloadForTestHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizePayloadForTestHash);
+  }
+
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(source)
+        .sort()
+        .map((key) => [key, normalizePayloadForTestHash(source[key])] as const),
+    );
+  }
+
+  return value;
+}
+
+function buildTestIdempotencyRequestHash(scope: string, payload: unknown): string {
+  return createHash("sha256")
+    .update(`${scope}:${JSON.stringify(normalizePayloadForTestHash(payload))}`)
+    .digest("hex");
 }
 
 function completedThirdTimerSegments(): ThirdTimerSegment[] {
@@ -322,6 +352,7 @@ function createHarness(config: HarnessConfig = {}) {
   let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   let finishBeforeGoalCorrectionOnce = config.finishBeforeGoalCorrectionOnce ?? false;
+  const idempotencyRecordReads = new Map<string, number>();
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
   const sessionEntities = new Map<string, MockSessionEntity>(
@@ -1537,7 +1568,16 @@ function createHarness(config: HarnessConfig = {}) {
         return sessionEntities.get(sessionId) ?? null;
       },
       async getIdempotencyRecord(scope: string, key: string) {
-        return idempotencyRecords.get(`${scope}:${key}`) ?? null;
+        const recordKey = `${scope}:${key}`;
+        const readCount = (idempotencyRecordReads.get(recordKey) ?? 0) + 1;
+        idempotencyRecordReads.set(recordKey, readCount);
+        config.beforeIdempotencyRecordRead?.({
+          scope,
+          key,
+          readCount,
+          records: idempotencyRecords,
+        });
+        return idempotencyRecords.get(recordKey) ?? null;
       },
       async createIdempotencyRecord(input) {
         const recordKey = `${input.scope}:${input.key}`;
@@ -2065,6 +2105,26 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
     message: "Join code is required.",
   });
 
+  const invalidFormatResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/too-long-code",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(invalidFormatResponse.statusCode, 400);
+  assert.deepEqual(JSON.parse(invalidFormatResponse.body), {
+    error: "bad_request",
+    code: "join_code_invalid",
+    message: "Join code must be 8 letters or digits.",
+  });
+
   const malformedResponse = await harness.handler(
     createEvent({
       method: "POST",
@@ -2533,6 +2593,100 @@ test("core lambda maps duplicate game IDs to conflict on game creation", async (
     code: "game_exists",
     message: "Game game-1 already exists.",
   });
+  assert.equal(harness.createdGames.length, 0);
+  assert.equal(harness.createdSessionGames.length, 0);
+});
+
+test("core lambda replays idempotent create game response after a duplicate race", async () => {
+  const scope = "admin@example.com:POST:/v1/sessions/session-abc/games";
+  const key = "create-game-race-1";
+  const requestPayload = {
+    gameId: "game-1",
+    gameStartTs: "2026-02-23T11:00:00Z",
+  };
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    beforeIdempotencyRecordRead: ({ readCount, records }) => {
+      if (readCount !== 2) {
+        return;
+      }
+
+      records.set(`${scope}:${key}`, {
+        scope,
+        key,
+        requestHash: buildTestIdempotencyRequestHash(scope, requestPayload),
+        responseStatusCode: 201,
+        responseBody: JSON.stringify({ replayed: true }),
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      });
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": key,
+      },
+      body: requestPayload,
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(JSON.parse(response.body), { replayed: true });
   assert.equal(harness.createdGames.length, 0);
   assert.equal(harness.createdSessionGames.length, 0);
 });

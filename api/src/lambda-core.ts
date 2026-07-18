@@ -48,7 +48,9 @@ import {
   assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
+  isJoinCodePathParamValid,
   joinGameRequestSchema,
+  normalizeJoinCodePathParam,
   quickCreateGamePlayerRequestSchema,
   undoLastGoalRequestSchema,
   updateGoalRequestSchema,
@@ -860,6 +862,21 @@ function joinCodeRequiredResponse(
       error: "bad_request",
       code: "join_code_required",
       message: "Join code is required.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function joinCodeInvalidFormatResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    400,
+    {
+      error: "bad_request",
+      code: "join_code_invalid",
+      message: "Join code must be 8 letters or digits.",
     },
     buildCorsHeaders(origin, allowedOrigins),
   );
@@ -1776,7 +1793,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
       if (method === "POST" && joinGameMatch) {
         let joinCode: string;
         try {
-          joinCode = decodeURIComponent(joinGameMatch[1]).trim();
+          joinCode = normalizeJoinCodePathParam(decodeURIComponent(joinGameMatch[1]));
         } catch {
           status = 400;
           return badRequest(origin, dependencies.corsAllowedOrigins, "Join code must be URL encoded correctly.");
@@ -1784,6 +1801,10 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         if (joinCode.length === 0) {
           status = 400;
           return joinCodeRequiredResponse(origin, dependencies.corsAllowedOrigins);
+        }
+        if (!isJoinCodePathParamValid(joinCode)) {
+          status = 400;
+          return joinCodeInvalidFormatResponse(origin, dependencies.corsAllowedOrigins);
         }
 
         let rawBody: Record<string, unknown>;
@@ -2406,6 +2427,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             });
           } catch (error) {
             if (error instanceof GameAlreadyExistsError) {
+              const replayResponse = await replayStoredIdempotencyMutation({
+                repository: dependencies.repository,
+                idempotencyKey,
+                sessionEmail: session.email,
+                method,
+                route,
+                requestPayload: parsedBody.data,
+                origin,
+                allowedOrigins: dependencies.corsAllowedOrigins,
+              });
+              if (replayResponse) {
+                status = replayResponse.statusCode;
+                return replayResponse;
+              }
+
               status = 409;
               return gameAlreadyExistsConflictResponse(
                 origin,
@@ -2414,6 +2450,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               );
             }
             if (error instanceof GameJoinCodeCollisionError) {
+              const replayResponse = await replayStoredIdempotencyMutation({
+                repository: dependencies.repository,
+                idempotencyKey,
+                sessionEmail: session.email,
+                method,
+                route,
+                requestPayload: parsedBody.data,
+                origin,
+                allowedOrigins: dependencies.corsAllowedOrigins,
+              });
+              if (replayResponse) {
+                status = replayResponse.statusCode;
+                return replayResponse;
+              }
+
               status = 409;
               return gameJoinCodeCollisionConflictResponse(origin, dependencies.corsAllowedOrigins);
             }

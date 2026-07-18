@@ -34,7 +34,9 @@ paths:
           required: true
           schema:
             type: string
-            minLength: 1
+            minLength: 8
+            maxLength: 8
+            pattern: "^[A-Za-z0-9]{8}$"
       requestBody:
         required: true
         content:
@@ -53,7 +55,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/CreateGameConflict"
+          $ref: "#/components/responses/JoinGameConflict"
   /v1/leagues:
     post:
       summary: Create league
@@ -182,7 +184,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/Conflict"
+          $ref: "#/components/responses/CreateGameConflict"
   /v1/games/{gameId}/thirds/{third}/start:
     post:
       summary: Start a game third timer
@@ -747,6 +749,12 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     CreateGameConflict:
       description: Idempotency key was reused with a different request payload, or the game/join code already exists
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    JoinGameConflict:
+      description: Join registration is closed or the join state changed while registering
       content:
         application/json:
           schema:

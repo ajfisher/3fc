@@ -58,7 +58,9 @@ import {
   assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
+  isJoinCodePathParamValid,
   joinGameRequestSchema,
+  normalizeJoinCodePathParam,
   quickCreateGamePlayerRequestSchema,
   undoLastGoalRequestSchema,
   updateGoalRequestSchema,
@@ -508,6 +510,15 @@ function joinCodeRequired(request: IncomingMessage, response: ServerResponse): n
     error: "bad_request",
     code: "join_code_required",
     message: "Join code is required.",
+  });
+  return 400;
+}
+
+function joinCodeInvalidFormat(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 400, {
+    error: "bad_request",
+    code: "join_code_invalid",
+    message: "Join code must be 8 letters or digits.",
   });
   return 400;
 }
@@ -1139,6 +1150,58 @@ async function executeIdempotentMutation(input: {
   return mutation.statusCode;
 }
 
+async function waitForIdempotencyRecord(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+async function replayStoredIdempotencyMutation(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  repositoryClient?: LocalIdempotencyRepository;
+}): Promise<number | null> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
+  if (!idempotencyKeyRaw) {
+    return null;
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(idempotencyKeyRaw);
+  if (!parsedHeader.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const key = parsedHeader.data;
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record = await repositoryClient.getIdempotencyRecord(scope, key);
+    if (record) {
+      if (record.requestHash !== requestHash) {
+        return idempotencyConflict(input.request, input.response);
+      }
+
+      sendJsonWithCors(
+        input.request,
+        input.response,
+        record.responseStatusCode,
+        parseStoredIdempotencyResponseBody(record.responseBody),
+      );
+      return record.responseStatusCode;
+    }
+
+    if (attempt < 2) {
+      await waitForIdempotencyRecord();
+    }
+  }
+
+  return null;
+}
+
 export async function handleLocalFinishGameRoute(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -1658,9 +1721,33 @@ async function handleCreateGame(
     });
   } catch (error) {
     if (error instanceof GameAlreadyExistsError) {
+      const replayStatus = await replayStoredIdempotencyMutation({
+        request,
+        response,
+        sessionEmail,
+        method,
+        route,
+        requestPayload: parsedBody.data,
+      });
+      if (replayStatus !== null) {
+        return replayStatus;
+      }
+
       return gameAlreadyExistsConflict(request, response, parsedBody.data.gameId);
     }
     if (error instanceof GameJoinCodeCollisionError) {
+      const replayStatus = await replayStoredIdempotencyMutation({
+        request,
+        response,
+        sessionEmail,
+        method,
+        route,
+        requestPayload: parsedBody.data,
+      });
+      if (replayStatus !== null) {
+        return replayStatus;
+      }
+
       return gameJoinCodeCollisionConflict(request, response);
     }
 
@@ -2048,13 +2135,17 @@ async function start(): Promise<void> {
       if (method === "POST" && joinGameMatch) {
         let joinCode: string;
         try {
-          joinCode = decodeURIComponent(joinGameMatch[1]).trim();
+          joinCode = normalizeJoinCodePathParam(decodeURIComponent(joinGameMatch[1]));
         } catch {
           status = badRequest(request, response, "Join code must be URL encoded correctly.");
           return;
         }
         if (joinCode.length === 0) {
           status = joinCodeRequired(request, response);
+          return;
+        }
+        if (!isJoinCodePathParamValid(joinCode)) {
+          status = joinCodeInvalidFormat(request, response);
           return;
         }
 

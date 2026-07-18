@@ -4,6 +4,7 @@ import { MAX_ASSISTS, TEAM_IDS, THIRD_LENGTH_MINUTES } from "@3fc/contracts";
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
 const teamIdSchema = z.enum(TEAM_IDS);
+const joinCodePathPattern = /^[A-Z0-9]{8}$/;
 const thirdLengthMinutesSchema = z.union([
   z.literal(THIRD_LENGTH_MINUTES[0]),
   z.literal(THIRD_LENGTH_MINUTES[1]),
@@ -69,6 +70,14 @@ export const joinGameRequestSchema = z
     nickname: nonEmptyTrimmedString,
   })
   .strict();
+
+export function normalizeJoinCodePathParam(joinCode: string): string {
+  return joinCode.trim().toUpperCase();
+}
+
+export function isJoinCodePathParamValid(joinCode: string): boolean {
+  return joinCodePathPattern.test(joinCode);
+}
 
 export const assignRosterPlayerRequestSchema = z
   .object({

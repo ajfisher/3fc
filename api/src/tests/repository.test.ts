@@ -1344,6 +1344,42 @@ test("repository gives legacy games default timer state", async () => {
   assert.equal(await repository.getGameByJoinCode(buildJoinCodeForGameId("game-legacy")), null);
 });
 
+test("repository does not delete another game's join-code lookup for legacy games", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
+  const currentGame = await repository.createGame({
+    gameId: "game-current",
+    joinCode: claimedJoinCode,
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-current",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T11:00:00.000Z",
+      }),
+    },
+  });
+
+  assert.equal(await repository.deleteGame("game-legacy"), true);
+  assert.equal(await repository.getGame("game-legacy"), null);
+  assert.deepEqual(await repository.getGameByJoinCode(claimedJoinCode), currentGame);
+});
+
 test("repository rejects join registration for finished games without creating a player", async () => {
   const repository = createRepository();
   const game = await repository.createGame({
