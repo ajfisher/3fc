@@ -1297,7 +1297,9 @@ export class ThreeFcRepository {
       );
     }
 
-    const teamItems = await this.queryByPrefix(gamePk(input.gameId), "TEAM#");
+    const teamItems = await this.queryByPrefix(gamePk(input.gameId), "TEAM#", {
+      consistentRead: true,
+    });
     const teamStates = teamItems
       .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)
       .map((item) => ({
