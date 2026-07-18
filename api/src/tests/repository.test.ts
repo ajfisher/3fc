@@ -1254,6 +1254,53 @@ test("repository updates goals, recomputes tallies, and records audit entries", 
   );
 });
 
+test("repository normalizes malformed goal audit snapshots to documented response bounds", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-1" },
+    sk: { S: "AUDIT#GOAL#2026-02-22T00:00:00.000Z#audit-legacy" },
+    entityType: { S: "goalAudit" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        auditId: "audit-legacy",
+        gameId: "game-1",
+        eventId: "goal-legacy",
+        actorUserId: "admin@example.com",
+        action: "goal_updated",
+        before: {
+          eventId: "goal-legacy",
+          third: 7,
+          thirdMinute: 0,
+          gameMinute: 0,
+          elapsedSeconds: -1,
+          stoppageMinute: 0,
+          scoringTeamId: "green",
+          concedingTeamId: "orange",
+          scorerPlayerId: "player-red",
+          assistPlayerIds: [123, "player-blue"],
+          ownGoal: "false",
+        },
+        after: null,
+      }),
+    },
+  });
+
+  const [audit] = await repository.listGoalAuditEntries("game-1");
+  assert.equal(audit.before?.third, 1);
+  assert.equal(audit.before?.thirdMinute, 1);
+  assert.equal(audit.before?.gameMinute, 1);
+  assert.equal(audit.before?.elapsedSeconds, 0);
+  assert.equal(audit.before?.stoppageMinute, null);
+  assert.equal(audit.before?.displayTime, "1");
+  assert.equal(audit.before?.scoringTeamId, null);
+  assert.equal(audit.before?.concedingTeamId, "red");
+  assert.deepEqual(audit.before?.assistPlayerIds, ["player-blue"]);
+  assert.equal(audit.before?.ownGoal, false);
+});
+
 test("repository replays duplicate correction operation IDs without duplicate PATCH side effects", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);

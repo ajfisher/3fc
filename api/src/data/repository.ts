@@ -341,26 +341,28 @@ function normalizeGoalAuditSnapshot(data: unknown): GoalAuditSnapshotRecord | nu
   }
 
   const raw = data as Partial<GoalAuditSnapshotRecord>;
-  const third = raw.third ?? 1;
+  const third = normalizeThirdNumber(raw.third);
+  const thirdMinute = normalizePositiveInteger(raw.thirdMinute);
+  const gameMinute = normalizePositiveInteger(raw.gameMinute);
 
   return {
     eventId: raw.eventId ?? "",
     third,
-    thirdMinute: normalizeNonNegativeInteger(raw.thirdMinute),
-    gameMinute: normalizeNonNegativeInteger(raw.gameMinute),
+    thirdMinute,
+    gameMinute,
     elapsedSeconds: normalizeNonNegativeInteger(raw.elapsedSeconds),
     stoppageMinute:
-      raw.stoppageMinute === null || Number.isInteger(raw.stoppageMinute)
-        ? (raw.stoppageMinute ?? null)
+      Number.isInteger(raw.stoppageMinute) && (raw.stoppageMinute as number) >= 1
+        ? (raw.stoppageMinute as number)
         : null,
-    displayTime: raw.displayTime ?? String(raw.gameMinute ?? ""),
-    scoringTeamId: raw.scoringTeamId ?? null,
-    concedingTeamId: raw.concedingTeamId ?? "red",
+    displayTime: typeof raw.displayTime === "string" ? raw.displayTime : String(gameMinute),
+    scoringTeamId: isTeamId(raw.scoringTeamId) ? raw.scoringTeamId : null,
+    concedingTeamId: isTeamId(raw.concedingTeamId) ? raw.concedingTeamId : "red",
     scorerPlayerId: raw.scorerPlayerId ?? "",
     assistPlayerIds: Array.isArray(raw.assistPlayerIds)
       ? raw.assistPlayerIds.filter((playerId): playerId is string => typeof playerId === "string")
       : [],
-    ownGoal: raw.ownGoal ?? false,
+    ownGoal: typeof raw.ownGoal === "boolean" ? raw.ownGoal : false,
   };
 }
 
