@@ -244,8 +244,8 @@ function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "create
     gameMinute,
     elapsedSeconds,
     stoppageMinute:
-      raw.stoppageMinute === null || Number.isInteger(raw.stoppageMinute)
-        ? (raw.stoppageMinute ?? null)
+      Number.isInteger(raw.stoppageMinute) && (raw.stoppageMinute as number) >= 1
+        ? (raw.stoppageMinute as number)
         : null,
     displayTime: raw.displayTime ?? String(gameMinute),
     scoringTeamId: raw.scoringTeamId ?? null,

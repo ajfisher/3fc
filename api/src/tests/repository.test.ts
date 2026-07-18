@@ -527,6 +527,37 @@ test("repository orders stoppage goals by elapsed time before event ID", async (
   );
 });
 
+test("repository normalizes partial legacy goal records to documented response bounds", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-1" },
+    sk: { S: "GOAL#1#0000#0000000#goal-legacy" },
+    entityType: { S: "goal" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-1",
+        eventId: "goal-legacy",
+        third: 1,
+        elapsedSeconds: 0,
+        stoppageMinute: 0,
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      }),
+    },
+  });
+
+  const [goal] = await repository.listGoalEvents("game-1");
+  assert.equal(goal.thirdMinute, 1);
+  assert.equal(goal.gameMinute, 1);
+  assert.equal(goal.stoppageMinute, null);
+});
+
 test("repository supports league discovery by user ACL", async () => {
   const repository = createRepository();
 
@@ -722,7 +753,7 @@ test("repository rejects stale timer transition writes without overwriting newer
     data.status = "live";
     data.thirds[0].startedAt = "2026-02-22T00:00:99.000Z";
     item.data.S = JSON.stringify(data);
-    item.updatedAt = { S: "2026-02-22T00:00:99.000Z" };
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
     client.seedItem(item);
   });
 
