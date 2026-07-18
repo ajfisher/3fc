@@ -2,6 +2,23 @@ import { readFile } from "node:fs/promises";
 
 const RISK_TIERS = ["low", "medium", "high"];
 const REQUIREMENT_LEVELS = new Set(["required", "optional", "advisory"]);
+const CHANGE_TYPES = new Set([
+  "documentation-only",
+  "tests-only",
+  "application-behaviour",
+  "backlog-maintenance",
+  "dependency-tooling",
+  "public-contract",
+  "data-migration",
+  "permission-trust-boundary",
+  "durable-state-ownership",
+  "destructive-behaviour",
+  "new-production-dependency",
+  "authentication-authorisation",
+  "privacy-regulated-data",
+  "infrastructure-production-configuration",
+  "review-policy",
+]);
 
 function assert(condition, message) {
   if (!condition) {
@@ -75,10 +92,31 @@ export function validatePolicy(policy) {
     assert(config && typeof config === "object", `risk.${tier} must be an object`);
     assertStringArray(config.paths, `risk.${tier}.paths`);
     assertStringArray(config.change_types, `risk.${tier}.change_types`);
+    assert(
+      config.change_types.every((type) => CHANGE_TYPES.has(type)),
+      `risk.${tier}.change_types contains an unsupported change type`,
+    );
     validateRequirements(config.requirements, tier);
   }
 
-  assertStringArray(policy.architecture_triggers, "architecture_triggers");
+  assert(
+    policy.architecture_triggers
+      && typeof policy.architecture_triggers === "object"
+      && !Array.isArray(policy.architecture_triggers),
+    "architecture_triggers must be an object",
+  );
+  assertStringArray(
+    policy.architecture_triggers.paths,
+    "architecture_triggers.paths",
+  );
+  assertStringArray(
+    policy.architecture_triggers.change_types,
+    "architecture_triggers.change_types",
+  );
+  assert(
+    policy.architecture_triggers.change_types.every((type) => CHANGE_TYPES.has(type)),
+    "architecture_triggers.change_types contains an unsupported change type",
+  );
   assert(policy.labels && typeof policy.labels === "object", "labels must be an object");
   assertStringArray(policy.labels.managed_prefixes, "labels.managed_prefixes", { allowEmpty: false });
   assert(Array.isArray(policy.labels.definitions), "labels.definitions must be an array");
@@ -89,6 +127,10 @@ export function validatePolicy(policy) {
     assert(/^[0-9A-Fa-f]{6}$/.test(definition.color), `label ${definition.name} must have a six-character hex color`);
     assert(typeof definition.description === "string" && definition.description.trim(), `label ${definition.name} description is required`);
     assert(!labelNames.has(definition.name), `duplicate label definition ${definition.name}`);
+    assert(
+      policy.labels.managed_prefixes.some((prefix) => definition.name.startsWith(prefix)),
+      `label ${definition.name} does not use a managed prefix`,
+    );
     labelNames.add(definition.name);
   }
   for (const requiredLabel of [

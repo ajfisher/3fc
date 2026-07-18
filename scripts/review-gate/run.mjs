@@ -4,11 +4,11 @@ import path from "node:path";
 import {
   desiredManagedLabels,
   evaluateReview,
-  renderSummary,
 } from "./evaluate.mjs";
 import { resolvePullRequestNumbers } from "./events.mjs";
 import { GitHubClient } from "./github.mjs";
 import { loadPolicy } from "./policy.mjs";
+import { renderSummary } from "./render.mjs";
 
 function normalizeReviews(reviews) {
   return reviews.map((review) => ({
@@ -85,6 +85,7 @@ async function evaluatePullRequest(client, policy, number) {
     conclusion: result.conclusion,
     summary,
     pullRequestNumber: number,
+    pullRequestUrl: pullRequest.html_url,
   });
 
   console.log(
@@ -116,6 +117,7 @@ async function publishConfigurationError(client, number, error) {
     conclusion: "neutral",
     summary,
     pullRequestNumber: number,
+    pullRequestUrl: pullRequest.html_url,
   });
 }
 
@@ -131,10 +133,11 @@ async function main() {
     repository: process.env.GITHUB_REPOSITORY ?? "",
   });
 
-  let numbers = resolvePullRequestNumbers(
+  let numbers = await resolvePullRequestNumbers(
     eventName,
     payload,
     process.env.INPUT_PR_NUMBER,
+    client,
   );
   if (eventName === "schedule") {
     numbers = await client.listOpenPullRequestNumbers();

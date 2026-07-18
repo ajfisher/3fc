@@ -155,6 +155,7 @@ and operational ownership.
 
 Before marking a pull request ready for human review:
 
+- preserve the review-packet marker, headings, and machine-readable tokens
 - update the review packet after material fixes
 - map acceptance criteria to tests, checks, or QA evidence
 - record rejected findings with a reason and evidence

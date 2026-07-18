@@ -5,8 +5,8 @@ export class GitHubClient {
     if (!token) {
       throw new Error("GITHUB_TOKEN is required");
     }
-    const [owner, repo] = repository.split("/");
-    if (!owner || !repo) {
+    const [owner, repo, extra] = repository.split("/");
+    if (!owner || !repo || extra) {
       throw new Error("GITHUB_REPOSITORY must use owner/repository format");
     }
     this.token = token;
@@ -87,10 +87,25 @@ export class GitHubClient {
   }
 
   async graphql(query, variables) {
-    return this.request("/graphql", {
+    const payload = await this.request("/graphql", {
       method: "POST",
       body: { query, variables },
     });
+    if (payload.errors?.length) {
+      throw new Error(
+        `GitHub GraphQL failed: ${payload.errors.map((error) => error.message).join("; ")}`,
+      );
+    }
+    return payload;
+  }
+
+  async getAssociatedPullRequestNumbers(headSha) {
+    const pulls = await this.paginate(
+      `/repos/${this.owner}/${this.repo}/commits/${headSha}/pulls`,
+    );
+    return pulls
+      .filter((pullRequest) => pullRequest.state === "open")
+      .map((pullRequest) => pullRequest.number);
   }
 
   async getReviewThreads(number) {
@@ -181,7 +196,14 @@ export class GitHubClient {
     }
   }
 
-  async publishCheck({ headSha, state, conclusion, summary, pullRequestNumber }) {
+  async publishCheck({
+    headSha,
+    state,
+    conclusion,
+    summary,
+    pullRequestNumber,
+    pullRequestUrl,
+  }) {
     const checkRuns = await this.getCheckRuns(headSha);
     const existing = checkRuns
       .filter((check) => check.name === "review-gate")
@@ -198,6 +220,7 @@ export class GitHubClient {
           conclusion,
           completed_at: new Date().toISOString(),
           external_id: `review-gate-pr-${pullRequestNumber}`,
+          details_url: pullRequestUrl,
           output,
         }
       : {
@@ -205,6 +228,7 @@ export class GitHubClient {
           head_sha: headSha,
           status: "in_progress",
           external_id: `review-gate-pr-${pullRequestNumber}`,
+          details_url: pullRequestUrl,
           output,
         };
 

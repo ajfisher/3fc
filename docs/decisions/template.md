@@ -1,12 +1,8 @@
-# ADR-NNN: Decision title
+# ADR NNNN: Decision title
 
-Status: proposed
-
-Date: YYYY-MM-DD
-
-Owners: 3FC maintainers
-
-Related PR or specification:
+- Status: Proposed
+- Date: YYYY-MM-DD
+- Deciders: 3FC maintainers
 
 ## Context
 
@@ -16,19 +12,21 @@ Describe the constraint, problem, and forces that make a decision necessary.
 
 State the selected approach and its boundaries.
 
-## Alternatives considered
-
-List credible alternatives and why they were not selected.
-
 ## Consequences
 
 Record positive, negative, operational, security, and compatibility consequences.
 
-## Reversal approach and cost
+## Alternatives considered
+
+List credible alternatives and why they were not selected.
+
+## Reversal
 
 Explain how the decision could be reversed and what data, deployment, or user
 impact reversal would have.
 
-## Affected invariants
+## Related material
 
-List identifiers from `docs/architecture/invariants.md`, or `none`.
+- Invariants:
+- Design documents:
+- GitHub issues:

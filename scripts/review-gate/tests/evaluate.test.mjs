@@ -7,10 +7,10 @@ import {
   desiredManagedLabels,
   evaluateReview,
   globMatches,
-  renderSummary,
 } from "../evaluate.mjs";
 import { parseReviewPacket } from "../packet.mjs";
 import { parsePolicy, validatePolicy } from "../policy.mjs";
+import { renderSummary } from "../render.mjs";
 
 const policyPath = new URL("../../../.github/review-policy.yml", import.meta.url);
 const fixturePath = new URL("../fixtures/base-state.json", import.meta.url);
@@ -21,6 +21,7 @@ function packet({
   risk = "low",
   claim = "Documentation describes the review process.",
   acceptance = true,
+  acceptanceResult = "PASS",
   changeTypes = [],
   architecture = "none",
   invariants = "",
@@ -28,27 +29,34 @@ function packet({
   failureBehaviour = "",
   rollbackApproach = "",
   rollbackEvidence = "",
-  rejectedFinding = false,
+  rejectedFinding = "",
   noJudgement = true,
   judgementDecision = "",
+  judgementOptions = "",
+  judgementReason = "",
   reversalCost = "",
 } = {}) {
-  const changeTypeLabels = [
-    ["Public contract", "public-contract"],
-    ["Data migration", "data-migration"],
-    ["Permission or trust boundary", "permission-trust-boundary"],
-    ["Durable state ownership", "durable-state-ownership"],
-    ["Destructive behaviour", "destructive-behaviour"],
-    ["New production dependency", "new-production-dependency"],
-    ["Authentication or authorisation", "authentication-authorisation"],
-    ["Privacy or regulated data", "privacy-regulated-data"],
-    ["Infrastructure or production configuration", "infrastructure-production-configuration"],
+  const changeTypeIds = [
+    "documentation-only",
+    "tests-only",
+    "application-behaviour",
+    "backlog-maintenance",
+    "dependency-tooling",
+    "public-contract",
+    "data-migration",
+    "permission-trust-boundary",
+    "durable-state-ownership",
+    "destructive-behaviour",
+    "new-production-dependency",
+    "authentication-authorisation",
+    "privacy-regulated-data",
+    "infrastructure-production-configuration",
+    "review-policy",
   ];
-  const architectureLabels = [
-    ["No architecture boundary or invariant changed", "none"],
-    ["Architecture documentation updated", "documented"],
-    ["Human architecture judgement required", "judgement-required"],
-  ];
+  const selectedChangeTypes = changeTypes.length > 0
+    ? changeTypes
+    : ["documentation-only"];
+  const architectureToken = `architecture:${architecture}`;
   return `<!-- review-packet-version:1 -->
 
 ## Behavioural claim
@@ -58,8 +66,8 @@ ${claim}
 ## Specification and acceptance evidence
 
 | Acceptance criterion | Evidence | Result |
-|---|---|---|
-${acceptance ? "| Review behaviour is documented | docs/review-process.md | pass |" : "|  |  |  |"}
+| --- | --- | --- |
+${acceptance ? `| Review behaviour is documented | docs/review-process.md | ${acceptanceResult} |` : "|  |  | PENDING |"}
 
 ## Scope boundaries
 
@@ -69,64 +77,65 @@ Excluded: product behaviour
 
 ## Change classification
 
-- Declared risk: ${risk}
-- Change types:
-${changeTypeLabels.map(([label, id]) => `  - [${changeTypes.includes(id) ? "x" : " "}] ${label}`).join("\n")}
-  - [${changeTypes.length === 0 ? "x" : " "}] None of the above
+- Declared risk: \`${risk}\`
+${changeTypeIds.map((id) => `- [${selectedChangeTypes.includes(id) ? "x" : " "}] \`${id}\``).join("\n")}
 
 ## Architecture and invariants
 
-${architectureLabels.map(([label, id]) => `- [${architecture === id ? "x" : " "}] ${label}`).join("\n")}
+${["architecture:none", "architecture:documented", "architecture:judgement-required"]
+  .map((token) => `- [${architectureToken === token ? "x" : " "}] \`${token}\``)
+  .join("\n")}
 
-Affected invariants:
+### Affected invariants
 
 ${invariants}
 
-Architecture or decision record:
+### Architecture or decision record
 
 ${architectureRecord}
 
 ## Failure and rollback
 
-Failure behaviour:
+### Failure behaviour
 
 ${failureBehaviour}
 
-Rollback approach:
+### Rollback approach
 
 ${rollbackApproach}
 
-Rollback evidence:
+### Rollback evidence
 
 ${rollbackEvidence}
 
 ## Automated and agent review disposition
 
-| Finding | Disposition | Reason | Evidence |
-|---|---|---|---|
-${rejectedFinding ? "| Finding A | rejected |  |  |" : "|  |  |  |  |"}
+### Unresolved blocking findings
 
-Unresolved blocking findings:
+None.
 
-none
+### Rejected findings and evidence
+
+${rejectedFinding || "None."}
 
 ## Human judgement
 
-- [${noJudgement ? "x" : " "}] No human judgement requested
+- [${noJudgement ? "x" : " "}] \`human-judgement:none\`
+- [${noJudgement ? " " : "x"}] \`human-judgement:required\`
 
-Decision requiring judgement:
+### Decision requiring judgement
 
 ${judgementDecision}
 
-Options considered:
+### Options considered
 
-Option A
+${judgementOptions}
 
-Reason selected:
+### Reason selected
 
-Reason
+${judgementReason}
 
-Reversal cost:
+### Reversal cost
 
 ${reversalCost}
 
@@ -160,7 +169,7 @@ function highRiskState(overrides = {}) {
       acceptance: true,
       architecture: "documented",
       invariants: "none",
-      architectureRecord: "docs/decisions/001-review-gate.md",
+      architectureRecord: "docs/decisions/0001-risk-based-pull-request-review.md",
       failureBehaviour: "The change fails closed.",
       rollbackApproach: "Revert the pull request.",
       rollbackEvidence: "Fixture verifies old policy.",
@@ -174,7 +183,7 @@ function highRiskState(overrides = {}) {
 
 test("low-risk documentation-only PR passes with low-risk evidence", () => {
   const result = evaluateReview(policy, state());
-  assert.equal(result.state, "pass");
+  assert.equal(result.state, "pass", result.blockers.join("\n"));
   assert.equal(result.conclusion, "success");
   assert.equal(result.risk.effective, "low");
   assert.deepEqual(result.labels, ["risk:low", "review:ready", "architecture:none"]);
@@ -222,6 +231,21 @@ test("missing acceptance evidence blocks medium risk", () => {
   }));
   assert.equal(result.state, "blocked");
   assert.match(result.blockers.join("\n"), /acceptance criterion/);
+});
+
+test("pending acceptance evidence is never presented as passing evidence", () => {
+  const result = evaluateReview(policy, state({
+    body: packet({
+      risk: "medium",
+      changeTypes: ["application-behaviour"],
+      acceptanceResult: "PENDING",
+    }),
+    changedFiles: ["app/src/index.ts"],
+    labels: ["QA-ready"],
+    checkRuns: [completedCheck("merge-gate"), completedCheck("deploy-qa")],
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /PENDING result/);
 });
 
 test("missing acceptance evidence blocks high risk", () => {
@@ -408,7 +432,7 @@ test("rejected finding without reason and evidence blocks", () => {
     body: packet({ rejectedFinding: true }),
   }));
   assert.equal(result.state, "blocked");
-  assert.match(result.blockers.join("\n"), /rejected automated finding/);
+  assert.match(result.blockers.join("\n"), /rejected automated finding/i);
 });
 
 test("architecture trigger cannot be declared as no impact", () => {
@@ -425,8 +449,58 @@ test("architecture trigger cannot be declared as no impact", () => {
 });
 
 test("packet parser rejects placeholder declared risk", () => {
-  const parsed = parseReviewPacket(packet().replace("- Declared risk: low", "- Declared risk: low / medium / high"));
+  const parsed = parseReviewPacket(
+    packet().replace(
+      "- Declared risk: `low`",
+      "- Declared risk: `choose: low | medium | high`",
+    ),
+  );
   assert.equal(parsed.declaredRisk, null);
+});
+
+test("unchanged pull request template reports every required author choice", async () => {
+  const template = await readFile(
+    new URL("../../../.github/pull_request_template.md", import.meta.url),
+    "utf8",
+  );
+  const parsed = parseReviewPacket(template);
+  assert.equal(parsed.claim, "");
+  assert.equal(parsed.scopeIncluded, "");
+  assert.equal(parsed.scopeExcluded, "");
+  assert.match(parsed.errors.join("\n"), /Declared risk/);
+  assert.match(parsed.errors.join("\n"), /change type/);
+  assert.match(parsed.errors.join("\n"), /architecture disposition/);
+  assert.match(parsed.errors.join("\n"), /human-judgement disposition/);
+});
+
+test("packet parser requires stable machine-readable dispositions", () => {
+  const parsed = parseReviewPacket(
+    packet().replace(
+      "- [x] `human-judgement:none`",
+      "- [ ] `human-judgement:none`",
+    ),
+  );
+  assert.match(parsed.errors.join("\n"), /exactly one human-judgement/);
+});
+
+test("architecture-sensitive change types trigger without a matching path", () => {
+  const result = evaluateReview(policy, highRiskState({
+    changedFiles: ["notes.txt"],
+    body: packet({
+      risk: "high",
+      changeTypes: ["permission-trust-boundary"],
+      architecture: "none",
+      invariants: "None",
+      failureBehaviour: "The operation fails closed.",
+      rollbackApproach: "Revert the change.",
+      rollbackEvidence: "A revert procedure was reviewed.",
+    }),
+  }));
+  assert.deepEqual(
+    result.architectureChangeTypes,
+    ["permission-trust-boundary"],
+  );
+  assert.match(result.blockers.join("\n"), /paths or change types/);
 });
 
 test("glob matching supports repository policy patterns", () => {
@@ -440,8 +514,8 @@ test("summary explains risk, evidence, review state, and actions", () => {
   const result = evaluateReview(policy, state({ body: packet({ claim: "" }) }));
   const summary = renderSummary(result, "head-123");
   assert.match(summary, /### Risk/);
-  assert.match(summary, /### Evidence/);
+  assert.match(summary, /### Current-head evidence/);
   assert.match(summary, /### Review state/);
-  assert.match(summary, /### To unblock/);
+  assert.match(summary, /### Exact unblock actions/);
   assert.match(summary, /Observe mode/);
 });

@@ -1,6 +1,6 @@
 {
   "headSha": "head-123",
-  "changedFiles": ["docs/review-process.md"],
+  "changedFiles": ["docs/product.md"],
   "checkRuns": [
     {
       "name": "merge-gate",

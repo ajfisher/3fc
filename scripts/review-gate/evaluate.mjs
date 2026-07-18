@@ -205,13 +205,13 @@ function determineReviewLabel({ draft, packetBlockers, blockers, pending, judgem
 }
 
 function architectureLabel(packet) {
-  if (packet.architecture === "documented") {
-    return "architecture:documented";
-  }
-  if (packet.architecture === "judgement-required") {
-    return "architecture:judgement-required";
-  }
-  return "architecture:none";
+  return [
+    "architecture:none",
+    "architecture:documented",
+    "architecture:judgement-required",
+  ].includes(packet.architecture)
+    ? packet.architecture
+    : "architecture:none";
 }
 
 function configurationError(error, mode = "observe") {
@@ -256,29 +256,36 @@ export function evaluateReview(rawPolicy, rawInput) {
   const pending = [];
   const actions = [];
 
-  if (packet.version !== 1) {
-    packetBlockers.push("Review packet version marker is missing or unsupported.");
-  }
+  packetBlockers.push(...packet.errors);
   if (!packet.claim) {
     packetBlockers.push("Behavioural claim is required.");
   }
-  if (!packet.declaredRisk) {
-    packetBlockers.push("Declared risk must be exactly low, medium, or high.");
+  if (!packet.scopeIncluded || !packet.scopeExcluded) {
+    packetBlockers.push("Scope boundaries require both Included and Excluded content.");
   }
-  if (packet.invalidChangeTypeSelection) {
-    packetBlockers.push("None of the above cannot be selected with another change type.");
-  }
-  if (packet.architectureSelections.length !== 1) {
-    packetBlockers.push("Select exactly one architecture-impact option.");
-  }
-  if (packet.architecture === "documented" && !packet.architectureRecord) {
+  if (packet.architecture === "architecture:documented" && !packet.architectureRecord) {
     packetBlockers.push("Documented architecture impact requires an architecture or decision-record reference.");
   }
-  if (packet.architecture === "judgement-required" && packet.noJudgementRequested) {
+  if (
+    packet.architecture === "architecture:judgement-required"
+    && packet.humanJudgement === "human-judgement:none"
+  ) {
     packetBlockers.push("Architecture judgement cannot be requested while human judgement is marked unnecessary.");
   }
   if (requirements.acceptance_evidence === "required" && !packet.hasAcceptanceEvidence) {
-    packetBlockers.push(`${effectiveRisk} risk requires at least one acceptance criterion with evidence.`);
+    packetBlockers.push(`${effectiveRisk} risk requires at least one acceptance criterion with evidence and result PASS.`);
+  }
+  if (
+    requirements.acceptance_evidence === "required"
+    && packet.acceptanceRows.some((row) => row.result === "FAIL")
+  ) {
+    packetBlockers.push("Acceptance evidence contains a FAIL result.");
+  }
+  if (
+    requirements.acceptance_evidence === "required"
+    && packet.acceptanceRows.some((row) => row.result === "PENDING")
+  ) {
+    packetBlockers.push("Acceptance evidence contains a PENDING result.");
   }
   if (requirements.failure_evidence === "required" && !packet.failureBehaviour) {
     packetBlockers.push(`${effectiveRisk} risk requires failure behaviour.`);
@@ -291,21 +298,48 @@ export function evaluateReview(rawPolicy, rawInput) {
   }
   if (
     requirements.invariant_declaration === "required"
-    && !/^(none|INV-\d{3}(?:[\s,;]+INV-\d{3})*)$/i.test(packet.affectedInvariants)
+    && !/^(none\.?|INV-\d{3}(?:[\s,;]+INV-\d{3})*)$/i.test(packet.affectedInvariants)
   ) {
     packetBlockers.push(`${effectiveRisk} risk requires invariant identifiers or explicit none.`);
   }
-  if (packet.rejectedFindingsMissingEvidence.length > 0) {
-    packetBlockers.push("Every rejected automated finding requires a reason and evidence.");
+  if (
+    packet.rejectedFindings
+    && !/(evidence|https?:\/\/|`[^`]+`|#[0-9]+)/i.test(packet.rejectedFindings)
+  ) {
+    packetBlockers.push("Rejected automated findings require supporting evidence.");
   }
-  if (packet.humanJudgementRequested && (!packet.judgementDecision || !packet.reversalCost)) {
-    packetBlockers.push("Requested human judgement requires a decision and reversal cost.");
+  if (
+    packet.humanJudgementRequested
+    && (
+      !packet.judgementDecision
+      || !packet.judgementOptions
+      || !packet.judgementReason
+      || !packet.reversalCost
+    )
+  ) {
+    packetBlockers.push("Requested human judgement requires a decision, options, reason, and reversal cost.");
+  }
+  if (
+    packet.humanJudgement === "human-judgement:none"
+    && (
+      packet.judgementDecision
+      || packet.judgementOptions
+      || packet.judgementReason
+      || packet.reversalCost
+    )
+  ) {
+    packetBlockers.push("human-judgement:none contradicts the recorded judgement fields.");
   }
 
   const architecturePaths = input.changedFiles.filter((path) =>
-    policy.architecture_triggers.some((glob) => globMatches(path, glob)));
-  if (architecturePaths.length > 0 && packet.architecture === "none") {
-    packetBlockers.push("Architecture-sensitive paths require documentation or explicit human architecture judgement.");
+    policy.architecture_triggers.paths.some((glob) => globMatches(path, glob)));
+  const architectureChangeTypes = packet.changeTypes.filter((type) =>
+    policy.architecture_triggers.change_types.includes(type));
+  if (
+    (architecturePaths.length > 0 || architectureChangeTypes.length > 0)
+    && packet.architecture === "architecture:none"
+  ) {
+    packetBlockers.push("Architecture-sensitive paths or change types require documentation or explicit human architecture judgement.");
   }
 
   blockers.push(...packetBlockers);
@@ -389,69 +423,8 @@ export function evaluateReview(rawPolicy, rawInput) {
     actions: unique(actions),
     labels,
     architecturePaths,
+    architectureChangeTypes,
   };
-}
-
-export function renderSummary(result, headSha) {
-  if (result.state === "configuration-error") {
-    return [
-      `## Review gate: CONFIGURATION ERROR`,
-      "",
-      ...result.blockers.map((blocker) => `- ${blocker}`),
-      "",
-      "### To unblock",
-      ...result.actions.map((action, index) => `${index + 1}. ${action}`),
-    ].join("\n");
-  }
-
-  const lines = [
-    `## Review gate: ${result.state.toUpperCase()} (${result.mode})`,
-    "",
-    "### Risk",
-    "",
-    `- Effective: **${result.risk.effective.toUpperCase()}**`,
-    `- Declared: ${result.risk.declared?.toUpperCase() ?? "MISSING"}`,
-    `- Path-derived: ${result.risk.path.toUpperCase()}`,
-    `- Change-type-derived: ${result.risk.changeType.toUpperCase()}`,
-  ];
-  if (result.risk.escalationReasons.length > 0) {
-    lines.push("- Escalation context:", ...result.risk.escalationReasons.map((reason) => `  - ${reason}`));
-  }
-
-  lines.push("", "### Evidence", "");
-  for (const group of result.checks) {
-    for (const check of group.checks) {
-      lines.push(`- ${group.name.toUpperCase()} / ${check.name}: ${check.state.toUpperCase()}${group.required ? " (required)" : " (optional)"}`);
-    }
-  }
-  lines.push(
-    `- Codex review: ${result.codex.state.toUpperCase()}`,
-    `- Reviewed SHA: ${result.codex.reviewedSha ?? "not available"}`,
-    `- Current SHA: ${headSha || "not available"}`,
-    `- Acceptance evidence: ${result.packet.hasAcceptanceEvidence ? "PRESENT" : "MISSING"}`,
-    `- Rollback approach: ${result.packet.rollbackApproach ? "PRESENT" : "MISSING"}`,
-    `- Rollback evidence: ${result.packet.rollbackEvidence ? "PRESENT" : "MISSING"}`,
-  );
-
-  lines.push(
-    "",
-    "### Review state",
-    "",
-    `- Unresolved threads: ${result.unresolvedThreads}`,
-    `- Human approvals: ${result.approvals} / ${result.requirements.human_approvals}`,
-    `- Architecture: ${result.packet.architecture ?? "INVALID"}`,
-    `- Human judgement requested: ${result.packet.humanJudgementRequested ? "YES" : "NO"}`,
-  );
-
-  if (result.actions.length > 0) {
-    lines.push("", "### To unblock", "", ...result.actions.map((action, index) => `${index + 1}. ${action}`));
-  } else {
-    lines.push("", "No deterministic blockers are present.");
-  }
-  if (result.mode === "observe") {
-    lines.push("", "> Observe mode: non-passing states are reported with a neutral conclusion and are not authoritative merge decisions.");
-  }
-  return lines.join("\n");
 }
 
 export function desiredManagedLabels(policy, currentLabels, desiredLabels) {

@@ -177,8 +177,10 @@ make help
 The `review-gate` check is initially observe-only and must not replace or weaken
 the existing `PR checks / merge-gate` requirement. Medium and high-risk changes
 need a successful `deploy-qa` result; low-risk changes do not. After resolving a
-review conversation, comment `/review-gate refresh` for an immediate refresh or
-wait for the hourly reconciliation run. See `docs/review-process.md`.
+review conversation, a repository owner, member, or collaborator can comment
+`/review-gate refresh` for an immediate refresh or wait for the hourly
+reconciliation run. Validate policy changes with
+`npm run review-policy:check`; see `docs/review-process.md`.
 
 Required GitHub repo configuration:
 

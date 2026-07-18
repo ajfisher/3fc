@@ -31,11 +31,14 @@
         ".github/pull_request_template.md",
         "scripts/review-gate/**",
         "docs/architecture/invariants.md",
+        "docs/decisions/**",
+        "docs/review-process.md",
         "AGENTS.md",
         "package.json",
         "package-lock.json"
       ],
       "change_types": [
+        "dependency-tooling",
         "public-contract",
         "data-migration",
         "permission-trust-boundary",
@@ -44,7 +47,8 @@
         "new-production-dependency",
         "authentication-authorisation",
         "privacy-regulated-data",
-        "infrastructure-production-configuration"
+        "infrastructure-production-configuration",
+        "review-policy"
       ],
       "requirements": {
         "ci": "required",
@@ -67,7 +71,10 @@
         "scripts/**",
         "docs/backlog/**"
       ],
-      "change_types": [],
+      "change_types": [
+        "application-behaviour",
+        "backlog-maintenance"
+      ],
       "requirements": {
         "ci": "required",
         "qa": "required",
@@ -86,7 +93,10 @@
         "docs/**",
         "**/*.md"
       ],
-      "change_types": [],
+      "change_types": [
+        "documentation-only",
+        "tests-only"
+      ],
       "requirements": {
         "ci": "required",
         "qa": "optional",
@@ -101,20 +111,37 @@
       }
     }
   },
-  "architecture_triggers": [
-    "api/src/auth/**",
-    "api/src/data/**",
-    "api/src/contracts/**",
-    "packages/contracts/**",
-    "docs/openapi/**",
-    "infra/**",
-    "serverless.*.yml",
-    ".github/workflows/**",
-    ".github/review-policy.yml",
-    "scripts/review-gate/**",
-    "package.json",
-    "package-lock.json"
-  ],
+  "architecture_triggers": {
+    "paths": [
+      "api/src/auth/**",
+      "api/src/data/**",
+      "api/src/contracts/**",
+      "packages/contracts/**",
+      "docs/openapi/**",
+      "docs/architecture/**",
+      "docs/decisions/**",
+      "infra/**",
+      "serverless.*.yml",
+      ".github/workflows/**",
+      ".github/review-policy.yml",
+      "scripts/review-gate/**",
+      "package.json",
+      "package-lock.json"
+    ],
+    "change_types": [
+      "dependency-tooling",
+      "public-contract",
+      "data-migration",
+      "permission-trust-boundary",
+      "durable-state-ownership",
+      "destructive-behaviour",
+      "new-production-dependency",
+      "authentication-authorisation",
+      "privacy-regulated-data",
+      "infrastructure-production-configuration",
+      "review-policy"
+    ]
+  },
   "labels": {
     "managed_prefixes": ["risk:", "review:", "architecture:"],
     "definitions": [
