@@ -736,6 +736,11 @@ function createHarness(config: HarnessConfig = {}) {
               return minuteSort;
             }
 
+            const elapsedSort = left.elapsedSeconds - right.elapsedSeconds;
+            if (elapsedSort !== 0) {
+              return elapsedSort;
+            }
+
             return left.eventId.localeCompare(right.eventId);
           });
 

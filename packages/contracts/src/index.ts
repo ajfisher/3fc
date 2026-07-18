@@ -34,7 +34,6 @@ export const DEFAULT_TEAMS = [
 ] as const satisfies readonly DefaultTeamDefinition[];
 
 export interface GoalEventInput {
-  gameId: string;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
