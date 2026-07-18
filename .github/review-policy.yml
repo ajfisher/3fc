@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "mode": "observe",
+  "checks": {
+    "ci": {
+      "required_check_names": ["merge-gate"]
+    },
+    "qa": {
+      "required_check_names": ["deploy-qa"],
+      "trigger_label": "QA-ready"
+    }
+  },
+  "codex": {
+    "reviewer_logins": ["chatgpt-codex-connector[bot]"]
+  },
+  "risk": {
+    "order": ["low", "medium", "high"],
+    "high": {
+      "paths": [
+        "api/src/auth/**",
+        "api/src/data/**",
+        "api/src/contracts/**",
+        "app/src/security.ts",
+        "packages/contracts/**",
+        "docs/openapi/**",
+        "infra/**",
+        "serverless.*.yml",
+        "scripts/deploy/**",
+        ".github/workflows/**",
+        ".github/review-policy.yml",
+        ".github/pull_request_template.md",
+        "scripts/review-gate/**",
+        "docs/architecture/invariants.md",
+        "docs/decisions/**",
+        "docs/review-process.md",
+        "AGENTS.md",
+        "package.json",
+        "package-lock.json"
+      ],
+      "change_types": [
+        "dependency-tooling",
+        "public-contract",
+        "data-migration",
+        "permission-trust-boundary",
+        "durable-state-ownership",
+        "destructive-behaviour",
+        "new-production-dependency",
+        "authentication-authorisation",
+        "privacy-regulated-data",
+        "infrastructure-production-configuration",
+        "review-policy"
+      ],
+      "requirements": {
+        "ci": "required",
+        "qa": "required",
+        "codex_review": "advisory",
+        "unresolved_review_threads": 0,
+        "human_approvals": 0,
+        "architecture_declaration": "required",
+        "failure_evidence": "required",
+        "rollback_evidence": "required",
+        "acceptance_evidence": "required",
+        "invariant_declaration": "required"
+      }
+    },
+    "medium": {
+      "paths": [
+        "api/**",
+        "app/**",
+        "packages/**",
+        "scripts/**",
+        "docs/backlog/**"
+      ],
+      "change_types": [
+        "application-behaviour",
+        "backlog-maintenance"
+      ],
+      "requirements": {
+        "ci": "required",
+        "qa": "required",
+        "codex_review": "advisory",
+        "unresolved_review_threads": 0,
+        "human_approvals": 0,
+        "architecture_declaration": "required",
+        "failure_evidence": "optional",
+        "rollback_evidence": "optional",
+        "acceptance_evidence": "required",
+        "invariant_declaration": "optional"
+      }
+    },
+    "low": {
+      "paths": [
+        "docs/**",
+        "**/*.md"
+      ],
+      "change_types": [
+        "documentation-only",
+        "tests-only"
+      ],
+      "requirements": {
+        "ci": "required",
+        "qa": "optional",
+        "codex_review": "advisory",
+        "unresolved_review_threads": 0,
+        "human_approvals": 0,
+        "architecture_declaration": "required",
+        "failure_evidence": "optional",
+        "rollback_evidence": "optional",
+        "acceptance_evidence": "optional",
+        "invariant_declaration": "optional"
+      }
+    }
+  },
+  "architecture_triggers": {
+    "paths": [
+      "api/src/auth/**",
+      "api/src/data/**",
+      "api/src/contracts/**",
+      "packages/contracts/**",
+      "docs/openapi/**",
+      "docs/architecture/**",
+      "docs/decisions/**",
+      "infra/**",
+      "serverless.*.yml",
+      ".github/workflows/**",
+      ".github/review-policy.yml",
+      "scripts/review-gate/**",
+      "package.json",
+      "package-lock.json"
+    ],
+    "change_types": [
+      "dependency-tooling",
+      "public-contract",
+      "data-migration",
+      "permission-trust-boundary",
+      "durable-state-ownership",
+      "destructive-behaviour",
+      "new-production-dependency",
+      "authentication-authorisation",
+      "privacy-regulated-data",
+      "infrastructure-production-configuration",
+      "review-policy"
+    ]
+  },
+  "labels": {
+    "managed_prefixes": ["risk:", "review:", "architecture:"],
+    "definitions": [
+      {"name": "risk:low", "color": "C2E0C6", "description": "Effective review risk is low"},
+      {"name": "risk:medium", "color": "FBCA04", "description": "Effective review risk is medium"},
+      {"name": "risk:high", "color": "B60205", "description": "Effective review risk is high"},
+      {"name": "review:automated", "color": "D4C5F9", "description": "Automated review inputs are pending"},
+      {"name": "review:agent-fixing", "color": "D4C5F9", "description": "Reserved for explicit agent remediation state"},
+      {"name": "review:awaiting-evidence", "color": "FBCA04", "description": "Review packet evidence is incomplete"},
+      {"name": "review:awaiting-judgement", "color": "5319E7", "description": "A documented human judgement is required"},
+      {"name": "review:awaiting-human", "color": "1D76DB", "description": "Evidence is ready and human approval is pending"},
+      {"name": "review:blocked", "color": "B60205", "description": "A deterministic review requirement is blocked"},
+      {"name": "review:ready", "color": "0E8A16", "description": "Review gate requirements are satisfied"},
+      {"name": "architecture:none", "color": "C2E0C6", "description": "No architecture or invariant impact declared"},
+      {"name": "architecture:documented", "color": "1D76DB", "description": "Architecture impact is documented"},
+      {"name": "architecture:judgement-required", "color": "5319E7", "description": "Architecture judgement is requested"}
+    ]
+  }
+}

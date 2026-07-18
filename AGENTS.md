@@ -123,3 +123,41 @@ Before opening or updating a PR:
 - Small, reviewable PRs.
 - Preserve momentum: ship vertical slices that can be tested quickly.
 - Document assumptions in code comments or PR notes where behavior is non-obvious.
+
+## Pull Request Review Guidelines
+
+Review a pull request independently from its implementation rationale. Assume the
+implementation may be subtly incorrect and try to falsify its claims.
+
+Test these claims first:
+
+1. The diff implements the stated behavioural claim.
+2. Each evidence item genuinely proves its acceptance criterion.
+3. The declared risk is not lower than the actual risk.
+4. The architecture-impact declaration is credible.
+5. The invariants in `docs/architecture/invariants.md` remain true.
+6. Failure, retry, concurrency, partial-state, and rollback behaviour are safe.
+7. Tests fail for the defect they claim to prevent rather than merely executing code.
+8. No unnecessary abstraction or production dependency was introduced.
+
+For each material finding:
+
+- describe a concrete failure scenario
+- identify the requirement or invariant involved
+- cite the relevant code
+- state whether the finding is demonstrated or inferred
+- avoid formatting and minor style comments already covered by deterministic checks
+
+Explicitly challenge claims that no architecture boundary changed by checking
+component responsibility, data ownership, dependency direction, public
+interfaces, state transitions, retry ownership, permissions, trust boundaries,
+and operational ownership.
+
+Before marking a pull request ready for human review:
+
+- preserve the review-packet marker, headings, and machine-readable tokens
+- update the review packet after material fixes
+- map acceptance criteria to tests, checks, or QA evidence
+- record rejected findings with a reason and evidence
+- declare architecture and invariant impact
+- leave only the narrow decisions that require human judgement

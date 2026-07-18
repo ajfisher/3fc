@@ -12,7 +12,7 @@ fi
 jq empty "$BACKLOG_FILE" >/dev/null
 
 {
-  echo "# 3FC v0 Backlog (M0-M4)"
+  echo "# 3FC Backlog (M0-M4 + Review System)"
   echo
   echo "Generated from \`$BACKLOG_FILE\`."
   echo
