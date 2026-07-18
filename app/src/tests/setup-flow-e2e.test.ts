@@ -165,6 +165,21 @@ function isAuthenticated(state: MockApiState): boolean {
   return Boolean(state.session && state.cookieJar.includes(`threefc_session=${state.session.sessionId}`));
 }
 
+function parseMockThirdRouteParam(value: string): 1 | 2 | 3 | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+
+  if (decoded === "1" || decoded === "2" || decoded === "3") {
+    return Number(decoded) as 1 | 2 | 3;
+  }
+
+  return null;
+}
+
 const DEFAULT_MOCK_TEAMS: Array<{ teamId: TeamId; name: string; color: string }> = [
   { teamId: "red", name: "Red", color: "#d83b36" },
   { teamId: "blue", name: "Blue", color: "#2364d2" },
@@ -515,7 +530,11 @@ function createMockFetch(state: MockApiState) {
     const startThirdMatch = path.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]+)\/start$/);
     if (method === "POST" && startThirdMatch) {
       const gameId = decodeURIComponent(startThirdMatch[1]);
-      const thirdNumber = Number.parseInt(decodeURIComponent(startThirdMatch[2]), 10);
+      const thirdNumber = parseMockThirdRouteParam(startThirdMatch[2]);
+      if (!thirdNumber) {
+        return createJsonResponse(400, { error: "Third must be 1, 2, or 3." });
+      }
+
       const game = state.games.get(gameId);
       if (!game) {
         return createJsonResponse(404, { error: "not_found", message: "Game not found." });
@@ -547,7 +566,11 @@ function createMockFetch(state: MockApiState) {
     const finishThirdMatch = path.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]+)\/finish$/);
     if (method === "POST" && finishThirdMatch) {
       const gameId = decodeURIComponent(finishThirdMatch[1]);
-      const thirdNumber = Number.parseInt(decodeURIComponent(finishThirdMatch[2]), 10);
+      const thirdNumber = parseMockThirdRouteParam(finishThirdMatch[2]);
+      if (!thirdNumber) {
+        return createJsonResponse(400, { error: "Third must be 1, 2, or 3." });
+      }
+
       const game = state.games.get(gameId);
       if (!game) {
         return createJsonResponse(404, { error: "not_found", message: "Game not found." });
@@ -555,6 +578,10 @@ function createMockFetch(state: MockApiState) {
 
       const thirds = game.thirds.map((third) => ({ ...third }));
       const target = thirds.find((third) => third.third === thirdNumber);
+      if (!target) {
+        return createJsonResponse(400, { error: "Third must be 1, 2, or 3." });
+      }
+
       if (!target?.startedAt) {
         return createJsonResponse(409, {
           error: "conflict",
