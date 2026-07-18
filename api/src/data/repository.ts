@@ -105,6 +105,10 @@ interface DynamoCommandClient {
   send(command: unknown): Promise<unknown>;
 }
 
+interface QueryByPrefixOptions {
+  consistentRead?: boolean;
+}
+
 interface StoredEntity<T> {
   pk: string;
   sk: string;
@@ -1534,7 +1538,7 @@ export class ThreeFcRepository {
 
   async listGoalEvents(gameId: string): Promise<GoalEventRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "GOAL#");
+    const items = await this.queryByPrefix(gamePk(gameId), "GOAL#", { consistentRead: true });
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.goal)
@@ -1703,11 +1707,16 @@ export class ThreeFcRepository {
     return parseStoredEntity(result.Item);
   }
 
-  private async queryByPrefix(pk: string, skPrefix: string): Promise<Array<StoredEntity<unknown>>> {
+  private async queryByPrefix(
+    pk: string,
+    skPrefix: string,
+    options: QueryByPrefixOptions = {},
+  ): Promise<Array<StoredEntity<unknown>>> {
     const result = (await this.client.send(
       new QueryCommand({
         TableName: this.tableName,
         KeyConditionExpression: "pk = :pk and begins_with(sk, :skPrefix)",
+        ConsistentRead: options.consistentRead,
         ExpressionAttributeValues: {
           ":pk": { S: pk },
           ":skPrefix": { S: skPrefix },

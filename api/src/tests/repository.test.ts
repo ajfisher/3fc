@@ -20,8 +20,15 @@ import { ThreeFcRepository } from "../data/repository.js";
 
 type Item = Record<string, AttributeValue>;
 
+interface ObservedQuery {
+  pk: string;
+  skPrefix: string;
+  consistentRead?: boolean;
+}
+
 class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
+  private readonly queries: ObservedQuery[] = [];
   private beforeNextPut: (() => void) | null = null;
 
   seedItem(item: Item): void {
@@ -32,6 +39,10 @@ class InMemoryDynamoClient {
 
   readItem(pk: string, sk: string): Item | undefined {
     return this.items.get(`${pk}|${sk}`);
+  }
+
+  readQueries(): readonly ObservedQuery[] {
+    return this.queries;
   }
 
   runBeforeNextPut(callback: () => void): void {
@@ -89,6 +100,11 @@ class InMemoryDynamoClient {
       const values = command.input.ExpressionAttributeValues ?? {};
       const pk = this.readString(values[":pk"], ":pk");
       const prefix = this.readString(values[":skPrefix"], ":skPrefix");
+      this.queries.push({
+        pk,
+        skPrefix: prefix,
+        consistentRead: command.input.ConsistentRead,
+      });
 
       const items = [...this.items.values()]
         .filter((item) => this.readString(item.pk, "pk") === pk)
@@ -926,7 +942,7 @@ async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {
 }
 
 test("repository creates standard goals with timer stamping, mixed-team assists, and persisted tallies", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
   await setupScoringGame(repository);
   await repository.startGameThird({ gameId: "game-1", third: 1 });
 
@@ -972,6 +988,13 @@ test("repository creates standard goals with timer stamping, mixed-team assists,
     ],
   );
   assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-1"]);
+  assert.deepEqual(
+    client
+      .readQueries()
+      .filter((query) => query.pk === "GAME#game-1" && query.skPrefix === "GOAL#")
+      .map((query) => query.consistentRead),
+    [true],
+  );
 });
 
 test("repository rejects duplicate goal event IDs without double-counting tallies", async () => {
