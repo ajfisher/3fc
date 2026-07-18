@@ -1171,12 +1171,12 @@ test("repository rejects duplicate goal event IDs without double-counting tallie
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-idem-duplicate",
-    actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
       assistPlayerIds: [],
       ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
     }),
     /Goal event has already been created/,
   );
@@ -1504,12 +1504,12 @@ test("repository rejects stale scoreboard writes without creating the goal", asy
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-stale",
-    actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
       assistPlayerIds: [],
       ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
     }),
     /Scoreboard changed while creating this goal/,
   );
@@ -1549,6 +1549,7 @@ test("repository rethrows non-conditional transaction cancellation when creating
       scorerPlayerId: "player-red",
       assistPlayerIds: [],
       ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
     }),
     /Transaction validation failed/,
   );
