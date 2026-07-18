@@ -488,6 +488,14 @@ function finishedGameRosterMutationConflict(
   return 409;
 }
 
+function finishedGameGoalMutationPayload(): { error: "conflict"; code: "game_finished"; message: string } {
+  return {
+    error: "conflict",
+    code: "game_finished",
+    message: "Cannot create a goal after the game is finished.",
+  };
+}
+
 function finishedGameDeleteConflict(
   request: IncomingMessage,
   response: ServerResponse,
@@ -2256,6 +2264,11 @@ async function start(): Promise<void> {
           status = notFound(request, response, `Game ${gameId} was not found.`);
           return;
         }
+        if (game.status === "finished") {
+          status = 409;
+          sendJsonWithCors(request, response, status, finishedGameGoalMutationPayload());
+          return;
+        }
 
         let rawBody: Record<string, unknown>;
         try {
@@ -2292,14 +2305,10 @@ async function start(): Promise<void> {
                 };
               }
 
-              const finishedBlock = await buildFinishedGameMutationBlock(
-                currentGame,
-                sessionEmail,
-              );
-              if (finishedBlock) {
+              if (currentGame.status === "finished") {
                 return {
-                  statusCode: finishedBlock.statusCode,
-                  payload: finishedBlock.payload,
+                  statusCode: 409,
+                  payload: finishedGameGoalMutationPayload(),
                 };
               }
 

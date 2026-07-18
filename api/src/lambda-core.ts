@@ -792,6 +792,21 @@ function finishedGameDeleteConflictResponse(
   );
 }
 
+function finishedGameGoalMutationConflictResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "game_finished",
+      message: "Cannot create a goal after the game is finished.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
 async function buildFinishedGameMutationBlock(input: {
   repository: RepositoryContract;
   game: Pick<RepositoryGameRecord, "gameId" | "leagueId" | "status">;
@@ -2234,17 +2249,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
-
-          const finishedBlock = await buildFinishedGameMutationBlock({
-            repository: dependencies.repository,
-            game,
-            sessionEmail: session.email,
-            origin,
-            allowedOrigins: dependencies.corsAllowedOrigins,
-          });
-          if (finishedBlock) {
-            status = finishedBlock.statusCode;
-            return finishedBlock;
+          if (game.status === "finished") {
+            status = 409;
+            return finishedGameGoalMutationConflictResponse(origin, dependencies.corsAllowedOrigins);
           }
 
           let rawBody: Record<string, unknown>;
@@ -2286,15 +2293,8 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
-                const finishedBlock = await buildFinishedGameMutationBlock({
-                  repository: dependencies.repository,
-                  game: currentGame,
-                  sessionEmail: session.email,
-                  origin,
-                  allowedOrigins: dependencies.corsAllowedOrigins,
-                });
-                if (finishedBlock) {
-                  return finishedBlock;
+                if (currentGame.status === "finished") {
+                  return finishedGameGoalMutationConflictResponse(origin, dependencies.corsAllowedOrigins);
                 }
 
                 if (!currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {

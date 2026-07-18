@@ -2259,7 +2259,7 @@ test("core lambda returns idempotency conflict for reused finish key with mismat
   });
 });
 
-test("core lambda rejects non-admin goal creation after finish", async () => {
+test("core lambda rejects goal creation after finish", async () => {
   const harness = createGoalHarness({ runningThird: false, completedThirds: true });
   const finishResponse = await harness.handler(
     createEvent({
@@ -2295,7 +2295,7 @@ test("core lambda rejects non-admin goal creation after finish", async () => {
   assert.deepEqual(JSON.parse(response.body), {
     error: "conflict",
     code: "game_finished",
-    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
+    message: "Cannot create a goal after the game is finished.",
   });
   assert.equal(harness.createdGoals.length, 0);
 });
