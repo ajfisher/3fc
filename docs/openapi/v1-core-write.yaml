@@ -1,9 +1,10 @@
 openapi: 3.1.0
 info:
-  title: 3FC Core Write API
+  title: 3FC Core API
   version: 0.1.0
   description: |
-    Authenticated core write routes for league/season/session/game creation, M2 roster setup, third timer control, and goal scoring.
+    Authenticated core routes for league/season/session/game creation, M2 roster setup,
+    third timer control, and goal scoring reads and writes.
 servers:
   - url: https://qa-api.3fc.football
     description: QA

@@ -1768,12 +1768,21 @@
 
     async function loadGameGoals() {
       if (!liveControlsAvailable()) {
-        return;
+        return true;
       }
 
-      const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals`, {
-        method: "GET",
-      });
+      let payload;
+      try {
+        payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals`, {
+          method: "GET",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not load goal timeline.";
+        showError(message);
+        setStatus("Could not load goal timeline.", "error");
+        renderLiveScoring();
+        return false;
+      }
 
       if (Array.isArray(payload?.scoreboard?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
@@ -1781,6 +1790,7 @@
 
       goalTimeline = Array.isArray(payload?.timeline) ? sortGoalTimeline(payload.timeline) : [];
       renderLiveScoring();
+      return true;
     }
 
     async function loadGame() {
@@ -2216,7 +2226,7 @@
 
     await loadGame();
     await loadRosterSetup({ updateStatus: false });
-    await loadGameGoals();
+    const goalsLoaded = await loadGameGoals();
 
     try {
       const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {
@@ -2230,7 +2240,9 @@
       // Keep existing game context if season lookup fails.
     }
 
-    setStatus("Game page ready.", "success");
+    if (goalsLoaded) {
+      setStatus("Game page ready.", "success");
+    }
   }
 
   async function initialize() {

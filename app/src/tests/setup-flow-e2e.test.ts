@@ -1118,6 +1118,7 @@ async function bootPage(input: {
   url: string;
   scriptFile: string;
   apiState: MockApiState;
+  fetch?: ReturnType<typeof createMockFetch>;
 }) {
   const dom = new JSDOM(input.html, {
     url: input.url,
@@ -1151,7 +1152,7 @@ async function bootPage(input: {
     configurable: true,
   });
   Object.defineProperty(window, "fetch", {
-    value: createMockFetch(input.apiState),
+    value: input.fetch ?? createMockFetch(input.apiState),
     configurable: true,
   });
   Object.defineProperty(window, "setTimeout", {
@@ -1616,6 +1617,82 @@ test("game page quick-creates and assigns roster players", async () => {
   const assignment = apiState.roster.get(`game-1:${createdPlayer.playerId}`);
   assert.equal(assignment?.teamId, "red");
   assert.match(rosterTeams.textContent ?? "", /Ari/);
+});
+
+test("game page remains usable when goal timeline load fails", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "scorekeeper@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-goals-fail", {
+    gameId: "game-goals-fail",
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const failingGoalFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "GET" && target.pathname === "/v1/games/game-goals-fail/goals") {
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Goal feed unavailable.",
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-goals-fail" }),
+    url: "http://localhost:3000/games/game-goals-fail",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: failingGoalFetch,
+  });
+
+  const status = page.document.getElementById("setup-status");
+  const error = page.document.getElementById("setup-error");
+  const rosterTeams = page.document.getElementById("roster-teams");
+  const timeline = page.document.getElementById("goal-timeline");
+  const quickCreateButton = page.document.querySelector('[data-action="quick-create-player"]');
+
+  assert(status instanceof page.window.HTMLElement);
+  assert(error instanceof page.window.HTMLElement);
+  assert(rosterTeams instanceof page.window.HTMLElement);
+  assert(timeline instanceof page.window.HTMLElement);
+  assert(quickCreateButton instanceof page.window.HTMLButtonElement);
+  assert.equal(status.textContent, "Could not load goal timeline.");
+  assert.equal(error.hidden, false);
+  assert.equal(error.textContent, "Goal feed unavailable.");
+  assert.match(rosterTeams.textContent ?? "", /Red/);
+  assert.match(timeline.textContent ?? "", /No goals yet/);
+  assert.equal(quickCreateButton.disabled, false);
 });
 
 test("game page runs live goal scoring, corrections, undo, and delete", async () => {
