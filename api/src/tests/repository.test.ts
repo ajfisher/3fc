@@ -1279,9 +1279,9 @@ test("repository normalizes persisted game results to contract-safe values", asy
     result: unknown;
   };
   data.status = "finished";
-  data.finishedAt = "2026-02-22T00:01:39.000Z";
+  data.finishedAt = "not-a-date";
   data.result = {
-    winnerTeamId: null,
+    winnerTeamId: "red",
     outcome: "draw",
     comparator: "fewest_conceded_then_most_scored",
     computedAt: "2026-02-22T00:01:39.000Z",
@@ -1290,22 +1290,63 @@ test("repository normalizes persisted game results to contract-safe values", asy
         teamId: "red",
         name: "Red",
         color: "#d83b36",
-        scored: 0,
+        scored: 1,
         conceded: 0,
         rank: 0,
         outcome: "draw",
       },
+      {
+        teamId: "blue",
+        name: "Blue",
+        color: "#2364d2",
+        scored: 0,
+        conceded: 1,
+        rank: 2,
+        outcome: "loss",
+      },
+      {
+        teamId: "yellow",
+        name: "Yellow",
+        color: "#e0a612",
+        scored: 0,
+        conceded: 0,
+        rank: 2,
+        outcome: "loss",
+      },
     ],
   };
+  const validResultPayload = data.result as Record<string, unknown>;
   item.data.S = JSON.stringify(data);
   item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
   client.seedItem(item);
 
   const normalized = await repository.getGame("game-result-normalize");
+  assert.equal(normalized?.finishedAt, null);
+  assert.equal(normalized?.result?.outcome, "win");
   assert.equal(normalized?.result?.teams[0]?.rank, 1);
 
   data.result = {
-    ...(data.result as Record<string, unknown>),
+    ...validResultPayload,
+    teams: [
+      {
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        scored: 0,
+        conceded: 0,
+        rank: 1,
+        outcome: "draw",
+      },
+    ],
+  };
+  item.data.S = JSON.stringify(data);
+  client.seedItem(item);
+
+  const incompleteResult = await repository.getGame("game-result-normalize");
+  assert.equal(incompleteResult?.result, null);
+
+  data.result = {
+    ...validResultPayload,
     computedAt: "not-a-date",
   };
   item.data.S = JSON.stringify(data);

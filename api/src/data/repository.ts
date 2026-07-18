@@ -276,37 +276,43 @@ function normalizeGameResultPayload(value: unknown): GameResult | null {
   }
 
   const winnerTeamId = raw.winnerTeamId ?? null;
-  if (winnerTeamId !== null && !TEAM_IDS.includes(winnerTeamId as TeamId)) {
+  if (winnerTeamId !== null && !isTeamId(winnerTeamId)) {
     return null;
   }
   if (!isValidTimestamp(raw.computedAt)) {
     return null;
   }
 
+  const teams = raw.teams
+    .filter(
+      (team): team is GameResult["teams"][number] =>
+        typeof team === "object" &&
+        team !== null &&
+        isTeamId((team as { teamId?: unknown }).teamId),
+    )
+    .map((team) => ({
+      teamId: team.teamId,
+      name: typeof team.name === "string" ? team.name : "",
+      color: typeof team.color === "string" ? team.color : null,
+      scored: normalizeNonNegativeInteger(team.scored),
+      conceded: normalizeNonNegativeInteger(team.conceded),
+      rank: normalizePositiveInteger(team.rank),
+      outcome:
+        team.outcome === "win" || team.outcome === "draw" || team.outcome === "loss"
+          ? team.outcome
+          : "loss",
+    }));
+  const teamIds = new Set(teams.map((team) => team.teamId));
+  if (teams.length !== TEAM_IDS.length || TEAM_IDS.some((teamId) => !teamIds.has(teamId))) {
+    return null;
+  }
+
   return {
     winnerTeamId,
-    outcome: raw.outcome === "win" ? "win" : "draw",
+    outcome: winnerTeamId ? "win" : "draw",
     comparator: "fewest_conceded_then_most_scored",
     computedAt: raw.computedAt,
-    teams: raw.teams
-      .filter(
-        (team): team is GameResult["teams"][number] =>
-          typeof team === "object" &&
-          team !== null &&
-          TEAM_IDS.includes((team as { teamId?: unknown }).teamId as TeamId),
-      )
-      .map((team) => ({
-        teamId: team.teamId,
-        name: typeof team.name === "string" ? team.name : "",
-        color: typeof team.color === "string" ? team.color : null,
-        scored: normalizeNonNegativeInteger(team.scored),
-        conceded: normalizeNonNegativeInteger(team.conceded),
-        rank: normalizePositiveInteger(team.rank),
-        outcome:
-          team.outcome === "win" || team.outcome === "draw" || team.outcome === "loss"
-            ? team.outcome
-            : "loss",
-      })),
+    teams,
   };
 }
 
@@ -322,7 +328,7 @@ function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "up
     gameStartTs: raw.gameStartTs ?? "",
     thirdLengthMinutes: normalizeThirdLengthMinutes(raw.thirdLengthMinutes),
     thirds: normalizeThirdTimerSegments(raw.thirds),
-    finishedAt: typeof raw.finishedAt === "string" ? raw.finishedAt : null,
+    finishedAt: isValidTimestamp(raw.finishedAt) ? raw.finishedAt : null,
     result: normalizeGameResultPayload(raw.result),
   };
 }
