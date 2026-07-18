@@ -1190,6 +1190,69 @@ function dispatchSubmit(form: HTMLFormElement): void {
   form.dispatchEvent(new form.ownerDocument.defaultView!.Event("submit", { bubbles: true, cancelable: true }));
 }
 
+function seedGoalScoringGame(
+  apiState: MockApiState,
+  input: { gameId: string; status?: MockGame["status"]; thirds?: ThirdTimerSegment[] },
+): void {
+  apiState.session = {
+    sessionId: "session-1",
+    email: "scorekeeper@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set(input.gameId, {
+    gameId: input.gameId,
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: input.status ?? "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: input.thirds ?? createDefaultThirdTimerSegments(),
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const playerSeeds: Array<{ playerId: string; nickname: string; teamId: TeamId }> = [
+    { playerId: "player-ari", nickname: "Ari", teamId: "red" },
+    { playerId: "player-bea", nickname: "Bea", teamId: "red" },
+    { playerId: "player-cy", nickname: "Cy", teamId: "blue" },
+  ];
+  for (const playerSeed of playerSeeds) {
+    apiState.players.set(playerSeed.playerId, {
+      playerId: playerSeed.playerId,
+      nickname: playerSeed.nickname,
+      claimedByUserId: null,
+      createdAt: "2026-03-28T11:00:07.000Z",
+      updatedAt: "2026-03-28T11:00:07.000Z",
+    });
+    apiState.gamePlayers.set(`${input.gameId}:${playerSeed.playerId}`, {
+      gameId: input.gameId,
+      playerId: playerSeed.playerId,
+      createdAt: "2026-03-28T11:00:08.000Z",
+      updatedAt: "2026-03-28T11:00:08.000Z",
+    });
+    apiState.roster.set(`${input.gameId}:${playerSeed.playerId}`, {
+      gameId: input.gameId,
+      playerId: playerSeed.playerId,
+      teamId: playerSeed.teamId,
+      createdAt: "2026-03-28T11:00:08.000Z",
+      updatedAt: "2026-03-28T11:00:08.000Z",
+    });
+  }
+}
+
 test("sign-in page shows inline validation for invalid email", async () => {
   const apiState = createMockApiState();
   const page = await bootPage({
@@ -1693,6 +1756,116 @@ test("game page remains usable when goal timeline load fails", async () => {
   assert.match(rosterTeams.textContent ?? "", /Red/);
   assert.match(timeline.textContent ?? "", /No goals yet/);
   assert.equal(quickCreateButton.disabled, false);
+});
+
+test("game page keeps edit goal helper text when no third is running", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "game-edit-note" });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-edit-note",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: ["player-bea"],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-edit-note" }),
+    url: "http://localhost:3000/games/game-edit-note",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  const note = page.document.getElementById("goal-form-note");
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  assert(note instanceof page.window.HTMLElement);
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+
+  assert.equal(note.textContent, "Editing keeps the original timer stamp.");
+});
+
+test("game page reuses create goal idempotency key for unchanged retry", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-goal-retry",
+    status: "live",
+    thirds,
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const createGoalIdempotencyKeys: Array<string | null> = [];
+  let failNextGoalCreate = true;
+  const flakyGoalFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "POST" && target.pathname === "/v1/games/game-goal-retry/goals") {
+      createGoalIdempotencyKeys.push(readInitHeader(init, "idempotency-key"));
+      if (failNextGoalCreate) {
+        failNextGoalCreate = false;
+        return createJsonResponse(503, {
+          error: "unavailable",
+          message: "Goal create unavailable.",
+        });
+      }
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-goal-retry" }),
+    url: "http://localhost:3000/games/game-goal-retry",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: flakyGoalFetch,
+  });
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.size, 0);
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 1);
+  assert.equal(createGoalIdempotencyKeys.length, 2);
+  assert.ok(createGoalIdempotencyKeys[0]);
+  assert.equal(createGoalIdempotencyKeys[0], createGoalIdempotencyKeys[1]);
 });
 
 test("game page runs live goal scoring, corrections, undo, and delete", async () => {

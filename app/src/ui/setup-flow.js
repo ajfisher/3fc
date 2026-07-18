@@ -1093,6 +1093,7 @@
     let scoreboardTeams = [];
     let goalTimeline = [];
     let editingGoalId = null;
+    let pendingCreateGoalIdempotency = null;
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -1482,11 +1483,6 @@
       undoLastGoalButton.disabled = goalTimeline.length === 0;
       undoLastGoalButton.textContent = "Undo last";
 
-      if (!activeThird) {
-        goalFormNote.textContent = "Start a third before adding goals.";
-        return;
-      }
-
       if (rosterTeams.length < 2) {
         goalFormNote.textContent = "Teams load before scoring.";
         return;
@@ -1497,9 +1493,17 @@
         return;
       }
 
-      goalFormNote.textContent = editingGoalId
-        ? "Editing keeps the original timer stamp."
-        : `Goal will be added to third ${activeThird}.`;
+      if (editingGoalId) {
+        goalFormNote.textContent = "Editing keeps the original timer stamp.";
+        return;
+      }
+
+      if (!activeThird) {
+        goalFormNote.textContent = "Start a third before adding goals.";
+        return;
+      }
+
+      goalFormNote.textContent = `Goal will be added to third ${activeThird}.`;
     }
 
     function timelineGoalLabel(goal) {
@@ -1651,6 +1655,32 @@
           ownGoal,
         },
       };
+    }
+
+    function goalCreatePayloadFingerprint(payload) {
+      return JSON.stringify({
+        scoringTeamId: payload.scoringTeamId,
+        concedingTeamId: payload.concedingTeamId,
+        scorerPlayerId: payload.scorerPlayerId,
+        assistPlayerIds: Array.isArray(payload.assistPlayerIds) ? payload.assistPlayerIds : [],
+        ownGoal: payload.ownGoal === true,
+      });
+    }
+
+    function idempotencyKeyForGoalSave(eventId, payload) {
+      if (eventId) {
+        return createIdempotencyKey("update-goal", `${gameId}-${eventId}`);
+      }
+
+      const fingerprint = goalCreatePayloadFingerprint(payload);
+      if (!pendingCreateGoalIdempotency || pendingCreateGoalIdempotency.fingerprint !== fingerprint) {
+        pendingCreateGoalIdempotency = {
+          fingerprint,
+          key: createIdempotencyKey("create-goal", `${gameId}-new`),
+        };
+      }
+
+      return pendingCreateGoalIdempotency.key;
     }
 
     function assignmentButtons(playerId, currentTeamId = null) {
@@ -2109,12 +2139,15 @@
             method: eventId ? "PATCH" : "POST",
             headers: {
               "Content-Type": "application/json",
-              "Idempotency-Key": createIdempotencyKey(eventId ? "update-goal" : "create-goal", `${gameId}-${eventId ?? "new"}`),
+              "Idempotency-Key": idempotencyKeyForGoalSave(eventId, draft.payload),
             },
             body: JSON.stringify(draft.payload),
           });
 
           applyGoalMutationResult(result);
+          if (!eventId) {
+            pendingCreateGoalIdempotency = null;
+          }
           setStatus(eventId ? "Goal updated." : "Goal added.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not save goal.";
