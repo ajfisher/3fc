@@ -15,7 +15,8 @@
   "scripts": {
     "build": "npm run build -w @3fc/contracts && npm run build -w @3fc/api && npm run build -w @3fc/app",
     "lint": "npm run typecheck",
-    "test": "npm run build -w @3fc/contracts && npm run test --workspaces",
+    "test": "npm run build -w @3fc/contracts && npm run test --workspaces && npm run test:review-gate",
+    "test:review-gate": "node --test scripts/review-gate/tests/*.test.mjs",
     "contracts:check": "npm run build -w @3fc/contracts && npm run test -w @3fc/contracts",
     "typecheck": "npm run build -w @3fc/contracts && npm run typecheck --workspaces",
     "clean": "npm run clean --workspaces --if-present"

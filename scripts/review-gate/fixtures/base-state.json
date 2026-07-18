@@ -1,0 +1,17 @@
+{
+  "headSha": "head-123",
+  "changedFiles": ["docs/review-process.md"],
+  "checkRuns": [
+    {
+      "name": "merge-gate",
+      "status": "completed",
+      "conclusion": "success",
+      "completedAt": "2026-07-18T01:00:00Z"
+    }
+  ],
+  "reviews": [],
+  "codexActivity": [],
+  "reviewThreads": [],
+  "labels": [],
+  "draft": false
+}
