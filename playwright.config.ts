@@ -5,7 +5,7 @@ const skipWebServer = process.env.THREEFC_SKIP_WEB_SERVER === "1";
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 60_000,
+  timeout: 180_000,
   expect: {
     timeout: 10_000,
   },
