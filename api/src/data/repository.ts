@@ -425,7 +425,14 @@ function compareGoalEvents(left: Pick<GoalEventRecord, "third" | "gameMinute" | 
 }
 
 function latestGoalEvent(goals: GoalEventRecord[]): GoalEventRecord | null {
-  return [...goals].sort(compareGoalEvents).at(-1) ?? null;
+  let latest: GoalEventRecord | null = null;
+  for (const goal of goals) {
+    if (!latest || compareGoalEvents(latest, goal) < 0) {
+      latest = goal;
+    }
+  }
+
+  return latest;
 }
 
 function goalAuditSnapshot(goal: GoalEventRecord): GoalAuditSnapshotRecord {
@@ -2087,7 +2094,7 @@ export class ThreeFcRepository {
     const goalSortKey = goalSk(activeThird.third, gameMinute, display.elapsedSeconds, input.eventId);
     const goalEventIdKey = goalEventIdSk(input.eventId);
     const goal = withTimestamps(payload, now, now);
-    const existingGoalState = await this.getGoalState(input.gameId);
+    const existingGoalState = await this.getGoalState(input.gameId, { consistentRead: true });
     const audit = this.buildGoalAuditRecord({
       gameId: input.gameId,
       eventId: input.eventId,
