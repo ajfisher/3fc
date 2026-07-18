@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const apiBaseUrl = process.env.THREEFC_API_BASE_URL ?? "http://localhost:3001";
 const fakeSesBaseUrl = process.env.THREEFC_FAKE_SES_BASE_URL ?? "http://localhost:4025";
+const fetchTimeoutMs = 5_000;
 
 interface FakeSesMessage {
   to?: string;
@@ -12,12 +13,22 @@ function uniqueRunId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function waitForHealthy(url: string): Promise<void> {
   await expect
     .poll(
       async () => {
         try {
-          const response = await fetch(url);
+          const response = await fetchWithTimeout(url);
           return response.ok;
         } catch {
           return false;
@@ -29,7 +40,7 @@ async function waitForHealthy(url: string): Promise<void> {
 }
 
 async function readFakeSesMessages(): Promise<FakeSesMessage[]> {
-  const response = await fetch(`${fakeSesBaseUrl}/messages`);
+  const response = await fetchWithTimeout(`${fakeSesBaseUrl}/messages`);
   if (!response.ok) {
     throw new Error(`Fake SES messages request failed with ${response.status}.`);
   }
@@ -75,12 +86,14 @@ async function createAndAssignPlayer(page: Page, nickname: string, teamId: "red"
   await expect(playerCard).toBeVisible();
 
   const playerId = await playerCard.getAttribute("data-player-id");
-  expect(playerId).toBeTruthy();
+  if (!playerId) {
+    throw new Error(`Created player ${nickname} did not expose a data-player-id.`);
+  }
 
   await playerCard.locator(`[data-action="assign-player"][data-team-id="${teamId}"]`).click();
   await expect(page.locator(`[data-ui="roster-team"][data-team-id="${teamId}"]`)).toContainText(nickname);
 
-  return playerId as string;
+  return playerId;
 }
 
 async function startThird(page: Page, third: 1 | 2 | 3): Promise<void> {
