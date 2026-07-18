@@ -171,12 +171,23 @@ make help
 - `.github/workflows/pr-checks.yml` runs lint, unit, and contracts checks on PRs.
 - `.github/workflows/deploy-qa.yml` deploys to QA when a PR is labeled `QA-ready`.
 - `.github/workflows/deploy-prod.yml` deploys to production on `main` pushes (with path filters).
+- `.github/workflows/review-gate.yml` reports risk, evidence, review state, and
+  managed labels from trusted base-branch policy.
+
+The `review-gate` check is initially observe-only and must not replace or weaken
+the existing `PR checks / merge-gate` requirement. Medium and high-risk changes
+need a successful `deploy-qa` result; low-risk changes do not. After resolving a
+review conversation, comment `/review-gate refresh` for an immediate refresh or
+wait for the hourly reconciliation run. See `docs/review-process.md`.
 
 Required GitHub repo configuration:
 
 - Add secret `AWS_ROLE_TO_ASSUME_QA` using `terraform -chdir=infra/qa output -raw github_actions_deploy_role_arn`.
 - Add secret `AWS_ROLE_TO_ASSUME_PROD` using `terraform -chdir=infra/prod output -raw github_actions_deploy_role_arn`.
 - Configure branch protection on `main` to require `PR checks / merge-gate` before merge.
+- Connect the repository to Codex and enable Code review/Automatic reviews.
+- Do not require `review-gate` until the observe rollout is complete and an
+  independent reviewer is available.
 
 Notes:
 
