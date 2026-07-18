@@ -168,6 +168,16 @@ function requireTeamId(teamId: string | null, fieldName: string): asserts teamId
   }
 }
 
+function isTeamId(value: unknown): value is TeamId {
+  return typeof value === "string" && TEAM_IDS.includes(value as TeamId);
+}
+
+function normalizeThirdNumber(value: unknown): ThirdNumber {
+  return typeof value === "number" && THIRD_NUMBERS.includes(value as ThirdNumber)
+    ? (value as ThirdNumber)
+    : 1;
+}
+
 function normalizeThirdLengthMinutes(value: unknown): ThirdLengthMinutes {
   return typeof value === "number" && isThirdLengthMinutes(value)
     ? value
@@ -231,7 +241,7 @@ function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdA
 
 function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "createdAt" | "updatedAt"> {
   const raw = data as Partial<Omit<GoalEventRecord, "createdAt" | "updatedAt">>;
-  const third = raw.third ?? 1;
+  const third = normalizeThirdNumber(raw.third);
   const thirdMinute = normalizePositiveInteger(raw.thirdMinute);
   const gameMinute = normalizePositiveInteger(raw.gameMinute);
   const elapsedSeconds = normalizeNonNegativeInteger(raw.elapsedSeconds);
@@ -248,8 +258,8 @@ function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "create
         ? (raw.stoppageMinute as number)
         : null,
     displayTime: raw.displayTime ?? String(gameMinute),
-    scoringTeamId: raw.scoringTeamId ?? null,
-    concedingTeamId: raw.concedingTeamId ?? "red",
+    scoringTeamId: isTeamId(raw.scoringTeamId) ? raw.scoringTeamId : null,
+    concedingTeamId: isTeamId(raw.concedingTeamId) ? raw.concedingTeamId : "red",
     scorerPlayerId: raw.scorerPlayerId ?? "",
     assistPlayerIds: Array.isArray(raw.assistPlayerIds)
       ? raw.assistPlayerIds.filter((playerId): playerId is string => typeof playerId === "string")

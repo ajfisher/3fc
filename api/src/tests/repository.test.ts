@@ -540,11 +540,11 @@ test("repository normalizes partial legacy goal records to documented response b
       S: JSON.stringify({
         gameId: "game-1",
         eventId: "goal-legacy",
-        third: 1,
+        third: 9,
         elapsedSeconds: 0,
         stoppageMinute: 0,
-        scoringTeamId: "red",
-        concedingTeamId: "blue",
+        scoringTeamId: "green",
+        concedingTeamId: "orange",
         scorerPlayerId: "player-red",
         assistPlayerIds: [],
         ownGoal: false,
@@ -553,9 +553,12 @@ test("repository normalizes partial legacy goal records to documented response b
   });
 
   const [goal] = await repository.listGoalEvents("game-1");
+  assert.equal(goal.third, 1);
   assert.equal(goal.thirdMinute, 1);
   assert.equal(goal.gameMinute, 1);
   assert.equal(goal.stoppageMinute, null);
+  assert.equal(goal.scoringTeamId, null);
+  assert.equal(goal.concedingTeamId, "red");
 });
 
 test("repository supports league discovery by user ACL", async () => {
