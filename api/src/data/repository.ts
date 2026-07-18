@@ -1480,6 +1480,24 @@ export class ThreeFcRepository {
               ConditionCheck: {
                 TableName: this.tableName,
                 Key: {
+                  pk: { S: joinCodePk(normalizedJoinCode) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedJoinCodeUpdatedAt": { S: joinCodeItem.updatedAt },
+                  ":expectedJoinCodeData": { S: joinCodeItem.rawData },
+                },
+              },
+            },
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
                   pk: { S: gamePk(game.gameId) },
                   sk: { S: metadataSk() },
                 },

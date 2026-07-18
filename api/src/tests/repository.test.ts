@@ -1456,6 +1456,46 @@ test("repository rejects join registration for finished games without creating a
   assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
 });
 
+test("repository rejects join registration if join code lookup changes before write", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-join-code-race",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected join code lookup item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      gameId: string;
+    };
+    data.gameId = "game-rotated-join-code";
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-racy-join",
+      nickname: "Racy Join",
+    }),
+    (error) =>
+      error instanceof GameJoinRegistrationError &&
+      error.code === "join_state_changed" &&
+      error.statusCode === 409,
+  );
+  assert.equal(await repository.getPlayer("player-racy-join"), null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+});
+
 test("repository rethrows non-conditional transaction cancellation when joining by code", async () => {
   const { repository, client } = createRepositoryHarness();
   const game = await repository.createGame({
