@@ -1,5 +1,5 @@
 {
-  "version": "2026-02-21",
+  "version": "2026-07-18",
   "labels": [
     {
       "name": "area:infra",
@@ -82,6 +82,11 @@
       "description": "M4 Notifications and Product Polish"
     },
     {
+      "name": "milestone:REV",
+      "color": "7057FF",
+      "description": "Risk-Based Review System Rollout"
+    },
+    {
       "name": "priority:P0",
       "color": "B60205",
       "description": "Critical path for MVP delivery"
@@ -117,6 +122,10 @@
     {
       "name": "M4 Notifications and Product Polish",
       "description": "Deliver async notifications, email templates, UX polish, observability, and security hardening."
+    },
+    {
+      "name": "Review System Rollout",
+      "description": "Introduce and tune a deterministic, risk-based pull request review process without weakening existing delivery controls."
     }
   ],
   "epics": [
@@ -247,6 +256,31 @@
         "M4-03",
         "M4-04",
         "M4-05"
+      ]
+    },
+    {
+      "id": "EPIC-REV",
+      "title": "Risk-Based Pull Request Review System",
+      "milestone": "Review System Rollout",
+      "labels": [
+        "area:qa",
+        "type:chore",
+        "milestone:REV",
+        "priority:P1"
+      ],
+      "summary": "Prepare pull requests for focused human judgement with deterministic risk, evidence, review-state, and architecture controls.",
+      "outcomes": [
+        "Every pull request presents one behavioural claim and risk-proportionate evidence.",
+        "A stable review-gate reports current automated, Codex, discussion, and approval state.",
+        "Review enforcement is introduced only after observe-mode results and independent reviewer availability support it."
+      ],
+      "childIssues": [
+        "REV-01",
+        "REV-02",
+        "REV-03",
+        "REV-04",
+        "REV-05",
+        "REV-06"
       ]
     }
   ],
@@ -1235,6 +1269,183 @@
         "Automated security header assertions.",
         "Session cookie policy verification in browser devtools checks.",
         "Authorization regression test sweep across privileged routes."
+      ]
+    },
+    {
+      "id": "REV-01",
+      "title": "Review packet, invariants, ADRs, and agent guidance",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-REV",
+      "milestone": "Review System Rollout",
+      "labels": ["area:qa", "type:chore", "milestone:REV", "priority:P1"],
+      "dependsOn": [],
+      "summary": "Define the repository-native evidence packet and durable architecture/review guidance used before human review.",
+      "scope": [
+        "Add the machine-parseable pull request review packet.",
+        "Create an evidence-backed system invariant registry and ADR guidance.",
+        "Extend AGENTS.md with independent semantic review instructions."
+      ],
+      "outOfScope": [
+        "Automated policy evaluation.",
+        "GitHub branch ruleset changes."
+      ],
+      "acceptanceCriteria": [
+        "Pull requests have one stable template for behavioural claims, risk, evidence, architecture, rollback, and judgement.",
+        "Repository-specific invariants are documented with evidence expectations and consequences.",
+        "Codex and human reviewers receive durable guidance for challenging claims and tests."
+      ],
+      "testScenarios": [
+        "Populate the template for a low-risk documentation change.",
+        "Populate high-risk rollback and invariant fields.",
+        "Review instructions distinguish semantic findings from deterministic style checks."
+      ]
+    },
+    {
+      "id": "REV-02",
+      "title": "Deterministic review policy evaluator and fixtures",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-REV",
+      "milestone": "Review System Rollout",
+      "labels": ["area:qa", "type:test", "milestone:REV", "priority:P1"],
+      "dependsOn": ["REV-01"],
+      "summary": "Implement a zero-network evaluator for risk, packet evidence, checks, reviews, threads, approvals, and label state.",
+      "scope": [
+        "Add and validate the repository review policy schema.",
+        "Implement pure risk, packet, review-currency, requirement, label, and summary evaluation.",
+        "Cover required policy behaviours with Node test-runner fixtures."
+      ],
+      "outOfScope": [
+        "Calling GitHub APIs.",
+        "Changing branch protection."
+      ],
+      "acceptanceCriteria": [
+        "Effective risk is the maximum of declared, path, and change-type risk.",
+        "Missing evidence and pending/failed inputs produce stable outcome states and actions.",
+        "Tests cover all minimum scenarios from the review-system implementation brief."
+      ],
+      "testScenarios": [
+        "High-risk path and change-type escalation from a low declaration.",
+        "Missing medium/high acceptance evidence and high rollback evidence.",
+        "Stale Codex review, unresolved threads, approvals, drafts, and malformed policy."
+      ]
+    },
+    {
+      "id": "REV-03",
+      "title": "Observe-mode GitHub review gate and Codex cloud signal",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-REV",
+      "milestone": "Review System Rollout",
+      "labels": ["area:ops", "type:feature", "milestone:REV", "priority:P1"],
+      "dependsOn": ["REV-02"],
+      "summary": "Publish current-head review state and managed labels without making the new gate a required merge control.",
+      "scope": [
+        "Fetch trusted GitHub PR metadata, checks, reviews, approvals, and review threads.",
+        "Publish one review-gate check summary and update managed labels.",
+        "Integrate Codex cloud review metadata, supported event refreshes, manual refresh, and hourly reconciliation."
+      ],
+      "outOfScope": [
+        "API-backed Codex Action or OPENAI_API_KEY.",
+        "Required review-gate ruleset configuration.",
+        "Auto-merge."
+      ],
+      "acceptanceCriteria": [
+        "The current PR head receives one explanatory review-gate result.",
+        "Observe-mode blockers are visible but non-blocking.",
+        "Managed labels update without removing unrelated labels.",
+        "No PR-head code executes with elevated workflow permissions."
+      ],
+      "testScenarios": [
+        "PR edit and workflow completion refresh the current-head result.",
+        "Manual refresh reconciles a resolved review thread.",
+        "Codex activity is current only when its reviewed SHA matches the PR head.",
+        "Existing PR checks and QA deployment continue unchanged."
+      ]
+    },
+    {
+      "id": "REV-04",
+      "title": "Observe review results and tune policy",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-REV",
+      "milestone": "Review System Rollout",
+      "labels": ["area:qa", "type:chore", "milestone:REV", "priority:P1"],
+      "dependsOn": ["REV-03"],
+      "summary": "Run pilot pull requests, confirm live GitHub identities/check names, and tune false positives before enforcement.",
+      "scope": [
+        "Exercise low, medium, and high-risk pilot pull requests.",
+        "Confirm Codex reviewer identity and reviewed-SHA metadata.",
+        "Measure missing evidence, risk escalation, refresh latency, and false positives."
+      ],
+      "outOfScope": [
+        "Making review-gate required.",
+        "Reducing human review."
+      ],
+      "acceptanceCriteria": [
+        "Configured check and reviewer names match live GitHub metadata.",
+        "Known false positives and missing triggers are resolved or documented.",
+        "An enforcement readiness recommendation is recorded."
+      ],
+      "testScenarios": [
+        "Documentation-only low-risk pilot.",
+        "Medium-risk app change requiring QA evidence.",
+        "High-risk policy or auth change declared low."
+      ]
+    },
+    {
+      "id": "REV-05",
+      "title": "Enforce medium and high-risk review requirements",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-REV",
+      "milestone": "Review System Rollout",
+      "labels": ["area:ops", "type:security", "milestone:REV", "priority:P1"],
+      "dependsOn": ["REV-04"],
+      "summary": "Make the tuned review gate authoritative for material changes once an independent reviewer is available.",
+      "scope": [
+        "Switch the policy from observe to enforce.",
+        "Require review-gate without removing existing required checks.",
+        "Require one independent approval for medium/high risk and configure conversation/stale-review controls."
+      ],
+      "outOfScope": [
+        "Low-risk approval relaxation.",
+        "Auto-merge."
+      ],
+      "acceptanceCriteria": [
+        "Medium/high pull requests cannot merge with failed, pending, or missing required evidence.",
+        "Existing merge-gate and QA workflows remain operational.",
+        "Ruleset bypass permissions and manual configuration are documented and reviewed."
+      ],
+      "testScenarios": [
+        "Medium-risk PR blocked without QA or approval.",
+        "High-risk PR blocked without rollback evidence.",
+        "Passing PR retains existing required checks and succeeds through review-gate."
+      ]
+    },
+    {
+      "id": "REV-06",
+      "title": "Evaluate low-risk review relaxation and dashboard",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-REV",
+      "milestone": "Review System Rollout",
+      "labels": ["area:ops", "type:chore", "milestone:REV", "priority:P2"],
+      "dependsOn": ["REV-05"],
+      "summary": "Use observed quality outcomes to decide whether low-risk review load can be reduced and whether a Project dashboard is justified.",
+      "scope": [
+        "Review risk-tier defect, escalation, false-positive, and review-time measures.",
+        "Decide whether low-risk changes may proceed without manual approval.",
+        "Optionally implement a non-blocking GitHub Project review dashboard."
+      ],
+      "outOfScope": [
+        "Automatic merge.",
+        "Replacing review-gate diagnostics with Project fields."
+      ],
+      "acceptanceCriteria": [
+        "Any low-risk policy relaxation is backed by recorded evidence and a reversible decision.",
+        "Project sync, if implemented, cannot block merge.",
+        "Post-merge defect and rollback monitoring remains available by risk tier."
+      ],
+      "testScenarios": [
+        "Compare low-risk review outcomes before and after any policy adjustment.",
+        "Verify dashboard failure does not affect review-gate.",
+        "Revert the policy safely if defect rates worsen."
       ]
     }
   ],

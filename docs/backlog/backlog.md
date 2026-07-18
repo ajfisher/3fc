@@ -1,4 +1,4 @@
-# 3FC v0 Backlog (M0-M4)
+# 3FC Backlog (M0-M4 + Review System)
 
 Generated from `docs/backlog/backlog.json`.
 
@@ -11,6 +11,7 @@ Generated from `docs/backlog/backlog.json`.
 | `EPIC-M2` | Live Match Operations | M2 Live Match Operations | 9 |
 | `EPIC-M3` | Public Results and Season Stats | M3 Public Results and Season Stats | 6 |
 | `EPIC-M4` | Notifications and Product Polish | M4 Notifications and Product Polish | 5 |
+| `EPIC-REV` | Risk-Based Pull Request Review System | Review System Rollout | 6 |
 
 ## Child Issues
 
@@ -50,6 +51,12 @@ Generated from `docs/backlog/backlog.json`.
 | `M4-03` | QR join UX polish and onboarding latency optimization | 5 | `EPIC-M4` | M4 Notifications and Product Polish | `M2-02` |
 | `M4-04` | Observability pack (dashboards, alerts, failure drilldowns) | 5 | `EPIC-M4` | M4 Notifications and Product Polish | `M4-01`, `M4-02` |
 | `M4-05` | Final security hardening (CSP, headers, cookie flags, permission review) | 3 | `EPIC-M4` | M4 Notifications and Product Polish | `M3-06` |
+| `REV-01` | Review packet, invariants, ADRs, and agent guidance | 5 | `EPIC-REV` | Review System Rollout | - |
+| `REV-02` | Deterministic review policy evaluator and fixtures | 8 | `EPIC-REV` | Review System Rollout | `REV-01` |
+| `REV-03` | Observe-mode GitHub review gate and Codex cloud signal | 8 | `EPIC-REV` | Review System Rollout | `REV-02` |
+| `REV-04` | Observe review results and tune policy | 3 | `EPIC-REV` | Review System Rollout | `REV-03` |
+| `REV-05` | Enforce medium and high-risk review requirements | 3 | `EPIC-REV` | Review System Rollout | `REV-04` |
+| `REV-06` | Evaluate low-risk review relaxation and dashboard | 5 | `EPIC-REV` | Review System Rollout | `REV-05` |
 
 ## Global Test Scenarios
 

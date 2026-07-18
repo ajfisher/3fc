@@ -19,7 +19,9 @@ Primary source docs:
 
 - `docs/product.md`: product brief, UX flows, and game rules
 - `docs/spec.md`: high-level technical architecture and platform constraints
-- `docs/backlog/backlog.json`: canonical implementation backlog (M0-M4)
+- `docs/backlog/backlog.json`: canonical product and review-system backlog
+- `docs/review-process.md`: pull request evidence, risk, and rollout process
+- `docs/architecture/invariants.md`: stable system behaviours reviewers must preserve
 
 ## Current Status
 
@@ -48,6 +50,7 @@ The project is in the delivery setup phase:
 - `docs/openapi/`: OpenAPI definitions for implemented API surface
 - `docs/local-development.md`: local stack usage and smoke checks
 - `docs/dynamodb-single-table.md`: key schema and repository access patterns
+- `docs/decisions/`: architecture decision guidance and template
 - `scripts/github/`: backlog validation/export/sync helpers
 
 ## Tooling Requirements
@@ -94,7 +97,9 @@ Detailed local stack smoke tests are documented in:
   - Keep commits scoped and logically grouped.
 - PRs:
   - Open PRs against `main`.
-  - Include summary, risk notes, and validation steps in PR description.
+  - Complete the repository pull request review packet.
+  - State one behavioural claim and map acceptance criteria to evidence.
+  - Include risk, architecture/invariant impact, and validation results.
 
 ## Delivery Conventions
 

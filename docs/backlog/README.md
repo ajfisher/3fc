@@ -1,4 +1,4 @@
-# 3FC GitHub Backlog (M0-M4)
+# 3FC GitHub Backlog (M0-M4 + Review System)
 
 This folder contains the canonical implementation backlog for 3FC v0 as GitHub-ready issue metadata.
 
@@ -16,8 +16,10 @@ This folder contains the canonical implementation backlog for 3FC v0 as GitHub-r
   - Priorities: `priority:P0`, `priority:P1`, `priority:P2`
 - Epic issues:
   - `EPIC-M0` through `EPIC-M4`
+  - `EPIC-REV` for the risk-based review-system rollout
 - Child issue backlog:
   - `M0-01` through `M4-05`
+  - `REV-01` through `REV-06`
 - Full issue template fields per issue:
   - Summary, scope, out of scope, acceptance criteria, test scenarios, dependencies, labels, milestone, story points.
 
