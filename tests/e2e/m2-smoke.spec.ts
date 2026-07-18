@@ -13,6 +13,20 @@ function uniqueRunId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function scheduleForRun(runId: string): { gameDate: string; kickoff: string } {
+  const hash = [...runId].reduce((value, character) => {
+    return (value * 33 + character.charCodeAt(0)) >>> 0;
+  }, 5381);
+  const date = new Date(Date.UTC(2027, 0, 1));
+  date.setUTCDate(date.getUTCDate() + (hash % 20_000));
+  const gameDate = date.toISOString().slice(0, 10);
+  const hour = 8 + (hash % 10);
+  const minute = [0, 15, 30, 45][Math.floor(hash / 10) % 4];
+  const kickoff = `${gameDate}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+
+  return { gameDate, kickoff };
+}
+
 async function fetchWithTimeout(url: string): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
@@ -131,6 +145,7 @@ test.describe("M2 local-stack smoke", () => {
     const seasonSlug = `m2-smoke-season-${runId}`;
     const leagueName = `M2 Smoke League ${runId}`;
     const seasonName = `M2 Smoke Season ${runId}`;
+    const schedule = scheduleForRun(runId);
 
     await page.goto("/sign-in?returnTo=%2Fsetup");
     await expect(page.getByTestId("signin-shell")).toBeVisible();
@@ -159,9 +174,9 @@ test.describe("M2 local-stack smoke", () => {
     ]);
     await expect(page.locator("#season-title")).toHaveText(seasonName);
 
-    await page.locator("#game-date").fill("2026-06-20");
+    await page.locator("#game-date").fill(schedule.gameDate);
     await page.locator("#game-date").dispatchEvent("change");
-    await page.locator("#game-kickoff").fill("2026-06-20T10:00");
+    await page.locator("#game-kickoff").fill(schedule.kickoff);
     await page.locator("#game-kickoff").dispatchEvent("change");
     const gameId = (await page.locator("#game-id-display").innerText()).trim();
     expect(gameId).toMatch(/^game-/);
