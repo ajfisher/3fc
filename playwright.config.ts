@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const appBaseUrl = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
 const skipWebServer = process.env.THREEFC_SKIP_WEB_SERVER === "1";
+const isCi = Boolean(process.env.CI);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -20,7 +21,7 @@ export default defineConfig({
     : {
         command: process.env.THREEFC_WEB_SERVER_COMMAND ?? "make dev",
         url: `${appBaseUrl}/health`,
-        reuseExistingServer: process.env.CI !== "true",
+        reuseExistingServer: !isCi,
         timeout: 600_000,
       },
   projects: [
