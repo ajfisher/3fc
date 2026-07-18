@@ -751,7 +751,7 @@ test("repository rejects stale timer transition writes without overwriting newer
       thirds: Array<{ third: number; startedAt: string | null; finishedAt: string | null }>;
     };
     data.status = "live";
-    data.thirds[0].startedAt = "2026-02-22T00:00:99.000Z";
+    data.thirds[0].startedAt = "2026-02-22T00:01:29.000Z";
     item.data.S = JSON.stringify(data);
     item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
     client.seedItem(item);
@@ -762,7 +762,7 @@ test("repository rejects stale timer transition writes without overwriting newer
     /Timer state changed while applying this transition/,
   );
   const externallyStarted = await repository.getGame("game-1");
-  assert.equal(externallyStarted?.thirds[0].startedAt, "2026-02-22T00:00:99.000Z");
+  assert.equal(externallyStarted?.thirds[0].startedAt, "2026-02-22T00:01:29.000Z");
 
   client.runBeforeNextPut(() => {
     const item = client.readItem("GAME#game-1", "METADATA");
@@ -772,9 +772,9 @@ test("repository rejects stale timer transition writes without overwriting newer
     const data = JSON.parse(item.data.S) as {
       thirds: Array<{ third: number; startedAt: string | null; finishedAt: string | null }>;
     };
-    data.thirds[0].finishedAt = "2026-02-22T00:01:99.000Z";
+    data.thirds[0].finishedAt = "2026-02-22T00:02:39.000Z";
     item.data.S = JSON.stringify(data);
-    item.updatedAt = { S: "2026-02-22T00:01:99.000Z" };
+    item.updatedAt = { S: "2026-02-22T00:02:39.000Z" };
     client.seedItem(item);
   });
 
@@ -783,7 +783,7 @@ test("repository rejects stale timer transition writes without overwriting newer
     /Timer state changed while applying this transition/,
   );
   const externallyFinished = await repository.getGame("game-1");
-  assert.equal(externallyFinished?.thirds[0].finishedAt, "2026-02-22T00:01:99.000Z");
+  assert.equal(externallyFinished?.thirds[0].finishedAt, "2026-02-22T00:02:39.000Z");
 });
 
 test("timer display formatting switches to stoppage after nominal length", () => {
@@ -795,10 +795,17 @@ test("timer display formatting switches to stoppage after nominal length", () =>
     stoppageMinute: null,
   });
   assert.deepEqual(formatThirdDisplayTime(1200, 20), {
-    displayTime: "20+01",
-    phase: "stoppage",
+    displayTime: "20:00",
+    phase: "regulation",
     elapsedSeconds: 1200,
     stoppageSeconds: 0,
+    stoppageMinute: null,
+  });
+  assert.deepEqual(formatThirdDisplayTime(1201, 20), {
+    displayTime: "20+01",
+    phase: "stoppage",
+    elapsedSeconds: 1201,
+    stoppageSeconds: 1,
     stoppageMinute: 1,
   });
   assert.deepEqual(formatThirdDisplayTime(1260, 20), {
@@ -1089,7 +1096,7 @@ test("repository rejects stale scoreboard writes without creating the goal", asy
     };
     data.conceded = 7;
     item.data.S = JSON.stringify(data);
-    item.updatedAt = { S: "2026-02-22T00:00:99.000Z" };
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
     client.seedItem(item);
   });
 

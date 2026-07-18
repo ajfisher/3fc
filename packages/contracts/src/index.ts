@@ -184,7 +184,7 @@ export function formatThirdDisplayTime(
   const safeElapsedSeconds = Math.max(0, Math.floor(elapsedSeconds));
   const nominalSeconds = thirdLengthMinutes * 60;
 
-  if (safeElapsedSeconds < nominalSeconds) {
+  if (safeElapsedSeconds <= nominalSeconds) {
     const minutes = Math.floor(safeElapsedSeconds / 60);
     const seconds = safeElapsedSeconds % 60;
     return {
