@@ -309,6 +309,7 @@ function isValidTimestamp(value: unknown): value is string {
 
 const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const JOIN_CODE_LENGTH = 8;
+const JOIN_CODE_PATTERN = /^[A-Z0-9]{8}$/;
 
 export function buildJoinCodeForGameId(gameId: string): string {
   const digest = createHash("sha256").update(`3fc:join:${gameId}`).digest();
@@ -323,6 +324,15 @@ export function buildJoinCodeForGameId(gameId: string): string {
 
 function normalizeJoinCode(joinCode: string): string {
   return joinCode.trim().toUpperCase();
+}
+
+function normalizeCustomJoinCode(joinCode: string): string {
+  const normalizedJoinCode = normalizeJoinCode(joinCode);
+  if (!JOIN_CODE_PATTERN.test(normalizedJoinCode)) {
+    throw new Error("joinCode must be 8 letters or digits.");
+  }
+
+  return normalizedJoinCode;
 }
 
 function normalizeGameResultPayload(value: unknown): GameResult | null {
@@ -1289,9 +1299,9 @@ export class ThreeFcRepository {
     }
 
     const now = this.clock.now();
-    const joinCode = normalizeJoinCode(
-      input.joinCode?.trim() ? input.joinCode : buildJoinCodeForGameId(input.gameId),
-    );
+    const joinCode = input.joinCode?.trim()
+      ? normalizeCustomJoinCode(input.joinCode)
+      : buildJoinCodeForGameId(input.gameId);
     const payload = {
       gameId: input.gameId,
       joinCode,

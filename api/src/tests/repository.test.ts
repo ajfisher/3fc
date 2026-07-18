@@ -599,6 +599,23 @@ test("repository rejects duplicate join code lookup records", async () => {
   assert.equal(await repository.getGame("game-join-b"), null);
 });
 
+test("repository rejects custom join codes that do not match the public contract", async () => {
+  const repository = createRepository();
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-invalid-join-code",
+      joinCode: "STRONG1",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T10:00:00Z",
+    }),
+    /joinCode must be 8 letters or digits/,
+  );
+  assert.equal(await repository.getGame("game-invalid-join-code"), null);
+});
+
 test("repository distinguishes duplicate game IDs from join-code collisions", async () => {
   const repository = createRepository();
 
@@ -660,7 +677,7 @@ test("repository strongly reads game join-code lookups", async () => {
 
   const game = await repository.createGame({
     gameId: "game-join-strong",
-    joinCode: "STRONG1",
+    joinCode: "STRONG01",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
@@ -668,7 +685,7 @@ test("repository strongly reads game join-code lookups", async () => {
   });
   client.getItemRequests.length = 0;
 
-  assert.deepEqual(await repository.getGameByJoinCode("strong1"), game);
+  assert.deepEqual(await repository.getGameByJoinCode("strong01"), game);
   assert.deepEqual(
     client.getItemRequests.map((request) => request.consistentRead),
     [true, true],
