@@ -55,6 +55,8 @@ import {
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
 import {
+  GameAlreadyExistsError,
+  GameJoinCodeCollisionError,
   GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
@@ -909,6 +911,37 @@ function joinStateChangedResponse(
   );
 }
 
+function gameAlreadyExistsConflictResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  gameId: string,
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "game_exists",
+      message: `Game ${gameId} already exists.`,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function gameJoinCodeCollisionConflictResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "conflict",
+      code: "join_code_collision",
+      message: "Join code is already assigned to another game.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
 async function buildFinishedGameMutationBlock(input: {
   repository: RepositoryContract;
   game: Pick<RepositoryGameRecord, "gameId" | "leagueId" | "status">;
@@ -1741,7 +1774,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
       const joinGameMatch = route.match(/^\/v1\/join\/([^/]+)$/);
       if (method === "POST" && joinGameMatch) {
-        const joinCode = decodeRouteParam(joinGameMatch[1]).trim();
+        let joinCode: string;
+        try {
+          joinCode = decodeURIComponent(joinGameMatch[1]).trim();
+        } catch {
+          status = 400;
+          return badRequest(origin, dependencies.corsAllowedOrigins, "Join code must be URL encoded correctly.");
+        }
         if (joinCode.length === 0) {
           status = 400;
           return joinCodeRequiredResponse(origin, dependencies.corsAllowedOrigins);
@@ -2327,42 +2366,60 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          const mutationResponse = await executeIdempotentMutation({
-            repository: dependencies.repository,
-            idempotencyKey,
-            sessionEmail: session.email,
-            method,
-            route,
-            requestPayload: parsedBody.data,
-            origin,
-            allowedOrigins: dependencies.corsAllowedOrigins,
-            execute: async () => {
-              const createdGame = await dependencies.repository.createGame({
-                gameId: parsedBody.data.gameId,
-                leagueId,
-                seasonId,
-                sessionId,
-                status: parsedBody.data.status as GameStatus | undefined,
-                gameStartTs: parsedBody.data.gameStartTs,
-                thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
-              });
+          let mutationResponse: ApiGatewayHttpResponse;
+          try {
+            mutationResponse = await executeIdempotentMutation({
+              repository: dependencies.repository,
+              idempotencyKey,
+              sessionEmail: session.email,
+              method,
+              route,
+              requestPayload: parsedBody.data,
+              origin,
+              allowedOrigins: dependencies.corsAllowedOrigins,
+              execute: async () => {
+                const createdGame = await dependencies.repository.createGame({
+                  gameId: parsedBody.data.gameId,
+                  leagueId,
+                  seasonId,
+                  sessionId,
+                  status: parsedBody.data.status as GameStatus | undefined,
+                  gameStartTs: parsedBody.data.gameStartTs,
+                  thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+                });
 
-              await dependencies.repository.createSessionGame({
-                sessionId: createdGame.sessionId,
-                gameId: createdGame.gameId,
-                gameStartTs: createdGame.gameStartTs,
-                leagueId: createdGame.leagueId,
-                seasonId: createdGame.seasonId,
-              });
-              await ensureGameTeamsForGame(dependencies.repository, createdGame);
+                await dependencies.repository.createSessionGame({
+                  sessionId: createdGame.sessionId,
+                  gameId: createdGame.gameId,
+                  gameStartTs: createdGame.gameStartTs,
+                  leagueId: createdGame.leagueId,
+                  seasonId: createdGame.seasonId,
+                });
+                await ensureGameTeamsForGame(dependencies.repository, createdGame);
 
-              return createJsonResponse(
-                201,
-                buildGameResponse(createdGame),
-                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                return createJsonResponse(
+                  201,
+                  buildGameResponse(createdGame),
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              },
+            });
+          } catch (error) {
+            if (error instanceof GameAlreadyExistsError) {
+              status = 409;
+              return gameAlreadyExistsConflictResponse(
+                origin,
+                dependencies.corsAllowedOrigins,
+                parsedBody.data.gameId,
               );
-            },
-          });
+            }
+            if (error instanceof GameJoinCodeCollisionError) {
+              status = 409;
+              return gameJoinCodeCollisionConflictResponse(origin, dependencies.corsAllowedOrigins);
+            }
+
+            throw error;
+          }
 
           status = mutationResponse.statusCode;
           return mutationResponse;

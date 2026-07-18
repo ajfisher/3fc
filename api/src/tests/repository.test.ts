@@ -19,6 +19,7 @@ import {
 
 import {
   buildJoinCodeForGameId,
+  GameAlreadyExistsError,
   GameJoinCodeCollisionError,
   GameJoinRegistrationError,
   GameMutationStateError,
@@ -38,6 +39,7 @@ class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
   private readonly queries: ObservedQuery[] = [];
   private beforeNextPut: (() => void) | null = null;
+  readonly getItemRequests: Array<{ pk: string; sk: string; consistentRead: boolean }> = [];
 
   seedItem(item: Item): void {
     const pk = this.readString(item.pk, "pk");
@@ -100,6 +102,11 @@ class InMemoryDynamoClient {
 
       const pk = this.readString(key.pk, "pk");
       const sk = this.readString(key.sk, "sk");
+      this.getItemRequests.push({
+        pk,
+        sk,
+        consistentRead: command.input.ConsistentRead === true,
+      });
       const item = this.items.get(`${pk}|${sk}`);
       return { Item: item };
     }
@@ -592,6 +599,49 @@ test("repository rejects duplicate join code lookup records", async () => {
     GameJoinCodeCollisionError,
   );
   assert.equal(await repository.getGame("game-join-b"), null);
+});
+
+test("repository distinguishes duplicate game IDs from join-code collisions", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-existing",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-existing",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T11:00:00Z",
+    }),
+    GameAlreadyExistsError,
+  );
+});
+
+test("repository strongly reads game join-code lookups", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  const game = await repository.createGame({
+    gameId: "game-join-strong",
+    joinCode: "STRONG1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  client.getItemRequests.length = 0;
+
+  assert.deepEqual(await repository.getGameByJoinCode("strong1"), game);
+  assert.deepEqual(
+    client.getItemRequests.map((request) => request.consistentRead),
+    [true, true],
+  );
 });
 
 test("repository query supports deterministic session->games ordering", async () => {

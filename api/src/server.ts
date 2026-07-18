@@ -65,6 +65,8 @@ import {
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
 import {
+  GameAlreadyExistsError,
+  GameJoinCodeCollisionError,
   GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
@@ -537,6 +539,28 @@ function joinStateChangedConflict(request: IncomingMessage, response: ServerResp
     error: "conflict",
     code: "join_state_changed",
     message: "Game join state changed while registering this player. Reload and try again.",
+  });
+  return 409;
+}
+
+function gameAlreadyExistsConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_exists",
+    message: `Game ${gameId} already exists.`,
+  });
+  return 409;
+}
+
+function gameJoinCodeCollisionConflict(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "join_code_collision",
+    message: "Join code is already assigned to another game.",
   });
   return 409;
 }
@@ -1598,39 +1622,50 @@ async function handleCreateGame(
     return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
   }
 
-  return executeIdempotentMutation({
-    request,
-    response,
-    sessionEmail,
-    method,
-    route,
-    requestPayload: parsedBody.data,
-    execute: async () => {
-      const game = await repository.createGame({
-        gameId: parsedBody.data.gameId,
-        leagueId: scope.leagueId,
-        seasonId: scope.seasonId,
-        sessionId: scope.sessionId,
-        status: parsedBody.data.status,
-        gameStartTs: parsedBody.data.gameStartTs,
-        thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
-      });
+  try {
+    return await executeIdempotentMutation({
+      request,
+      response,
+      sessionEmail,
+      method,
+      route,
+      requestPayload: parsedBody.data,
+      execute: async () => {
+        const game = await repository.createGame({
+          gameId: parsedBody.data.gameId,
+          leagueId: scope.leagueId,
+          seasonId: scope.seasonId,
+          sessionId: scope.sessionId,
+          status: parsedBody.data.status,
+          gameStartTs: parsedBody.data.gameStartTs,
+          thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+        });
 
-      await repository.createSessionGame({
-        sessionId: scope.sessionId,
-        gameId: game.gameId,
-        gameStartTs: game.gameStartTs,
-        leagueId: game.leagueId,
-        seasonId: game.seasonId,
-      });
-      await ensureGameTeamsForGame(game);
+        await repository.createSessionGame({
+          sessionId: scope.sessionId,
+          gameId: game.gameId,
+          gameStartTs: game.gameStartTs,
+          leagueId: game.leagueId,
+          seasonId: game.seasonId,
+        });
+        await ensureGameTeamsForGame(game);
 
-      return {
-        statusCode: 201,
-        payload: buildGameResponse(game),
-      };
-    },
-  });
+        return {
+          statusCode: 201,
+          payload: buildGameResponse(game),
+        };
+      },
+    });
+  } catch (error) {
+    if (error instanceof GameAlreadyExistsError) {
+      return gameAlreadyExistsConflict(request, response, parsedBody.data.gameId);
+    }
+    if (error instanceof GameJoinCodeCollisionError) {
+      return gameJoinCodeCollisionConflict(request, response);
+    }
+
+    throw error;
+  }
 }
 
 async function handleCreateDevItem(
@@ -2011,7 +2046,13 @@ async function start(): Promise<void> {
 
       const joinGameMatch = route.match(/^\/v1\/join\/([^/]+)$/);
       if (method === "POST" && joinGameMatch) {
-        const joinCode = decodeURIComponent(joinGameMatch[1]).trim();
+        let joinCode: string;
+        try {
+          joinCode = decodeURIComponent(joinGameMatch[1]).trim();
+        } catch {
+          status = badRequest(request, response, "Join code must be URL encoded correctly.");
+          return;
+        }
         if (joinCode.length === 0) {
           status = joinCodeRequired(request, response);
           return;

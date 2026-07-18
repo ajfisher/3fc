@@ -200,6 +200,13 @@ export class GameJoinCodeCollisionError extends Error {
   }
 }
 
+export class GameAlreadyExistsError extends Error {
+  constructor(gameId: string) {
+    super(`Game ${gameId} already exists.`);
+    this.name = "GameAlreadyExistsError";
+  }
+}
+
 export class GameJoinRegistrationError extends Error {
   constructor(
     readonly code: "game_finished" | "join_state_changed",
@@ -710,6 +717,11 @@ function isConditionalWriteFailure(error: unknown): boolean {
       reason.Code === "ConditionalCheckFailed" ||
       reason.Code === "ConditionalCheckFailedException",
   );
+}
+
+function transactionCancellationCode(error: unknown, index: number): string | null {
+  const reason = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[index];
+  return typeof reason?.Code === "string" ? reason.Code : null;
 }
 
 function readString(value: AttributeValue | undefined, field: string): string {
@@ -1317,7 +1329,25 @@ export class ThreeFcRepository {
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
-        throw new GameJoinCodeCollisionError();
+        const gameCancellationCode = transactionCancellationCode(error, 0);
+        const joinCodeCancellationCode = transactionCancellationCode(error, 1);
+        if (gameCancellationCode === "ConditionalCheckFailed") {
+          throw new GameAlreadyExistsError(input.gameId);
+        }
+        if (joinCodeCancellationCode === "ConditionalCheckFailed") {
+          throw new GameJoinCodeCollisionError();
+        }
+
+        const [existingGameItem, existingJoinCodeItem] = await Promise.all([
+          this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
+          this.getEntity(joinCodePk(joinCode), metadataSk(), { consistentRead: true }),
+        ]);
+        if (existingGameItem?.entityType === ENTITY_TYPE.game) {
+          throw new GameAlreadyExistsError(input.gameId);
+        }
+        if (existingJoinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+          throw new GameJoinCodeCollisionError();
+        }
       }
 
       throw error;
@@ -1340,14 +1370,27 @@ export class ThreeFcRepository {
     const normalizedJoinCode = normalizeJoinCode(joinCode);
     requireNonEmpty("joinCode", normalizedJoinCode);
 
-    const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk());
+    const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk(), {
+      consistentRead: true,
+    });
     if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
       const joinCodeRecord = withTimestamps(
         joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
         joinCodeItem.createdAt,
         joinCodeItem.updatedAt,
       );
-      const game = await this.getGame(joinCodeRecord.gameId);
+      const gameItem = await this.getEntity(gamePk(joinCodeRecord.gameId), metadataSk(), {
+        consistentRead: true,
+      });
+      if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+        return null;
+      }
+
+      const game = withTimestamps(
+        normalizeGamePayload(gameItem.data),
+        gameItem.createdAt,
+        gameItem.updatedAt,
+      );
 
       if (game && normalizeJoinCode(game.joinCode) === normalizedJoinCode) {
         return game;

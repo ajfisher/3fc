@@ -18,6 +18,8 @@ import {
 } from "@3fc/contracts";
 import {
   buildJoinCodeForGameId,
+  GameAlreadyExistsError,
+  GameJoinCodeCollisionError,
   GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
@@ -821,10 +823,22 @@ function createHarness(config: HarnessConfig = {}) {
         return record;
       },
       async createGame(input) {
+        if (games.has(input.gameId)) {
+          throw new GameAlreadyExistsError(input.gameId);
+        }
+        const joinCode = input.joinCode ?? buildJoinCodeForGameId(input.gameId);
+        if (
+          [...games.values()].some(
+            (game) => game.joinCode.trim().toUpperCase() === joinCode.trim().toUpperCase(),
+          )
+        ) {
+          throw new GameJoinCodeCollisionError();
+        }
+
         createdGames.push(input);
         const record = {
           gameId: input.gameId,
-          joinCode: input.joinCode ?? buildJoinCodeForGameId(input.gameId),
+          joinCode,
           leagueId: input.leagueId,
           seasonId: input.seasonId,
           sessionId: input.sessionId,
@@ -2050,6 +2064,24 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
     code: "join_code_required",
     message: "Join code is required.",
   });
+
+  const malformedResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/%E0%A4%A",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(malformedResponse.statusCode, 400);
+  assert.deepEqual(JSON.parse(malformedResponse.body), {
+    error: "Join code must be URL encoded correctly.",
+  });
   assert.equal(harness.createdPlayers.length, 0);
   assert.equal(harness.linkedGamePlayers.length, 0);
 });
@@ -2422,6 +2454,85 @@ test("core lambda rejects creating games directly as finished", async () => {
 
   assert.equal(response.statusCode, 400);
   assert.match((JSON.parse(response.body) as { error: string }).error, /status/);
+  assert.equal(harness.createdGames.length, 0);
+  assert.equal(harness.createdSessionGames.length, 0);
+});
+
+test("core lambda maps duplicate game IDs to conflict on game creation", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        gameId: "game-1",
+        gameStartTs: "2026-02-23T11:00:00Z",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_exists",
+    message: "Game game-1 already exists.",
+  });
   assert.equal(harness.createdGames.length, 0);
   assert.equal(harness.createdSessionGames.length, 0);
 });

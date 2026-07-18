@@ -182,7 +182,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/IdempotencyConflict"
+          $ref: "#/components/responses/Conflict"
   /v1/games/{gameId}/thirds/{third}/start:
     post:
       summary: Start a game third timer
