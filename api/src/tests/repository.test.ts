@@ -247,9 +247,7 @@ class InMemoryDynamoClient {
               write.ConditionCheck.ExpressionAttributeValues ?? {},
             )
           ) {
-            const error = new Error("Conditional transaction request failed.");
-            (error as Error & { name: string }).name = "ConditionalCheckFailedException";
-            throw error;
+            throwConditionalCancellation(write);
           }
         }
       }
@@ -1369,6 +1367,45 @@ test("repository rejects join registration for finished games without creating a
       error.statusCode === 409,
   );
   assert.equal(await repository.getPlayer("player-late"), null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+});
+
+test("repository rethrows non-conditional transaction cancellation when joining by code", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-join-cancelled",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const error = new Error("Join transaction validation failed.");
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).name = "TransactionCanceledException";
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).CancellationReasons = [{ Code: "ValidationError" }];
+    throw error;
+  });
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-join-cancelled",
+      nickname: "Join Cancelled",
+    }),
+    /Join transaction validation failed/,
+  );
+  assert.equal(await repository.getPlayer("player-join-cancelled"), null);
   assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
 });
 

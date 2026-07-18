@@ -966,7 +966,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
       const joinCode = (await page.getByTestId("game-join-code-value").innerText()).trim();
-      expect(joinCode).toMatch(/^[A-Z2-9]{8}$/);
+      expect(joinCode).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
 
       const joinResult = await page.evaluate(
         async ({ apiBaseUrl: browserApiBaseUrl, joinCode: browserJoinCode }) => {
@@ -977,11 +977,21 @@ test.describe("M2 local-stack smoke", () => {
             },
             body: JSON.stringify({ nickname: "Cy" }),
           });
-          const body = (await response.json()) as {
+          const responseText = await response.text();
+          type JoinRegistrationSmokeBody = {
             gameId?: string;
             joinCode?: string;
             player?: { nickname?: string; playerId?: string };
+            rawBody?: string;
           };
+          let body: JoinRegistrationSmokeBody;
+          try {
+            body = responseText
+              ? (JSON.parse(responseText) as JoinRegistrationSmokeBody)
+              : {};
+          } catch {
+            body = { rawBody: responseText };
+          }
           return {
             status: response.status,
             body,

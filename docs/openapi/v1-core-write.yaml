@@ -53,7 +53,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/Conflict"
+          $ref: "#/components/responses/CreateGameConflict"
   /v1/leagues:
     post:
       summary: Create league
@@ -741,6 +741,12 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     Conflict:
       description: State transition rejected
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    CreateGameConflict:
+      description: Idempotency key was reused with a different request payload, or the game/join code already exists
       content:
         application/json:
           schema:
