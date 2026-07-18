@@ -1480,7 +1480,7 @@
       cancelGoalEditButton.hidden = editingGoalId === null;
       cancelGoalEditButton.disabled = editingGoalId === null;
       undoLastGoalButton.disabled = goalTimeline.length === 0;
-      undoLastGoalButton.textContent = goalTimeline.length > 0 ? "Undo last" : "Undo last";
+      undoLastGoalButton.textContent = "Undo last";
 
       if (!activeThird) {
         goalFormNote.textContent = "Start a third before adding goals.";
