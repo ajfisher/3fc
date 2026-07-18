@@ -37,7 +37,7 @@ export interface GoalEventInput {
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
-  assistPlayerIds: string[];
+  assistPlayerIds?: string[];
   ownGoal: boolean;
 }
 

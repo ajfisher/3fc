@@ -702,6 +702,7 @@ components:
           type: array
           default: []
           maxItems: 3
+          uniqueItems: true
           items:
             type: string
             minLength: 1

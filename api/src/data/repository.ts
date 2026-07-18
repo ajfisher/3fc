@@ -208,6 +208,10 @@ function normalizeNonNegativeInteger(value: unknown): number {
   return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0;
 }
 
+function normalizePositiveInteger(value: unknown): number {
+  return Number.isInteger(value) && (value as number) >= 1 ? (value as number) : 1;
+}
+
 function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdAt" | "updatedAt"> {
   const raw = data as Partial<Omit<GameTeamRecord, "createdAt" | "updatedAt">>;
 
@@ -224,8 +228,8 @@ function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdA
 function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "createdAt" | "updatedAt"> {
   const raw = data as Partial<Omit<GoalEventRecord, "createdAt" | "updatedAt">>;
   const third = raw.third ?? 1;
-  const thirdMinute = normalizeNonNegativeInteger(raw.thirdMinute);
-  const gameMinute = normalizeNonNegativeInteger(raw.gameMinute);
+  const thirdMinute = normalizePositiveInteger(raw.thirdMinute);
+  const gameMinute = normalizePositiveInteger(raw.gameMinute);
   const elapsedSeconds = normalizeNonNegativeInteger(raw.elapsedSeconds);
 
   return {
@@ -263,10 +267,25 @@ function sortGameTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
 }
 
 function isConditionalWriteFailure(error: unknown): boolean {
-  const awsError = error as { name?: string };
-  return (
-    awsError.name === "ConditionalCheckFailedException" ||
-    awsError.name === "TransactionCanceledException"
+  const awsError = error as {
+    name?: string;
+    CancellationReasons?: Array<{ Code?: string }>;
+    cancellationReasons?: Array<{ Code?: string }>;
+  };
+
+  if (awsError.name === "ConditionalCheckFailedException") {
+    return true;
+  }
+
+  if (awsError.name !== "TransactionCanceledException") {
+    return false;
+  }
+
+  const cancellationReasons = awsError.CancellationReasons ?? awsError.cancellationReasons ?? [];
+  return cancellationReasons.some(
+    (reason) =>
+      reason.Code === "ConditionalCheckFailed" ||
+      reason.Code === "ConditionalCheckFailedException",
   );
 }
 

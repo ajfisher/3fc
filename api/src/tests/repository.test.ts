@@ -151,7 +151,20 @@ class InMemoryDynamoClient {
           )
         ) {
           const error = new Error("Conditional transaction request failed.");
-          (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+          (
+            error as Error & {
+              name: string;
+              CancellationReasons: Array<{ Code: string }>;
+            }
+          ).name = "TransactionCanceledException";
+          (
+            error as Error & {
+              name: string;
+              CancellationReasons: Array<{ Code: string }>;
+            }
+          ).CancellationReasons = puts.map((candidate) => ({
+            Code: candidate === put ? "ConditionalCheckFailed" : "None",
+          }));
           throw error;
         }
       }
@@ -1041,6 +1054,44 @@ test("repository rejects stale scoreboard writes without creating the goal", asy
 
   assert.deepEqual(await repository.listGoalEvents("game-1"), []);
   assert.equal((await repository.listTeamsForGame("game-1")).find((team) => team.teamId === "blue")?.conceded, 7);
+});
+
+test("repository rethrows non-conditional transaction cancellation when creating goals", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  client.runBeforeNextPut(() => {
+    const error = new Error("Transaction validation failed.");
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).name = "TransactionCanceledException";
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).CancellationReasons = [{ Code: "ValidationError" }];
+    throw error;
+  });
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-transaction-cancelled",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Transaction validation failed/,
+  );
+
+  assert.deepEqual(await repository.listGoalEvents("game-1"), []);
 });
 
 test("repository own goals increment conceding only and require scorer on conceding team", async () => {
