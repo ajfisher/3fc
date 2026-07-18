@@ -711,16 +711,25 @@ function isConditionalWriteFailure(error: unknown): boolean {
     return false;
   }
 
-  const cancellationReasons = awsError.CancellationReasons ?? awsError.cancellationReasons ?? [];
-  return cancellationReasons.some(
-    (reason) =>
-      reason.Code === "ConditionalCheckFailed" ||
-      reason.Code === "ConditionalCheckFailedException",
+  return transactionCancellationReasons(error).some((reason) =>
+    isConditionalCancellationCode(reason.Code),
   );
 }
 
+function transactionCancellationReasons(error: unknown): Array<{ Code?: string }> {
+  const awsError = error as {
+    CancellationReasons?: Array<{ Code?: string }>;
+    cancellationReasons?: Array<{ Code?: string }>;
+  };
+  return awsError.CancellationReasons ?? awsError.cancellationReasons ?? [];
+}
+
+function isConditionalCancellationCode(code: string | undefined): boolean {
+  return code === "ConditionalCheckFailed" || code === "ConditionalCheckFailedException";
+}
+
 function transactionCancellationCode(error: unknown, index: number): string | null {
-  const reason = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.[index];
+  const reason = transactionCancellationReasons(error)[index];
   return typeof reason?.Code === "string" ? reason.Code : null;
 }
 
@@ -1331,10 +1340,10 @@ export class ThreeFcRepository {
       if (isConditionalWriteFailure(error)) {
         const gameCancellationCode = transactionCancellationCode(error, 0);
         const joinCodeCancellationCode = transactionCancellationCode(error, 1);
-        if (gameCancellationCode === "ConditionalCheckFailed") {
+        if (isConditionalCancellationCode(gameCancellationCode ?? undefined)) {
           throw new GameAlreadyExistsError(input.gameId);
         }
-        if (joinCodeCancellationCode === "ConditionalCheckFailed") {
+        if (isConditionalCancellationCode(joinCodeCancellationCode ?? undefined)) {
           throw new GameJoinCodeCollisionError();
         }
 

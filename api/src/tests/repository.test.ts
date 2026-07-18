@@ -622,6 +622,39 @@ test("repository distinguishes duplicate game IDs from join-code collisions", as
   );
 });
 
+test("repository rethrows non-conditional transaction cancellation when creating games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.runBeforeNextPut(() => {
+    const error = new Error("Create game transaction validation failed.");
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).name = "TransactionCanceledException";
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).CancellationReasons = [{ Code: "ValidationError" }];
+    throw error;
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-create-cancelled",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T11:00:00Z",
+    }),
+    /Create game transaction validation failed/,
+  );
+  assert.equal(await repository.getGame("game-create-cancelled"), null);
+});
+
 test("repository strongly reads game join-code lookups", async () => {
   const { repository, client } = createRepositoryHarness();
 
