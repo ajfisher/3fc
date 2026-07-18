@@ -1431,6 +1431,71 @@ test("repository undo-last deletes only the current latest goal and rejects stal
   );
 });
 
+test("repository undo-last backfills missing legacy goal state", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+
+  for (const goal of [
+    {
+      eventId: "goal-legacy-1",
+      sk: "GOAL#1#0001#0000060#goal-legacy-1",
+      elapsedSeconds: 60,
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+    },
+    {
+      eventId: "goal-legacy-2",
+      sk: "GOAL#1#0002#0000120#goal-legacy-2",
+      elapsedSeconds: 120,
+      scoringTeamId: "yellow",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-yellow",
+    },
+  ] as const) {
+    client.seedItem({
+      pk: { S: "GAME#game-1" },
+      sk: { S: goal.sk },
+      entityType: { S: "goal" },
+      createdAt: { S: "2026-02-22T00:00:00.000Z" },
+      updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          gameId: "game-1",
+          eventId: goal.eventId,
+          third: 1,
+          thirdMinute: Math.floor(goal.elapsedSeconds / 60) + 1,
+          gameMinute: Math.floor(goal.elapsedSeconds / 60) + 1,
+          elapsedSeconds: goal.elapsedSeconds,
+          stoppageMinute: null,
+          displayTime: `${String(Math.floor(goal.elapsedSeconds / 60)).padStart(2, "0")}:00`,
+          scoringTeamId: goal.scoringTeamId,
+          concedingTeamId: goal.concedingTeamId,
+          scorerPlayerId: goal.scorerPlayerId,
+          assistPlayerIds: [],
+          ownGoal: false,
+        }),
+      },
+    });
+  }
+
+  const result = await repository.undoLastGoal({
+    gameId: "game-1",
+    actorUserId: "scorekeeper@example.com",
+    expectedEventId: "goal-legacy-2",
+  });
+
+  assert.ok(result);
+  assert.equal(result.deletedGoal.eventId, "goal-legacy-2");
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-legacy-1"]);
+  const stateItem = client.readItem("GAME#game-1", "GOAL_STATE");
+  assert.ok(stateItem?.data?.S);
+  assert.equal(
+    (JSON.parse(stateItem.data.S) as { latestEventId: string | null }).latestEventId,
+    "goal-legacy-1",
+  );
+});
+
 test("repository undo-last rejects when strongly read goal-state latest is stale", async () => {
   const { repository, client } = createRepositoryHarness();
   await setupScoringGame(repository);

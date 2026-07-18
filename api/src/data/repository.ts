@@ -2472,7 +2472,8 @@ export class ThreeFcRepository {
 
     if (
       input.expectedLatestEventId &&
-      existingGoalState?.state.latestEventId !== input.expectedLatestEventId
+      existingGoalState &&
+      existingGoalState.state.latestEventId !== input.expectedLatestEventId
     ) {
       throw new GoalCorrectionError(
         "latest_goal_changed",
