@@ -1258,6 +1258,63 @@ test("repository finishes a game with full draw result", async () => {
   );
 });
 
+test("repository normalizes persisted game results to contract-safe values", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await repository.createGame({
+    gameId: "game-result-normalize",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  const item = client.readItem("GAME#game-result-normalize", "METADATA");
+  if (!item?.data?.S) {
+    throw new Error("Expected seeded game item.");
+  }
+
+  const data = JSON.parse(item.data.S) as {
+    status: "scheduled" | "live" | "finished";
+    finishedAt: string | null;
+    result: unknown;
+  };
+  data.status = "finished";
+  data.finishedAt = "2026-02-22T00:01:39.000Z";
+  data.result = {
+    winnerTeamId: null,
+    outcome: "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt: "2026-02-22T00:01:39.000Z",
+    teams: [
+      {
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        scored: 0,
+        conceded: 0,
+        rank: 0,
+        outcome: "draw",
+      },
+    ],
+  };
+  item.data.S = JSON.stringify(data);
+  item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+  client.seedItem(item);
+
+  const normalized = await repository.getGame("game-result-normalize");
+  assert.equal(normalized?.result?.teams[0]?.rank, 1);
+
+  data.result = {
+    ...(data.result as Record<string, unknown>),
+    computedAt: "not-a-date",
+  };
+  item.data.S = JSON.stringify(data);
+  client.seedItem(item);
+
+  const invalidResult = await repository.getGame("game-result-normalize");
+  assert.equal(invalidResult?.result, null);
+});
+
 test("repository rejects finish until all thirds are completed", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);

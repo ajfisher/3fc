@@ -1388,15 +1388,17 @@
         return [];
       }
 
-      return teams.map((team) => ({
-        teamId: team.teamId,
-        name: team.name ?? team.teamId,
-        color: typeof team.color === "string" ? team.color : null,
-        scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
-        conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
-        rank: Number.isInteger(team.rank) && team.rank > 0 ? team.rank : 0,
-        outcome: team.outcome ?? "loss",
-      }));
+      return teams
+        .filter((team) => team && typeof team === "object" && typeof team.teamId === "string")
+        .map((team) => ({
+          teamId: team.teamId,
+          name: typeof team.name === "string" && team.name.length > 0 ? team.name : team.teamId,
+          color: typeof team.color === "string" ? team.color : null,
+          scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
+          conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
+          rank: Number.isInteger(team.rank) && team.rank > 0 ? team.rank : 0,
+          outcome: ["win", "draw", "loss"].includes(team.outcome) ? team.outcome : "loss",
+        }));
     }
 
     function renderGameResult() {
@@ -1414,10 +1416,11 @@
 
       const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
       const outcomeText = winner ? `${winner.name} win` : "Draw";
+      const resultOutcome = result.outcome === "win" ? "win" : "draw";
       const computedAt = typeof result.computedAt === "string" ? result.computedAt : "";
 
       gameResultSummaryElement.hidden = false;
-      gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(result.outcome ?? "draw")}">
+      gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
         <header>
           <span>Final result</span>
           <strong data-testid="game-result-outcome">${escapeHtml(outcomeText)}</strong>

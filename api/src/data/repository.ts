@@ -261,6 +261,10 @@ function normalizeThirdTimerSegments(value: unknown): ThirdTimerSegment[] {
   });
 }
 
+function isValidTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
 function normalizeGameResultPayload(value: unknown): GameResult | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -275,12 +279,15 @@ function normalizeGameResultPayload(value: unknown): GameResult | null {
   if (winnerTeamId !== null && !TEAM_IDS.includes(winnerTeamId as TeamId)) {
     return null;
   }
+  if (!isValidTimestamp(raw.computedAt)) {
+    return null;
+  }
 
   return {
     winnerTeamId,
     outcome: raw.outcome === "win" ? "win" : "draw",
     comparator: "fewest_conceded_then_most_scored",
-    computedAt: typeof raw.computedAt === "string" ? raw.computedAt : "",
+    computedAt: raw.computedAt,
     teams: raw.teams
       .filter(
         (team): team is GameResult["teams"][number] =>
@@ -294,7 +301,7 @@ function normalizeGameResultPayload(value: unknown): GameResult | null {
         color: typeof team.color === "string" ? team.color : null,
         scored: normalizeNonNegativeInteger(team.scored),
         conceded: normalizeNonNegativeInteger(team.conceded),
-        rank: normalizeNonNegativeInteger(team.rank),
+        rank: normalizePositiveInteger(team.rank),
         outcome:
           team.outcome === "win" || team.outcome === "draw" || team.outcome === "loss"
             ? team.outcome

@@ -2342,10 +2342,8 @@ test("core lambda locks team overrides after finish", async () => {
   assert.equal(harness.createdGameTeams.length, 0);
 });
 
-test("core lambda locks admin player and roster mutations after finish", async () => {
+test("core lambda locks scorekeeper player and roster mutations after finish", async () => {
   const harness = createGoalHarness({
-    email: "admin@example.com",
-    role: "admin",
     runningThird: false,
     completedThirds: true,
   });
@@ -2380,7 +2378,7 @@ test("core lambda locks admin player and roster mutations after finish", async (
   assert.deepEqual(JSON.parse(playerResponse.body), {
     error: "conflict",
     code: "game_finished",
-    message: "Game game-1 is finished. Roster and player mutations are locked after finish.",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
   });
   assert.equal(harness.createdPlayers.length, 0);
 
@@ -2401,7 +2399,67 @@ test("core lambda locks admin player and roster mutations after finish", async (
   assert.deepEqual(JSON.parse(rosterResponse.body), {
     error: "conflict",
     code: "game_finished",
-    message: "Game game-1 is finished. Roster and player mutations are locked after finish.",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
+  });
+});
+
+test("core lambda allows admin player and roster corrections after finish", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-admin-roster-correction-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const playerResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finished-admin-player-create-1",
+      },
+      body: {
+        playerId: "player-late",
+        nickname: "Late",
+      },
+    }),
+  );
+
+  assert.equal(playerResponse.statusCode, 201);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.createdPlayers[0].playerId, "player-late");
+
+  const rosterResponse = await harness.handler(
+    createEvent({
+      method: "PUT",
+      path: "/v1/games/game-1/roster/player-red",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        teamId: "blue",
+      },
+    }),
+  );
+
+  assert.equal(rosterResponse.statusCode, 200);
+  assert.equal(harness.assignedRosterPlayers.length, 1);
+  assert.deepEqual(harness.assignedRosterPlayers[0], {
+    gameId: "game-1",
+    teamId: "blue",
+    playerId: "player-red",
   });
 });
 

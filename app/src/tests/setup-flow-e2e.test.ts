@@ -2571,6 +2571,87 @@ test("game page keeps current goals when correction replay refresh fails", async
   assert.match(timeline.textContent ?? "", /Cy for Blue/);
 });
 
+test("game page renders malformed result data without crashing", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "scorekeeper@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-result-malformed", {
+    gameId: "game-result-malformed",
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "finished",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments().map((third) => ({
+      ...third,
+      startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+      finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+    })),
+    finishedAt: "2026-03-28T11:00:12.000Z",
+    result: {
+      winnerTeamId: null,
+      outcome: 42,
+      comparator: "fewest_conceded_then_most_scored",
+      computedAt: null,
+      teams: [
+        {
+          teamId: "red",
+          name: 123,
+          color: "#d83b36",
+          scored: "1",
+          conceded: null,
+          rank: 0,
+          outcome: {},
+        },
+        {
+          teamId: null,
+          name: "Bad Team",
+          color: null,
+          scored: 0,
+          conceded: 0,
+          rank: 1,
+          outcome: "draw",
+        },
+      ],
+    } as unknown as GameResult,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:12.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-result-malformed" }),
+    url: "http://localhost:3000/games/game-result-malformed",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const resultSummary = page.document.getElementById("game-result-summary");
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", /Draw/);
+  assert.equal(resultSummary.querySelectorAll('[data-ui="result-team"]').length, 1);
+  assert.equal(
+    resultSummary.querySelector('[data-ui="result-team"][data-team-id="red"] strong')?.textContent,
+    "red",
+  );
+});
+
 test("game page runs live goal scoring, corrections, undo, and delete", async () => {
   const apiState = createMockApiState();
   apiState.session = {

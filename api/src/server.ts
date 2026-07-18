@@ -475,19 +475,6 @@ function finishedGameTeamOverrideConflict(
   return 409;
 }
 
-function finishedGameRosterMutationConflict(
-  request: IncomingMessage,
-  response: ServerResponse,
-  gameId: string,
-): number {
-  sendJsonWithCors(request, response, 409, {
-    error: "conflict",
-    code: "game_finished",
-    message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
-  });
-  return 409;
-}
-
 function finishedGameGoalMutationPayload(): { error: "conflict"; code: "game_finished"; message: string } {
   return {
     error: "conflict",
@@ -2891,14 +2878,14 @@ async function start(): Promise<void> {
               };
             }
 
-            if (currentGame.status === "finished") {
+            const finishedBlock = await buildFinishedGameMutationBlock(
+              currentGame,
+              sessionEmail,
+            );
+            if (finishedBlock) {
               return {
-                statusCode: 409,
-                payload: {
-                  error: "conflict",
-                  code: "game_finished",
-                  message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
-                },
+                statusCode: finishedBlock.statusCode,
+                payload: finishedBlock.payload,
               };
             }
 
@@ -2974,8 +2961,14 @@ async function start(): Promise<void> {
           return;
         }
 
-        if (game.status === "finished") {
-          status = finishedGameRosterMutationConflict(request, response, gameId);
+        const finishedLock = await ensureFinishedGameMutationAllowed(
+          request,
+          response,
+          game,
+          authGate.session.email,
+        );
+        if (!finishedLock.allowed) {
+          status = finishedLock.status;
           return;
         }
 

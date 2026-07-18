@@ -2913,16 +2913,15 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 );
               }
 
-              if (currentGame.status === "finished") {
-                return createJsonResponse(
-                  409,
-                  {
-                    error: "conflict",
-                    code: "game_finished",
-                    message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
-                  },
-                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-                );
+              const finishedBlock = await buildFinishedGameMutationBlock({
+                repository: dependencies.repository,
+                game: currentGame,
+                sessionEmail: session.email,
+                origin,
+                allowedOrigins: dependencies.corsAllowedOrigins,
+              });
+              if (finishedBlock) {
+                return finishedBlock;
               }
 
               const player = await dependencies.repository.createPlayer({
@@ -2989,17 +2988,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
 
-          if (game.status === "finished") {
-            status = 409;
-            return createJsonResponse(
-              status,
-              {
-                error: "conflict",
-                code: "game_finished",
-                message: `Game ${gameId} is finished. Roster and player mutations are locked after finish.`,
-              },
-              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-            );
+          const finishedBlock = await buildFinishedGameMutationBlock({
+            repository: dependencies.repository,
+            game,
+            sessionEmail: session.email,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+          });
+          if (finishedBlock) {
+            status = finishedBlock.statusCode;
+            return finishedBlock;
           }
 
           let rawBody: Record<string, unknown>;
