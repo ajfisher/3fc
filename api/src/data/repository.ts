@@ -2798,7 +2798,6 @@ export class ThreeFcRepository {
           ":pk": { S: pk },
           ":skPrefix": { S: skPrefix },
         },
-        ConsistentRead: options.consistentRead,
       }),
     )) as QueryCommandOutput;
 
