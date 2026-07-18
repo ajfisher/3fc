@@ -168,13 +168,6 @@ export interface DeleteGoalResponse {
 
 export type UndoLastGoalResponse = DeleteGoalResponse;
 
-export interface FinishGameResponse {
-  gameId: string;
-  status: "finished";
-  finishedAt: string;
-  result: GameResult;
-}
-
 export interface ThirdTimerSegment {
   third: ThirdNumber;
   startedAt: string | null;

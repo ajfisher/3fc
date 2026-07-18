@@ -1976,6 +1976,54 @@ test("repository rejects stale scoreboard writes without creating the goal", asy
   assert.equal((await repository.listTeamsForGame("game-1")).find((team) => team.teamId === "blue")?.conceded, 7);
 });
 
+test("repository rejects goal creation if game finishes before the goal transaction commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem("GAME#game-1", "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected game metadata item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      status: string;
+      finishedAt?: string | null;
+      result?: unknown;
+    };
+    data.status = "finished";
+    data.finishedAt = "2026-02-22T00:01:39.000Z";
+    data.result = {
+      winnerTeamId: null,
+      outcome: "draw",
+      comparator: "fewest_conceded_then_most_scored",
+      computedAt: "2026-02-22T00:01:39.000Z",
+      teams: [],
+    };
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-finish-race",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
+    }),
+    /game\/goal state changed/,
+  );
+
+  assert.deepEqual(await repository.listGoalEvents("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
 test("repository rethrows non-conditional transaction cancellation when creating goals", async () => {
   const { repository, client } = createRepositoryHarness();
   await setupScoringGame(repository);

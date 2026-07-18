@@ -2453,6 +2453,24 @@ export class ThreeFcRepository {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gamePk(input.gameId) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedGameUpdatedAt": { S: gameItem.updatedAt },
+                  ":expectedGameData": { S: gameItem.rawData },
+                },
+              },
+            },
             ...changedTeams.map((team) => {
               const original = teamStatesById.get(team.teamId);
               if (!original) {
@@ -2551,7 +2569,7 @@ export class ThreeFcRepository {
       throw new GoalCreationError(
         "scoreboard_state_changed",
         409,
-        "Scoreboard changed while creating this goal, or goal state changed. Reload the game and try again.",
+        "Scoreboard changed while creating this goal, or game/goal state changed. Reload the game and try again.",
       );
     }
 
