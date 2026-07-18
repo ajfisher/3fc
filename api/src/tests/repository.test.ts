@@ -1593,7 +1593,7 @@ test("repository own goals increment conceding only and require scorer on conced
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-own-invalid",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: null,
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
@@ -1612,7 +1612,7 @@ test("repository rejects goal creation unless a third is running", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-no-timer",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
@@ -1632,7 +1632,7 @@ test("repository validates goal roster and team rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-unrostered-scorer",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-missing",
@@ -1646,7 +1646,7 @@ test("repository validates goal roster and team rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-wrong-team",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-blue",
@@ -1660,7 +1660,7 @@ test("repository validates goal roster and team rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-unrostered-assist",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
@@ -1696,7 +1696,7 @@ test("repository enforces goal validation rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-invalid",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-1",
@@ -1710,7 +1710,7 @@ test("repository enforces goal validation rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-own",
-    actorUserId: "scorekeeper@example.com",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-1",
