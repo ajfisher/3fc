@@ -56,6 +56,54 @@ test("GraphQL errors are surfaced with their server diagnostics", async () => {
   );
 });
 
+test("review threads use thread-level outdated state", async () => {
+  const requests = [];
+  const client = new GitHubClient({
+    token: "token",
+    repository: "ajfisher/3fc",
+    async fetchImpl(url, options) {
+      requests.push({ url, options });
+      return jsonResponse({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  { isResolved: false, isOutdated: true },
+                  { isResolved: false, isOutdated: false },
+                ],
+                pageInfo: {
+                  hasNextPage: false,
+                  endCursor: null,
+                },
+              },
+            },
+          },
+        },
+      });
+    },
+  });
+
+  assert.deepEqual(
+    await client.getReviewThreads(91),
+    [
+      { isResolved: false, isOutdated: true },
+      { isResolved: false, isOutdated: false },
+    ],
+  );
+
+  const payload = JSON.parse(requests[0].options.body);
+  assert.match(payload.query, /reviewThreads/);
+  assert.match(payload.query, /isOutdated/);
+  assert.doesNotMatch(payload.query, /comments\(first: 100\)/);
+  assert.deepEqual(payload.variables, {
+    owner: "ajfisher",
+    repo: "3fc",
+    number: 91,
+    cursor: null,
+  });
+});
+
 test("publishing updates the one existing review-gate check", async () => {
   const requests = [];
   const client = new GitHubClient({
