@@ -1484,25 +1484,36 @@
       undoLastGoalButton.textContent = "Undo last";
 
       if (rosterTeams.length < 2) {
+        saveGoalButton.disabled = true;
         goalFormNote.textContent = "Teams load before scoring.";
         return;
       }
 
       if (rosteredPlayers().length === 0) {
+        saveGoalButton.disabled = true;
         goalFormNote.textContent = "Assign players before scoring.";
         return;
       }
 
+      if (!goalScorerInput.value) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Choose a scorer before adding a goal.";
+        return;
+      }
+
       if (editingGoalId) {
+        saveGoalButton.disabled = false;
         goalFormNote.textContent = "Editing keeps the original timer stamp.";
         return;
       }
 
       if (!activeThird) {
+        saveGoalButton.disabled = true;
         goalFormNote.textContent = "Start a third before adding goals.";
         return;
       }
 
+      saveGoalButton.disabled = false;
       goalFormNote.textContent = `Goal will be added to third ${activeThird}.`;
     }
 

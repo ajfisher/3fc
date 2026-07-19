@@ -201,6 +201,10 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="start-third"/);
   assert.match(html, /data-testid="finish-third"/);
   assert.match(html, /data-testid="game-edit-third-length"/);
+  assert.ok(
+    html.indexOf('data-testid="panel-game-roster"') < html.indexOf('data-testid="panel-game-live"'),
+    "Roster setup should appear before live scoring in the game workflow.",
+  );
   assert.match(html, /data-testid="panel-game-live"/);
   assert.match(html, /data-testid="live-scoreboard"/);
   assert.match(html, /data-testid="goal-scoring-team"/);

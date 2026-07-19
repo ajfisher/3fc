@@ -1625,6 +1625,9 @@ test("game page quick-creates and assigns roster players", async () => {
   const nicknameInput = gamePage.document.getElementById("player-nickname");
   const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
   const rosterTeams = gamePage.document.getElementById("roster-teams");
+  const scorerInput = gamePage.document.getElementById("goal-scorer");
+  const saveGoalButton = gamePage.document.querySelector('[data-action="save-goal"]');
+  const goalFormNote = gamePage.document.getElementById("goal-form-note");
   const statusInput = gamePage.document.getElementById("game-edit-status");
   const thirdLengthInput = gamePage.document.getElementById("game-edit-third-length");
   const timerDisplay = gamePage.document.getElementById("timer-display-value");
@@ -1634,6 +1637,9 @@ test("game page quick-creates and assigns roster players", async () => {
   assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
   assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
+  assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert(goalFormNote instanceof gamePage.window.HTMLElement);
   assert(statusInput instanceof gamePage.window.HTMLSelectElement);
   assert(scheduledStatusOption instanceof gamePage.window.HTMLOptionElement);
   assert(thirdLengthInput instanceof gamePage.window.HTMLSelectElement);
@@ -1680,6 +1686,16 @@ test("game page quick-creates and assigns roster players", async () => {
   const assignment = apiState.roster.get(`game-1:${createdPlayer.playerId}`);
   assert.equal(assignment?.teamId, "red");
   assert.match(rosterTeams.textContent ?? "", /Ari/);
+  assert.equal(scorerInput.value, createdPlayer.playerId);
+  assert.match(scorerInput.textContent ?? "", /Ari/);
+  assert.equal(saveGoalButton.disabled, true);
+  assert.match(goalFormNote.textContent ?? "", /Start a third/);
+
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  assert.equal(apiState.games.get("game-1")?.thirds[1].startedAt, "2026-03-28T11:00:10.000Z");
+  assert.equal(saveGoalButton.disabled, false);
+  assert.match(goalFormNote.textContent ?? "", /third 2/);
 });
 
 test("game page remains usable when goal timeline load fails", async () => {
