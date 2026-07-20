@@ -50,7 +50,7 @@ test("privileged evaluation uses pinned Actions and trusted default-branch code"
 test("workflow permissions and refresh authorisation are explicit", () => {
   assert.match(
     workflow,
-    /permissions:\s*\n\s+contents: read\s*\n\s+pull-requests: read\s*\n\s+checks: write\s*\n\s+issues: write/,
+    /permissions:\s*\n\s+contents: read\s*\n\s+pull-requests: write\s*\n\s+checks: write\s*\n\s+issues: write/,
   );
   assert.doesNotMatch(workflow, /contents: write/);
   assert.doesNotMatch(workflow, /actions: write/);
