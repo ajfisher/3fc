@@ -232,8 +232,8 @@ function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdA
   return {
     gameId: raw.gameId ?? "",
     teamId: isTeamId(raw.teamId) ? raw.teamId : "red",
-    name: raw.name ?? "",
-    color: raw.color ?? null,
+    name: typeof raw.name === "string" ? raw.name : "",
+    color: typeof raw.color === "string" ? raw.color : null,
     scored: normalizeNonNegativeInteger(raw.scored),
     conceded: normalizeNonNegativeInteger(raw.conceded),
   };
@@ -1386,10 +1386,10 @@ export class ThreeFcRepository {
         ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
         : 0;
     const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
-    const thirdMinute =
-      display.phase === "stoppage"
-        ? game.thirdLengthMinutes
-        : Math.floor(display.elapsedSeconds / 60) + 1;
+    const thirdMinute = Math.min(
+      game.thirdLengthMinutes,
+      Math.floor(display.elapsedSeconds / 60) + 1,
+    );
     const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
     const payload = {
       gameId: input.gameId,

@@ -259,6 +259,18 @@ class IncrementingClock {
   }
 }
 
+class MutableClock {
+  constructor(private stamp: string) {}
+
+  set(stamp: string): void {
+    this.stamp = stamp;
+  }
+
+  now(): string {
+    return this.stamp;
+  }
+}
+
 function createRepository(): ThreeFcRepository {
   return new ThreeFcRepository(new InMemoryDynamoClient(), "threefc_test", new IncrementingClock());
 }
@@ -574,8 +586,8 @@ test("repository normalizes malformed game team records to documented response b
       S: JSON.stringify({
         gameId: "game-legacy",
         teamId: "green",
-        name: "Legacy Team",
-        color: null,
+        name: 42,
+        color: 99,
         scored: -1,
         conceded: -2,
       }),
@@ -584,6 +596,8 @@ test("repository normalizes malformed game team records to documented response b
 
   const [team] = await repository.listTeamsForGame("game-legacy");
   assert.equal(team.teamId, "red");
+  assert.equal(team.name, "");
+  assert.equal(team.color, null);
   assert.equal(team.scored, 0);
   assert.equal(team.conceded, 0);
 });
@@ -1063,6 +1077,35 @@ test("repository creates standard goals with timer stamping, mixed-team assists,
       .map((query) => query.consistentRead),
     [true],
   );
+});
+
+test("repository stamps regulation-boundary goals at the final regulation minute", async () => {
+  const clock = new MutableClock("2026-02-22T00:00:00.000Z");
+  const repository = new ThreeFcRepository(
+    new InMemoryDynamoClient(),
+    "threefc_test",
+    clock,
+  );
+  await setupScoringGame(repository);
+  clock.set("2026-02-22T00:00:00.000Z");
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  clock.set("2026-02-22T00:20:00.000Z");
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-boundary",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.thirdMinute, 20);
+  assert.equal(result.goal.gameMinute, 20);
+  assert.equal(result.goal.displayTime, "20:00");
+  assert.equal(result.goal.stoppageMinute, null);
 });
 
 test("repository rejects duplicate goal event IDs without double-counting tallies", async () => {

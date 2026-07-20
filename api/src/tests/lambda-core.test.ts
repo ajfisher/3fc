@@ -674,10 +674,10 @@ function createHarness(config: HarnessConfig = {}) {
           Math.floor((Date.parse(now) - Date.parse(activeThird.startedAt)) / 1000),
         );
         const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
-        const thirdMinute =
-          display.phase === "stoppage"
-            ? game.thirdLengthMinutes
-            : Math.floor(display.elapsedSeconds / 60) + 1;
+        const thirdMinute = Math.min(
+          game.thirdLengthMinutes,
+          Math.floor(display.elapsedSeconds / 60) + 1,
+        );
         const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
         const goal = {
           gameId: input.gameId,
