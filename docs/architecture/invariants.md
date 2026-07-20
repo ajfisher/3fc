@@ -1,8 +1,8 @@
 # Review invariants
 
 These identifiers turn 3FC's durable product and system rules into reviewable
-constraints. Pull requests name every invariant they affect and provide evidence
-proportionate to the failure consequence.
+constraints. Pull requests explain every invariant they affect and provide
+evidence proportionate to the failure consequence.
 
 | ID | Invariant and failure consequence | Evidence expected | Canonical source |
 | --- | --- | --- | --- |
@@ -19,3 +19,9 @@ proportionate to the failure consequence.
 Adding, changing, or removing an invariant is a high-risk architecture change.
 Update the canonical source, record the decision in `docs/decisions/`, and cite
 the invariant ID in the pull-request packet.
+
+For every affected invariant, the pull-request packet must state:
+
+- how the PR affects the invariant
+- why the invariant remains valid after the change
+- the evidence reviewers should use to verify that claim

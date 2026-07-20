@@ -45,7 +45,11 @@ Excluded:
 
 ### Affected invariants
 
-<!-- Use IDs from docs/architecture/invariants.md, or write "None". -->
+<!-- Use IDs from docs/architecture/invariants.md. For no impact, replace the table with "None.". -->
+
+| Invariant | How this PR affects it | Why it remains valid | Evidence |
+| --- | --- | --- | --- |
+| <!-- INV-000 --> | <!-- route, state, contract, permission, data, or operational path changed --> | <!-- why the invariant still holds after this PR --> | <!-- test, check, QA note, or review evidence --> |
 
 ### Architecture or decision record
 
