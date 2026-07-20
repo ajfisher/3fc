@@ -116,11 +116,7 @@ export class GitHubClient {
             reviewThreads(first: 100, after: $cursor) {
               nodes {
                 isResolved
-                comments(first: 100) {
-                  nodes {
-                    isOutdated
-                  }
-                }
+                isOutdated
               }
               pageInfo {
                 hasNextPage
@@ -145,10 +141,9 @@ export class GitHubClient {
         throw new Error(`GitHub GraphQL response did not contain review threads for PR #${number}`);
       }
       for (const thread of connection.nodes) {
-        const comments = thread.comments?.nodes ?? [];
         threads.push({
           isResolved: thread.isResolved,
-          isOutdated: comments.length > 0 && comments.every((comment) => comment.isOutdated),
+          isOutdated: thread.isOutdated,
         });
       }
       cursor = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
