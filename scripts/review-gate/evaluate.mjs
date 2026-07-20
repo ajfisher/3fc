@@ -225,6 +225,19 @@ function architectureLabel(packet) {
     : "architecture:none";
 }
 
+function hasExplicitNoInvariantImpact(value) {
+  return /^none\.?$/i.test((value ?? "").trim());
+}
+
+function hasCompleteInvariantImpactRows(rows) {
+  return rows.length > 0 && rows.every((row) =>
+    row.invariantIds.length === 1
+    && /^INV-\d{3}$/.test(row.invariant)
+    && row.affected
+    && row.valid
+    && row.evidence);
+}
+
 function configurationError(error, mode = "observe") {
   return {
     state: "configuration-error",
@@ -309,9 +322,16 @@ export function evaluateReview(rawPolicy, rawInput) {
   }
   if (
     requirements.invariant_declaration === "required"
-    && !/^(none\.?|INV-\d{3}(?:[\s,;]+INV-\d{3})*)$/i.test(packet.affectedInvariants)
+    && !hasExplicitNoInvariantImpact(packet.affectedInvariants)
+    && !hasCompleteInvariantImpactRows(packet.affectedInvariantRows)
   ) {
-    packetBlockers.push(`${effectiveRisk} risk requires invariant identifiers or explicit none.`);
+    packetBlockers.push(`${effectiveRisk} risk requires affected invariant impact rows or explicit none.`);
+  }
+  if (
+    packet.affectedInvariantRows.length > 0
+    && !hasCompleteInvariantImpactRows(packet.affectedInvariantRows)
+  ) {
+    packetBlockers.push("Affected invariant rows require invariant ID, how affected, why it remains valid, and evidence.");
   }
   if (
     packet.rejectedFindings

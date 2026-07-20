@@ -4,6 +4,13 @@ function bullets(items, emptyMessage) {
     : [`- ${emptyMessage}`];
 }
 
+function invariantSummary(packet) {
+  if (packet.affectedInvariantRows?.length > 0) {
+    return packet.affectedInvariantRows.map((row) => row.invariant).join(" ");
+  }
+  return packet.affectedInvariants || "missing";
+}
+
 export function renderSummary(result, headSha) {
   if (result.state === "configuration-error") {
     return [
@@ -67,7 +74,7 @@ export function renderSummary(result, headSha) {
     `| Unresolved current threads | ${result.unresolvedThreads} |`,
     `| Human approvals | ${result.approvals} / ${result.requirements.human_approvals} |`,
     `| Architecture | ${result.packet.architecture ?? "invalid"} |`,
-    `| Affected invariants | ${result.packet.affectedInvariants || "missing"} |`,
+    `| Affected invariants | ${invariantSummary(result.packet)} |`,
     `| Human judgement | ${result.packet.humanJudgement ?? "invalid"} |`,
     "",
     "### Blocking findings",

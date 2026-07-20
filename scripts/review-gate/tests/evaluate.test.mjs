@@ -162,6 +162,19 @@ function completedCheck(name, conclusion = "success") {
   };
 }
 
+function invariantTable(
+  invariant = "INV-002",
+  affected = "Changes protected write routing.",
+  valid = "The route still requires a scoped authenticated session.",
+  evidence = "`npm run test -w @3fc/api`",
+) {
+  return [
+    "| Invariant | How this PR affects it | Why it remains valid | Evidence |",
+    "| --- | --- | --- | --- |",
+    `| ${invariant} | ${affected} | ${valid} | ${evidence} |`,
+  ].join("\n");
+}
+
 function highRiskState(overrides = {}) {
   return state({
     body: packet({
@@ -254,7 +267,7 @@ test("missing acceptance evidence blocks high risk", () => {
     risk: "high",
     acceptance: false,
     architecture: "documented",
-    invariants: "INV-002",
+    invariants: invariantTable(),
     architectureRecord: "docs/decisions/001-auth.md",
     failureBehaviour: "Fail closed.",
     rollbackApproach: "Revert.",
@@ -268,7 +281,7 @@ test("missing rollback evidence blocks high risk", () => {
   high.body = packet({
     risk: "high",
     architecture: "documented",
-    invariants: "INV-002",
+    invariants: invariantTable(),
     architectureRecord: "docs/decisions/001-auth.md",
     failureBehaviour: "Fail closed.",
     rollbackApproach: "Revert the pull request.",
@@ -484,6 +497,279 @@ test("architecture trigger cannot be declared as no impact", () => {
     }),
   }));
   assert.match(result.blockers.join("\n"), /Architecture-sensitive paths/);
+});
+
+test("listed invariants require impact details", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: "INV-002 INV-003",
+      architectureRecord: "docs/decisions/001-auth.md",
+      failureBehaviour: "Fail closed.",
+      rollbackApproach: "Revert.",
+      rollbackEvidence: "Revert is sufficient because no data migration runs.",
+    }),
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /invariant impact rows/);
+});
+
+test("complete invariant impact rows satisfy high-risk invariant declaration", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: invariantTable(
+        "INV-003",
+        "Adds an idempotent write endpoint.",
+        "Stored results are replayed for matching operation keys.",
+        "`npm run test -w @3fc/api`",
+      ),
+      architectureRecord: "docs/decisions/001-idempotent-write.md",
+      failureBehaviour: "The endpoint fails closed on conflicting idempotency keys.",
+      rollbackApproach: "Revert the endpoint and contract change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "pass", result.blockers.join("\n"));
+  assert.deepEqual(result.packet.affectedInvariantRows, [{
+    invariant: "INV-003",
+    invariantIds: ["INV-003"],
+    affected: "Adds an idempotent write endpoint.",
+    valid: "Stored results are replayed for matching operation keys.",
+    evidence: "`npm run test -w @3fc/api`",
+  }]);
+});
+
+test("invariant impact rows accept tables without outer pipes", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "Invariant | How this PR affects it | Why it remains valid | Evidence",
+        "--- | --- | --- | ---",
+        "INV-004 | Changes a repository access path. | Keys remain owned by the documented entity. | `npm run test -w @3fc/api`",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Invalid access paths fail closed.",
+      rollbackApproach: "Revert the repository change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "pass", result.blockers.join("\n"));
+  assert.deepEqual(result.packet.affectedInvariantRows, [{
+    invariant: "INV-004",
+    invariantIds: ["INV-004"],
+    affected: "Changes a repository access path.",
+    valid: "Keys remain owned by the documented entity.",
+    evidence: "`npm run test -w @3fc/api`",
+  }]);
+});
+
+test("invariant impact rows accept escaped pipes and code-span pipes in cells", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "| Invariant | How this PR affects it | Why it remains valid | Evidence |",
+        "| --- | --- | --- | --- |",
+        "| INV-004 | Changes a parser path. | Table cells still parse deterministically. | `npm test \\| tee evidence.log` and `a|b` |",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Malformed packets fail closed.",
+      rollbackApproach: "Revert the parser change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "pass", result.blockers.join("\n"));
+  assert.deepEqual(result.packet.affectedInvariantRows, [{
+    invariant: "INV-004",
+    invariantIds: ["INV-004"],
+    affected: "Changes a parser path.",
+    valid: "Table cells still parse deterministically.",
+    evidence: "`npm test \\| tee evidence.log` and `a|b`",
+  }]);
+});
+
+test("invariant impact rows accept multi-backtick code-span pipes in cells", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "| Invariant | How this PR affects it | Why it remains valid | Evidence |",
+        "| --- | --- | --- | --- |",
+        "| INV-004 | Changes a parser path. | Table cells still parse deterministically. | ``command a|b`` |",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Malformed packets fail closed.",
+      rollbackApproach: "Revert the parser change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "pass", result.blockers.join("\n"));
+  assert.deepEqual(result.packet.affectedInvariantRows, [{
+    invariant: "INV-004",
+    invariantIds: ["INV-004"],
+    affected: "Changes a parser path.",
+    valid: "Table cells still parse deterministically.",
+    evidence: "``command a|b``",
+  }]);
+});
+
+test("invariant impact rows accept single-hyphen GFM delimiters", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "| Invariant | How this PR affects it | Why it remains valid | Evidence |",
+        "| - | - | - | - |",
+        "| INV-004 | Changes a parser path. | Table delimiter parsing still follows GFM. | `npm run test:review-gate` |",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Malformed packets fail closed.",
+      rollbackApproach: "Revert the parser change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "pass", result.blockers.join("\n"));
+  assert.deepEqual(result.packet.affectedInvariantRows, [{
+    invariant: "INV-004",
+    invariantIds: ["INV-004"],
+    affected: "Changes a parser path.",
+    valid: "Table delimiter parsing still follows GFM.",
+    evidence: "`npm run test:review-gate`",
+  }]);
+});
+
+test("invariant impact rows require a Markdown table delimiter", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "Notes | context",
+        "INV-002 | Changes protected writes. | ACL remains enforced. | `npm run test -w @3fc/api`",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Invalid access fails closed.",
+      rollbackApproach: "Revert the change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /invariant impact rows/);
+  assert.deepEqual(result.packet.affectedInvariantRows, []);
+});
+
+test("invariant impact rows require a delimiter matching the header width", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "Notes | context",
+        "--- | --- | --- | ---",
+        "INV-002 | Changes protected writes. | ACL remains enforced. | `npm run test -w @3fc/api`",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Invalid access fails closed.",
+      rollbackApproach: "Revert the change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /invariant impact rows/);
+  assert.deepEqual(result.packet.affectedInvariantRows, []);
+});
+
+test("invariant impact rows must be contiguous table rows", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "Invariant | How this PR affects it | Why it remains valid | Evidence",
+        "--- | --- | --- | ---",
+        "ordinary prose terminates the table",
+        "INV-002 | Changes protected writes. | ACL remains enforced. | `npm run test -w @3fc/api`",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Invalid access fails closed.",
+      rollbackApproach: "Revert the change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /invariant impact rows/);
+  assert.deepEqual(result.packet.affectedInvariantRows, []);
+});
+
+test("invariant impact rows reject multiple invariant IDs in one row", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: invariantTable(
+        "INV-002, INV-003",
+        "Changes protected idempotent writes.",
+        "ACL and idempotency remain enforced.",
+        "`npm run test -w @3fc/api`",
+      ),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Invalid writes fail closed.",
+      rollbackApproach: "Revert the change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /Affected invariant rows require/);
+  assert.equal(result.packet.affectedInvariantRows[0].invariant, "INV-002, INV-003");
+  assert.deepEqual(result.packet.affectedInvariantRows[0].invariantIds, ["INV-002", "INV-003"]);
+});
+
+test("invariant impact rows parse every table in the section", () => {
+  const result = evaluateReview(policy, highRiskState({
+    body: packet({
+      risk: "high",
+      architecture: "documented",
+      invariants: [
+        "| Invariant | How this PR affects it | Why it remains valid | Evidence |",
+        "| --- | --- | --- | --- |",
+        "| INV-002 | Changes protected writes. | ACL remains enforced. | `npm run test:review-gate` |",
+        "",
+        "| Invariant | How this PR affects it | Why it remains valid | Evidence |",
+        "| --- | --- | --- | --- |",
+        "| INV-003 | Changes idempotent write handling. |  |  |",
+      ].join("\n"),
+      architectureRecord: "docs/architecture/invariants.md",
+      failureBehaviour: "Invalid writes fail closed.",
+      rollbackApproach: "Revert the change.",
+      rollbackEvidence: "No migration is required.",
+    }),
+  }));
+  assert.equal(result.state, "blocked");
+  assert.match(result.blockers.join("\n"), /Affected invariant rows require/);
+  assert.deepEqual(result.packet.affectedInvariantRows, [
+    {
+      invariant: "INV-002",
+      invariantIds: ["INV-002"],
+      affected: "Changes protected writes.",
+      valid: "ACL remains enforced.",
+      evidence: "`npm run test:review-gate`",
+    },
+    {
+      invariant: "INV-003",
+      invariantIds: ["INV-003"],
+      affected: "Changes idempotent write handling.",
+      valid: "",
+      evidence: "",
+    },
+  ]);
 });
 
 test("packet parser rejects placeholder declared risk", () => {

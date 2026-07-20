@@ -111,25 +111,115 @@ function readField(section, label) {
   return "";
 }
 
+function parseMarkdownTable(section) {
+  const lines = section.split("\n");
+  const splitTableCells = (line) => {
+    const cells = [];
+    let cell = "";
+    let codeDelimiterLength = 0;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (character === "\\" && index + 1 < line.length) {
+        cell += character + line[index + 1];
+        index += 1;
+        continue;
+      }
+      if (character === "`") {
+        const start = index;
+        while (line[index + 1] === "`") {
+          index += 1;
+        }
+        const delimiterLength = index - start + 1;
+        if (codeDelimiterLength === 0) {
+          codeDelimiterLength = delimiterLength;
+        } else if (delimiterLength === codeDelimiterLength) {
+          codeDelimiterLength = 0;
+        }
+        cell += "`".repeat(delimiterLength);
+        continue;
+      }
+      if (character === "|" && codeDelimiterLength === 0) {
+        cells.push(cell);
+        cell = "";
+        continue;
+      }
+      cell += character;
+    }
+    cells.push(cell);
+    return cells;
+  };
+  const readRow = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.includes("|")) {
+      return null;
+    }
+    const cells = splitTableCells(trimmed);
+    if (trimmed.startsWith("|")) {
+      cells.shift();
+    }
+    if (cells.at(-1)?.trim() === "") {
+      cells.pop();
+    }
+    return cells.map((cell) => clean(cell));
+  };
+  const isDelimiter = (row, width) =>
+    row?.length === width && row.every((cell) => /^:?-+:?$/.test(cell));
+
+  const bodyRows = [];
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const header = readRow(lines[index]);
+    if (!header || header.length < 2 || !header.some(Boolean)) {
+      continue;
+    }
+    if (!isDelimiter(readRow(lines[index + 1]), header.length)) {
+      continue;
+    }
+    let cursor = index + 2;
+    for (; cursor < lines.length; cursor += 1) {
+      const row = readRow(lines[cursor]);
+      if (!row || row.length !== header.length || isDelimiter(row, header.length)) {
+        break;
+      }
+      if (row.some(Boolean)) {
+        bodyRows.push(row);
+      }
+    }
+    index = cursor - 1;
+  }
+  return bodyRows;
+}
+
 function parseEvidence(section) {
-  const rows = section
-    .split("\n")
-    .filter((line) => /^\s*\|/.test(line))
-    .map((line) =>
-      line
-        .split("|")
-        .slice(1, -1)
-        .map((cell) => clean(cell)),
-    )
-    .filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell)));
+  const rows = parseMarkdownTable(section);
   return rows
-    .slice(1)
-    .filter((row) => row.some(Boolean))
     .map(([criterion = "", evidence = "", result = ""]) => ({
       criterion,
       evidence,
       result: result.toUpperCase(),
     }));
+}
+
+function parseInvariantImpacts(section) {
+  return parseMarkdownTable(section)
+    .map(([
+      invariant = "",
+      affected = "",
+      valid = "",
+      evidence = "",
+    ]) => {
+      const invariantIds = [...invariant.matchAll(/\bINV-\d{3}\b/ig)]
+        .map((match) => match[0].toUpperCase());
+      return {
+        invariant: invariantIds.length === 1
+          ? invariantIds[0]
+          : invariant.toUpperCase(),
+        invariantIds,
+        affected,
+        valid,
+        evidence,
+      };
+    })
+    .filter((row) => row.invariant || row.affected || row.valid || row.evidence);
 }
 
 export function parseReviewPacket(body = "") {
@@ -198,6 +288,8 @@ export function parseReviewPacket(body = "") {
   const acceptanceRows = parseEvidence(
     sections.get("Specification and acceptance evidence") ?? "",
   );
+  const affectedInvariantSection = subsections.get("Affected invariants") ?? "";
+  const affectedInvariantRows = parseInvariantImpacts(affectedInvariantSection);
 
   return {
     errors,
@@ -215,10 +307,8 @@ export function parseReviewPacket(body = "") {
     architecture: architectureSelections.length === 1
       ? architectureSelections[0]
       : null,
-    affectedInvariants: clean(
-      subsections.get("Affected invariants") ?? "",
-      { emptyNone: false },
-    ),
+    affectedInvariants: clean(affectedInvariantSection, { emptyNone: false }),
+    affectedInvariantRows,
     architectureRecord: clean(
       subsections.get("Architecture or decision record") ?? "",
     ),
