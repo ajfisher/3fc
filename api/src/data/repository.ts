@@ -366,6 +366,34 @@ function normalizeGoalAuditSnapshot(data: unknown): GoalAuditSnapshotRecord | nu
   };
 }
 
+const GOAL_AUDIT_ACTIONS = new Set<GoalAuditAction>([
+  "goal_created",
+  "goal_updated",
+  "goal_deleted",
+  "goal_undo_last",
+]);
+
+const GOAL_CORRECTION_ACTIONS = new Set<
+  Extract<GoalAuditAction, "goal_updated" | "goal_deleted" | "goal_undo_last">
+>(["goal_updated", "goal_deleted", "goal_undo_last"]);
+
+function normalizeGoalAuditAction(action: unknown): GoalAuditAction {
+  return typeof action === "string" && GOAL_AUDIT_ACTIONS.has(action as GoalAuditAction)
+    ? (action as GoalAuditAction)
+    : "goal_updated";
+}
+
+function normalizeGoalCorrectionAction(
+  action: unknown,
+): Extract<GoalAuditAction, "goal_updated" | "goal_deleted" | "goal_undo_last"> {
+  return typeof action === "string" &&
+    GOAL_CORRECTION_ACTIONS.has(
+      action as Extract<GoalAuditAction, "goal_updated" | "goal_deleted" | "goal_undo_last">,
+    )
+    ? (action as Extract<GoalAuditAction, "goal_updated" | "goal_deleted" | "goal_undo_last">)
+    : "goal_updated";
+}
+
 function normalizeGoalAuditPayload(data: unknown): Omit<GoalAuditRecord, "createdAt" | "updatedAt"> {
   const raw = data as Partial<Omit<GoalAuditRecord, "createdAt" | "updatedAt">>;
 
@@ -374,7 +402,7 @@ function normalizeGoalAuditPayload(data: unknown): Omit<GoalAuditRecord, "create
     gameId: raw.gameId ?? "",
     eventId: raw.eventId ?? "",
     actorUserId: raw.actorUserId ?? "",
-    action: raw.action ?? "goal_updated",
+    action: normalizeGoalAuditAction(raw.action),
     before: normalizeGoalAuditSnapshot(raw.before),
     after: normalizeGoalAuditSnapshot(raw.after),
   };
@@ -390,7 +418,7 @@ function normalizeGoalCorrectionOperationPayload(
     eventId: raw.eventId ?? "",
     operationId: raw.operationId ?? "",
     requestHash: raw.requestHash ?? "",
-    action: raw.action ?? "goal_updated",
+    action: normalizeGoalCorrectionAction(raw.action),
     result: raw.result as GoalCorrectionOperationRecord["result"],
   };
 }
@@ -407,7 +435,10 @@ function sortGameTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
   return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
 }
 
-function compareGoalEvents(left: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "eventId">, right: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "eventId">): number {
+function compareGoalEvents(
+  left: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "createdAt" | "eventId">,
+  right: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "createdAt" | "eventId">,
+): number {
   const thirdSort = left.third - right.third;
   if (thirdSort !== 0) {
     return thirdSort;
@@ -421,6 +452,11 @@ function compareGoalEvents(left: Pick<GoalEventRecord, "third" | "gameMinute" | 
   const elapsedSort = left.elapsedSeconds - right.elapsedSeconds;
   if (elapsedSort !== 0) {
     return elapsedSort;
+  }
+
+  const createdAtSort = left.createdAt.localeCompare(right.createdAt);
+  if (createdAtSort !== 0) {
+    return createdAtSort;
   }
 
   return left.eventId.localeCompare(right.eventId);
@@ -2213,7 +2249,7 @@ export class ThreeFcRepository {
       );
     }
 
-    const persistedTimeline = await this.listGoalEvents(input.gameId);
+    const persistedTimeline = await this.listGoalEventsForWrite(input.gameId);
 
     return {
       goal,
@@ -2247,7 +2283,8 @@ export class ThreeFcRepository {
           item.createdAt,
           item.updatedAt,
         ),
-      );
+      )
+      .sort(compareGoalEvents);
   }
 
   async listGoalAuditEntries(gameId: string): Promise<GoalAuditRecord[]> {

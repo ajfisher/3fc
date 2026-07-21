@@ -581,6 +581,64 @@ test("repository orders stoppage goals by elapsed time before event ID", async (
   );
 });
 
+test("repository uses creation order to break same-second goal ties", async () => {
+  const clock = new MutableClock("2026-02-22T00:00:00.000Z");
+  const repository = new ThreeFcRepository(
+    new InMemoryDynamoClient(),
+    "threefc_test",
+    clock,
+  );
+  await setupScoringGame(repository);
+  clock.set("2026-02-22T00:00:00.000Z");
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  clock.set("2026-02-22T00:00:10.100Z");
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-z-earlier",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  clock.set("2026-02-22T00:00:10.900Z");
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-a-later",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.deepEqual((await repository.listGoalEvents("game-1")).map((goal) => goal.eventId), [
+    "goal-z-earlier",
+    "goal-a-later",
+  ]);
+  await assert.rejects(
+    repository.undoLastGoal({
+      gameId: "game-1",
+      actorUserId: "scorekeeper@example.com",
+      expectedEventId: "goal-z-earlier",
+    }),
+    /Latest goal changed/,
+  );
+
+  const result = await repository.undoLastGoal({
+    gameId: "game-1",
+    actorUserId: "scorekeeper@example.com",
+    expectedEventId: "goal-a-later",
+  });
+
+  assert.ok(result);
+  assert.equal(result.deletedGoal.eventId, "goal-a-later");
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-z-earlier"]);
+});
+
 test("repository normalizes partial legacy goal records to documented response bounds", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -1270,7 +1328,7 @@ test("repository normalizes malformed goal audit snapshots to documented respons
         gameId: "game-1",
         eventId: "goal-legacy",
         actorUserId: "admin@example.com",
-        action: "goal_updated",
+        action: "legacy_unknown",
         before: {
           eventId: "goal-legacy",
           third: 7,
@@ -1290,6 +1348,7 @@ test("repository normalizes malformed goal audit snapshots to documented respons
   });
 
   const [audit] = await repository.listGoalAuditEntries("game-1");
+  assert.equal(audit.action, "goal_updated");
   assert.equal(audit.before?.third, 1);
   assert.equal(audit.before?.thirdMinute, 1);
   assert.equal(audit.before?.gameMinute, 1);
@@ -1303,7 +1362,7 @@ test("repository normalizes malformed goal audit snapshots to documented respons
 });
 
 test("repository replays duplicate correction operation IDs without duplicate PATCH side effects", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
   await setupScoringGame(repository);
   await repository.startGameThird({ gameId: "game-1", third: 1 });
 
@@ -1326,6 +1385,26 @@ test("repository replays duplicate correction operation IDs without duplicate PA
     operationRequestHash: "hash-1",
     assistPlayerIds: ["player-yellow"],
   });
+  const operationItem = client.readItem("GAME#game-1", "GOAL_CORRECTION#correction-op-1");
+  assert.ok(operationItem);
+  const operationJson = operationItem.data.S;
+  if (typeof operationJson !== "string") {
+    throw new Error("Expected correction operation data to be stored as JSON.");
+  }
+  const operationData = JSON.parse(operationJson) as Record<string, unknown>;
+  operationItem.data = { S: JSON.stringify({ ...operationData, action: "legacy_unknown" }) };
+  client.seedItem(operationItem);
+
+  const storedOperation = await (
+    repository as unknown as {
+      getGoalCorrectionOperation(
+        gameId: string,
+        operationId: string,
+      ): Promise<{ action: string } | null>;
+    }
+  ).getGoalCorrectionOperation("game-1", "correction-op-1");
+  assert.equal(storedOperation?.action, "goal_updated");
+
   const second = await repository.updateGoal({
     gameId: "game-1",
     eventId: "goal-op-replay",
