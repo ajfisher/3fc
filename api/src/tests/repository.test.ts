@@ -1137,6 +1137,7 @@ test("repository stamps regulation-boundary goals at the final regulation minute
   const result = await repository.createGoal({
     gameId: "game-1",
     eventId: "goal-boundary",
+    actorUserId: "scorekeeper@example.com",
     scoringTeamId: "red",
     concedingTeamId: "blue",
     scorerPlayerId: "player-red",
