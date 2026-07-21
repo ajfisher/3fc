@@ -3,7 +3,7 @@ info:
   title: 3FC Core Write API
   version: 0.1.0
   description: |
-    Authenticated core write routes for league/season/session/game creation, M2 roster setup, and third timer control.
+    Authenticated core write routes for league/season/session/game creation, M2 roster setup, third timer control, and goal scoring.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
@@ -195,6 +195,44 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+  /v1/games/{gameId}/goals:
+    post:
+      summary: Create a goal event and update game scoring tallies
+      operationId: createGoal
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGoalRequest"
+      responses:
+        "201":
+          description: Goal created with updated scoreboard and timeline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateGoalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: State conflict, including no running third, idempotency conflict, duplicate goal request, or stale scoreboard state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/seasons/{seasonId}/teams:
     get:
       summary: List season default teams
@@ -633,6 +671,43 @@ components:
             - red
             - blue
             - yellow
+    CreateGoalRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - scoringTeamId
+        - concedingTeamId
+        - scorerPlayerId
+        - ownGoal
+      properties:
+        scoringTeamId:
+          type:
+            - string
+            - "null"
+          enum:
+            - red
+            - blue
+            - yellow
+            - null
+        concedingTeamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        scorerPlayerId:
+          type: string
+          minLength: 1
+        assistPlayerIds:
+          type: array
+          default: []
+          maxItems: 3
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        ownGoal:
+          type: boolean
     League:
       type: object
       required:
@@ -876,6 +951,8 @@ components:
         - teamId
         - name
         - color
+        - scored
+        - conceded
         - createdAt
         - updatedAt
       properties:
@@ -893,6 +970,12 @@ components:
           type:
             - string
             - "null"
+        scored:
+          type: integer
+          minimum: 0
+        conceded:
+          type: integer
+          minimum: 0
         createdAt:
           type: string
           format: date-time
@@ -960,6 +1043,105 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RosterAssignment"
+    GoalEvent:
+      type: object
+      required:
+        - gameId
+        - eventId
+        - third
+        - thirdMinute
+        - gameMinute
+        - elapsedSeconds
+        - stoppageMinute
+        - displayTime
+        - scoringTeamId
+        - concedingTeamId
+        - scorerPlayerId
+        - assistPlayerIds
+        - ownGoal
+        - createdAt
+        - updatedAt
+      properties:
+        gameId:
+          type: string
+        eventId:
+          type: string
+        third:
+          type: integer
+          enum:
+            - 1
+            - 2
+            - 3
+        thirdMinute:
+          type: integer
+          minimum: 1
+        gameMinute:
+          type: integer
+          minimum: 1
+        elapsedSeconds:
+          type: integer
+          minimum: 0
+        stoppageMinute:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        displayTime:
+          type: string
+        scoringTeamId:
+          type:
+            - string
+            - "null"
+          enum:
+            - red
+            - blue
+            - yellow
+            - null
+        concedingTeamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        scorerPlayerId:
+          type: string
+        assistPlayerIds:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+        ownGoal:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    GameScoreboard:
+      type: object
+      required:
+        - teams
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: "#/components/schemas/GameTeam"
+    CreateGoalResponse:
+      type: object
+      required:
+        - goal
+        - scoreboard
+        - timeline
+      properties:
+        goal:
+          $ref: "#/components/schemas/GoalEvent"
+        scoreboard:
+          $ref: "#/components/schemas/GameScoreboard"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoalEvent"
     ErrorResponse:
       type: object
       additionalProperties: true

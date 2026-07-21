@@ -79,6 +79,10 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "finishGameThird",
     gameId: "game-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/goals"), {
+    operation: "createGoal",
+    gameId: "game-1",
+  });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
 
@@ -270,6 +274,59 @@ test("game-scoped timer mutation allows scorekeepers", async () => {
 
   assert.equal(result.allowed, true);
   assert.equal(result.operation, "startGameThird");
+  assert.deepEqual(result.scope, {
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+  });
+});
+
+test("game-scoped goal mutation allows scorekeepers", async () => {
+  const result = await authorizeProtectedMutation(
+    "POST",
+    "/v1/games/game-1/goals",
+    "scorekeeper-user",
+    new InMemoryAclLookup({
+      games: {
+        "game-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          sessionId: "session-1",
+          gameId: "game-1",
+          status: "live",
+          gameStartTs: "2026-02-23T10:00:00.000Z",
+          ...defaultTimerFields(),
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      seasons: {
+        "season-1": {
+          leagueId: "league-1",
+          seasonId: "season-1",
+          name: "Season 1",
+          slug: null,
+          startsOn: null,
+          endsOn: null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+      leagueAccess: {
+        "league-1:scorekeeper-user": {
+          leagueId: "league-1",
+          userId: "scorekeeper-user",
+          role: "scorekeeper",
+          grantedByUserId: "admin-user",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.operation, "createGoal");
   assert.deepEqual(result.scope, {
     leagueId: "league-1",
     seasonId: "season-1",

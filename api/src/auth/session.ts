@@ -111,6 +111,10 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
     return true;
   }
 
+  if (method === "POST" && /^\/v1\/games\/[^/]+\/goals$/.test(route)) {
+    return true;
+  }
+
   if (method === "GET" && route === "/v1/auth/session") {
     return true;
   }

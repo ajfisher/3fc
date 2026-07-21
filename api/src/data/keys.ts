@@ -71,7 +71,17 @@ export function gameSessionIndexSk(gameStartTs: string, gameId: string): string 
   return `GAME#${gameStartTs}#${gameId}`;
 }
 
-export function goalSk(third: 1 | 2 | 3, gameMinute: number, eventId: string): string {
+export function goalEventIdSk(eventId: string): string {
+  return `GOAL_EVENT#${eventId}`;
+}
+
+export function goalSk(
+  third: 1 | 2 | 3,
+  gameMinute: number,
+  elapsedSeconds: number,
+  eventId: string,
+): string {
   const minuteSortable = String(gameMinute).padStart(4, "0");
-  return `GOAL#${third}#${minuteSortable}#${eventId}`;
+  const elapsedSortable = String(elapsedSeconds).padStart(6, "0");
+  return `GOAL#${third}#${minuteSortable}#${elapsedSortable}#${eventId}`;
 }

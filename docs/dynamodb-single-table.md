@@ -35,7 +35,10 @@ This document defines the baseline key structure and access patterns for the
   - `sk=METADATA`
 - Goal event timeline:
   - `pk=GAME#{gameId}`
-  - `sk=GOAL#{third}#{gameMinuteSortable}#{eventId}`
+  - `sk=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}`
+- Goal event id marker:
+  - `pk=GAME#{gameId}`
+  - `sk=GOAL_EVENT#{eventId}`
 - Roster assignment:
   - `pk=GAME#{gameId}`
   - `sk=ROSTER#{teamId}#{playerId}`

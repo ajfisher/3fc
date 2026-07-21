@@ -9,11 +9,13 @@ import type { RateLimitDecision } from "../auth/rate-limit.js";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
+  formatThirdDisplayTime,
+  TEAM_IDS,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdTimerSegment,
 } from "@3fc/contracts";
-import { GameTimerTransitionError } from "../data/repository.js";
+import { GameTimerTransitionError, GoalCreationError } from "../data/repository.js";
 
 interface MockSessionRecord {
   sessionId: string;
@@ -89,9 +91,14 @@ interface MockGameTeamRecord {
   teamId: TeamId;
   name: string;
   color: string | null;
+  scored: number;
+  conceded: number;
   createdAt: string;
   updatedAt: string;
 }
+
+type MockGameTeamInput = Omit<MockGameTeamRecord, "scored" | "conceded"> &
+  Partial<Pick<MockGameTeamRecord, "scored" | "conceded">>;
 
 interface MockPlayerRecord {
   playerId: string;
@@ -112,6 +119,24 @@ interface MockRosterAssignmentRecord {
 interface MockGamePlayerRecord {
   gameId: string;
   playerId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockGoalEventRecord {
+  gameId: string;
+  eventId: string;
+  third: 1 | 2 | 3;
+  thirdMinute: number;
+  gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
+  scoringTeamId: TeamId | null;
+  concedingTeamId: TeamId;
+  scorerPlayerId: string;
+  assistPlayerIds: string[];
+  ownGoal: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -174,7 +199,7 @@ interface HarnessConfig {
   seasonSessions?: Record<string, MockSessionEntity>;
   games?: Record<string, MockGameInput>;
   seasonTeams?: Record<string, MockSeasonTeamRecord>;
-  gameTeams?: Record<string, MockGameTeamRecord>;
+  gameTeams?: Record<string, MockGameTeamInput>;
   players?: Record<string, MockPlayerRecord>;
   rosterAssignments?: Record<string, MockRosterAssignmentRecord>;
   gamePlayers?: Record<string, MockGamePlayerRecord>;
@@ -216,6 +241,15 @@ function createHarness(config: HarnessConfig = {}) {
   const createdSeasonTeams: Array<{ seasonId: string; teamId: TeamId; name: string; color?: string | null }> = [];
   const createdGameTeams: Array<{ gameId: string; teamId: TeamId; name: string; color?: string | null }> = [];
   const createdPlayers: Array<{ playerId: string; nickname: string; claimedByUserId?: string | null }> = [];
+  const createdGoals: Array<{
+    gameId: string;
+    eventId: string;
+    scoringTeamId: TeamId | null;
+    concedingTeamId: TeamId;
+    scorerPlayerId: string;
+    assistPlayerIds: string[];
+    ownGoal: boolean;
+  }> = [];
   const assignedRosterPlayers: Array<{ gameId: string; teamId: TeamId; playerId: string }> = [];
   const linkedGamePlayers: Array<{ gameId: string; playerId: string }> = [];
   const magicLinkStarts: string[] = [];
@@ -240,7 +274,16 @@ function createHarness(config: HarnessConfig = {}) {
   const seasonTeams = new Map<string, MockSeasonTeamRecord>(
     Object.entries(config.seasonTeams ?? {}),
   );
-  const gameTeams = new Map<string, MockGameTeamRecord>(Object.entries(config.gameTeams ?? {}));
+  const gameTeams = new Map<string, MockGameTeamRecord>(
+    Object.entries(config.gameTeams ?? {}).map(([key, team]) => [
+      key,
+      {
+        ...team,
+        scored: team.scored ?? 0,
+        conceded: team.conceded ?? 0,
+      },
+    ]),
+  );
   const players = new Map<string, MockPlayerRecord>(Object.entries(config.players ?? {}));
   const rosterAssignments = new Map<string, MockRosterAssignmentRecord>(
     Object.entries(config.rosterAssignments ?? {}),
@@ -248,6 +291,7 @@ function createHarness(config: HarnessConfig = {}) {
   const gamePlayers = new Map<string, MockGamePlayerRecord>(
     Object.entries(config.gamePlayers ?? {}),
   );
+  const goalEvents = new Map<string, MockGoalEventRecord>();
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
@@ -355,6 +399,8 @@ function createHarness(config: HarnessConfig = {}) {
           teamId: input.teamId,
           name: input.name,
           color: input.color ?? null,
+          scored: existing?.scored ?? 0,
+          conceded: existing?.conceded ?? 0,
           createdAt: existing?.createdAt ?? "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
@@ -606,6 +652,106 @@ function createHarness(config: HarnessConfig = {}) {
       async listGameRoster(gameId: string) {
         return [...rosterAssignments.values()].filter((assignment) => assignment.gameId === gameId);
       },
+      async createGoal(input) {
+        createdGoals.push(input);
+        const game = games.get(input.gameId);
+        if (!game) {
+          return null;
+        }
+
+        const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
+        if (!activeThird?.startedAt) {
+          throw new GoalCreationError(
+            "no_active_third",
+            409,
+            "A goal can only be created while a third is running.",
+          );
+        }
+
+        const now = "2026-02-23T00:00:03.000Z";
+        const elapsedSeconds = Math.max(
+          0,
+          Math.floor((Date.parse(now) - Date.parse(activeThird.startedAt)) / 1000),
+        );
+        const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
+        const thirdMinute = Math.min(
+          game.thirdLengthMinutes,
+          Math.floor(display.elapsedSeconds / 60) + 1,
+        );
+        const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
+        const goal = {
+          gameId: input.gameId,
+          eventId: input.eventId,
+          third: activeThird.third,
+          thirdMinute,
+          gameMinute,
+          elapsedSeconds: display.elapsedSeconds,
+          stoppageMinute: display.stoppageMinute,
+          displayTime: display.displayTime,
+          scoringTeamId: input.scoringTeamId,
+          concedingTeamId: input.concedingTeamId,
+          scorerPlayerId: input.scorerPlayerId,
+          assistPlayerIds: input.assistPlayerIds,
+          ownGoal: input.ownGoal,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        goalEvents.set(`${input.gameId}:${input.eventId}`, goal);
+        for (const [key, team] of gameTeams.entries()) {
+          if (team.gameId !== input.gameId) {
+            continue;
+          }
+
+          const scored = !input.ownGoal && team.teamId === input.scoringTeamId
+            ? team.scored + 1
+            : team.scored;
+          const conceded = team.teamId === input.concedingTeamId
+            ? team.conceded + 1
+            : team.conceded;
+
+          if (scored !== team.scored || conceded !== team.conceded) {
+            gameTeams.set(key, {
+              ...team,
+              scored,
+              conceded,
+              updatedAt: now,
+            });
+          }
+        }
+
+        const teams = [...gameTeams.values()]
+          .filter((team) => team.gameId === input.gameId)
+          .sort((left, right) => TEAM_IDS.indexOf(left.teamId) - TEAM_IDS.indexOf(right.teamId));
+        const timeline = [...goalEvents.values()]
+          .filter((entry) => entry.gameId === input.gameId)
+          .sort((left, right) => {
+            const thirdSort = left.third - right.third;
+            if (thirdSort !== 0) {
+              return thirdSort;
+            }
+
+            const minuteSort = left.gameMinute - right.gameMinute;
+            if (minuteSort !== 0) {
+              return minuteSort;
+            }
+
+            const elapsedSort = left.elapsedSeconds - right.elapsedSeconds;
+            if (elapsedSort !== 0) {
+              return elapsedSort;
+            }
+
+            return left.eventId.localeCompare(right.eventId);
+          });
+
+        return {
+          goal,
+          scoreboard: {
+            teams,
+          },
+          timeline,
+        };
+      },
       async getLeagueAccess(leagueId: string, userId: string) {
         return config.leagueAccess?.[`${leagueId}:${userId}`] ?? null;
       },
@@ -645,6 +791,7 @@ function createHarness(config: HarnessConfig = {}) {
     createdSeasonTeams,
     createdGameTeams,
     createdPlayers,
+    createdGoals,
     assignedRosterPlayers,
     linkedGamePlayers,
     magicLinkStarts,
@@ -652,6 +799,142 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkRateLimitChecks,
     idempotencyRecords,
   };
+}
+
+function createGoalHarness(input: {
+  email?: string;
+  role?: "admin" | "scorekeeper" | "viewer";
+  runningThird?: boolean;
+} = {}) {
+  const email = input.email ?? "scorekeeper@example.com";
+  const role = input.role ?? "scorekeeper";
+  const runningThird = input.runningThird ?? true;
+  const thirds = createDefaultThirdTimerSegments();
+  if (runningThird) {
+    thirds[0] = {
+      ...thirds[0],
+      startedAt: "2026-02-23T00:00:00.000Z",
+    };
+  }
+
+  return createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: runningThird ? "live" : "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        thirdLengthMinutes: 20,
+        thirds,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      [`league-1:${email}`]: {
+        leagueId: "league-1",
+        userId: email,
+        role,
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    gameTeams: {
+      "game-1:red": {
+        gameId: "game-1",
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:blue": {
+        gameId: "game-1",
+        teamId: "blue",
+        name: "Blue",
+        color: "#2364d2",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:yellow": {
+        gameId: "game-1",
+        teamId: "yellow",
+        name: "Yellow",
+        color: "#e0a612",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    players: {
+      "player-red": {
+        playerId: "player-red",
+        nickname: "Red Player",
+        claimedByUserId: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "player-blue": {
+        playerId: "player-blue",
+        nickname: "Blue Player",
+        claimedByUserId: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "player-yellow": {
+        playerId: "player-yellow",
+        nickname: "Yellow Player",
+        claimedByUserId: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    rosterAssignments: {
+      "game-1:player-red": {
+        gameId: "game-1",
+        teamId: "red",
+        playerId: "player-red",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:player-blue": {
+        gameId: "game-1",
+        teamId: "blue",
+        playerId: "player-blue",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:player-yellow": {
+        gameId: "game-1",
+        teamId: "yellow",
+        playerId: "player-yellow",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
 }
 
 test("core lambda rejects protected mutation without session cookie", async () => {
@@ -1345,6 +1628,261 @@ test("core lambda rejects viewer third timer mutations through ACL", async () =>
     code: "scorekeeper_required",
     message: "Admin or scorekeeper role is required for league league-1.",
   });
+});
+
+test("core lambda creates goals with idempotency replay and conflict behavior", async () => {
+  const harness = createGoalHarness();
+  const requestBody = {
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: ["player-blue", "player-yellow"],
+    ownGoal: false,
+  };
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-create-1",
+      },
+      body: requestBody,
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  const body = JSON.parse(response.body) as {
+    goal: {
+      eventId: string;
+      third: number;
+      thirdMinute: number;
+      gameMinute: number;
+      elapsedSeconds: number;
+      displayTime: string;
+      scoringTeamId: string | null;
+      concedingTeamId: string;
+      assistPlayerIds: string[];
+    };
+    scoreboard: {
+      teams: Array<{ teamId: string; scored: number; conceded: number }>;
+    };
+    timeline: Array<{ eventId: string }>;
+  };
+  assert.match(body.goal.eventId, /^goal-idem-/);
+  assert.equal(body.goal.third, 1);
+  assert.equal(body.goal.thirdMinute, 1);
+  assert.equal(body.goal.gameMinute, 1);
+  assert.equal(body.goal.elapsedSeconds, 3);
+  assert.equal(body.goal.displayTime, "00:03");
+  assert.equal(body.goal.scoringTeamId, "red");
+  assert.equal(body.goal.concedingTeamId, "blue");
+  assert.deepEqual(body.goal.assistPlayerIds, ["player-blue", "player-yellow"]);
+  assert.deepEqual(
+    body.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+  assert.deepEqual(body.timeline.map((goal) => goal.eventId), [body.goal.eventId]);
+  assert.equal(harness.createdGoals.length, 1);
+
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/thirds/1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const replayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-create-1",
+      },
+      body: requestBody,
+    }),
+  );
+  assert.equal(replayResponse.statusCode, 201);
+  assert.deepEqual(JSON.parse(replayResponse.body), body);
+  assert.equal(harness.createdGoals.length, 1);
+
+  const conflictResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-create-1",
+      },
+      body: {
+        ...requestBody,
+        concedingTeamId: "yellow",
+      },
+    }),
+  );
+
+  assert.equal(conflictResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(conflictResponse.body), {
+    error: "idempotency_conflict",
+    message: "Idempotency key has already been used with a different payload.",
+  });
+});
+
+test("core lambda rejects goal creation when no third is running", async () => {
+  const harness = createGoalHarness({
+    runningThird: false,
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "no_active_third",
+    message: "A goal can only be created while a third is running.",
+  });
+});
+
+test("core lambda rejects viewer goal creation through ACL", async () => {
+  const harness = createGoalHarness({
+    email: "viewer@example.com",
+    role: "viewer",
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "forbidden",
+    code: "scorekeeper_required",
+    message: "Admin or scorekeeper role is required for league league-1.",
+  });
+  assert.equal(harness.createdGoals.length, 0);
+});
+
+test("core lambda rejects invalid assist payloads before creating goals", async () => {
+  const harness = createGoalHarness();
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: ["player-blue", "player-yellow", "player-a", "player-b"],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "Field `assistPlayerIds` must contain no more than 3 player IDs.",
+  });
+  assert.equal(harness.createdGoals.length, 0);
+});
+
+test("core lambda rejects duplicate assist IDs before creating goals", async () => {
+  const harness = createGoalHarness();
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: ["player-blue", "player-blue"],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "Field `assistPlayerIds` must be unique.",
+  });
+  assert.equal(harness.createdGoals.length, 0);
+});
+
+test("core lambda rejects same-team standard goals before creating goals", async () => {
+  const harness = createGoalHarness();
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "red",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "Field `concedingTeamId` must differ from scoringTeamId for standard goals.",
+  });
+  assert.equal(harness.createdGoals.length, 0);
 });
 
 test("core lambda rejects third length changes on finished games", async () => {

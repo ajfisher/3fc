@@ -34,13 +34,50 @@ export const DEFAULT_TEAMS = [
 ] as const satisfies readonly DefaultTeamDefinition[];
 
 export interface GoalEventInput {
+  scoringTeamId: TeamId | null;
+  concedingTeamId: TeamId;
+  scorerPlayerId: string;
+  assistPlayerIds?: string[];
+  ownGoal: boolean;
+}
+
+export interface GoalEvent {
   gameId: string;
-  third: 1 | 2 | 3;
+  eventId: string;
+  third: ThirdNumber;
+  thirdMinute: number;
+  gameMinute: number;
+  elapsedSeconds: number;
+  stoppageMinute: number | null;
+  displayTime: string;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameScoreboardTeam {
+  gameId: string;
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  scored: number;
+  conceded: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameScoreboard {
+  teams: GameScoreboardTeam[];
+}
+
+export interface CreateGoalResponse {
+  goal: GoalEvent;
+  scoreboard: GameScoreboard;
+  timeline: GoalEvent[];
 }
 
 export interface ThirdTimerSegment {
@@ -147,7 +184,7 @@ export function formatThirdDisplayTime(
   const safeElapsedSeconds = Math.max(0, Math.floor(elapsedSeconds));
   const nominalSeconds = thirdLengthMinutes * 60;
 
-  if (safeElapsedSeconds < nominalSeconds) {
+  if (safeElapsedSeconds <= nominalSeconds) {
     const minutes = Math.floor(safeElapsedSeconds / 60);
     const seconds = safeElapsedSeconds % 60;
     return {
