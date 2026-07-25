@@ -5,6 +5,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import {
   buildGameTimerState,
+  DEFAULT_THIRD_LENGTH_MINUTES,
   DEFAULT_TEAMS,
   isThirdLengthMinutes,
   isThirdNumber,
@@ -777,6 +778,30 @@ function buildGameResponse(game: RepositoryGameRecord) {
       thirds: game.thirds,
     }),
   };
+}
+
+function existingGameMatchesCreateRequest(input: {
+  game: RepositoryGameRecord;
+  leagueId: string;
+  seasonId: string;
+  sessionId: string;
+  request: {
+    gameId: string;
+    gameStartTs: string;
+    status?: GameStatus;
+    thirdLengthMinutes?: ThirdLengthMinutes;
+  };
+}): boolean {
+  return (
+    input.game.gameId === input.request.gameId &&
+    input.game.leagueId === input.leagueId &&
+    input.game.seasonId === input.seasonId &&
+    input.game.sessionId === input.sessionId &&
+    input.game.status === (input.request.status ?? "scheduled") &&
+    input.game.gameStartTs === input.request.gameStartTs &&
+    input.game.thirdLengthMinutes ===
+      (input.request.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES)
+  );
 }
 
 function parseThirdRouteParam(value: string): ThirdNumber | null {
@@ -2413,15 +2438,38 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               origin,
               allowedOrigins: dependencies.corsAllowedOrigins,
               execute: async () => {
-                const createdGame = await dependencies.repository.createGame({
-                  gameId: parsedBody.data.gameId,
-                  leagueId,
-                  seasonId,
-                  sessionId,
-                  status: parsedBody.data.status as GameStatus | undefined,
-                  gameStartTs: parsedBody.data.gameStartTs,
-                  thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
-                });
+                let createdGame: RepositoryGameRecord;
+                try {
+                  createdGame = await dependencies.repository.createGame({
+                    gameId: parsedBody.data.gameId,
+                    leagueId,
+                    seasonId,
+                    sessionId,
+                    status: parsedBody.data.status as GameStatus | undefined,
+                    gameStartTs: parsedBody.data.gameStartTs,
+                    thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+                  });
+                } catch (error) {
+                  if (!(error instanceof GameAlreadyExistsError)) {
+                    throw error;
+                  }
+
+                  const existingGame = await dependencies.repository.getGame(parsedBody.data.gameId);
+                  if (
+                    !existingGame ||
+                    !existingGameMatchesCreateRequest({
+                      game: existingGame,
+                      leagueId,
+                      seasonId,
+                      sessionId,
+                      request: parsedBody.data,
+                    })
+                  ) {
+                    throw error;
+                  }
+
+                  createdGame = existingGame;
+                }
 
                 await dependencies.repository.createSessionGame({
                   sessionId: createdGame.sessionId,

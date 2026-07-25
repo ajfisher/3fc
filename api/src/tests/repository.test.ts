@@ -1391,7 +1391,13 @@ test("repository gives legacy games default timer state", async () => {
   assert.equal(game?.thirdLengthMinutes, DEFAULT_THIRD_LENGTH_MINUTES);
   assert.deepEqual(game?.thirds, createDefaultThirdTimerSegments());
   assert.equal(game?.joinCode, buildJoinCodeForGameId("game-legacy"));
-  assert.equal(await repository.getGameByJoinCode(buildJoinCodeForGameId("game-legacy")), null);
+  assert.deepEqual(await repository.getGameByJoinCode(buildJoinCodeForGameId("game-legacy")), game);
+  const lookupItem = client.readItem(`JOIN_CODE#${buildJoinCodeForGameId("game-legacy")}`, "METADATA");
+  assert.equal(lookupItem?.entityType?.S, "gameJoinCode");
+  assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
+    joinCode: buildJoinCodeForGameId("game-legacy"),
+    gameId: "game-legacy",
+  });
 });
 
 test("repository does not delete another game's join-code lookup for legacy games", async () => {
@@ -1428,6 +1434,43 @@ test("repository does not delete another game's join-code lookup for legacy game
   assert.equal(await repository.deleteGame("game-legacy"), true);
   assert.equal(await repository.getGame("game-legacy"), null);
   assert.deepEqual(await repository.getGameByJoinCode(claimedJoinCode), currentGame);
+});
+
+test("repository leaves game and join-code lookup intact if delete sees a join-code race", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-delete-race",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected join code lookup item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      gameId: string;
+      joinCode: string;
+    };
+    item.data.S = JSON.stringify({
+      ...data,
+      gameId: "game-other",
+    });
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+    client.seedItem(item);
+  });
+
+  assert.equal(await repository.deleteGame("game-delete-race"), false);
+  assert.deepEqual(await repository.getGame("game-delete-race"), game);
+  assert.equal(
+    JSON.parse(client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA")?.data?.S ?? "{}").gameId,
+    "game-other",
+  );
 });
 
 test("repository rejects join registration for finished games without creating a player", async () => {

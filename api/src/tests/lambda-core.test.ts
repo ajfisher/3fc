@@ -228,6 +228,7 @@ interface HarnessConfig {
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
+  createSessionGameFailures?: number;
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
@@ -352,6 +353,7 @@ function createHarness(config: HarnessConfig = {}) {
   let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   let finishBeforeGoalCorrectionOnce = config.finishBeforeGoalCorrectionOnce ?? false;
+  let createSessionGameFailures = config.createSessionGameFailures ?? 0;
   const idempotencyRecordReads = new Map<string, number>();
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
@@ -886,6 +888,11 @@ function createHarness(config: HarnessConfig = {}) {
         return record;
       },
       async createSessionGame(input) {
+        if (createSessionGameFailures > 0) {
+          createSessionGameFailures -= 1;
+          throw new Error("Session game index write failed.");
+        }
+
         createdSessionGames.push(input);
         return input;
       },
@@ -2518,6 +2525,83 @@ test("core lambda rejects creating games directly as finished", async () => {
   assert.match((JSON.parse(response.body) as { error: string }).error, /status/);
   assert.equal(harness.createdGames.length, 0);
   assert.equal(harness.createdSessionGames.length, 0);
+});
+
+test("core lambda recovers idempotent create game retry after the game write commits", async () => {
+  const harness = createHarness({
+    createSessionGameFailures: 1,
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const event = createEvent({
+    method: "POST",
+    path: "/v1/sessions/session-abc/games",
+    headers: {
+      Cookie: "threefc_session=session-1",
+      "Idempotency-Key": "create-game-recover-1",
+    },
+    body: {
+      gameId: "game-1",
+      gameStartTs: "2026-02-23T10:00:00Z",
+    },
+  });
+
+  const failedResponse = await harness.handler(event);
+  assert.equal(failedResponse.statusCode, 500);
+  assert.equal(harness.createdGames.length, 1);
+  assert.equal(harness.createdSessionGames.length, 0);
+
+  const retryResponse = await harness.handler(event);
+  assert.equal(retryResponse.statusCode, 201);
+  assert.equal(harness.createdGames.length, 1);
+  assert.equal(harness.createdSessionGames.length, 1);
+  assert.deepEqual(
+    harness.createdGameTeams.map((team) => team.teamId),
+    ["red", "blue", "yellow"],
+  );
+  assert.equal(harness.idempotencyRecords.size, 1);
+
+  const replayResponse = await harness.handler(event);
+  assert.equal(replayResponse.statusCode, 201);
+  assert.equal(harness.createdSessionGames.length, 1);
 });
 
 test("core lambda maps duplicate game IDs to conflict on game creation", async () => {

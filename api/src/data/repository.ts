@@ -1393,7 +1393,13 @@ export class ThreeFcRepository {
       return null;
     }
 
-    return withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
+    const rawGame = item.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+    const game = withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
+    if (typeof rawGame.joinCode !== "string" || rawGame.joinCode.trim().length === 0) {
+      await this.ensureGameJoinCodeLookup(game);
+    }
+
+    return game;
   }
 
   async getGameByJoinCode(joinCode: string): Promise<GameRecord | null> {
@@ -4035,6 +4041,53 @@ export class ThreeFcRepository {
         Item: buildItemWithTimestamps(pk, sk, entityType, payload, createdAt, updatedAt),
       }),
     );
+  }
+
+  private async ensureGameJoinCodeLookup(game: Pick<GameRecord, "gameId" | "joinCode">): Promise<void> {
+    if (game.gameId.trim().length === 0) {
+      return;
+    }
+
+    const joinCode = normalizeJoinCode(game.joinCode);
+    if (joinCode.length === 0) {
+      return;
+    }
+
+    const existing = await this.getEntity(joinCodePk(joinCode), metadataSk(), { consistentRead: true });
+    if (existing?.entityType === ENTITY_TYPE.gameJoinCode) {
+      const existingRecord = existing.data as Partial<GameJoinCodeRecord>;
+      if (existingRecord.gameId === game.gameId) {
+        return;
+      }
+
+      return;
+    }
+
+    const now = this.clock.now();
+    try {
+      await this.client.send(
+        new PutItemCommand({
+          TableName: this.tableName,
+          Item: buildItem(
+            joinCodePk(joinCode),
+            metadataSk(),
+            ENTITY_TYPE.gameJoinCode,
+            {
+              joinCode,
+              gameId: game.gameId,
+            },
+            now,
+          ),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        return;
+      }
+
+      throw error;
+    }
   }
 
   private async putEntityWithTimestampsIfUnchanged<T>(
