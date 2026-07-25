@@ -6,6 +6,7 @@ import {
   ScanCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
+import { createHash } from "node:crypto";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const apiBaseUrl = process.env.THREEFC_API_BASE_URL ?? "http://localhost:3001";
@@ -24,12 +25,30 @@ type DynamoItem = Record<string, AttributeValue>;
 interface SmokeRunCleanupInput {
   runId: string;
   email: string;
+  clientIp: string;
   leagueSlug: string;
   seasonSlug: string;
   gameId: string;
   sessionId: string;
   playerIds: string[];
   originalSessionMetadata: DynamoItem | null;
+}
+
+function authRateLimitHash(dimension: "email" | "ip", identifier: string): string {
+  return createHash("sha256")
+    .update(`magic-link-start:${dimension}:${identifier}`, "utf8")
+    .digest("hex");
+}
+
+function authRateLimitPkPrefix(dimension: "email" | "ip", identifier: string): string {
+  const normalizedIdentifier = dimension === "email" ? identifier.trim().toLowerCase() : identifier.trim();
+  return [
+    "AUTH_RATE_LIMIT",
+    "magic-link-start",
+    dimension,
+    authRateLimitHash(dimension, normalizedIdentifier || "unknown"),
+    "",
+  ].join("#");
 }
 
 function uniqueRunId(): string {
@@ -137,6 +156,36 @@ async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promi
   return items;
 }
 
+async function scanAuthRateLimitItems(
+  client: DynamoDBClient,
+  input: { email: string; clientIp: string },
+): Promise<DynamoItem[]> {
+  const prefixes = [
+    authRateLimitPkPrefix("email", input.email),
+    authRateLimitPkPrefix("ip", input.clientIp),
+  ];
+  const items: DynamoItem[] = [];
+  let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+
+  do {
+    const response = await client.send(
+      new ScanCommand({
+        TableName: dynamodbTableName,
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+    items.push(
+      ...((response.Items ?? []) as DynamoItem[]).filter((item) => {
+        const pk = item.pk?.S ?? "";
+        return item.sk?.S === "METADATA" && prefixes.some((prefix) => pk.startsWith(prefix));
+      }),
+    );
+    exclusiveStartKey = response.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
+}
+
 async function deleteItems(client: DynamoDBClient, items: DynamoItem[]): Promise<void> {
   const seen = new Set<string>();
 
@@ -219,6 +268,7 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
         [input.runId, input.leagueSlug, input.seasonSlug, input.gameId].filter(Boolean),
       ),
     );
+    await deleteItems(client, await scanAuthRateLimitItems(client, input));
 
     await deleteFakeSesMessages(input.email);
   } finally {
@@ -356,6 +406,7 @@ test.describe("M2 local-stack smoke", () => {
   test("scorekeeper can set up and finish a live game", async ({ page }) => {
     const runId = uniqueRunId();
     const email = `m2-smoke-${runId}@example.com`;
+    const clientIp = `m2-smoke-${runId}`;
     const leagueSlug = `m2-smoke-league-${runId}`;
     const seasonSlug = `m2-smoke-season-${runId}`;
     const leagueName = `M2 Smoke League ${runId}`;
@@ -376,6 +427,7 @@ test.describe("M2 local-stack smoke", () => {
 
     let testFailed = false;
     try {
+      await page.setExtraHTTPHeaders({ "x-forwarded-for": clientIp });
       await page.goto("/sign-in?returnTo=%2Fsetup");
       await expect(page.getByTestId("signin-shell")).toBeVisible();
       await page.locator("#auth-email").fill(email);
@@ -469,6 +521,7 @@ test.describe("M2 local-stack smoke", () => {
         await cleanupSmokeRun({
           runId,
           email,
+          clientIp,
           leagueSlug,
           seasonSlug,
           gameId,

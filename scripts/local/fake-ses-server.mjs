@@ -5,6 +5,16 @@ import { createServer } from "node:http";
 
 const PORT = Number.parseInt(process.env.FAKE_SES_PORT ?? "4025", 10);
 const LOG_FILE = process.env.FAKE_SES_LOG_FILE ?? "/data/emails.jsonl";
+let messageLogQueue = Promise.resolve();
+
+async function withMessageLogLock(operation) {
+  const run = messageLogQueue.then(operation, operation);
+  messageLogQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
 
 async function parseJsonBody(request) {
   const chunks = [];
@@ -25,41 +35,53 @@ function sendJson(response, statusCode, payload) {
 }
 
 async function appendMessage(payload) {
-  await mkdir(dirname(LOG_FILE), { recursive: true });
+  return withMessageLogLock(async () => {
+    await mkdir(dirname(LOG_FILE), { recursive: true });
 
-  const message = {
-    messageId: randomUUID(),
-    receivedAt: new Date().toISOString(),
-    ...payload,
-  };
+    const message = {
+      messageId: randomUUID(),
+      receivedAt: new Date().toISOString(),
+      ...payload,
+    };
 
-  await appendFile(LOG_FILE, `${JSON.stringify(message)}\n`, "utf8");
+    await appendFile(LOG_FILE, `${JSON.stringify(message)}\n`, "utf8");
 
-  return message;
+    return message;
+  });
 }
 
-async function listMessages() {
+async function readMessagesFromFile() {
   try {
     const content = await readFile(LOG_FILE, "utf8");
     return content
       .split("\n")
       .filter((line) => line.trim().length > 0)
       .map((line) => JSON.parse(line));
-  } catch {
-    return [];
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
   }
 }
 
+async function listMessages() {
+  return withMessageLogLock(() => readMessagesFromFile());
+}
+
 async function deleteMessagesForRecipient(to) {
-  const messages = await listMessages();
-  const retained = messages.filter((message) => message?.to !== to);
-  await mkdir(dirname(LOG_FILE), { recursive: true });
-  await writeFile(
-    LOG_FILE,
-    retained.length > 0 ? `${retained.map((message) => JSON.stringify(message)).join("\n")}\n` : "",
-    "utf8",
-  );
-  return messages.length - retained.length;
+  return withMessageLogLock(async () => {
+    const messages = await readMessagesFromFile();
+    const retained = messages.filter((message) => message?.to !== to);
+    await mkdir(dirname(LOG_FILE), { recursive: true });
+    await writeFile(
+      LOG_FILE,
+      retained.length > 0 ? `${retained.map((message) => JSON.stringify(message)).join("\n")}\n` : "",
+      "utf8",
+    );
+    return messages.length - retained.length;
+  });
 }
 
 const server = createServer(async (request, response) => {
