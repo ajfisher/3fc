@@ -52,18 +52,39 @@ function uniqueRunId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function scheduleForRun(runId: string): { gameDate: string; kickoff: string } {
+function sessionIdForGameDate(gameDate: string): string {
+  return gameDate.replaceAll("-", "");
+}
+
+function scheduleCandidateForRun(runId: string, probe: number): { gameDate: string; kickoff: string } {
   const hash = [...runId].reduce((value, character) => {
     return (value * 33 + character.charCodeAt(0)) >>> 0;
   }, 5381);
   const date = new Date(Date.UTC(2027, 0, 1));
-  date.setUTCDate(date.getUTCDate() + (hash % 20_000));
+  date.setUTCDate(date.getUTCDate() + ((hash + probe * 9973) % 20_000));
   const gameDate = date.toISOString().slice(0, 10);
   const hour = 8 + (hash % 10);
   const minute = [0, 15, 30, 45][Math.floor(hash / 10) % 4];
   const kickoff = `${gameDate}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 
   return { gameDate, kickoff };
+}
+
+async function scheduleForRun(runId: string): Promise<{ gameDate: string; kickoff: string }> {
+  const client = createLocalDynamoClient();
+  try {
+    for (let probe = 0; probe < 200; probe += 1) {
+      const schedule = scheduleCandidateForRun(runId, probe);
+      const sessionItems = await queryPartition(client, `SESSION#${sessionIdForGameDate(schedule.gameDate)}`);
+      if (sessionItems.length === 0) {
+        return schedule;
+      }
+    }
+  } finally {
+    client.destroy();
+  }
+
+  throw new Error("Could not find an unused smoke-test session date after 200 probes.");
 }
 
 function createLocalDynamoClient(): DynamoDBClient {
@@ -388,8 +409,8 @@ test.describe("M2 local-stack smoke", () => {
     const seasonName = `M2 Smoke Season ${runId}`;
     const ariNickname = `Ari ${runId}`;
     const beaNickname = `Bea ${runId}`;
-    const schedule = scheduleForRun(runId);
-    const sessionId = schedule.gameDate.replaceAll("-", "");
+    const schedule = await scheduleForRun(runId);
+    const sessionId = sessionIdForGameDate(schedule.gameDate);
     let gameId = "";
     const playerIds: string[] = [];
 
