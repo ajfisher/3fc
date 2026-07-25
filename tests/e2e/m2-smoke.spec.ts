@@ -31,6 +31,20 @@ interface SmokeRunCleanupInput {
   playerIds: string[];
 }
 
+type DynamoClientLike = Pick<DynamoDBClient, "send" | "destroy">;
+
+interface SmokeRunCleanupDependencies {
+  createClient?: () => DynamoClientLike;
+  queryPartition?: (client: DynamoClientLike, pk: string) => Promise<DynamoItem[]>;
+  scanTaggedItems?: (client: DynamoClientLike, needles: string[]) => Promise<DynamoItem[]>;
+  scanAuthRateLimitItems?: (
+    client: DynamoClientLike,
+    input: { email: string },
+  ) => Promise<DynamoItem[]>;
+  deleteItems?: (client: DynamoClientLike, items: DynamoItem[]) => Promise<void>;
+  deleteFakeSesMessages?: (email: string) => Promise<void>;
+}
+
 function authRateLimitHash(dimension: "email" | "ip", identifier: string): string {
   return createHash("sha256")
     .update(`magic-link-start:${dimension}:${identifier}`, "utf8")
@@ -87,7 +101,7 @@ async function scheduleForRun(runId: string): Promise<{ gameDate: string; kickof
   throw new Error("Could not find an unused smoke-test session date after 200 probes.");
 }
 
-function createLocalDynamoClient(): DynamoDBClient {
+function createLocalDynamoClient(): DynamoClientLike {
   return new DynamoDBClient({
     region: process.env.AWS_REGION ?? "ap-southeast-2",
     endpoint: dynamodbEndpoint,
@@ -111,7 +125,7 @@ function itemSearchText(item: DynamoItem): string {
     .join("\n");
 }
 
-async function queryPartition(client: DynamoDBClient, pk: string): Promise<DynamoItem[]> {
+async function queryPartition(client: DynamoClientLike, pk: string): Promise<DynamoItem[]> {
   const items: DynamoItem[] = [];
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
 
@@ -133,7 +147,7 @@ async function queryPartition(client: DynamoDBClient, pk: string): Promise<Dynam
   return items;
 }
 
-async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promise<DynamoItem[]> {
+async function scanTaggedItems(client: DynamoClientLike, needles: string[]): Promise<DynamoItem[]> {
   if (needles.length === 0) {
     return [];
   }
@@ -161,7 +175,7 @@ async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promi
 }
 
 async function scanAuthRateLimitItems(
-  client: DynamoDBClient,
+  client: DynamoClientLike,
   input: { email: string },
 ): Promise<DynamoItem[]> {
   const prefix = authRateLimitPkPrefix("email", input.email);
@@ -187,7 +201,7 @@ async function scanAuthRateLimitItems(
   return items;
 }
 
-async function deleteItems(client: DynamoDBClient, items: DynamoItem[]): Promise<void> {
+async function deleteItems(client: DynamoClientLike, items: DynamoItem[]): Promise<void> {
   const seen = new Set<string>();
 
   for (const item of items) {
@@ -214,12 +228,23 @@ async function deleteItems(client: DynamoDBClient, items: DynamoItem[]): Promise
   }
 }
 
-async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
+async function cleanupSmokeRun(
+  input: SmokeRunCleanupInput,
+  dependencies: SmokeRunCleanupDependencies = {},
+): Promise<void> {
   if (process.env.THREEFC_SKIP_SMOKE_CLEANUP === "1") {
     return;
   }
 
-  const client = createLocalDynamoClient();
+  const createClient = dependencies.createClient ?? createLocalDynamoClient;
+  const queryPartitionForCleanup = dependencies.queryPartition ?? queryPartition;
+  const scanTaggedItemsForCleanup = dependencies.scanTaggedItems ?? scanTaggedItems;
+  const scanAuthRateLimitItemsForCleanup =
+    dependencies.scanAuthRateLimitItems ?? scanAuthRateLimitItems;
+  const deleteItemsForCleanup = dependencies.deleteItems ?? deleteItems;
+  const deleteFakeSesMessagesForCleanup =
+    dependencies.deleteFakeSesMessages ?? deleteFakeSesMessages;
+  const client = createClient();
   try {
     const runNeedles = [input.runId, input.leagueSlug, input.seasonSlug, input.gameId].filter(Boolean);
     const partitions = [
@@ -230,13 +255,13 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
     ];
 
     for (const pk of partitions) {
-      await deleteItems(client, await queryPartition(client, pk));
+      await deleteItemsForCleanup(client, await queryPartitionForCleanup(client, pk));
     }
 
     if (input.sessionId && input.gameId) {
       const sessionPk = `SESSION#${input.sessionId}`;
-      const sessionItems = await queryPartition(client, sessionPk);
-      await deleteItems(
+      const sessionItems = await queryPartitionForCleanup(client, sessionPk);
+      await deleteItemsForCleanup(
         client,
         sessionItems.filter((item) => {
           const sk = item.sk?.S ?? "";
@@ -244,7 +269,7 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
         }),
       );
 
-      const remainingSessionItems = await queryPartition(client, sessionPk);
+      const remainingSessionItems = await queryPartitionForCleanup(client, sessionPk);
       const remainingSessionGameItems = remainingSessionItems.filter((item) =>
         (item.sk?.S ?? "").startsWith("GAME#"),
       );
@@ -253,21 +278,21 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
         ? runNeedles.some((needle) => itemSearchText(currentSessionMetadata).includes(needle))
         : false;
       if (currentSessionMetadata && metadataBelongsToRun && remainingSessionGameItems.length === 0) {
-        await deleteItems(client, [currentSessionMetadata]);
+        await deleteItemsForCleanup(client, [currentSessionMetadata]);
       }
     }
 
-    const taggedItems = await scanTaggedItems(client, runNeedles);
-    await deleteItems(
+    const taggedItems = await scanTaggedItemsForCleanup(client, runNeedles);
+    await deleteItemsForCleanup(
       client,
       taggedItems.filter((item) => {
         const key = itemKey(item);
         return !(key?.pk === `SESSION#${input.sessionId}` && key.sk === "METADATA");
       }),
     );
-    await deleteItems(client, await scanAuthRateLimitItems(client, input));
+    await deleteItemsForCleanup(client, await scanAuthRateLimitItemsForCleanup(client, input));
 
-    await deleteFakeSesMessages(input.email);
+    await deleteFakeSesMessagesForCleanup(input.email);
   } finally {
     client.destroy();
   }
@@ -393,6 +418,133 @@ async function expectAllDisabled(locator: Locator): Promise<void> {
     await expect(locator.nth(index)).toBeDisabled();
   }
 }
+
+function testItem(pk: string, sk: string, text: string): DynamoItem {
+  return {
+    pk: { S: pk },
+    sk: { S: sk },
+    data: { S: text },
+  };
+}
+
+test("smoke cleanup removes run-owned records without deleting unrelated session metadata", async () => {
+  const runId = "cleanup-run-001";
+  const email = "cleanup-run-001@example.com";
+  const leagueSlug = "cleanup-league-001";
+  const seasonSlug = "cleanup-season-001";
+  const gameId = "game-cleanup-001";
+  const sessionId = "20270103";
+  const playerId = "player-cleanup-001";
+  const sessionPk = `SESSION#${sessionId}`;
+  const unrelatedSessionMetadata = testItem(
+    sessionPk,
+    "METADATA",
+    "existing real session metadata",
+  );
+  const partitions = new Map<string, DynamoItem[]>([
+    [
+      `LEAGUE#${leagueSlug}`,
+      [testItem(`LEAGUE#${leagueSlug}`, "METADATA", `owned by ${runId}`)],
+    ],
+    [
+      `SEASON#${seasonSlug}`,
+      [testItem(`SEASON#${seasonSlug}`, "METADATA", `owned by ${runId}`)],
+    ],
+    [
+      `GAME#${gameId}`,
+      [testItem(`GAME#${gameId}`, "METADATA", `owned by ${runId}`)],
+    ],
+    [
+      `PLAYER#${playerId}`,
+      [testItem(`PLAYER#${playerId}`, "PROFILE", `owned by ${runId}`)],
+    ],
+    [
+      sessionPk,
+      [
+        unrelatedSessionMetadata,
+        testItem(sessionPk, `GAME#${gameId}`, `session index for ${gameId}`),
+      ],
+    ],
+    [
+      "AUTH_RATE_LIMIT#magic-link-start#email#hash#bucket",
+      [
+        testItem(
+          "AUTH_RATE_LIMIT#magic-link-start#email#hash#bucket",
+          "METADATA",
+          email,
+        ),
+      ],
+    ],
+  ]);
+  const deletedKeys = new Set<string>();
+  let destroyed = false;
+  let fakeSesDeletedFor: string | null = null;
+  const fakeClient: DynamoClientLike = {
+    async send() {
+      throw new Error("The cleanup isolation test must use injected Dynamo helpers.");
+    },
+    destroy() {
+      destroyed = true;
+    },
+  };
+
+  await cleanupSmokeRun(
+    {
+      runId,
+      email,
+      leagueSlug,
+      seasonSlug,
+      gameId,
+      sessionId,
+      playerIds: [playerId],
+    },
+    {
+      createClient: () => fakeClient,
+      async queryPartition(_client, pk) {
+        return [...(partitions.get(pk) ?? [])];
+      },
+      async scanTaggedItems(_client, needles) {
+        return [...partitions.values()]
+          .flat()
+          .filter((item) => needles.some((needle) => itemSearchText(item).includes(needle)));
+      },
+      async scanAuthRateLimitItems() {
+        return partitions.get("AUTH_RATE_LIMIT#magic-link-start#email#hash#bucket") ?? [];
+      },
+      async deleteItems(_client, items) {
+        for (const item of items) {
+          const key = itemKey(item);
+          if (!key) {
+            continue;
+          }
+
+          deletedKeys.add(`${key.pk}|${key.sk}`);
+          partitions.set(
+            key.pk,
+            (partitions.get(key.pk) ?? []).filter((candidate) => {
+              const candidateKey = itemKey(candidate);
+              return candidateKey?.sk !== key.sk;
+            }),
+          );
+        }
+      },
+      async deleteFakeSesMessages(deletedEmail) {
+        fakeSesDeletedFor = deletedEmail;
+      },
+    },
+  );
+
+  expect(deletedKeys).toContain(`LEAGUE#${leagueSlug}|METADATA`);
+  expect(deletedKeys).toContain(`SEASON#${seasonSlug}|METADATA`);
+  expect(deletedKeys).toContain(`GAME#${gameId}|METADATA`);
+  expect(deletedKeys).toContain(`PLAYER#${playerId}|PROFILE`);
+  expect(deletedKeys).toContain(`${sessionPk}|GAME#${gameId}`);
+  expect(deletedKeys).toContain("AUTH_RATE_LIMIT#magic-link-start#email#hash#bucket|METADATA");
+  expect(deletedKeys).not.toContain(`${sessionPk}|METADATA`);
+  expect(partitions.get(sessionPk)).toEqual([unrelatedSessionMetadata]);
+  expect(fakeSesDeletedFor).toBe(email);
+  expect(destroyed).toBe(true);
+});
 
 test.describe("M2 local-stack smoke", () => {
   test.beforeEach(async () => {
