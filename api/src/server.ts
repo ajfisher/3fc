@@ -2097,36 +2097,10 @@ async function start(): Promise<void> {
 
       const startThirdMatch = route.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/);
       if (method === "POST" && startThirdMatch) {
-        if (!authGate.session) {
-          status = 500;
-          sendJsonWithCors(request, response, status, {
-            error: "internal_error",
-            message: "Session should be available for authenticated route.",
-          });
-          return;
-        }
-
         const gameId = decodeURIComponent(startThirdMatch[1]);
         const third = parseThirdRouteParam(decodeURIComponent(startThirdMatch[2]));
         if (!third) {
           status = badRequest(request, response, "Third must be 1, 2, or 3.");
-          return;
-        }
-
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-
-        const finishedLock = await ensureFinishedGameMutationAllowed(
-          request,
-          response,
-          game,
-          authGate.session.email,
-        );
-        if (!finishedLock.allowed) {
-          status = finishedLock.status;
           return;
         }
 
@@ -2154,36 +2128,10 @@ async function start(): Promise<void> {
 
       const finishThirdMatch = route.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/);
       if (method === "POST" && finishThirdMatch) {
-        if (!authGate.session) {
-          status = 500;
-          sendJsonWithCors(request, response, status, {
-            error: "internal_error",
-            message: "Session should be available for authenticated route.",
-          });
-          return;
-        }
-
         const gameId = decodeURIComponent(finishThirdMatch[1]);
         const third = parseThirdRouteParam(decodeURIComponent(finishThirdMatch[2]));
         if (!third) {
           status = badRequest(request, response, "Third must be 1, 2, or 3.");
-          return;
-        }
-
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-
-        const finishedLock = await ensureFinishedGameMutationAllowed(
-          request,
-          response,
-          game,
-          authGate.session.email,
-        );
-        if (!finishedLock.allowed) {
-          status = finishedLock.status;
           return;
         }
 
