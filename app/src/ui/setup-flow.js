@@ -1491,7 +1491,16 @@
         label: player.nickname,
       }));
       const selectedScorerId = seed.scorerPlayerId ?? goalScorerInput.value;
-      const selectedScorerLabel = selectedScorerId
+      const editingGoal = editingGoalId
+        ? goalTimeline.find((goal) => goal.eventId === editingGoalId)
+        : null;
+      const canPreserveHistoricalScorer =
+        Boolean(editingGoal) &&
+        selectedScorerId === editingGoal.scorerPlayerId &&
+        ownGoal === Boolean(editingGoal.ownGoal) &&
+        scoringTeamId === (editingGoal.scoringTeamId ?? null) &&
+        concedingTeamId === editingGoal.concedingTeamId;
+      const selectedScorerLabel = selectedScorerId && canPreserveHistoricalScorer
         ? `${playerNickname(selectedScorerId)} (not currently rostered)`
         : null;
       renderSelectOptions(
@@ -2205,12 +2214,16 @@
             body: JSON.stringify(draft.payload),
           });
 
-          applyGoalMutationResult(result);
           if (!eventId) {
+            applyGoalMutationResult(result);
             pendingCreateGoalIdempotency = null;
           } else {
+            const goalsLoaded = await loadGameGoals();
+            if (!goalsLoaded) {
+              throw new Error("Goal update was saved, but the latest goal state could not be loaded.");
+            }
+            editingGoalId = null;
             clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
-            await loadGameGoals();
           }
           setStatus(eventId ? "Goal updated." : "Goal added.", "success");
         } catch (error) {

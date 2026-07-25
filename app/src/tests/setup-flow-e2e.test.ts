@@ -2186,6 +2186,67 @@ test("game page preserves a historical scorer when editing an old goal", async (
   assert.equal(patchPayload["scorerPlayerId"], "player-ari");
 });
 
+test("game page clears a historical scorer after changing the goal context", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-historical-context",
+    status: "live",
+    thirds,
+  });
+  apiState.roster.delete("game-historical-context:player-ari");
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-historical-context",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-historical-context" }),
+    url: "http://localhost:3000/games/game-historical-context",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const ownGoalInput = page.document.getElementById("goal-own-goal");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerSelect = page.document.getElementById("goal-scorer");
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(ownGoalInput instanceof page.window.HTMLInputElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerSelect instanceof page.window.HTMLSelectElement);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  assert.equal(scorerSelect.value, "player-ari");
+  assert.match(scorerSelect.textContent ?? "", /Ari \(not currently rostered\)/);
+
+  ownGoalInput.checked = true;
+  ownGoalInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+
+  assert.equal(scorerSelect.value, "player-cy");
+  assert.doesNotMatch(scorerSelect.textContent ?? "", /Ari \(not currently rostered\)/);
+});
+
 test("game page reconciles current goals after stale correction replay", async () => {
   const apiState = createMockApiState();
   const thirds = createDefaultThirdTimerSegments();
@@ -2290,6 +2351,113 @@ test("game page reconciles current goals after stale correction replay", async (
   await flushAsync();
 
   assert.equal(patchCalls, 2);
+  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+});
+
+test("game page keeps current goals when correction replay refresh fails", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-stale-refresh-fail",
+    status: "live",
+    thirds,
+  });
+  const updatedGoal: MockGoalEvent = {
+    gameId: "game-stale-refresh-fail",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:02:02.000Z",
+  };
+  const newerGoal: MockGoalEvent = {
+    gameId: "game-stale-refresh-fail",
+    eventId: "goal-2",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 40,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  };
+  apiState.goalEvents.set("goal-1", { ...updatedGoal, updatedAt: "2026-03-28T11:01:01.000Z" });
+  apiState.goalEvents.set("goal-2", newerGoal);
+
+  const defaultFetch = createMockFetch(apiState);
+  let failGoalRefresh = false;
+  const staleReplayFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "GET" && target.pathname === "/v1/games/game-stale-refresh-fail/goals" && failGoalRefresh) {
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Goal timeline could not be refreshed.",
+      });
+    }
+
+    if (method === "PATCH" && target.pathname === "/v1/games/game-stale-refresh-fail/goals/goal-1") {
+      apiState.goalEvents.set("goal-1", updatedGoal);
+      failGoalRefresh = true;
+      return createJsonResponse(200, {
+        goal: updatedGoal,
+        scoreboard: {
+          teams: recomputeMockScoreboard(apiState, apiState.games.get("game-stale-refresh-fail")!),
+        },
+        timeline: [updatedGoal],
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-stale-refresh-fail" }),
+    url: "http://localhost:3000/games/game-stale-refresh-fail",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: staleReplayFetch,
+  });
+
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const timeline = page.document.getElementById("goal-timeline");
+  const status = page.document.getElementById("setup-status");
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(timeline instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  await flushAsync();
+
+  assert.match(status.textContent ?? "", /Goal save failed/);
   assert.match(timeline.textContent ?? "", /Cy for Blue/);
 });
 
