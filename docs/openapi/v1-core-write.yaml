@@ -782,7 +782,6 @@ components:
           enum:
             - scheduled
             - live
-            - finished
         thirdLengthMinutes:
           type: integer
           enum:

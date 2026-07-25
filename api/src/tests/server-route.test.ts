@@ -256,6 +256,76 @@ test("local server finish route returns existing result for already-finished gam
   assert.equal(body.result.winnerTeamId, "red");
 });
 
+test("local server finish route recovers concurrent finished game state", async () => {
+  const request = createMockRequest({
+    headers: {
+      "idempotency-key": "finish-local-race-1",
+    },
+  });
+  const response = createMockResponse();
+  const finished = gameRecord({
+    status: "finished",
+    finishedAt: "2026-02-23T00:05:00.000Z",
+    result,
+  });
+  let getGameCalls = 0;
+  let storedStatusCode: number | null = null;
+  let storedBody: string | null = null;
+  const repositoryClient = {
+    async getGame() {
+      getGameCalls += 1;
+      return getGameCalls === 1 ? gameRecord() : finished;
+    },
+    async finishGame() {
+      throw new GameTimerTransitionError(
+        "game_state_changed",
+        "Game game-1 changed before the finish write committed.",
+      );
+    },
+    async getLeagueAccess() {
+      return scorekeeperAccess;
+    },
+    async getIdempotencyRecord() {
+      return null;
+    },
+    async createIdempotencyRecord(record: { responseStatusCode: number; responseBody: string }) {
+      storedStatusCode = record.responseStatusCode;
+      storedBody = record.responseBody;
+      return true;
+    },
+    async listTeamsForSeason() {
+      return seasonTeams;
+    },
+    async createTeam() {
+      throw new Error("season teams should already exist");
+    },
+    async listTeamsForGame() {
+      return gameTeams;
+    },
+    async createGameTeamOverride() {
+      throw new Error("game teams should already exist");
+    },
+  };
+
+  const status = await handleLocalFinishGameRoute({
+    request,
+    response,
+    method: "POST",
+    route: "/v1/games/game-1/finish",
+    gameId: "game-1",
+    sessionEmail: "scorekeeper@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 200);
+  assert.equal(response.statusCode, 200);
+  assert.equal(storedStatusCode, 200);
+  assert.equal((JSON.parse(storedBody ?? "{}") as { status?: string }).status, "finished");
+  const body = JSON.parse(response.body) as { status: string; result: GameResult };
+  assert.equal(body.status, "finished");
+  assert.equal(body.result.winnerTeamId, "red");
+});
+
 test("local server finish route maps incomplete thirds to conflict", async () => {
   const request = createMockRequest({
     headers: {

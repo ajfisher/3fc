@@ -1024,6 +1024,13 @@ export class ThreeFcRepository {
     requireNonEmpty("sessionId", input.sessionId);
     requireNonEmpty("gameStartTs", input.gameStartTs);
 
+    if (input.status === "finished") {
+      throw new GameTimerTransitionError(
+        "invalid_status_transition",
+        "Games cannot be created directly as finished. Finish a completed live game instead.",
+      );
+    }
+
     const now = this.clock.now();
     const payload = {
       gameId: input.gameId,

@@ -867,6 +867,37 @@ interface JsonMutationResult {
   payload: unknown;
 }
 
+async function readStoredIdempotentMutation(input: {
+  request: IncomingMessage;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  repositoryClient: LocalIdempotencyRepository;
+}): Promise<JsonMutationResult | null> {
+  const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
+  if (!idempotencyKeyRaw) {
+    return null;
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(idempotencyKeyRaw);
+  if (!parsedHeader.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  const existing = await input.repositoryClient.getIdempotencyRecord(scope, parsedHeader.data);
+  if (!existing || existing.requestHash !== requestHash) {
+    return null;
+  }
+
+  return {
+    statusCode: existing.responseStatusCode,
+    payload: parseStoredIdempotencyResponseBody(existing.responseBody),
+  };
+}
+
 async function executeIdempotentMutation(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -1006,6 +1037,32 @@ export async function handleLocalFinishGameRoute(input: {
           result = await repositoryClient.finishGame({ gameId: input.gameId });
         } catch (error) {
           if (error instanceof GameTimerTransitionError) {
+            if (error.code === "game_state_changed") {
+              const replay = await readStoredIdempotentMutation({
+                request: input.request,
+                sessionEmail: input.sessionEmail,
+                method: input.method,
+                route: input.route,
+                requestPayload: {},
+                repositoryClient,
+              });
+              if (replay && replay.statusCode >= 200 && replay.statusCode < 300) {
+                return replay;
+              }
+
+              const current = await repositoryClient.getGame(input.gameId);
+              if (current?.status === "finished" && current.finishedAt && current.result) {
+                return {
+                  statusCode: 200,
+                  payload: buildGameResponse(current),
+                };
+              }
+
+              if (replay) {
+                return replay;
+              }
+            }
+
             return {
               statusCode: 409,
               payload: {

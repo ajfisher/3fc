@@ -1884,6 +1884,70 @@ test("core lambda creates game for admin with resolved ACL scope", async () => {
   );
 });
 
+test("core lambda rejects creating games directly as finished", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        gameId: "game-finished",
+        gameStartTs: "2026-02-23T10:00:00Z",
+        status: "finished",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match((JSON.parse(response.body) as { error: string }).error, /status/);
+  assert.equal(harness.createdGames.length, 0);
+  assert.equal(harness.createdSessionGames.length, 0);
+});
+
 test("core lambda lets scorekeepers quick-create and assign roster players", async () => {
   const harness = createHarness({
     sessions: {

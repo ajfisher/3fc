@@ -16,7 +16,7 @@ import {
   formatThirdDisplayTime,
 } from "@3fc/contracts";
 
-import { GameMutationStateError, ThreeFcRepository } from "../data/repository.js";
+import { GameMutationStateError, GameTimerTransitionError, ThreeFcRepository } from "../data/repository.js";
 
 type Item = Record<string, AttributeValue>;
 
@@ -466,6 +466,25 @@ test("repository supports round-trip create/read for core entities", async () =>
   });
   assert.deepEqual(await repository.listGameRoster("game-1"), [reassignedRoster]);
   assert.equal(reassignedRoster.teamId, "blue");
+});
+
+test("repository rejects creating games directly as finished", async () => {
+  const repository = createRepository();
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-finished",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      status: "finished",
+      gameStartTs: "2026-02-22T10:00:00Z",
+    }),
+    (error: unknown) =>
+      error instanceof GameTimerTransitionError &&
+      error.code === "invalid_status_transition" &&
+      /cannot be created directly as finished/.test(error.message),
+  );
 });
 
 test("repository query supports deterministic session->games ordering", async () => {
@@ -1145,7 +1164,7 @@ test("timer display formatting switches to stoppage after nominal length", () =>
 });
 
 test("repository locks third length after timer starts and rejects finished games", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   await repository.createGame({
     gameId: "game-1",
@@ -1190,9 +1209,9 @@ test("repository locks third length after timer starts and rejects finished game
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
-    status: "finished",
     gameStartTs: "2026-02-22T11:00:00Z",
   });
+  markStoredGameFinished(client, "game-finished");
   await assert.rejects(
     repository.finishGameThird({ gameId: "game-finished", third: 1 }),
     /Cannot finish a third after the game is finished/,
@@ -1200,16 +1219,16 @@ test("repository locks third length after timer starts and rejects finished game
 });
 
 test("repository rejects third length changes on finished games even before timer starts", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   await repository.createGame({
     gameId: "game-1",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
-    status: "finished",
     gameStartTs: "2026-02-22T10:00:00Z",
   });
+  markStoredGameFinished(client, "game-1");
 
   await assert.rejects(
     repository.updateGame({

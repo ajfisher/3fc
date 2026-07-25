@@ -45,7 +45,7 @@ export const createGameRequestSchema = z
   .object({
     gameId: nonEmptyTrimmedString,
     gameStartTs: nonEmptyTrimmedString,
-    status: z.enum(["scheduled", "live", "finished"]).optional(),
+    status: z.enum(["scheduled", "live"]).optional(),
     thirdLengthMinutes: thirdLengthMinutesSchema.optional(),
   })
   .strict();
