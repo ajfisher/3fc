@@ -309,6 +309,8 @@ function isValidTimestamp(value: unknown): value is string {
 
 const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const JOIN_CODE_LENGTH = 8;
+const LEGACY_JOIN_CODE_REPAIR_ATTEMPTS = 16;
+const LEGACY_JOIN_CODE_REPAIR_RACE_RETRIES = 3;
 const JOIN_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
 
 export function buildJoinCodeForGameId(gameId: string): string {
@@ -324,6 +326,10 @@ export function buildJoinCodeForGameId(gameId: string): string {
 
 function normalizeJoinCode(joinCode: string): string {
   return joinCode.trim().toUpperCase();
+}
+
+function buildLegacyJoinCodeRepairCandidate(gameId: string, attempt: number): string {
+  return attempt === 0 ? buildJoinCodeForGameId(gameId) : buildJoinCodeForGameId(`${gameId}:${attempt}`);
 }
 
 function normalizeCustomJoinCode(joinCode: string): string {
@@ -1396,7 +1402,7 @@ export class ThreeFcRepository {
     const rawGame = item.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
     const game = withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
     if (typeof rawGame.joinCode !== "string" || rawGame.joinCode.trim().length === 0) {
-      await this.ensureGameJoinCodeLookup(game);
+      return this.repairLegacyGameJoinCode(item);
     }
 
     return game;
@@ -4043,51 +4049,139 @@ export class ThreeFcRepository {
     );
   }
 
-  private async ensureGameJoinCodeLookup(game: Pick<GameRecord, "gameId" | "joinCode">): Promise<void> {
-    if (game.gameId.trim().length === 0) {
-      return;
-    }
+  private async repairLegacyGameJoinCode(stored: StoredEntity<unknown>): Promise<GameRecord> {
+    let currentStored = stored;
 
-    const joinCode = normalizeJoinCode(game.joinCode);
-    if (joinCode.length === 0) {
-      return;
-    }
-
-    const existing = await this.getEntity(joinCodePk(joinCode), metadataSk(), { consistentRead: true });
-    if (existing?.entityType === ENTITY_TYPE.gameJoinCode) {
-      const existingRecord = existing.data as Partial<GameJoinCodeRecord>;
-      if (existingRecord.gameId === game.gameId) {
-        return;
+    for (let raceAttempt = 0; raceAttempt < LEGACY_JOIN_CODE_REPAIR_RACE_RETRIES; raceAttempt += 1) {
+      const rawGame = currentStored.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+      const currentGame = normalizeGamePayload(currentStored.data);
+      if (typeof rawGame.joinCode === "string" && rawGame.joinCode.trim().length > 0) {
+        return withTimestamps(currentGame, currentStored.createdAt, currentStored.updatedAt);
       }
 
-      return;
+      const seenCandidates = new Set<string>();
+      for (
+        let candidateAttempt = 0;
+        candidateAttempt < LEGACY_JOIN_CODE_REPAIR_ATTEMPTS;
+        candidateAttempt += 1
+      ) {
+        const joinCode = buildLegacyJoinCodeRepairCandidate(currentGame.gameId, candidateAttempt);
+        if (seenCandidates.has(joinCode)) {
+          continue;
+        }
+        seenCandidates.add(joinCode);
+
+        const joinCodeItem = await this.getEntity(joinCodePk(joinCode), metadataSk(), {
+          consistentRead: true,
+        });
+        if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+          const joinCodeRecord = joinCodeItem.data as Partial<GameJoinCodeRecord>;
+          if (joinCodeRecord.gameId !== currentGame.gameId) {
+            continue;
+          }
+        } else if (joinCodeItem) {
+          continue;
+        }
+
+        const repairedGame = await this.writeLegacyGameJoinCodeRepair({
+          stored: currentStored,
+          game: currentGame,
+          joinCode,
+          joinCodeItem: joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode ? joinCodeItem : null,
+        });
+        if (repairedGame) {
+          return repairedGame;
+        }
+
+        break;
+      }
+
+      const latest = await this.getEntity(gamePk(currentGame.gameId), metadataSk(), {
+        consistentRead: true,
+      });
+      if (!latest || latest.entityType !== ENTITY_TYPE.game) {
+        return withTimestamps(currentGame, currentStored.createdAt, currentStored.updatedAt);
+      }
+      currentStored = latest;
     }
 
+    throw new GameJoinCodeCollisionError(
+      "Could not repair legacy game join code without a collision.",
+    );
+  }
+
+  private async writeLegacyGameJoinCodeRepair(input: {
+    stored: StoredEntity<unknown>;
+    game: Omit<GameRecord, "createdAt" | "updatedAt">;
+    joinCode: string;
+    joinCodeItem: StoredEntity<unknown> | null;
+  }): Promise<GameRecord | null> {
     const now = this.clock.now();
-    try {
-      await this.client.send(
-        new PutItemCommand({
+    const repairedGame = {
+      ...input.game,
+      joinCode: input.joinCode,
+    };
+    const transactionItems: TransactWriteItem[] = [
+      this.buildGamePutTransactionItem({
+        game: repairedGame,
+        stored: input.stored,
+        now,
+      }),
+    ];
+
+    if (input.joinCodeItem) {
+      transactionItems.push({
+        ConditionCheck: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: joinCodePk(input.joinCode) },
+            sk: { S: metadataSk() },
+          },
+          ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedJoinCodeUpdatedAt": { S: input.joinCodeItem.updatedAt },
+            ":expectedJoinCodeData": { S: input.joinCodeItem.rawData },
+          },
+        },
+      });
+    } else {
+      transactionItems.push({
+        Put: {
           TableName: this.tableName,
           Item: buildItem(
-            joinCodePk(joinCode),
+            joinCodePk(input.joinCode),
             metadataSk(),
             ENTITY_TYPE.gameJoinCode,
             {
-              joinCode,
-              gameId: game.gameId,
+              joinCode: input.joinCode,
+              gameId: input.game.gameId,
             },
             now,
           ),
           ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        },
+      });
+    }
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: transactionItems,
         }),
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
-        return;
+        return null;
       }
 
       throw error;
     }
+
+    return withTimestamps(repairedGame, input.stored.createdAt, now);
   }
 
   private async putEntityWithTimestampsIfUnchanged<T>(

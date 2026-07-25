@@ -13,6 +13,7 @@ import {
 import {
   buildGameTimerState,
   DEFAULT_TEAMS,
+  DEFAULT_THIRD_LENGTH_MINUTES,
   isThirdLengthMinutes,
   isThirdNumber,
   TEAM_IDS,
@@ -180,6 +181,18 @@ type LocalIdempotencyRepository = Pick<
   ThreeFcRepository,
   "getIdempotencyRecord" | "createIdempotencyRecord"
 >;
+
+type LocalCreateGameRouteRepository = LocalIdempotencyRepository &
+  Pick<
+    ThreeFcRepository,
+    | "createGame"
+    | "getGame"
+    | "createSessionGame"
+    | "listTeamsForSeason"
+    | "createTeam"
+    | "listTeamsForGame"
+    | "createGameTeamOverride"
+  >;
 
 async function ensureTable(): Promise<void> {
   try {
@@ -405,6 +418,38 @@ function buildGameResponse(game: {
       thirds: game.thirds,
     }),
   };
+}
+
+function existingGameMatchesCreateRequest(input: {
+  game: {
+    gameId: string;
+    leagueId: string;
+    seasonId: string;
+    sessionId: string;
+    status: "scheduled" | "live" | "finished";
+    gameStartTs: string;
+    thirdLengthMinutes: ThirdLengthMinutes;
+  };
+  leagueId: string;
+  seasonId: string;
+  sessionId: string;
+  request: {
+    gameId: string;
+    gameStartTs: string;
+    status?: "scheduled" | "live" | "finished";
+    thirdLengthMinutes?: ThirdLengthMinutes;
+  };
+}): boolean {
+  return (
+    input.game.gameId === input.request.gameId &&
+    input.game.leagueId === input.leagueId &&
+    input.game.seasonId === input.seasonId &&
+    input.game.sessionId === input.sessionId &&
+    input.game.status === (input.request.status ?? "scheduled") &&
+    input.game.gameStartTs === input.request.gameStartTs &&
+    input.game.thirdLengthMinutes ===
+      (input.request.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES)
+  );
 }
 
 function parseThirdRouteParam(value: string): ThirdNumber | null {
@@ -1673,54 +1718,103 @@ async function handleCreateSession(
   });
 }
 
-async function handleCreateGame(
-  request: IncomingMessage,
-  response: ServerResponse,
-  scope: { leagueId: string; seasonId: string; sessionId: string },
-  sessionEmail: string,
-  method: string,
-  route: string,
-): Promise<number> {
+async function createGameWithDerivedRecords(input: {
+  repositoryClient: LocalCreateGameRouteRepository;
+  scope: { leagueId: string; seasonId: string; sessionId: string };
+  request: {
+    gameId: string;
+    gameStartTs: string;
+    status?: "scheduled" | "live" | "finished";
+    thirdLengthMinutes?: ThirdLengthMinutes;
+  };
+}) {
+  let game;
+  try {
+    game = await input.repositoryClient.createGame({
+      gameId: input.request.gameId,
+      leagueId: input.scope.leagueId,
+      seasonId: input.scope.seasonId,
+      sessionId: input.scope.sessionId,
+      status: input.request.status,
+      gameStartTs: input.request.gameStartTs,
+      thirdLengthMinutes: input.request.thirdLengthMinutes,
+    });
+  } catch (error) {
+    if (!(error instanceof GameAlreadyExistsError)) {
+      throw error;
+    }
+
+    const existingGame = await input.repositoryClient.getGame(input.request.gameId);
+    if (
+      !existingGame ||
+      !existingGameMatchesCreateRequest({
+        game: existingGame,
+        leagueId: input.scope.leagueId,
+        seasonId: input.scope.seasonId,
+        sessionId: input.scope.sessionId,
+        request: input.request,
+      })
+    ) {
+      throw error;
+    }
+
+    game = existingGame;
+  }
+
+  await input.repositoryClient.createSessionGame({
+    sessionId: game.sessionId,
+    gameId: game.gameId,
+    gameStartTs: game.gameStartTs,
+    leagueId: game.leagueId,
+    seasonId: game.seasonId,
+  });
+  await ensureGameTeamsForGame(game, input.repositoryClient);
+
+  return game;
+}
+
+export async function handleLocalCreateGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  scope: { leagueId: string; seasonId: string; sessionId: string };
+  sessionEmail: string;
+  method: string;
+  route: string;
+  repositoryClient?: LocalCreateGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
   let rawBody: Record<string, unknown>;
 
   try {
-    rawBody = await parseJsonBody(request);
+    rawBody = await parseJsonBody(input.request);
   } catch {
-    return badRequest(request, response, "Request body must be valid JSON.");
+    return badRequest(input.request, input.response, "Request body must be valid JSON.");
   }
 
   const parsedBody = createGameRequestSchema.safeParse(rawBody);
   if (!parsedBody.success) {
-    return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+    return badRequest(
+      input.request,
+      input.response,
+      formatSchemaValidationError(parsedBody.error),
+    );
   }
 
   try {
     return await executeIdempotentMutation({
-      request,
-      response,
-      sessionEmail,
-      method,
-      route,
+      request: input.request,
+      response: input.response,
+      sessionEmail: input.sessionEmail,
+      method: input.method,
+      route: input.route,
       requestPayload: parsedBody.data,
+      repositoryClient,
       execute: async () => {
-        const game = await repository.createGame({
-          gameId: parsedBody.data.gameId,
-          leagueId: scope.leagueId,
-          seasonId: scope.seasonId,
-          sessionId: scope.sessionId,
-          status: parsedBody.data.status,
-          gameStartTs: parsedBody.data.gameStartTs,
-          thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+        const game = await createGameWithDerivedRecords({
+          repositoryClient,
+          scope: input.scope,
+          request: parsedBody.data,
         });
-
-        await repository.createSessionGame({
-          sessionId: scope.sessionId,
-          gameId: game.gameId,
-          gameStartTs: game.gameStartTs,
-          leagueId: game.leagueId,
-          seasonId: game.seasonId,
-        });
-        await ensureGameTeamsForGame(game);
 
         return {
           statusCode: 201,
@@ -1731,37 +1825,57 @@ async function handleCreateGame(
   } catch (error) {
     if (error instanceof GameAlreadyExistsError) {
       const replayStatus = await replayStoredIdempotencyMutation({
-        request,
-        response,
-        sessionEmail,
-        method,
-        route,
+        request: input.request,
+        response: input.response,
+        sessionEmail: input.sessionEmail,
+        method: input.method,
+        route: input.route,
         requestPayload: parsedBody.data,
+        repositoryClient,
       });
       if (replayStatus !== null) {
         return replayStatus;
       }
 
-      return gameAlreadyExistsConflict(request, response, parsedBody.data.gameId);
+      return gameAlreadyExistsConflict(input.request, input.response, parsedBody.data.gameId);
     }
     if (error instanceof GameJoinCodeCollisionError) {
       const replayStatus = await replayStoredIdempotencyMutation({
-        request,
-        response,
-        sessionEmail,
-        method,
-        route,
+        request: input.request,
+        response: input.response,
+        sessionEmail: input.sessionEmail,
+        method: input.method,
+        route: input.route,
         requestPayload: parsedBody.data,
+        repositoryClient,
       });
       if (replayStatus !== null) {
         return replayStatus;
       }
 
-      return gameJoinCodeCollisionConflict(request, response);
+      return gameJoinCodeCollisionConflict(input.request, input.response);
     }
 
     throw error;
   }
+}
+
+async function handleCreateGame(
+  request: IncomingMessage,
+  response: ServerResponse,
+  scope: { leagueId: string; seasonId: string; sessionId: string },
+  sessionEmail: string,
+  method: string,
+  route: string,
+): Promise<number> {
+  return handleLocalCreateGameRoute({
+    request,
+    response,
+    scope,
+    sessionEmail,
+    method,
+    route,
+  });
 }
 
 async function handleCreateDevItem(

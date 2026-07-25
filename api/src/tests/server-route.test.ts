@@ -2,15 +2,21 @@ import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import test from "node:test";
 
-import type { GameResult, TeamId, ThirdTimerSegment } from "@3fc/contracts";
+import type { GameResult, TeamId, ThirdLengthMinutes, ThirdTimerSegment } from "@3fc/contracts";
 import { createDefaultThirdTimerSegments } from "@3fc/contracts";
 
 import {
+  handleLocalCreateGameRoute,
   handleLocalDeleteGameRoute,
   handleLocalFinishGameRoute,
   handleLocalUpdateGameTeamRoute,
 } from "../server.js";
-import { GameMutationStateError, GameTimerTransitionError } from "../data/repository.js";
+import {
+  GameAlreadyExistsError,
+  GameMutationStateError,
+  GameTimerTransitionError,
+} from "../data/repository.js";
+import type { GameRecord, GameTeamRecord } from "../data/types.js";
 
 class MockResponse {
   statusCode = 0;
@@ -140,6 +146,188 @@ const scorekeeperAccess = {
   createdAt: "2026-02-23T00:00:00.000Z",
   updatedAt: "2026-02-23T00:00:00.000Z",
 };
+
+test("local server create game route recovers retry after the game write commits", async () => {
+  const idempotencyRecords = new Map<string, {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    createdAt: string;
+    updatedAt: string;
+  }>();
+  const games = new Map<string, GameRecord>();
+  const createdSessionGames: Array<{
+    sessionId: string;
+    gameId: string;
+    gameStartTs: string;
+    leagueId: string;
+    seasonId: string;
+  }> = [];
+  const createdGameTeams: GameTeamRecord[] = [];
+  let createSessionGameFailures = 1;
+  const buildRequest = () =>
+    createMockRequest({
+      headers: {
+        "idempotency-key": "local-create-game-recover-1",
+      },
+      body: {
+        gameId: "game-local",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+      },
+    });
+  const repositoryClient = {
+    async getIdempotencyRecord(scope: string, key: string) {
+      return idempotencyRecords.get(`${scope}:${key}`) ?? null;
+    },
+    async createIdempotencyRecord(input: {
+      scope: string;
+      key: string;
+      requestHash: string;
+      responseStatusCode: number;
+      responseBody: string;
+    }) {
+      const id = `${input.scope}:${input.key}`;
+      if (idempotencyRecords.has(id)) {
+        return false;
+      }
+
+      idempotencyRecords.set(id, {
+        ...input,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      });
+      return true;
+    },
+    async createGame(input: {
+      gameId: string;
+      leagueId: string;
+      seasonId: string;
+      sessionId: string;
+      status?: "scheduled" | "live" | "finished";
+      gameStartTs: string;
+      thirdLengthMinutes?: ThirdLengthMinutes;
+    }) {
+      if (games.has(input.gameId)) {
+        throw new GameAlreadyExistsError(input.gameId);
+      }
+
+      const game = {
+        ...gameRecord({
+          status: input.status ?? "scheduled",
+          thirds: createDefaultThirdTimerSegments(),
+        }),
+        gameId: input.gameId,
+        joinCode: "LOCAL234",
+        leagueId: input.leagueId,
+        seasonId: input.seasonId,
+        sessionId: input.sessionId,
+        gameStartTs: input.gameStartTs,
+        thirdLengthMinutes: input.thirdLengthMinutes ?? 20,
+      };
+      games.set(input.gameId, game);
+      return game;
+    },
+    async getGame(gameId: string) {
+      return games.get(gameId) ?? null;
+    },
+    async createSessionGame(input: {
+      sessionId: string;
+      gameId: string;
+      gameStartTs: string;
+      leagueId: string;
+      seasonId: string;
+    }) {
+      if (createSessionGameFailures > 0) {
+        createSessionGameFailures -= 1;
+        throw new Error("Session game index write failed.");
+      }
+
+      createdSessionGames.push(input);
+      return {
+        ...input,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+    },
+    async listTeamsForSeason() {
+      return seasonTeams;
+    },
+    async createTeam() {
+      throw new Error("Default season teams should already exist.");
+    },
+    async listTeamsForGame() {
+      return [];
+    },
+    async createGameTeamOverride(input: {
+      gameId: string;
+      teamId: TeamId;
+      name: string;
+      color: string | null;
+    }) {
+      const gameTeam = {
+        gameId: input.gameId,
+        teamId: input.teamId,
+        name: input.name,
+        color: input.color,
+        scored: 0,
+        conceded: 0,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+      createdGameTeams.push(gameTeam);
+      return gameTeam;
+    },
+  };
+
+  await assert.rejects(
+    handleLocalCreateGameRoute({
+      request: buildRequest(),
+      response: createMockResponse(),
+      scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+      sessionEmail: "admin@example.com",
+      method: "POST",
+      route: "/v1/sessions/session-1/games",
+      repositoryClient,
+    }),
+    /Session game index write failed/,
+  );
+  assert.equal(games.size, 1);
+  assert.equal(createdSessionGames.length, 0);
+
+  const retryResponse = createMockResponse();
+  const retryStatus = await handleLocalCreateGameRoute({
+    request: buildRequest(),
+    response: retryResponse,
+    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+    sessionEmail: "admin@example.com",
+    method: "POST",
+    route: "/v1/sessions/session-1/games",
+    repositoryClient,
+  });
+  assert.equal(retryStatus, 201);
+  assert.equal(createdSessionGames.length, 1);
+  assert.deepEqual(
+    createdGameTeams.map((team) => team.teamId),
+    ["red", "blue", "yellow"],
+  );
+  assert.equal(JSON.parse(retryResponse.body).gameId, "game-local");
+
+  const replayResponse = createMockResponse();
+  const replayStatus = await handleLocalCreateGameRoute({
+    request: buildRequest(),
+    response: replayResponse,
+    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+    sessionEmail: "admin@example.com",
+    method: "POST",
+    route: "/v1/sessions/session-1/games",
+    repositoryClient,
+  });
+  assert.equal(replayStatus, 201);
+  assert.equal(createdSessionGames.length, 1);
+  assert.equal(JSON.parse(replayResponse.body).gameId, "game-local");
+});
 
 test("local server finish route returns finished game result", async () => {
   const request = createMockRequest({

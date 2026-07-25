@@ -1400,6 +1400,52 @@ test("repository gives legacy games default timer state", async () => {
   });
 });
 
+test("repository repairs legacy game join-code collisions with a usable fallback", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
+  const currentGame = await repository.createGame({
+    gameId: "game-current",
+    joinCode: claimedJoinCode,
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-current",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T11:00:00.000Z",
+      }),
+    },
+  });
+
+  const repairedGame = await repository.getGame("game-legacy");
+  assert.ok(repairedGame);
+  assert.notEqual(repairedGame.joinCode, claimedJoinCode);
+  assert.deepEqual(await repository.getGameByJoinCode(claimedJoinCode), currentGame);
+  assert.deepEqual(await repository.getGameByJoinCode(repairedGame.joinCode), repairedGame);
+
+  const storedGame = client.readItem("GAME#game-legacy", "METADATA");
+  assert.equal(JSON.parse(storedGame?.data?.S ?? "{}").joinCode, repairedGame.joinCode);
+  const repairedLookup = client.readItem(`JOIN_CODE#${repairedGame.joinCode}`, "METADATA");
+  assert.deepEqual(JSON.parse(repairedLookup?.data?.S ?? "{}"), {
+    joinCode: repairedGame.joinCode,
+    gameId: "game-legacy",
+  });
+});
+
 test("repository does not delete another game's join-code lookup for legacy games", async () => {
   const { repository, client } = createRepositoryHarness();
   const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
