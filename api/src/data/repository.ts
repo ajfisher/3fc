@@ -11,7 +11,7 @@ import {
   type AttributeValue,
   type TransactWriteItem,
 } from "@aws-sdk/client-dynamodb";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
@@ -309,6 +309,7 @@ function isValidTimestamp(value: unknown): value is string {
 
 const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const JOIN_CODE_LENGTH = 8;
+const JOIN_CODE_GENERATION_ATTEMPTS = 8;
 const LEGACY_JOIN_CODE_REPAIR_ATTEMPTS = 16;
 const LEGACY_JOIN_CODE_REPAIR_RACE_RETRIES = 3;
 const JOIN_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
@@ -319,6 +320,17 @@ export function buildJoinCodeForGameId(gameId: string): string {
 
   for (let index = 0; index < JOIN_CODE_LENGTH; index += 1) {
     joinCode += JOIN_CODE_ALPHABET[digest[index] % JOIN_CODE_ALPHABET.length];
+  }
+
+  return joinCode;
+}
+
+function generateJoinCode(): string {
+  const bytes = randomBytes(JOIN_CODE_LENGTH);
+  let joinCode = "";
+
+  for (const byte of bytes) {
+    joinCode += JOIN_CODE_ALPHABET[byte % JOIN_CODE_ALPHABET.length];
   }
 
   return joinCode;
@@ -1316,79 +1328,91 @@ export class ThreeFcRepository {
     }
 
     const now = this.clock.now();
-    const joinCode = input.joinCode?.trim()
+    const customJoinCode = input.joinCode?.trim()
       ? normalizeCustomJoinCode(input.joinCode)
-      : buildJoinCodeForGameId(input.gameId);
-    const payload = {
-      gameId: input.gameId,
-      joinCode,
-      leagueId: input.leagueId,
-      seasonId: input.seasonId,
-      sessionId: input.sessionId,
-      status: input.status ?? "scheduled",
-      gameStartTs: input.gameStartTs,
-      thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
-      thirds: createDefaultThirdTimerSegments(),
-      finishedAt: null,
-      result: null,
-    };
+      : null;
 
-    try {
-      await this.client.send(
-        new TransactWriteItemsCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItem(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now),
-                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+    for (let attempt = 0; attempt < (customJoinCode ? 1 : JOIN_CODE_GENERATION_ATTEMPTS); attempt += 1) {
+      const joinCode = customJoinCode ?? generateJoinCode();
+      const payload = {
+        gameId: input.gameId,
+        joinCode,
+        leagueId: input.leagueId,
+        seasonId: input.seasonId,
+        sessionId: input.sessionId,
+        status: input.status ?? "scheduled",
+        gameStartTs: input.gameStartTs,
+        thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
+        thirds: createDefaultThirdTimerSegments(),
+        finishedAt: null,
+        result: null,
+      };
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now),
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                },
               },
-            },
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItem(
-                  joinCodePk(joinCode),
-                  metadataSk(),
-                  ENTITY_TYPE.gameJoinCode,
-                  {
-                    joinCode,
-                    gameId: input.gameId,
-                  },
-                  now,
-                ),
-                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(
+                    joinCodePk(joinCode),
+                    metadataSk(),
+                    ENTITY_TYPE.gameJoinCode,
+                    {
+                      joinCode,
+                      gameId: input.gameId,
+                    },
+                    now,
+                  ),
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                },
               },
-            },
-          ],
-        }),
-      );
-    } catch (error) {
-      if (isConditionalWriteFailure(error)) {
-        const gameCancellationCode = transactionCancellationCode(error, 0);
-        const joinCodeCancellationCode = transactionCancellationCode(error, 1);
-        if (isConditionalCancellationCode(gameCancellationCode ?? undefined)) {
-          throw new GameAlreadyExistsError(input.gameId);
-        }
-        if (isConditionalCancellationCode(joinCodeCancellationCode ?? undefined)) {
-          throw new GameJoinCodeCollisionError();
+            ],
+          }),
+        );
+        return withTimestamps(payload, now, now);
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          const gameCancellationCode = transactionCancellationCode(error, 0);
+          const joinCodeCancellationCode = transactionCancellationCode(error, 1);
+          if (isConditionalCancellationCode(gameCancellationCode ?? undefined)) {
+            throw new GameAlreadyExistsError(input.gameId);
+          }
+          if (isConditionalCancellationCode(joinCodeCancellationCode ?? undefined)) {
+            if (customJoinCode) {
+              throw new GameJoinCodeCollisionError();
+            }
+            continue;
+          }
+
+          const [existingGameItem, existingJoinCodeItem] = await Promise.all([
+            this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
+            this.getEntity(joinCodePk(joinCode), metadataSk(), { consistentRead: true }),
+          ]);
+          if (existingGameItem?.entityType === ENTITY_TYPE.game) {
+            throw new GameAlreadyExistsError(input.gameId);
+          }
+          if (existingJoinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+            if (customJoinCode) {
+              throw new GameJoinCodeCollisionError();
+            }
+            continue;
+          }
         }
 
-        const [existingGameItem, existingJoinCodeItem] = await Promise.all([
-          this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
-          this.getEntity(joinCodePk(joinCode), metadataSk(), { consistentRead: true }),
-        ]);
-        if (existingGameItem?.entityType === ENTITY_TYPE.game) {
-          throw new GameAlreadyExistsError(input.gameId);
-        }
-        if (existingJoinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
-          throw new GameJoinCodeCollisionError();
-        }
+        throw error;
       }
-
-      throw error;
     }
-    return withTimestamps(payload, now, now);
+
+    throw new GameJoinCodeCollisionError();
   }
 
   async getGame(gameId: string, options: { consistentRead?: boolean } = {}): Promise<GameRecord | null> {

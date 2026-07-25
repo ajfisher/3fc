@@ -5,7 +5,6 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import {
   buildGameTimerState,
-  DEFAULT_THIRD_LENGTH_MINUTES,
   DEFAULT_TEAMS,
   isThirdLengthMinutes,
   isThirdNumber,
@@ -787,20 +786,13 @@ function existingGameMatchesCreateRequest(input: {
   sessionId: string;
   request: {
     gameId: string;
-    gameStartTs: string;
-    status?: GameStatus;
-    thirdLengthMinutes?: ThirdLengthMinutes;
   };
 }): boolean {
   return (
     input.game.gameId === input.request.gameId &&
     input.game.leagueId === input.leagueId &&
     input.game.seasonId === input.seasonId &&
-    input.game.sessionId === input.sessionId &&
-    input.game.status === (input.request.status ?? "scheduled") &&
-    input.game.gameStartTs === input.request.gameStartTs &&
-    input.game.thirdLengthMinutes ===
-      (input.request.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES)
+    input.game.sessionId === input.sessionId
   );
 }
 
@@ -2451,6 +2443,23 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   });
                 } catch (error) {
                   if (!(error instanceof GameAlreadyExistsError)) {
+                    throw error;
+                  }
+
+                  const replayResponse = await replayStoredIdempotencyMutation({
+                    repository: dependencies.repository,
+                    idempotencyKey,
+                    sessionEmail: session.email,
+                    method,
+                    route,
+                    requestPayload: parsedBody.data,
+                    origin,
+                    allowedOrigins: dependencies.corsAllowedOrigins,
+                  });
+                  if (replayResponse) {
+                    return replayResponse;
+                  }
+                  if (!idempotencyKey) {
                     throw error;
                   }
 

@@ -295,6 +295,15 @@ test("local server create game route recovers retry after the game write commits
   );
   assert.equal(games.size, 1);
   assert.equal(createdSessionGames.length, 0);
+  const existingGame = games.get("game-local");
+  assert.ok(existingGame);
+  games.set("game-local", {
+    ...existingGame,
+    status: "live",
+    gameStartTs: "2026-02-23T11:00:00.000Z",
+    thirdLengthMinutes: 25,
+    updatedAt: "2026-02-23T00:01:00.000Z",
+  });
 
   const retryResponse = createMockResponse();
   const retryStatus = await handleLocalCreateGameRoute({
@@ -308,11 +317,25 @@ test("local server create game route recovers retry after the game write commits
   });
   assert.equal(retryStatus, 201);
   assert.equal(createdSessionGames.length, 1);
+  assert.equal(createdSessionGames[0]?.gameStartTs, "2026-02-23T11:00:00.000Z");
   assert.deepEqual(
     createdGameTeams.map((team) => team.teamId),
     ["red", "blue", "yellow"],
   );
-  assert.equal(JSON.parse(retryResponse.body).gameId, "game-local");
+  assert.deepEqual(
+    {
+      gameId: JSON.parse(retryResponse.body).gameId,
+      status: JSON.parse(retryResponse.body).status,
+      gameStartTs: JSON.parse(retryResponse.body).gameStartTs,
+      thirdLengthMinutes: JSON.parse(retryResponse.body).thirdLengthMinutes,
+    },
+    {
+      gameId: "game-local",
+      status: "live",
+      gameStartTs: "2026-02-23T11:00:00.000Z",
+      thirdLengthMinutes: 25,
+    },
+  );
 
   const replayResponse = createMockResponse();
   const replayStatus = await handleLocalCreateGameRoute({

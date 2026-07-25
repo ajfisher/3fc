@@ -13,7 +13,6 @@ import {
 import {
   buildGameTimerState,
   DEFAULT_TEAMS,
-  DEFAULT_THIRD_LENGTH_MINUTES,
   isThirdLengthMinutes,
   isThirdNumber,
   TEAM_IDS,
@@ -426,29 +425,19 @@ function existingGameMatchesCreateRequest(input: {
     leagueId: string;
     seasonId: string;
     sessionId: string;
-    status: "scheduled" | "live" | "finished";
-    gameStartTs: string;
-    thirdLengthMinutes: ThirdLengthMinutes;
   };
   leagueId: string;
   seasonId: string;
   sessionId: string;
   request: {
     gameId: string;
-    gameStartTs: string;
-    status?: "scheduled" | "live" | "finished";
-    thirdLengthMinutes?: ThirdLengthMinutes;
   };
 }): boolean {
   return (
     input.game.gameId === input.request.gameId &&
     input.game.leagueId === input.leagueId &&
     input.game.seasonId === input.seasonId &&
-    input.game.sessionId === input.sessionId &&
-    input.game.status === (input.request.status ?? "scheduled") &&
-    input.game.gameStartTs === input.request.gameStartTs &&
-    input.game.thirdLengthMinutes ===
-      (input.request.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES)
+    input.game.sessionId === input.sessionId
   );
 }
 
@@ -1721,6 +1710,7 @@ async function handleCreateSession(
 async function createGameWithDerivedRecords(input: {
   repositoryClient: LocalCreateGameRouteRepository;
   scope: { leagueId: string; seasonId: string; sessionId: string };
+  allowExistingGameRecovery: boolean;
   request: {
     gameId: string;
     gameStartTs: string;
@@ -1741,6 +1731,9 @@ async function createGameWithDerivedRecords(input: {
     });
   } catch (error) {
     if (!(error instanceof GameAlreadyExistsError)) {
+      throw error;
+    }
+    if (!input.allowExistingGameRecovery) {
       throw error;
     }
 
@@ -1771,6 +1764,11 @@ async function createGameWithDerivedRecords(input: {
   await ensureGameTeamsForGame(game, input.repositoryClient);
 
   return game;
+}
+
+function hasValidIdempotencyKey(request: IncomingMessage): boolean {
+  const raw = readHeaderValue(request, "idempotency-key");
+  return raw ? idempotencyKeyHeaderSchema.safeParse(raw).success : false;
 }
 
 export async function handleLocalCreateGameRoute(input: {
@@ -1813,6 +1811,7 @@ export async function handleLocalCreateGameRoute(input: {
         const game = await createGameWithDerivedRecords({
           repositoryClient,
           scope: input.scope,
+          allowExistingGameRecovery: hasValidIdempotencyKey(input.request),
           request: parsedBody.data,
         });
 

@@ -488,7 +488,7 @@ test("repository supports round-trip create/read for core entities", async () =>
     gameStartTs: "2026-02-22T10:00:00Z",
   });
   assert.deepEqual(await repository.getGame("game-1"), game);
-  assert.equal(game.joinCode, buildJoinCodeForGameId("game-1"));
+  assert.match(game.joinCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
   assert.deepEqual(await repository.getGameByJoinCode(game.joinCode), game);
   assert.deepEqual(await repository.getGameByJoinCode(game.joinCode.toLowerCase()), game);
 

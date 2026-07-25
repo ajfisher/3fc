@@ -1628,6 +1628,7 @@ function createHarness(config: HarnessConfig = {}) {
     listTeamsForGameCalls,
     idempotencyRecords,
     goalAuditEntries,
+    games,
   };
 }
 
@@ -2588,16 +2589,34 @@ test("core lambda recovers idempotent create game retry after the game write com
   assert.equal(failedResponse.statusCode, 500);
   assert.equal(harness.createdGames.length, 1);
   assert.equal(harness.createdSessionGames.length, 0);
+  const existingGame = harness.games.get("game-1");
+  assert.ok(existingGame);
+  harness.games.set("game-1", {
+    ...existingGame,
+    status: "live",
+    gameStartTs: "2026-02-23T11:00:00Z",
+    thirdLengthMinutes: 25,
+    updatedAt: "2026-02-23T00:01:00.000Z",
+  });
 
   const retryResponse = await harness.handler(event);
   assert.equal(retryResponse.statusCode, 201);
   assert.equal(harness.createdGames.length, 1);
   assert.equal(harness.createdSessionGames.length, 1);
+  assert.equal(harness.createdSessionGames[0]?.gameStartTs, "2026-02-23T11:00:00Z");
   assert.deepEqual(
     harness.createdGameTeams.map((team) => team.teamId),
     ["red", "blue", "yellow"],
   );
   assert.equal(harness.idempotencyRecords.size, 1);
+  const retryBody = JSON.parse(retryResponse.body) as {
+    status: string;
+    gameStartTs: string;
+    thirdLengthMinutes: number;
+  };
+  assert.equal(retryBody.status, "live");
+  assert.equal(retryBody.gameStartTs, "2026-02-23T11:00:00Z");
+  assert.equal(retryBody.thirdLengthMinutes, 25);
 
   const replayResponse = await harness.handler(event);
   assert.equal(replayResponse.statusCode, 201);
