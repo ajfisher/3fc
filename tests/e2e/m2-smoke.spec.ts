@@ -965,7 +965,9 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
-      const joinCode = (await page.getByTestId("game-join-code-value").innerText()).trim();
+      const joinCodeValue = page.getByTestId("game-join-code-value");
+      await expect(joinCodeValue).toHaveText(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+      const joinCode = (await joinCodeValue.innerText()).trim();
       expect(joinCode).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
 
       const joinResult = await page.evaluate(
