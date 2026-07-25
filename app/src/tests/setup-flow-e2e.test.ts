@@ -3663,3 +3663,84 @@ test("join page registers a player without organizer authentication", async () =
   assert.equal(apiState.players.size, 2);
   assert.equal(apiState.storage.has("threefc-idempotency:join-player:JOIN0001-Cy"), false);
 });
+
+test("join page preserves distinct retry keys for similar public nicknames", async () => {
+  const apiState = createMockApiState();
+  apiState.games.set("game-join-1", {
+    gameId: "game-join-1",
+    joinCode: "JOIN0001",
+    leagueId: "autumn-league",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const requestedKeys: string[] = [];
+  const failingJoinFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (method === "POST" && target.pathname === "/v1/join/JOIN0001") {
+      const idempotencyKey = readInitHeader(init, "idempotency-key");
+      if (idempotencyKey) {
+        requestedKeys.push(idempotencyKey);
+      }
+      return createJsonResponse(503, {
+        error: "temporary_failure",
+        message: "Temporary failure.",
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const firstJoinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "join0001"),
+    url: "http://localhost:3000/join/join0001",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: failingJoinFetch,
+  });
+  const firstNicknameInput = firstJoinPage.document.getElementById("join-player-nickname");
+  const firstForm = firstJoinPage.document.getElementById("join-game-form");
+  assert(firstNicknameInput instanceof firstJoinPage.window.HTMLInputElement);
+  assert(firstForm instanceof firstJoinPage.window.HTMLFormElement);
+
+  firstNicknameInput.value = "A B";
+  firstNicknameInput.dispatchEvent(new firstJoinPage.window.Event("input", { bubbles: true }));
+  dispatchSubmit(firstForm);
+  await flushAsync();
+
+  const secondJoinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "join0001"),
+    url: "http://localhost:3000/join/join0001",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: failingJoinFetch,
+  });
+  const secondNicknameInput = secondJoinPage.document.getElementById("join-player-nickname");
+  const secondForm = secondJoinPage.document.getElementById("join-game-form");
+  assert(secondNicknameInput instanceof secondJoinPage.window.HTMLInputElement);
+  assert(secondForm instanceof secondJoinPage.window.HTMLFormElement);
+
+  secondNicknameInput.value = "A-B";
+  secondNicknameInput.dispatchEvent(new secondJoinPage.window.Event("input", { bubbles: true }));
+  dispatchSubmit(secondForm);
+  await flushAsync();
+
+  assert.equal(requestedKeys.length, 2);
+  assert.notEqual(requestedKeys[0], requestedKeys[1]);
+  assert.equal(apiState.storage.get("threefc-idempotency:join-player:JOIN0001-A%20B"), requestedKeys[0]);
+  assert.equal(apiState.storage.get("threefc-idempotency:join-player:JOIN0001-A-B"), requestedKeys[1]);
+});

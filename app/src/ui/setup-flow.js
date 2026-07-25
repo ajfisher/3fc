@@ -192,9 +192,20 @@
     return `${prefix}-${safeStable}-${Date.now().toString(36)}-${nonce}`;
   }
 
+  function encodeStablePartForStorage(stablePart) {
+    try {
+      return encodeURIComponent(stablePart);
+    } catch {
+      let encoded = "";
+      for (let index = 0; index < stablePart.length; index += 1) {
+        encoded += stablePart.charCodeAt(index).toString(16).padStart(4, "0");
+      }
+      return `utf16-${encoded}`;
+    }
+  }
+
   function idempotencyStorageKey(prefix, stablePart) {
-    const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 96);
-    return `threefc-idempotency:${prefix}:${safeStable}`;
+    return `threefc-idempotency:${prefix}:${encodeStablePartForStorage(stablePart)}`;
   }
 
   function cachedIdempotencyKey(prefix, stablePart) {
