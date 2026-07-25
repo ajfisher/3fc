@@ -1120,11 +1120,26 @@ function createMockFetch(state: MockApiState) {
         return idempotencyError;
       }
 
-      const third = activeMockThird(game);
+      const finishedCorrection = game.status === "finished" && canMockCorrectFinishedGame(state, game);
+      if (game.status === "finished" && !finishedCorrection) {
+        return mockFinishedGameMutationError(game);
+      }
+
+      const activeThird = activeMockThird(game);
+      const finishedCorrectionThird = finishedCorrection
+        ? game.thirds
+            .filter((thirdSegment) => thirdSegment.finishedAt)
+            .map((thirdSegment) => thirdSegment.third)
+            .sort((left, right) => left - right)
+            .at(-1) ?? null
+        : null;
+      const third = activeThird ?? finishedCorrectionThird;
       if (!third) {
         return createJsonResponse(409, {
           error: "no_running_third",
-          message: "A goal can only be created while a third is running.",
+          message: finishedCorrection
+            ? "A finished-game correction needs at least one completed third."
+            : "A goal can only be created while a third is running.",
         });
       }
 
@@ -1143,24 +1158,28 @@ function createMockFetch(state: MockApiState) {
       }
 
       state.goalSequence += 1;
-      const elapsedSeconds = state.goalSequence * 30;
+      const elapsedSeconds = finishedCorrection ? game.thirdLengthMinutes * 60 : state.goalSequence * 30;
       const now = `2026-03-28T11:01:${String(state.goalSequence).padStart(2, "0")}.000Z`;
+      const thirdMinute = finishedCorrection ? game.thirdLengthMinutes : Math.floor(elapsedSeconds / 60) + 1;
       const goal: MockGoalEvent = {
         gameId,
         eventId: `goal-${state.goalSequence}`,
         third,
-        thirdMinute: Math.floor(elapsedSeconds / 60) + 1,
-        gameMinute: Math.floor(elapsedSeconds / 60) + 1 + (third - 1) * game.thirdLengthMinutes,
+        thirdMinute,
+        gameMinute: thirdMinute + (third - 1) * game.thirdLengthMinutes,
         elapsedSeconds,
         stoppageMinute: null,
-        displayTime: `${Math.floor(elapsedSeconds / 60) + 1}'`,
+        displayTime: finishedCorrection
+          ? `${String(game.thirdLengthMinutes).padStart(2, "0")}:00`
+          : `${Math.floor(elapsedSeconds / 60) + 1}'`,
         ...payload,
         createdAt: now,
         updatedAt: now,
       };
       state.goalEvents.set(goal.eventId, goal);
+      const responseGame = finishedCorrection ? refreshMockFinishedResult(state, game, now) : game;
 
-      return createJsonResponse(201, goalResponsePayload(state, game, { goal }));
+      return createJsonResponse(201, goalResponsePayload(state, responseGame, { goal }));
     }
 
     const undoLastGoalMatch = path.match(/^\/v1\/games\/([^/]+)\/goals\/undo-last$/);
@@ -3272,6 +3291,21 @@ test("game page allows admins to correct finished goals and refresh result", asy
   assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, null);
   assert.match(resultSummary.textContent ?? "", /Draw/);
   assert.equal(undoLastGoalButton.disabled, true);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  assert.equal(saveGoalButton.disabled, false);
+  assert.match(goalFormNote.textContent ?? "", /final whistle/);
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 1);
+  assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, "red");
+  assert.match(resultSummary.textContent ?? "", /Red win/);
 });
 
 test("game page treats committed undo as success when finished result refresh fails", async () => {

@@ -1619,13 +1619,14 @@
       const activeThird = activeThirdNumber();
       const gameFinished = isGameFinished();
       const finishedCorrectionsAllowed = canCorrectFinishedGoals();
+      const creatingFinishedCorrection = gameFinished && finishedCorrectionsAllowed && !isEditingGoal();
       saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
       cancelGoalEditButton.hidden = editingGoalId === null;
       cancelGoalEditButton.disabled = editingGoalId === null;
       undoLastGoalButton.disabled = goalTimeline.length === 0 || (gameFinished && !finishedCorrectionsAllowed);
       undoLastGoalButton.textContent = "Undo last";
 
-      if (gameFinished && (!isEditingGoal() || !finishedCorrectionsAllowed)) {
+      if (gameFinished && !finishedCorrectionsAllowed) {
         goalScoringTeamInput.disabled = true;
         goalConcedingTeamInput.disabled = true;
         goalOwnGoalInput.disabled = true;
@@ -1636,9 +1637,7 @@
             input.disabled = true;
           }
         }
-        goalFormNote.textContent = finishedCorrectionsAllowed
-          ? "Game finished. Select a goal to correct the result."
-          : "Game finished. Admin role is required to correct the result.";
+        goalFormNote.textContent = "Game finished. Admin role is required to correct the result.";
         return;
       }
 
@@ -1671,8 +1670,10 @@
       }
 
       if (!activeThird) {
-        saveGoalButton.disabled = true;
-        goalFormNote.textContent = "Start a third before adding goals.";
+        saveGoalButton.disabled = !creatingFinishedCorrection;
+        goalFormNote.textContent = creatingFinishedCorrection
+          ? "Finished-game correction will be recorded at final whistle."
+          : "Start a third before adding goals.";
         return;
       }
 
@@ -1791,14 +1792,10 @@
         };
       }
 
-      if (isGameFinished() && !isEditingGoal()) {
-        return {
-          error: "Game finished. Select a goal to correct the result.",
-        };
-      }
+      const creatingFinishedCorrection = isGameFinished() && canCorrectFinishedGoals() && !isEditingGoal();
 
       const activeThird = activeThirdNumber();
-      if (!activeThird && !editingGoalId) {
+      if (!activeThird && !editingGoalId && !creatingFinishedCorrection) {
         return {
           error: "Start a third before adding goals.",
         };
@@ -2440,7 +2437,7 @@
       });
 
       saveGoalButton.addEventListener("click", async () => {
-        if (isGameFinished() && (!isEditingGoal() || !canCorrectFinishedGoals())) {
+        if (isGameFinished() && !canCorrectFinishedGoals()) {
           renderLiveScoring();
           return;
         }
@@ -2474,6 +2471,12 @@
           if (!eventId) {
             applyGoalMutationResult(result);
             pendingCreateGoalIdempotency = null;
+            const gameRefreshed = await refreshGameAfterFinishedCorrection();
+            if (!gameRefreshed) {
+              showError("Goal was added, but the finished result could not be refreshed.");
+              setStatus("Goal added; result refresh failed.", "success");
+              return;
+            }
           } else {
             const goalsLoaded = await loadGameGoals();
             if (!goalsLoaded) {

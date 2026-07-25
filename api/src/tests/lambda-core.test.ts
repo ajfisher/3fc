@@ -284,6 +284,7 @@ function createHarness(config: HarnessConfig = {}) {
     gameId: string;
     eventId: string;
     actorUserId: string;
+    allowFinished?: boolean;
     scoringTeamId: TeamId | null;
     concedingTeamId: TeamId;
     scorerPlayerId: string;
@@ -1249,7 +1250,8 @@ function createHarness(config: HarnessConfig = {}) {
           return null;
         }
 
-        if (game.status === "finished") {
+        const allowFinished = game.status === "finished" && input.allowFinished === true;
+        if (game.status === "finished" && !allowFinished) {
           throw new GoalCreationError(
             "game_finished",
             409,
@@ -1258,29 +1260,40 @@ function createHarness(config: HarnessConfig = {}) {
         }
 
         const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
-        if (!activeThird?.startedAt) {
+        const finishedCorrectionThird = allowFinished
+          ? [...game.thirds]
+              .filter((third) => third.finishedAt)
+              .sort((left, right) => left.third - right.third)
+              .at(-1)
+          : null;
+        const goalThird = activeThird ?? finishedCorrectionThird;
+        if (!goalThird || (!activeThird?.startedAt && !allowFinished)) {
           throw new GoalCreationError(
             "no_active_third",
             409,
-            "A goal can only be created while a third is running.",
+            allowFinished
+              ? "A finished-game correction needs at least one completed third."
+              : "A goal can only be created while a third is running.",
           );
         }
 
         const now = `2026-02-23T00:00:${String(3 + goalEvents.size).padStart(2, "0")}.000Z`;
-        const elapsedSeconds = Math.max(
-          0,
-          Math.floor((Date.parse(now) - Date.parse(activeThird.startedAt)) / 1000),
-        );
+        const startedAtMs = activeThird?.startedAt ? Date.parse(activeThird.startedAt) : NaN;
+        const nowMs = Date.parse(now);
+        const elapsedSeconds = allowFinished
+          ? game.thirdLengthMinutes * 60
+          : Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
+            ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
+            : 0;
         const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
-        const thirdMinute = Math.min(
-          game.thirdLengthMinutes,
-          Math.floor(display.elapsedSeconds / 60) + 1,
-        );
-        const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
+        const thirdMinute = allowFinished
+          ? game.thirdLengthMinutes
+          : Math.min(game.thirdLengthMinutes, Math.floor(display.elapsedSeconds / 60) + 1);
+        const gameMinute = (goalThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
         const goal = {
           gameId: input.gameId,
           eventId: input.eventId,
-          third: activeThird.third,
+          third: goalThird.third,
           thirdMinute,
           gameMinute,
           elapsedSeconds: display.elapsedSeconds,
@@ -3014,9 +3027,56 @@ test("core lambda rejects goal creation after finish", async () => {
   assert.deepEqual(JSON.parse(response.body), {
     error: "conflict",
     code: "game_finished",
-    message: "Cannot create a goal after the game is finished.",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
   });
   assert.equal(harness.createdGoals.length, 0);
+});
+
+test("core lambda allows admins to create corrective goals after finish", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-create-correction-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "post-finish-goal-correction-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  const body = JSON.parse(response.body);
+  assert.equal(body.goal.third, 3);
+  assert.equal(body.goal.thirdMinute, 20);
+  assert.equal(body.goal.gameMinute, 60);
+  assert.equal(body.goal.displayTime, "20:00");
+  assert.equal(harness.createdGoals.length, 1);
+  assert.equal(harness.createdGoals[0]?.allowFinished, true);
 });
 
 test("core lambda allows admin team corrections after finish", async () => {

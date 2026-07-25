@@ -386,6 +386,7 @@ interface RepositoryContract {
     scorerPlayerId: string;
     assistPlayerIds: string[];
     ownGoal: boolean;
+    allowFinished?: boolean;
   }): Promise<CreateGoalResult | null>;
   listGoalEvents(gameId: string): Promise<CreateGoalResult["timeline"]>;
   updateGoal(input: {
@@ -823,21 +824,6 @@ function finishedGameDeleteConflictResponse(
       error: "conflict",
       code: "game_finished",
       message: `Game ${gameId} is finished. Finished games cannot be deleted.`,
-    },
-    buildCorsHeaders(origin, allowedOrigins),
-  );
-}
-
-function finishedGameGoalMutationConflictResponse(
-  origin: string | undefined,
-  allowedOrigins: string[],
-): ApiGatewayHttpResponse {
-  return createJsonResponse(
-    409,
-    {
-      error: "conflict",
-      code: "game_finished",
-      message: "Cannot create a goal after the game is finished.",
     },
     buildCorsHeaders(origin, allowedOrigins),
   );
@@ -2610,11 +2596,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
+                const allowFinished = currentGame.status === "finished";
                 if (currentGame.status === "finished") {
-                  return finishedGameGoalMutationConflictResponse(origin, dependencies.corsAllowedOrigins);
+                  const finishedBlock = await buildFinishedGameMutationBlock({
+                    repository: dependencies.repository,
+                    game: currentGame,
+                    sessionEmail: session.email,
+                    origin,
+                    allowedOrigins: dependencies.corsAllowedOrigins,
+                  });
+                  if (finishedBlock) {
+                    return finishedBlock;
+                  }
                 }
 
-                if (!currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
+                if (!allowFinished && !currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
                   throw new GoalCreationError(
                     "no_active_third",
                     409,
@@ -2622,7 +2618,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
-                await ensureGameTeamsForGame(dependencies.repository, currentGame);
+                await ensureGameTeamsForGame(dependencies.repository, currentGame, { allowFinished });
                 const result = await dependencies.repository.createGoal({
                   gameId,
                   eventId: buildGoalEventId({
@@ -2637,6 +2633,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   scorerPlayerId: parsedBody.data.scorerPlayerId,
                   assistPlayerIds: parsedBody.data.assistPlayerIds,
                   ownGoal: parsedBody.data.ownGoal,
+                  allowFinished,
                 });
 
                 if (!result) {

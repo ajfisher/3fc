@@ -2835,7 +2835,8 @@ export class ThreeFcRepository {
     }
 
     const game = normalizeGamePayload(gameItem.data);
-    if (game.status === "finished") {
+    const allowFinished = game.status === "finished" && input.allowFinished === true;
+    if (game.status === "finished" && !allowFinished) {
       throw new GoalCreationError(
         "game_finished",
         409,
@@ -2844,11 +2845,20 @@ export class ThreeFcRepository {
     }
 
     const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
-    if (!activeThird?.startedAt) {
+    const finishedCorrectionThird = allowFinished
+      ? [...game.thirds]
+          .filter((third) => third.finishedAt)
+          .sort((left, right) => left.third - right.third)
+          .at(-1)
+      : null;
+    const goalThird = activeThird ?? finishedCorrectionThird;
+    if (!goalThird || (!activeThird?.startedAt && !allowFinished)) {
       throw new GoalCreationError(
         "no_active_third",
         409,
-        "A goal can only be created while a third is running.",
+        allowFinished
+          ? "A finished-game correction needs at least one completed third."
+          : "A goal can only be created while a third is running.",
       );
     }
 
@@ -2924,22 +2934,25 @@ export class ThreeFcRepository {
     }
 
     const now = this.clock.now();
-    const startedAtMs = Date.parse(activeThird.startedAt);
+    const startedAtMs = activeThird?.startedAt ? Date.parse(activeThird.startedAt) : NaN;
     const nowMs = Date.parse(now);
-    const elapsedSeconds =
-      Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
+    const elapsedSeconds = allowFinished
+      ? game.thirdLengthMinutes * 60
+      : Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
         ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
         : 0;
     const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
-    const thirdMinute = Math.min(
-      game.thirdLengthMinutes,
-      Math.floor(display.elapsedSeconds / 60) + 1,
-    );
-    const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
+    const thirdMinute = allowFinished
+      ? game.thirdLengthMinutes
+      : Math.min(
+          game.thirdLengthMinutes,
+          Math.floor(display.elapsedSeconds / 60) + 1,
+        );
+    const gameMinute = (goalThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
     const payload = {
       gameId: input.gameId,
       eventId: input.eventId,
-      third: activeThird.third,
+      third: goalThird.third,
       thirdMinute,
       gameMinute,
       elapsedSeconds: display.elapsedSeconds,
@@ -2974,7 +2987,7 @@ export class ThreeFcRepository {
       const original = teamsById.get(team.teamId);
       return original ? team.scored !== original.scored || team.conceded !== original.conceded : false;
     });
-    const goalSortKey = goalSk(activeThird.third, gameMinute, display.elapsedSeconds, input.eventId);
+    const goalSortKey = goalSk(goalThird.third, gameMinute, display.elapsedSeconds, input.eventId);
     const goalEventIdKey = goalEventIdSk(input.eventId);
     const goal = withTimestamps(payload, now, now);
     const existingGoalState = await this.getGoalState(input.gameId, { consistentRead: true });
@@ -2987,29 +3000,28 @@ export class ThreeFcRepository {
       after: goal,
       now,
     });
+    const updatedFinishedGame =
+      game.status === "finished"
+        ? {
+            ...game,
+            finishedAt: game.finishedAt ?? now,
+            result: buildGameResult(nextTeams, now),
+          }
+        : null;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
-            {
-              ConditionCheck: {
-                TableName: this.tableName,
-                Key: {
-                  pk: { S: gamePk(input.gameId) },
-                  sk: { S: metadataSk() },
-                },
-                ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
-                ExpressionAttributeNames: {
-                  "#updatedAt": "updatedAt",
-                  "#data": "data",
-                },
-                ExpressionAttributeValues: {
-                  ":expectedGameUpdatedAt": { S: gameItem.updatedAt },
-                  ":expectedGameData": { S: gameItem.rawData },
-                },
-              },
-            },
+            ...(updatedFinishedGame
+              ? [
+                  this.buildGamePutTransactionItem({
+                    game: updatedFinishedGame,
+                    stored: gameItem,
+                    now,
+                  }),
+                ]
+              : [this.buildGameConditionCheck(input.gameId, gameItem)]),
             ...changedTeams.map((team) => {
               const original = teamStatesById.get(team.teamId);
               if (!original) {

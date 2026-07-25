@@ -2095,6 +2095,49 @@ test("repository recomputes finished game result after goal corrections", async 
   );
 });
 
+test("repository creates finished-game goal corrections and recomputes result", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await completeAllThirds(repository);
+  const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeCorrection?.status, "finished");
+  assert.equal(finishedBeforeCorrection?.result?.winnerTeamId, null);
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-created-after-finish",
+    actorUserId: "admin@example.com",
+    allowFinished: true,
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.third, 3);
+  assert.equal(result.goal.thirdMinute, 20);
+  assert.equal(result.goal.gameMinute, 60);
+  assert.equal(result.goal.displayTime, "20:00");
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
+});
+
 test("repository requires finished-game authority for goal corrections", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);

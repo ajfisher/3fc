@@ -292,6 +292,7 @@ export interface CreateGoalInput {
   gameId: string;
   eventId: string;
   actorUserId: string;
+  allowFinished?: boolean;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;

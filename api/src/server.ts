@@ -485,14 +485,6 @@ function finishedGameTeamOverrideConflict(
   return 409;
 }
 
-function finishedGameGoalMutationPayload(): { error: "conflict"; code: "game_finished"; message: string } {
-  return {
-    error: "conflict",
-    code: "game_finished",
-    message: "Cannot create a goal after the game is finished.",
-  };
-}
-
 function finishedGameDeleteConflict(
   request: IncomingMessage,
   response: ServerResponse,
@@ -2541,14 +2533,18 @@ async function start(): Promise<void> {
                 };
               }
 
+              const allowFinished = currentGame.status === "finished";
               if (currentGame.status === "finished") {
-                return {
-                  statusCode: 409,
-                  payload: finishedGameGoalMutationPayload(),
-                };
+                const finishedBlock = await buildFinishedGameMutationBlock(
+                  currentGame,
+                  sessionEmail,
+                );
+                if (finishedBlock) {
+                  return finishedBlock;
+                }
               }
 
-              if (!currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
+              if (!allowFinished && !currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
                 throw new GoalCreationError(
                   "no_active_third",
                   409,
@@ -2556,7 +2552,7 @@ async function start(): Promise<void> {
                 );
               }
 
-              await ensureGameTeamsForGame(currentGame);
+              await ensureGameTeamsForGame(currentGame, repository, { allowFinished });
               const result = await repository.createGoal({
                 gameId,
                 eventId: buildGoalEventId({
@@ -2571,6 +2567,7 @@ async function start(): Promise<void> {
                 scorerPlayerId: parsedBody.data.scorerPlayerId,
                 assistPlayerIds: parsedBody.data.assistPlayerIds,
                 ownGoal: parsedBody.data.ownGoal,
+                allowFinished,
               });
 
               if (!result) {
