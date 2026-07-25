@@ -3060,6 +3060,13 @@ export class ThreeFcRepository {
       return null;
     }
     const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GoalCorrectionError(
+        "game_finished",
+        409,
+        `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      );
+    }
 
     const existing = await this.findGoalByEventId(
       input.gameId,
@@ -3240,6 +3247,13 @@ export class ThreeFcRepository {
       return null;
     }
     const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GoalCorrectionError(
+        "game_finished",
+        409,
+        `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      );
+    }
 
     const existing = await this.findGoalByEventId(
       input.gameId,
@@ -3437,6 +3451,7 @@ export class ThreeFcRepository {
       actorUserId: input.actorUserId,
       operationId: input.operationId,
       operationRequestHash: input.operationRequestHash,
+      allowFinished: input.allowFinished,
       action: "goal_undo_last",
       expectedLatestEventId: input.expectedEventId,
     });

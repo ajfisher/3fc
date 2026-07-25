@@ -1754,6 +1754,7 @@ test("game page quick-creates and assigns roster players", async () => {
   const startThirdButton = gamePage.document.querySelector('[data-action="start-active-third"]');
   const finishThirdButton = gamePage.document.querySelector('[data-action="finish-active-third"]');
   const scheduledStatusOption = statusInput?.querySelector('option[value="scheduled"]');
+  const finishedStatusOption = statusInput?.querySelector('option[value="finished"]');
   assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
   assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
@@ -1768,6 +1769,8 @@ test("game page quick-creates and assigns roster players", async () => {
   assert(finishThirdButton instanceof gamePage.window.HTMLButtonElement);
   assert.equal(statusInput.value, "scheduled");
   assert.equal(scheduledStatusOption.disabled, false);
+  assert(finishedStatusOption instanceof gamePage.window.HTMLOptionElement);
+  assert.equal(finishedStatusOption.disabled, true);
   assert.equal(thirdLengthInput.value, "20");
   assert.equal(timerDisplay.textContent, "00:00");
   assert.equal(startThirdButton.textContent, "Start Third 1");

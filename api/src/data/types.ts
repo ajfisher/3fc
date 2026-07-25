@@ -311,6 +311,7 @@ export interface UpdateGoalInput {
   actorUserId: string;
   operationId?: string | null;
   operationRequestHash?: string | null;
+  allowFinished?: boolean;
   scoringTeamId?: TeamId | null;
   concedingTeamId?: TeamId;
   scorerPlayerId?: string;
@@ -334,6 +335,7 @@ export interface DeleteGoalInput {
   actorUserId: string;
   operationId?: string | null;
   operationRequestHash?: string | null;
+  allowFinished?: boolean;
   action?: Extract<GoalAuditAction, "goal_deleted" | "goal_undo_last">;
   expectedLatestEventId?: string;
 }
@@ -352,6 +354,7 @@ export interface UndoLastGoalInput {
   actorUserId: string;
   operationId?: string | null;
   operationRequestHash?: string | null;
+  allowFinished?: boolean;
   expectedEventId: string;
 }
 

@@ -216,6 +216,7 @@ interface HarnessConfig {
   createGameTeamOverrideStateChangedOnce?: boolean;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
+  finishBeforeGoalCorrectionOnce?: boolean;
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
@@ -278,6 +279,9 @@ function createHarness(config: HarnessConfig = {}) {
     assistPlayerIds: string[];
     ownGoal: boolean;
   }> = [];
+  const updatedGoals: Array<{ gameId: string; eventId: string; allowFinished?: boolean }> = [];
+  const deletedGoals: Array<{ gameId: string; eventId: string; allowFinished?: boolean }> = [];
+  const undoneGoals: Array<{ gameId: string; expectedEventId: string; allowFinished?: boolean }> = [];
   const deletedGames: string[] = [];
   const assignedRosterPlayers: Array<{ gameId: string; teamId: TeamId; playerId: string }> = [];
   const linkedGamePlayers: Array<{ gameId: string; playerId: string }> = [];
@@ -291,6 +295,7 @@ function createHarness(config: HarnessConfig = {}) {
   let createGameTeamOverrideStateChangedOnce = config.createGameTeamOverrideStateChangedOnce ?? false;
   let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
+  let finishBeforeGoalCorrectionOnce = config.finishBeforeGoalCorrectionOnce ?? false;
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
   const sessionEntities = new Map<string, MockSessionEntity>(
@@ -429,6 +434,43 @@ function createHarness(config: HarnessConfig = {}) {
         };
       }),
     };
+  }
+
+  function finishGameBeforeGoalCorrection(gameId: string): void {
+    if (!finishBeforeGoalCorrectionOnce) {
+      return;
+    }
+
+    finishBeforeGoalCorrectionOnce = false;
+    const existing = games.get(gameId);
+    if (!existing) {
+      return;
+    }
+
+    const finishedAt = "2026-02-23T00:00:06.000Z";
+    games.set(gameId, {
+      ...existing,
+      status: "finished",
+      finishedAt,
+      result: buildMockGameResult(gameId, finishedAt),
+      updatedAt: finishedAt,
+    });
+  }
+
+  function rejectFinishedGoalCorrectionUnlessAllowed(input: {
+    gameId: string;
+    allowFinished?: boolean;
+  }): void {
+    const game = games.get(input.gameId);
+    if (game?.status !== "finished" || input.allowFinished === true) {
+      return;
+    }
+
+    throw new GoalCorrectionError(
+      "game_finished",
+      409,
+      `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+    );
   }
 
   function validateMockGoal(goal: {
@@ -1183,6 +1225,13 @@ function createHarness(config: HarnessConfig = {}) {
         return sortedGoalTimeline(gameId);
       },
       async updateGoal(input) {
+        updatedGoals.push({
+          gameId: input.gameId,
+          eventId: input.eventId,
+          allowFinished: input.allowFinished,
+        });
+        finishGameBeforeGoalCorrection(input.gameId);
+        rejectFinishedGoalCorrectionUnlessAllowed(input);
         const existing = goalEvents.get(`${input.gameId}:${input.eventId}`);
         if (!games.has(input.gameId) || !existing) {
           return null;
@@ -1222,6 +1271,13 @@ function createHarness(config: HarnessConfig = {}) {
         };
       },
       async deleteGoal(input) {
+        deletedGoals.push({
+          gameId: input.gameId,
+          eventId: input.eventId,
+          allowFinished: input.allowFinished,
+        });
+        finishGameBeforeGoalCorrection(input.gameId);
+        rejectFinishedGoalCorrectionUnlessAllowed(input);
         const existing = goalEvents.get(`${input.gameId}:${input.eventId}`);
         if (!games.has(input.gameId) || !existing) {
           return null;
@@ -1249,6 +1305,13 @@ function createHarness(config: HarnessConfig = {}) {
         };
       },
       async undoLastGoal(input) {
+        undoneGoals.push({
+          gameId: input.gameId,
+          expectedEventId: input.expectedEventId,
+          allowFinished: input.allowFinished,
+        });
+        finishGameBeforeGoalCorrection(input.gameId);
+        rejectFinishedGoalCorrectionUnlessAllowed(input);
         const latest = latestGoal(input.gameId);
         if (!games.has(input.gameId) || !latest) {
           return null;
@@ -1323,6 +1386,9 @@ function createHarness(config: HarnessConfig = {}) {
     createdGameTeams,
     createdPlayers,
     createdGoals,
+    updatedGoals,
+    deletedGoals,
+    undoneGoals,
     deletedGames,
     assignedRosterPlayers,
     linkedGamePlayers,
@@ -1345,6 +1411,7 @@ function createGoalHarness(input: {
   createGameTeamOverrideStateChangedOnce?: boolean;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
+  finishBeforeGoalCorrectionOnce?: boolean;
   gameTeams?: Record<string, MockGameTeamInput>;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
@@ -1387,6 +1454,7 @@ function createGoalHarness(input: {
     createGameTeamOverrideStateChangedOnce: input.createGameTeamOverrideStateChangedOnce,
     createAndLinkGamePlayerStateChangedOnce: input.createAndLinkGamePlayerStateChangedOnce,
     assignRosterPlayerStateChangedOnce: input.assignRosterPlayerStateChangedOnce,
+    finishBeforeGoalCorrectionOnce: input.finishBeforeGoalCorrectionOnce,
     seasons: {
       "season-1": {
         leagueId: "league-1",
@@ -3001,6 +3069,7 @@ test("core lambda allows admin goal correction after finish and refreshes result
     }),
   );
   assert.equal(updateResponse.statusCode, 200);
+  assert.equal(harness.updatedGoals[0]?.allowFinished, true);
 
   const gameResponse = await harness.handler(
     createEvent({
@@ -3014,6 +3083,53 @@ test("core lambda allows admin goal correction after finish and refreshes result
   const gameBody = JSON.parse(gameResponse.body) as { result: GameResult };
   assert.equal(gameResponse.statusCode, 200);
   assert.equal(gameBody.result.winnerTeamId, "blue");
+});
+
+test("core lambda rejects scorekeeper goal updates if finish wins before repository correction", async () => {
+  const harness = createGoalHarness({
+    finishBeforeGoalCorrectionOnce: true,
+  });
+  const createResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "scorekeeper-finish-race-create-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(createResponse.statusCode, 201);
+  const created = JSON.parse(createResponse.body) as { goal: { eventId: string } };
+
+  const updateResponse = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: `/v1/games/game-1/goals/${created.goal.eventId}`,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "scorekeeper-finish-race-update-1",
+      },
+      body: {
+        scorerPlayerId: "player-blue",
+      },
+    }),
+  );
+
+  assert.equal(updateResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(updateResponse.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
+  });
+  assert.equal(harness.updatedGoals[0]?.allowFinished, false);
 });
 
 test("core lambda creates goals with idempotency replay and conflict behavior", async () => {
@@ -3253,6 +3369,7 @@ test("core lambda updates and deletes goals with idempotency replay", async () =
   assert.equal(updateResponseBody.audit.action, "goal_updated");
   assert.equal(updateResponseBody.audit.actorUserId, "scorekeeper@example.com");
   assert.equal(harness.goalAuditEntries.length, 2);
+  assert.equal(harness.updatedGoals[0]?.allowFinished, false);
 
   const updateReplayResponse = await harness.handler(
     createEvent({
@@ -3302,6 +3419,7 @@ test("core lambda updates and deletes goals with idempotency replay", async () =
   );
   assert.equal(deleteBody.audit.action, "goal_deleted");
   assert.equal(harness.goalAuditEntries.length, 3);
+  assert.equal(harness.deletedGoals[0]?.allowFinished, false);
 
   const deleteReplayResponse = await harness.handler(
     createEvent({

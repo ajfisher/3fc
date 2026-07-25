@@ -692,7 +692,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               <select id="game-edit-status" data-ui="input" data-testid="game-edit-status">
                 <option value="scheduled">Scheduled</option>
                 <option value="live">Live</option>
-                <option value="finished">Finished</option>
+                <option value="finished" disabled>Finished</option>
               </select>
             </div>
             <div data-ui="field">

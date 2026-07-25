@@ -2519,6 +2519,7 @@ async function start(): Promise<void> {
                 actorUserId: sessionEmail,
                 operationId: correctionOperation?.operationId,
                 operationRequestHash: correctionOperation?.operationRequestHash,
+                allowFinished: currentGame.status === "finished",
                 ...parsedBody.data,
               });
 
@@ -2616,6 +2617,7 @@ async function start(): Promise<void> {
                 actorUserId: sessionEmail,
                 operationId: correctionOperation?.operationId,
                 operationRequestHash: correctionOperation?.operationRequestHash,
+                allowFinished: currentGame.status === "finished",
               });
 
               if (!result) {
@@ -2723,6 +2725,7 @@ async function start(): Promise<void> {
                 actorUserId: sessionEmail,
                 operationId: correctionOperation?.operationId,
                 operationRequestHash: correctionOperation?.operationRequestHash,
+                allowFinished: currentGame.status === "finished",
                 expectedEventId: parsedBody.data.expectedEventId,
               });
 

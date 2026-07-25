@@ -385,6 +385,7 @@ interface RepositoryContract {
     actorUserId: string;
     operationId?: string | null;
     operationRequestHash?: string | null;
+    allowFinished?: boolean;
     scoringTeamId?: TeamId | null;
     concedingTeamId?: TeamId;
     scorerPlayerId?: string;
@@ -397,12 +398,14 @@ interface RepositoryContract {
     actorUserId: string;
     operationId?: string | null;
     operationRequestHash?: string | null;
+    allowFinished?: boolean;
   }): Promise<DeleteGoalResult | null>;
   undoLastGoal(input: {
     gameId: string;
     actorUserId: string;
     operationId?: string | null;
     operationRequestHash?: string | null;
+    allowFinished?: boolean;
     expectedEventId: string;
   }): Promise<DeleteGoalResult | null>;
   getLeagueAccess(
@@ -2589,6 +2592,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   actorUserId: session.email,
                   operationId: correctionOperation?.operationId,
                   operationRequestHash: correctionOperation?.operationRequestHash,
+                  allowFinished: currentGame.status === "finished",
                   ...parsedBody.data,
                 });
 
@@ -2678,6 +2682,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   actorUserId: session.email,
                   operationId: correctionOperation?.operationId,
                   operationRequestHash: correctionOperation?.operationRequestHash,
+                  allowFinished: currentGame.status === "finished",
                 });
 
                 if (!result) {
@@ -2793,6 +2798,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   actorUserId: session.email,
                   operationId: correctionOperation?.operationId,
                   operationRequestHash: correctionOperation?.operationRequestHash,
+                  allowFinished: currentGame.status === "finished",
                   expectedEventId: parsedBody.data.expectedEventId,
                 });
 

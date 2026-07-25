@@ -1660,6 +1660,7 @@ test("repository recomputes finished game result after goal corrections", async 
     gameId: "game-1",
     eventId: "goal-finished-correction",
     actorUserId: "admin@example.com",
+    allowFinished: true,
     scoringTeamId: "blue",
     concedingTeamId: "red",
     scorerPlayerId: "player-blue",
@@ -1684,6 +1685,52 @@ test("repository recomputes finished game result after goal corrections", async 
       { teamId: "red", scored: 0, conceded: 1, rank: 3, outcome: "loss" },
     ],
   );
+});
+
+test("repository requires finished-game authority for goal corrections", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finished-authority",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await completeAllThirds(repository, { firstThirdStarted: true });
+  const finished = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finished?.status, "finished");
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-finished-authority",
+      actorUserId: "scorekeeper@example.com",
+      scoringTeamId: "blue",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-blue",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Admin role is required to mutate finished games/,
+  );
+
+  await assert.rejects(
+    repository.deleteGoal({
+      gameId: "game-1",
+      eventId: "goal-finished-authority",
+      actorUserId: "scorekeeper@example.com",
+    }),
+    /Admin role is required to mutate finished games/,
+  );
+
+  const [goal] = await repository.listGoalEvents("game-1");
+  assert.equal(goal?.scoringTeamId, "red");
 });
 
 test("repository creates standard goals with timer stamping, mixed-team assists, and persisted tallies", async () => {
