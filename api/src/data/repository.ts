@@ -580,6 +580,15 @@ function buildGameResult(teams: GameTeamRecord[], computedAt: string): GameResul
   };
 }
 
+function isCompleteGameResult(result: GameResult | null): result is GameResult {
+  const resultTeams = result?.teams ?? [];
+  const resultTeamIds = new Set(resultTeams.map((team) => team.teamId));
+  return (
+    resultTeams.length === TEAM_IDS.length &&
+    TEAM_IDS.every((teamId) => resultTeamIds.has(teamId))
+  );
+}
+
 function compareGoalEvents(
   left: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "createdAt" | "eventId">,
   right: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "createdAt" | "eventId">,
@@ -1008,10 +1017,13 @@ export class ThreeFcRepository {
               },
             ],
       );
+      const hasAllResultTeams = TEAM_IDS.every((teamId) =>
+        nextTeams.some((team) => team.teamId === teamId),
+      );
       const updatedGame = {
         ...game,
-        finishedAt: game.finishedAt ?? now,
-        result: buildGameResult(nextTeams, now),
+        finishedAt: hasAllResultTeams ? game.finishedAt ?? now : game.finishedAt,
+        result: hasAllResultTeams ? buildGameResult(nextTeams, now) : null,
       };
       const existingTeamPutItems = this.buildTeamPutTransactionItems(
         nextTeams.filter((team) => teamStatesById.has(team.teamId)),
@@ -1592,7 +1604,7 @@ export class ThreeFcRepository {
     }
 
     const existing = normalizeGamePayload(gameItem.data);
-    if (existing.status === "finished" && existing.result && existing.finishedAt) {
+    if (existing.status === "finished" && existing.finishedAt && isCompleteGameResult(existing.result)) {
       return withTimestamps(existing, gameItem.createdAt, gameItem.updatedAt);
     }
 
@@ -1612,7 +1624,7 @@ export class ThreeFcRepository {
       const repairedGame = {
         ...existing,
         finishedAt: existing.finishedAt ?? now,
-        result: existing.result ?? buildGameResult(teams, now),
+        result: isCompleteGameResult(existing.result) ? existing.result : buildGameResult(teams, now),
       };
 
       const repairApplied = await this.putEntityWithTimestampsIfUnchanged(

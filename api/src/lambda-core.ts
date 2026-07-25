@@ -989,7 +989,14 @@ async function ensureGameTeamsForGame(
 }
 
 function isCompleteFinishedGame(game: RepositoryGameRecord | null): game is RepositoryGameRecord {
-  return game?.status === "finished" && Boolean(game.finishedAt && game.result);
+  const resultTeams = game?.result?.teams ?? [];
+  const resultTeamIds = new Set(resultTeams.map((team) => team.teamId));
+  return (
+    game?.status === "finished" &&
+    Boolean(game.finishedAt && game.result) &&
+    resultTeams.length === TEAM_IDS.length &&
+    TEAM_IDS.every((teamId) => resultTeamIds.has(teamId))
+  );
 }
 
 async function recoverFinishedGameForFinishRoute(input: {

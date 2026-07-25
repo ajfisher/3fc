@@ -450,6 +450,15 @@ function createHarness(config: HarnessConfig = {}) {
     };
   }
 
+  function isCompleteMockGameResult(result: GameResult | null): result is GameResult {
+    const resultTeams = result?.teams ?? [];
+    const resultTeamIds = new Set(resultTeams.map((team) => team.teamId));
+    return (
+      resultTeams.length === TEAM_IDS.length &&
+      TEAM_IDS.every((teamId) => resultTeamIds.has(teamId))
+    );
+  }
+
   function finishGameBeforeGoalCorrection(gameId: string): void {
     if (!finishBeforeGoalCorrectionOnce) {
       return;
@@ -982,7 +991,11 @@ function createHarness(config: HarnessConfig = {}) {
           return null;
         }
 
-        if (existing.status === "finished" && existing.result && existing.finishedAt) {
+        if (
+          existing.status === "finished" &&
+          existing.finishedAt &&
+          isCompleteMockGameResult(existing.result)
+        ) {
           return existing;
         }
 

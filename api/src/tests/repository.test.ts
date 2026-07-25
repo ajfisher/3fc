@@ -1902,6 +1902,149 @@ test("repository create-only team overrides repair missing finished-game teams",
   );
 });
 
+test("repository create-only team repair waits for all teams before completing finished results", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy-finished" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy-finished",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+        finishedAt: null,
+        result: null,
+      }),
+    },
+  });
+  client.seedItem({
+    pk: { S: "GAME#game-legacy-finished" },
+    sk: { S: "TEAM#red" },
+    entityType: { S: "gameTeam" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy-finished",
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        scored: 0,
+        conceded: 0,
+      }),
+    },
+  });
+
+  await repository.createGameTeamOverride({
+    gameId: "game-legacy-finished",
+    teamId: "yellow",
+    name: "Yellow",
+    color: "#e0a612",
+    allowFinished: true,
+    createOnly: true,
+  });
+
+  const stillIncomplete = await repository.getGame("game-legacy-finished");
+  assert.equal(stillIncomplete?.status, "finished");
+  assert.equal(stillIncomplete?.finishedAt, null);
+  assert.equal(stillIncomplete?.result, null);
+
+  await repository.createGameTeamOverride({
+    gameId: "game-legacy-finished",
+    teamId: "blue",
+    name: "Blue",
+    color: "#2f6fed",
+    allowFinished: true,
+    createOnly: true,
+  });
+
+  const complete = await repository.getGame("game-legacy-finished");
+  assert.equal(complete?.status, "finished");
+  assert.ok(complete?.finishedAt);
+  assert.deepEqual(
+    complete.result?.teams.map((team) => team.teamId).sort(),
+    ["blue", "red", "yellow"],
+  );
+});
+
+test("repository recomputes partial finished results once all teams exist", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy-partial-result" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy-partial-result",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+        finishedAt: "2026-02-22T11:00:00.000Z",
+        result: {
+          winnerTeamId: null,
+          outcome: "draw",
+          comparator: "fewest_conceded_then_most_scored",
+          computedAt: "2026-02-22T11:00:00.000Z",
+          teams: [
+            {
+              teamId: "red",
+              name: "Red",
+              color: "#d83b36",
+              scored: 0,
+              conceded: 0,
+              rank: 1,
+              outcome: "draw",
+            },
+          ],
+        },
+      }),
+    },
+  });
+
+  for (const team of [
+    { teamId: "red", name: "Red", color: "#d83b36" },
+    { teamId: "yellow", name: "Yellow", color: "#e0a612" },
+    { teamId: "blue", name: "Blue", color: "#2f6fed" },
+  ] as const) {
+    client.seedItem({
+      pk: { S: "GAME#game-legacy-partial-result" },
+      sk: { S: `TEAM#${team.teamId}` },
+      entityType: { S: "gameTeam" },
+      createdAt: { S: "2026-02-22T00:00:00.000Z" },
+      updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          gameId: "game-legacy-partial-result",
+          teamId: team.teamId,
+          name: team.name,
+          color: team.color,
+          scored: 0,
+          conceded: 0,
+        }),
+      },
+    });
+  }
+
+  const repaired = await repository.finishGame({ gameId: "game-legacy-partial-result" });
+
+  assert.deepEqual(
+    repaired?.result?.teams.map((team) => team.teamId).sort(),
+    ["blue", "red", "yellow"],
+  );
+});
+
 test("repository recomputes finished game result after goal corrections", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);
