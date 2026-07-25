@@ -1121,6 +1121,10 @@
       return currentLeagueRole === "admin";
     }
 
+    function finishedRosterControlsLocked() {
+      return isGameFinished() && !canCorrectFinishedGoals();
+    }
+
     function isFinishedGoalCorrection() {
       return isGameFinished() && isEditingGoal() && canCorrectFinishedGoals();
     }
@@ -1908,7 +1912,7 @@
     }
 
     function assignmentButtons(playerId, currentTeamId = null) {
-      const disabled = isGameFinished() ? " disabled" : "";
+      const disabled = finishedRosterControlsLocked() ? " disabled" : "";
       return rosterTeams
         .map((team) => {
           const active = currentTeamId === team.teamId ? ' data-state="active" aria-pressed="true"' : "";
@@ -1989,12 +1993,12 @@
     }
 
     function renderRosterSetup() {
-      const gameFinished = isGameFinished();
+      const rosterLocked = finishedRosterControlsLocked();
       if (quickCreatePlayerButton instanceof HTMLButtonElement) {
-        quickCreatePlayerButton.disabled = gameFinished;
+        quickCreatePlayerButton.disabled = rosterLocked;
       }
       if (playerNicknameInput instanceof HTMLInputElement) {
-        playerNicknameInput.disabled = gameFinished;
+        playerNicknameInput.disabled = rosterLocked;
       }
       renderPlayerPool();
       renderRosterTeams();
@@ -2315,7 +2319,7 @@
       });
 
       quickCreatePlayerButton.addEventListener("click", async () => {
-        if (isGameFinished()) {
+        if (finishedRosterControlsLocked()) {
           return;
         }
 
@@ -2356,7 +2360,7 @@
           showError(message);
           setStatus("Player creation failed.", "error");
         } finally {
-          quickCreatePlayerButton.disabled = isGameFinished();
+          quickCreatePlayerButton.disabled = finishedRosterControlsLocked();
         }
       });
 
@@ -2370,7 +2374,7 @@
           return;
         }
 
-        if (isGameFinished()) {
+        if (finishedRosterControlsLocked()) {
           return;
         }
 

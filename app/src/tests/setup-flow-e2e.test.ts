@@ -3247,6 +3247,8 @@ test("game page allows admins to correct finished goals and refresh result", asy
   const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
   const resultSummary = page.document.getElementById("game-result-summary");
   const goalFormNote = page.document.getElementById("goal-form-note");
+  const nicknameInput = page.document.getElementById("player-nickname");
+  const quickCreateButton = page.document.querySelector('[data-action="quick-create-player"]');
   const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   const deleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
   assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
@@ -3256,8 +3258,12 @@ test("game page allows admins to correct finished goals and refresh result", asy
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
   assert(resultSummary instanceof page.window.HTMLElement);
   assert(goalFormNote instanceof page.window.HTMLElement);
+  assert(nicknameInput instanceof page.window.HTMLInputElement);
+  assert(quickCreateButton instanceof page.window.HTMLButtonElement);
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
   assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
+  assert.equal(nicknameInput.disabled, false);
+  assert.equal(quickCreateButton.disabled, false);
   assert.equal(editGoalButton.disabled, false);
   assert.equal(deleteGoalButton.disabled, false);
   assert.equal(undoLastGoalButton.disabled, false);
@@ -3299,11 +3305,27 @@ test("game page allows admins to correct finished goals and refresh result", asy
   assert.match(resultSummary.textContent ?? "", /Draw/);
   assert.equal(undoLastGoalButton.disabled, true);
 
+  nicknameInput.value = "Dee";
+  nicknameInput.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  dispatchClick(quickCreateButton);
+  await flushAsync();
+  const dee = [...apiState.players.values()].find((player) => player.nickname === "Dee");
+  assert(dee);
+
+  const assignDeeRedButton = page.document.querySelector(
+    `[data-action="assign-player"][data-player-id="${dee.playerId}"][data-team-id="red"]`,
+  );
+  assert(assignDeeRedButton instanceof page.window.HTMLButtonElement);
+  assert.equal(assignDeeRedButton.disabled, false);
+  dispatchClick(assignDeeRedButton);
+  await flushAsync();
+  assert.equal(apiState.roster.get(`game-admin-finished-correction:${dee.playerId}`)?.teamId, "red");
+
   scoringTeamInput.value = "red";
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   concedingTeamInput.value = "blue";
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  scorerInput.value = "player-ari";
+  scorerInput.value = dee.playerId;
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   assert.equal(saveGoalButton.disabled, false);
   assert.match(goalFormNote.textContent ?? "", /final whistle/);
@@ -3311,6 +3333,7 @@ test("game page allows admins to correct finished goals and refresh result", asy
   await flushAsync();
 
   assert.equal(apiState.goalEvents.size, 1);
+  assert.equal([...apiState.goalEvents.values()][0]?.scorerPlayerId, dee.playerId);
   assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, "red");
   assert.match(resultSummary.textContent ?? "", /Red win/);
 });
