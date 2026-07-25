@@ -14,7 +14,6 @@ const fakeSesBaseUrl = process.env.THREEFC_FAKE_SES_BASE_URL ?? "http://localhos
 const dynamodbEndpoint = process.env.THREEFC_DYNAMODB_ENDPOINT ?? "http://localhost:8000";
 const dynamodbTableName = process.env.THREEFC_DYNAMODB_TABLE ?? "threefc_local";
 const fetchTimeoutMs = 5_000;
-const localBrowserClientIps = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
 
 interface FakeSesMessage {
   to?: string;
@@ -26,14 +25,12 @@ type DynamoItem = Record<string, AttributeValue>;
 interface SmokeRunCleanupInput {
   runId: string;
   email: string;
-  clientIps: string[];
   leagueSlug: string;
   seasonSlug: string;
   gameId: string;
   sessionId: string;
   playerIds: string[];
   originalSessionMetadata: DynamoItem | null;
-  originalAuthRateLimitItems: DynamoItem[];
 }
 
 function authRateLimitHash(dimension: "email" | "ip", identifier: string): string {
@@ -160,12 +157,9 @@ async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promi
 
 async function scanAuthRateLimitItems(
   client: DynamoDBClient,
-  input: { email: string; clientIps: string[] },
+  input: { email: string },
 ): Promise<DynamoItem[]> {
-  const prefixes = [
-    authRateLimitPkPrefix("email", input.email),
-    ...input.clientIps.map((clientIp) => authRateLimitPkPrefix("ip", clientIp)),
-  ];
+  const prefix = authRateLimitPkPrefix("email", input.email);
   const items: DynamoItem[] = [];
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
 
@@ -179,7 +173,7 @@ async function scanAuthRateLimitItems(
     items.push(
       ...((response.Items ?? []) as DynamoItem[]).filter((item) => {
         const pk = item.pk?.S ?? "";
-        return item.sk?.S === "METADATA" && prefixes.some((prefix) => pk.startsWith(prefix));
+        return item.sk?.S === "METADATA" && pk.startsWith(prefix);
       }),
     );
     exclusiveStartKey = response.LastEvaluatedKey;
@@ -271,9 +265,6 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
       ),
     );
     await deleteItems(client, await scanAuthRateLimitItems(client, input));
-    for (const item of input.originalAuthRateLimitItems) {
-      await putItem(client, item);
-    }
 
     await deleteFakeSesMessages(input.email);
   } finally {
@@ -423,13 +414,8 @@ test.describe("M2 local-stack smoke", () => {
     const playerIds: string[] = [];
     const snapshotClient = createLocalDynamoClient();
     let originalSessionMetadata: DynamoItem | null = null;
-    let originalAuthRateLimitItems: DynamoItem[] = [];
     try {
       originalSessionMetadata = await readSessionMetadataSnapshot(snapshotClient, sessionId);
-      originalAuthRateLimitItems = await scanAuthRateLimitItems(snapshotClient, {
-        email,
-        clientIps: localBrowserClientIps,
-      });
     } finally {
       snapshotClient.destroy();
     }
@@ -529,14 +515,12 @@ test.describe("M2 local-stack smoke", () => {
         await cleanupSmokeRun({
           runId,
           email,
-          clientIps: localBrowserClientIps,
           leagueSlug,
           seasonSlug,
           gameId,
           sessionId,
           playerIds,
           originalSessionMetadata,
-          originalAuthRateLimitItems,
         });
       } catch (error) {
         if (!testFailed) {
