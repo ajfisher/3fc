@@ -632,12 +632,12 @@ async function finishThird(page: Page, third: 1 | 2 | 3): Promise<void> {
   await expect(page.locator("#third-status-list")).toContainText(`Third ${third}`);
 }
 
-async function expectAllDisabled(locator: Locator): Promise<void> {
+async function expectAllEnabled(locator: Locator): Promise<void> {
   const count = await locator.count();
   expect(count).toBeGreaterThan(0);
 
   for (let index = 0; index < count; index += 1) {
-    await expect(locator.nth(index)).toBeDisabled();
+    await expect(locator.nth(index)).toBeEnabled();
   }
 }
 
@@ -1005,10 +1005,10 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("finish-game")).toBeDisabled();
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
       await expect(page.getByTestId("delete-game")).toBeDisabled();
-      await expect(page.getByTestId("quick-create-player")).toBeDisabled();
+      await expect(page.getByTestId("quick-create-player")).toBeEnabled();
       await expect(page.getByTestId("add-goal")).toBeEnabled();
       await expect(page.locator("#goal-form-note")).toContainText("final whistle");
-      await expectAllDisabled(page.locator('[data-action="assign-player"]'));
+      await expectAllEnabled(page.locator('[data-action="assign-player"]'));
       await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
       await expect(page.locator('[data-action="delete-goal"]').first()).toBeEnabled();
       await expect(page.getByTestId("undo-last-goal")).toBeEnabled();
