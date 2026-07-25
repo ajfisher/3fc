@@ -334,6 +334,10 @@ function smokeOwnedAuthRateLimitKeys(input: {
   return touchedAuthRateLimitKeys(input.before, input.after);
 }
 
+function didMagicLinkStartConsumeRateLimit(status: number): boolean {
+  return status === 202 || status >= 500;
+}
+
 function isConditionalCheckFailure(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -883,6 +887,14 @@ test("smoke cleanup detects consumed IP rate-limit buckets without known client 
   ).toEqual([]);
 });
 
+test("smoke cleanup tracks magic-link consumption separately from final response status", () => {
+  expect(didMagicLinkStartConsumeRateLimit(202)).toBe(true);
+  expect(didMagicLinkStartConsumeRateLimit(500)).toBe(true);
+  expect(didMagicLinkStartConsumeRateLimit(400)).toBe(false);
+  expect(didMagicLinkStartConsumeRateLimit(403)).toBe(false);
+  expect(didMagicLinkStartConsumeRateLimit(429)).toBe(false);
+});
+
 test.describe("M2 local-stack smoke", () => {
   test.beforeEach(async () => {
     await waitForHealthy(`${apiBaseUrl}/v1/health`);
@@ -916,7 +928,7 @@ test.describe("M2 local-stack smoke", () => {
       );
       await page.getByTestId("send-magic-link").click();
       const magicStartResponse = await magicStartResponsePromise;
-      magicLinkStartConsumedRateLimit = magicStartResponse.status() === 202;
+      magicLinkStartConsumedRateLimit = didMagicLinkStartConsumeRateLimit(magicStartResponse.status());
       await expect(page.locator("#auth-status")).toContainText("Magic link sent");
 
       const magicLink = await waitForMagicLink(email);
