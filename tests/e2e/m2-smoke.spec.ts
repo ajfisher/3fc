@@ -3,6 +3,7 @@ import {
   DynamoDBClient,
   QueryCommand,
   ScanCommand,
+  UpdateItemCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 import { createHash } from "node:crypto";
@@ -29,9 +30,20 @@ interface SmokeRunCleanupInput {
   gameId: string;
   sessionId: string;
   playerIds: string[];
+  ipRateLimitKeys: DynamoItemKey[];
 }
 
 type DynamoClientLike = Pick<DynamoDBClient, "send" | "destroy">;
+type RateLimitDimension = "email" | "ip";
+
+interface DynamoItemKey {
+  pk: string;
+  sk: string;
+}
+
+interface AuthRateLimitSnapshot extends DynamoItemKey {
+  attemptCount: number;
+}
 
 interface SmokeRunCleanupDependencies {
   createClient?: () => DynamoClientLike;
@@ -41,17 +53,23 @@ interface SmokeRunCleanupDependencies {
     client: DynamoClientLike,
     input: { email: string },
   ) => Promise<DynamoItem[]>;
+  decrementAuthRateLimitItems?: (
+    client: DynamoClientLike,
+    keys: DynamoItemKey[],
+  ) => Promise<void>;
   deleteItems?: (client: DynamoClientLike, items: DynamoItem[]) => Promise<void>;
   deleteFakeSesMessages?: (email: string) => Promise<void>;
 }
 
-function authRateLimitHash(dimension: "email" | "ip", identifier: string): string {
+const localBrowserClientIpCandidates = ["::1", "::ffff:127.0.0.1", "127.0.0.1", "unknown"];
+
+function authRateLimitHash(dimension: RateLimitDimension, identifier: string): string {
   return createHash("sha256")
     .update(`magic-link-start:${dimension}:${identifier}`, "utf8")
     .digest("hex");
 }
 
-function authRateLimitPkPrefix(dimension: "email" | "ip", identifier: string): string {
+function authRateLimitPkPrefix(dimension: RateLimitDimension, identifier: string): string {
   const normalizedIdentifier = dimension === "email" ? identifier.trim().toLowerCase() : identifier.trim();
   return [
     "AUTH_RATE_LIMIT",
@@ -118,6 +136,20 @@ function itemKey(item: DynamoItem): { pk: string; sk: string } | null {
   return pk && sk ? { pk, sk } : null;
 }
 
+function authRateLimitSnapshotKey(snapshot: DynamoItemKey): string {
+  return `${snapshot.pk}|${snapshot.sk}`;
+}
+
+function attemptCount(item: DynamoItem): number {
+  const rawValue = item.attemptCount?.N;
+  if (!rawValue) {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function itemSearchText(item: DynamoItem): string {
   return Object.values(item)
     .flatMap((attribute) => [attribute.S, attribute.N, attribute.BOOL?.toString()])
@@ -174,11 +206,13 @@ async function scanTaggedItems(client: DynamoClientLike, needles: string[]): Pro
   return items;
 }
 
-async function scanAuthRateLimitItems(
+async function scanAuthRateLimitItemsForIdentifiers(
   client: DynamoClientLike,
-  input: { email: string },
+  input: { dimension: RateLimitDimension; identifiers: string[] },
 ): Promise<DynamoItem[]> {
-  const prefix = authRateLimitPkPrefix("email", input.email);
+  const prefixes = input.identifiers.map((identifier) =>
+    authRateLimitPkPrefix(input.dimension, identifier),
+  );
   const items: DynamoItem[] = [];
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
 
@@ -192,13 +226,142 @@ async function scanAuthRateLimitItems(
     items.push(
       ...((response.Items ?? []) as DynamoItem[]).filter((item) => {
         const pk = item.pk?.S ?? "";
-        return item.sk?.S === "METADATA" && pk.startsWith(prefix);
+        return item.sk?.S === "METADATA" && prefixes.some((prefix) => pk.startsWith(prefix));
       }),
     );
     exclusiveStartKey = response.LastEvaluatedKey;
   } while (exclusiveStartKey);
 
   return items;
+}
+
+async function scanAuthRateLimitItems(
+  client: DynamoClientLike,
+  input: { email: string },
+): Promise<DynamoItem[]> {
+  return scanAuthRateLimitItemsForIdentifiers(client, {
+    dimension: "email",
+    identifiers: [input.email],
+  });
+}
+
+async function scanAuthRateLimitSnapshots(
+  client: DynamoClientLike,
+  input: { dimension: RateLimitDimension; identifiers: string[] },
+): Promise<AuthRateLimitSnapshot[]> {
+  const items = await scanAuthRateLimitItemsForIdentifiers(client, input);
+  return items
+    .map((item) => {
+      const key = itemKey(item);
+      return key ? { ...key, attemptCount: attemptCount(item) } : null;
+    })
+    .filter((snapshot): snapshot is AuthRateLimitSnapshot => snapshot !== null);
+}
+
+async function snapshotLocalAuthRateLimits(input: {
+  dimension: RateLimitDimension;
+  identifiers: string[];
+}): Promise<AuthRateLimitSnapshot[]> {
+  const client = createLocalDynamoClient();
+  try {
+    return await scanAuthRateLimitSnapshots(client, input);
+  } finally {
+    client.destroy();
+  }
+}
+
+function touchedAuthRateLimitKeys(
+  before: AuthRateLimitSnapshot[],
+  after: AuthRateLimitSnapshot[],
+): DynamoItemKey[] {
+  const beforeByKey = new Map(
+    before.map((snapshot) => [authRateLimitSnapshotKey(snapshot), snapshot.attemptCount]),
+  );
+  return after
+    .filter((snapshot) => snapshot.attemptCount > (beforeByKey.get(authRateLimitSnapshotKey(snapshot)) ?? 0))
+    .map(({ pk, sk }) => ({ pk, sk }));
+}
+
+function isConditionalCheckFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name?: string }).name === "ConditionalCheckFailedException"
+  );
+}
+
+async function decrementAuthRateLimitItem(client: DynamoClientLike, key: DynamoItemKey): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await client.send(
+        new UpdateItemCommand({
+          TableName: dynamodbTableName,
+          Key: {
+            pk: { S: key.pk },
+            sk: { S: key.sk },
+          },
+          UpdateExpression: "ADD #attemptCount :minusOne SET #updatedAt = :updatedAt",
+          ConditionExpression: "#attemptCount > :one",
+          ExpressionAttributeNames: {
+            "#attemptCount": "attemptCount",
+            "#updatedAt": "updatedAt",
+          },
+          ExpressionAttributeValues: {
+            ":minusOne": { N: "-1" },
+            ":one": { N: "1" },
+            ":updatedAt": { S: new Date().toISOString() },
+          },
+        }),
+      );
+      return;
+    } catch (error) {
+      if (!isConditionalCheckFailure(error)) {
+        throw error;
+      }
+    }
+
+    try {
+      await client.send(
+        new DeleteItemCommand({
+          TableName: dynamodbTableName,
+          Key: {
+            pk: { S: key.pk },
+            sk: { S: key.sk },
+          },
+          ConditionExpression: "attribute_not_exists(#attemptCount) OR #attemptCount <= :one",
+          ExpressionAttributeNames: {
+            "#attemptCount": "attemptCount",
+          },
+          ExpressionAttributeValues: {
+            ":one": { N: "1" },
+          },
+        }),
+      );
+      return;
+    } catch (error) {
+      if (!isConditionalCheckFailure(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`Could not safely remove smoke rate-limit attempt for ${key.pk}.`);
+}
+
+async function decrementAuthRateLimitItems(
+  client: DynamoClientLike,
+  keys: DynamoItemKey[],
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const key of keys) {
+    const dedupeKey = authRateLimitSnapshotKey(key);
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    await decrementAuthRateLimitItem(client, key);
+  }
 }
 
 async function deleteItems(client: DynamoClientLike, items: DynamoItem[]): Promise<void> {
@@ -241,6 +404,8 @@ async function cleanupSmokeRun(
   const scanTaggedItemsForCleanup = dependencies.scanTaggedItems ?? scanTaggedItems;
   const scanAuthRateLimitItemsForCleanup =
     dependencies.scanAuthRateLimitItems ?? scanAuthRateLimitItems;
+  const decrementAuthRateLimitItemsForCleanup =
+    dependencies.decrementAuthRateLimitItems ?? decrementAuthRateLimitItems;
   const deleteItemsForCleanup = dependencies.deleteItems ?? deleteItems;
   const deleteFakeSesMessagesForCleanup =
     dependencies.deleteFakeSesMessages ?? deleteFakeSesMessages;
@@ -291,6 +456,7 @@ async function cleanupSmokeRun(
       }),
     );
     await deleteItemsForCleanup(client, await scanAuthRateLimitItemsForCleanup(client, input));
+    await decrementAuthRateLimitItemsForCleanup(client, input.ipRateLimitKeys);
 
     await deleteFakeSesMessagesForCleanup(input.email);
   } finally {
@@ -435,6 +601,10 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
   const gameId = "game-cleanup-001";
   const sessionId = "20270103";
   const playerId = "player-cleanup-001";
+  const ipRateLimitKey = {
+    pk: "AUTH_RATE_LIMIT#magic-link-start#ip#hash#bucket",
+    sk: "METADATA",
+  };
   const sessionPk = `SESSION#${sessionId}`;
   const unrelatedSessionMetadata = testItem(
     sessionPk,
@@ -477,6 +647,7 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
     ],
   ]);
   const deletedKeys = new Set<string>();
+  const decrementedRateLimitKeys = new Set<string>();
   let destroyed = false;
   let fakeSesDeletedFor: string | null = null;
   const fakeClient: DynamoClientLike = {
@@ -497,6 +668,7 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
       gameId,
       sessionId,
       playerIds: [playerId],
+      ipRateLimitKeys: [ipRateLimitKey],
     },
     {
       createClient: () => fakeClient,
@@ -510,6 +682,11 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
       },
       async scanAuthRateLimitItems() {
         return partitions.get("AUTH_RATE_LIMIT#magic-link-start#email#hash#bucket") ?? [];
+      },
+      async decrementAuthRateLimitItems(_client, keys) {
+        for (const key of keys) {
+          decrementedRateLimitKeys.add(`${key.pk}|${key.sk}`);
+        }
       },
       async deleteItems(_client, items) {
         for (const item of items) {
@@ -540,6 +717,7 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
   expect(deletedKeys).toContain(`PLAYER#${playerId}|PROFILE`);
   expect(deletedKeys).toContain(`${sessionPk}|GAME#${gameId}`);
   expect(deletedKeys).toContain("AUTH_RATE_LIMIT#magic-link-start#email#hash#bucket|METADATA");
+  expect(decrementedRateLimitKeys).toContain(`${ipRateLimitKey.pk}|${ipRateLimitKey.sk}`);
   expect(deletedKeys).not.toContain(`${sessionPk}|METADATA`);
   expect(partitions.get(sessionPk)).toEqual([unrelatedSessionMetadata]);
   expect(fakeSesDeletedFor).toBe(email);
@@ -565,13 +743,24 @@ test.describe("M2 local-stack smoke", () => {
     const sessionId = sessionIdForGameDate(schedule.gameDate);
     let gameId = "";
     const playerIds: string[] = [];
+    const initialIpRateLimits = await snapshotLocalAuthRateLimits({
+      dimension: "ip",
+      identifiers: localBrowserClientIpCandidates,
+    });
+    let magicLinkStartReachedApi = false;
 
     let testFailed = false;
     try {
       await page.goto("/sign-in?returnTo=%2Fsetup");
       await expect(page.getByTestId("signin-shell")).toBeVisible();
       await page.locator("#auth-email").fill(email);
+      const magicStartResponsePromise = page.waitForResponse((response) =>
+        response.url().startsWith(`${apiBaseUrl}/v1/auth/magic/start`) &&
+        response.request().method() === "POST",
+      );
       await page.getByTestId("send-magic-link").click();
+      const magicStartResponse = await magicStartResponsePromise;
+      magicLinkStartReachedApi = magicStartResponse.status() > 0;
       await expect(page.locator("#auth-status")).toContainText("Magic link sent");
 
       const magicLink = await waitForMagicLink(email);
@@ -649,7 +838,8 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
       await expect(page.getByTestId("delete-game")).toBeDisabled();
       await expect(page.getByTestId("quick-create-player")).toBeDisabled();
-      await expect(page.getByTestId("add-goal")).toBeDisabled();
+      await expect(page.getByTestId("add-goal")).toBeEnabled();
+      await expect(page.locator("#goal-form-note")).toContainText("final whistle");
       await expectAllDisabled(page.locator('[data-action="assign-player"]'));
       await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
       await expect(page.locator('[data-action="delete-goal"]').first()).toBeEnabled();
@@ -659,6 +849,12 @@ test.describe("M2 local-stack smoke", () => {
       throw error;
     } finally {
       try {
+        const currentIpRateLimits = magicLinkStartReachedApi
+          ? await snapshotLocalAuthRateLimits({
+              dimension: "ip",
+              identifiers: localBrowserClientIpCandidates,
+            })
+          : [];
         await cleanupSmokeRun({
           runId,
           email,
@@ -667,6 +863,7 @@ test.describe("M2 local-stack smoke", () => {
           gameId,
           sessionId,
           playerIds,
+          ipRateLimitKeys: touchedAuthRateLimitKeys(initialIpRateLimits, currentIpRateLimits),
         });
       } catch (error) {
         if (!testFailed) {
