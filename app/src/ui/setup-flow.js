@@ -1361,24 +1361,31 @@
       return ` style="--team-color: ${escapeHtml(color)}"`;
     }
 
-    function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select") {
-      const safeSelected = options.some((option) => option.value === selectedValue)
+    function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select", missingSelectedLabel = null) {
+      const selectedExists = options.some((option) => option.value === selectedValue);
+      const preservesMissingSelection =
+        !selectedExists && Boolean(selectedValue) && typeof missingSelectedLabel === "string";
+      const safeSelected = selectedExists || preservesMissingSelection
         ? selectedValue
         : (options[0]?.value ?? "");
+      const preservedOption = preservesMissingSelection
+        ? `<option value="${escapeHtml(selectedValue)}" selected>${escapeHtml(missingSelectedLabel)}</option>`
+        : "";
+      const renderedOptions = options
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.value)}"${option.value === safeSelected ? " selected" : ""}>${escapeHtml(
+              option.label,
+            )}</option>`,
+        )
+        .join("");
 
       selectElement.innerHTML =
-        options.length > 0
-          ? options
-              .map(
-                (option) =>
-                  `<option value="${escapeHtml(option.value)}"${option.value === safeSelected ? " selected" : ""}>${escapeHtml(
-                    option.label,
-                  )}</option>`,
-              )
-              .join("")
+        options.length > 0 || preservesMissingSelection
+          ? `${preservedOption}${renderedOptions}`
           : `<option value="">${escapeHtml(emptyLabel)}</option>`;
       selectElement.value = safeSelected;
-      selectElement.disabled = options.length === 0;
+      selectElement.disabled = options.length === 0 && !preservesMissingSelection;
     }
 
     function renderLiveScoreboard() {
@@ -1484,7 +1491,16 @@
         label: player.nickname,
       }));
       const selectedScorerId = seed.scorerPlayerId ?? goalScorerInput.value;
-      renderSelectOptions(goalScorerInput, scorerOptions, selectedScorerId, "Assign players first");
+      const selectedScorerLabel = selectedScorerId
+        ? `${playerNickname(selectedScorerId)} (not currently rostered)`
+        : null;
+      renderSelectOptions(
+        goalScorerInput,
+        scorerOptions,
+        selectedScorerId,
+        "Assign players first",
+        selectedScorerLabel,
+      );
       renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
 
       const activeThird = activeThirdNumber();
@@ -2194,6 +2210,7 @@
             pendingCreateGoalIdempotency = null;
           } else {
             clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
+            await loadGameGoals();
           }
           setStatus(eventId ? "Goal updated." : "Goal added.", "success");
         } catch (error) {
