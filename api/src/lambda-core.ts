@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
@@ -61,6 +62,9 @@ import {
 } from "./data/repository.js";
 import type { CreateGoalResult, DeleteGoalResult, GameStatus, UpdateGoalResult } from "./data/types.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
+
+const FINISHED_REPAIR_RETRY_DELAYS_MS = [25, 50, 100] as const;
+const FINISHED_REPAIR_MAX_ATTEMPTS = 3;
 
 export interface ApiGatewayHttpEvent {
   rawPath?: string;
@@ -999,6 +1003,32 @@ function isCompleteFinishedGame(game: RepositoryGameRecord | null): game is Repo
   );
 }
 
+function isRetryableFinishedRepairConflict(error: unknown): boolean {
+  return (
+    error instanceof GameMutationStateError ||
+    (error instanceof GameTimerTransitionError && error.code === "game_state_changed")
+  );
+}
+
+async function waitForFinishedRepairCompletion(input: {
+  repository: RepositoryContract;
+  gameId: string;
+}): Promise<RepositoryGameRecord | null> {
+  let latest: RepositoryGameRecord | null = null;
+
+  for (const delayMs of FINISHED_REPAIR_RETRY_DELAYS_MS) {
+    await sleep(delayMs);
+    latest = await input.repository.getGame(input.gameId, {
+      consistentRead: true,
+    });
+    if (!latest || latest.status !== "finished" || isCompleteFinishedGame(latest)) {
+      return latest;
+    }
+  }
+
+  return latest;
+}
+
 async function recoverFinishedGameForFinishRoute(input: {
   repository: RepositoryContract;
   gameId: string;
@@ -1020,21 +1050,27 @@ async function recoverFinishedGameForFinishRoute(input: {
     );
   }
 
-  let repaired: RepositoryGameRecord | null = null;
-  try {
-    await ensureGameTeamsForGame(input.repository, current, { allowFinished: true });
-    repaired = await input.repository.finishGame({ gameId: input.gameId });
-  } catch (error) {
-    const isRetryableRepairConflict =
-      error instanceof GameMutationStateError ||
-      (error instanceof GameTimerTransitionError && error.code === "game_state_changed");
-    if (!isRetryableRepairConflict) {
-      throw error;
-    }
+  let repaired: RepositoryGameRecord | null = current;
+  for (let attempt = 0; attempt < FINISHED_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await ensureGameTeamsForGame(input.repository, current, { allowFinished: true });
+      repaired = await input.repository.finishGame({ gameId: input.gameId });
+      if (isCompleteFinishedGame(repaired)) {
+        break;
+      }
+    } catch (error) {
+      if (!isRetryableFinishedRepairConflict(error)) {
+        throw error;
+      }
 
-    repaired = await input.repository.getGame(input.gameId, {
-      consistentRead: true,
-    });
+      repaired = await waitForFinishedRepairCompletion({
+        repository: input.repository,
+        gameId: input.gameId,
+      });
+      if (!repaired || repaired.status !== "finished" || isCompleteFinishedGame(repaired)) {
+        break;
+      }
+    }
   }
 
   if (!isCompleteFinishedGame(repaired)) {

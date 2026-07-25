@@ -212,10 +212,12 @@ interface HarnessConfig {
   rosterAssignments?: Record<string, MockRosterAssignmentRecord>;
   gamePlayers?: Record<string, MockGamePlayerRecord>;
   finishGameStateChangedOnce?: boolean;
+  finishGameStateChangedWithIncompleteFinishOnce?: boolean;
   finishGameStateChangedWithoutFinishOnce?: boolean;
   deleteGameFinishesBeforeDeleteOnce?: boolean;
   createGameTeamOverrideStateChangedOnce?: boolean;
   createGameTeamOverrideFinishesIncompleteOnce?: boolean;
+  completeFinishedRepairAfterConsistentReads?: number;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
@@ -302,11 +304,14 @@ function createHarness(config: HarnessConfig = {}) {
   const listTeamsForGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
+  let finishGameStateChangedWithIncompleteFinishOnce =
+    config.finishGameStateChangedWithIncompleteFinishOnce ?? false;
   let finishGameStateChangedWithoutFinishOnce = config.finishGameStateChangedWithoutFinishOnce ?? false;
   let deleteGameFinishesBeforeDeleteOnce = config.deleteGameFinishesBeforeDeleteOnce ?? false;
   let createGameTeamOverrideStateChangedOnce = config.createGameTeamOverrideStateChangedOnce ?? false;
   let createGameTeamOverrideFinishesIncompleteOnce =
     config.createGameTeamOverrideFinishesIncompleteOnce ?? false;
+  let completeFinishedRepairAfterConsistentReads = config.completeFinishedRepairAfterConsistentReads ?? 0;
   let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   let finishBeforeGoalCorrectionOnce = config.finishBeforeGoalCorrectionOnce ?? false;
@@ -837,7 +842,26 @@ function createHarness(config: HarnessConfig = {}) {
       },
       async getGame(gameId: string, options: { consistentRead?: boolean } = {}) {
         getGameCalls.push({ gameId, consistentRead: options.consistentRead ?? false });
-        return games.get(gameId) ?? null;
+        const game = games.get(gameId) ?? null;
+        if (
+          game &&
+          options.consistentRead &&
+          completeFinishedRepairAfterConsistentReads > 0 &&
+          game.status === "finished" &&
+          (!game.finishedAt || !game.result)
+        ) {
+          completeFinishedRepairAfterConsistentReads -= 1;
+          if (completeFinishedRepairAfterConsistentReads === 0) {
+            const finishedAt = "2026-02-23T00:00:05.000Z";
+            games.set(gameId, {
+              ...game,
+              finishedAt,
+              result: buildMockGameResult(gameId, finishedAt),
+              updatedAt: finishedAt,
+            });
+          }
+        }
+        return game;
       },
       async updateGame(input) {
         const existing = games.get(input.gameId);
@@ -1018,6 +1042,21 @@ function createHarness(config: HarnessConfig = {}) {
         }
 
         const finishedAt = "2026-02-23T00:00:05.000Z";
+        if (finishGameStateChangedWithIncompleteFinishOnce) {
+          finishGameStateChangedWithIncompleteFinishOnce = false;
+          games.set(input.gameId, {
+            ...existing,
+            status: "finished" as const,
+            finishedAt: null,
+            result: null,
+            updatedAt: finishedAt,
+          });
+          throw new GameTimerTransitionError(
+            "game_state_changed",
+            "Game or scoreboard state changed while finishing this game. Reload and try again.",
+          );
+        }
+
         if (finishGameStateChangedWithoutFinishOnce) {
           finishGameStateChangedWithoutFinishOnce = false;
           throw new GameTimerTransitionError(
@@ -1464,10 +1503,12 @@ function createGoalHarness(input: {
   runningThird?: boolean;
   completedThirds?: boolean;
   finishGameStateChangedOnce?: boolean;
+  finishGameStateChangedWithIncompleteFinishOnce?: boolean;
   finishGameStateChangedWithoutFinishOnce?: boolean;
   deleteGameFinishesBeforeDeleteOnce?: boolean;
   createGameTeamOverrideStateChangedOnce?: boolean;
   createGameTeamOverrideFinishesIncompleteOnce?: boolean;
+  completeFinishedRepairAfterConsistentReads?: number;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
@@ -1509,10 +1550,12 @@ function createGoalHarness(input: {
       },
     },
     finishGameStateChangedOnce: input.finishGameStateChangedOnce,
+    finishGameStateChangedWithIncompleteFinishOnce: input.finishGameStateChangedWithIncompleteFinishOnce,
     finishGameStateChangedWithoutFinishOnce: input.finishGameStateChangedWithoutFinishOnce,
     deleteGameFinishesBeforeDeleteOnce: input.deleteGameFinishesBeforeDeleteOnce,
     createGameTeamOverrideStateChangedOnce: input.createGameTeamOverrideStateChangedOnce,
     createGameTeamOverrideFinishesIncompleteOnce: input.createGameTeamOverrideFinishesIncompleteOnce,
+    completeFinishedRepairAfterConsistentReads: input.completeFinishedRepairAfterConsistentReads,
     createAndLinkGamePlayerStateChangedOnce: input.createAndLinkGamePlayerStateChangedOnce,
     assignRosterPlayerStateChangedOnce: input.assignRosterPlayerStateChangedOnce,
     finishBeforeGoalCorrectionOnce: input.finishBeforeGoalCorrectionOnce,
@@ -2702,8 +2745,9 @@ test("core lambda repairs incomplete finished games after team setup races", asy
 test("core lambda recovers finished repair conflicts by rereading completed results", async () => {
   const harness = createGoalHarness({
     completedThirds: true,
+    finishGameStateChangedWithIncompleteFinishOnce: true,
     createGameTeamOverrideFinishesIncompleteOnce: true,
-    finishGameStateChangedOnce: true,
+    completeFinishedRepairAfterConsistentReads: 2,
     gameTeams: {
       "game-1:blue": {
         gameId: "game-1",
@@ -2745,7 +2789,7 @@ test("core lambda recovers finished repair conflicts by rereading completed resu
   assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
   assert.ok(body.result);
   assert.equal(
-    harness.getGameCalls.filter((call) => call.gameId === "game-1" && call.consistentRead).length >= 2,
+    harness.getGameCalls.filter((call) => call.gameId === "game-1" && call.consistentRead).length >= 3,
     true,
   );
   const record = harness.idempotencyRecords.get(

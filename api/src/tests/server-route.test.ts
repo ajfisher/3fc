@@ -628,6 +628,9 @@ test("local server finish route rereads completed repair after repair conflicts"
       if (getGameCalls.length === 2) {
         return incompleteFinished;
       }
+      if (getGameCalls.length === 3) {
+        return incompleteFinished;
+      }
       return repairedFinished;
     },
     async finishGame() {
@@ -701,7 +704,7 @@ test("local server finish route rereads completed repair after repair conflicts"
   assert.equal(response.statusCode, 200);
   assert.equal(storedStatusCode, 200);
   assert.equal(finishGameCalls, 1);
-  assert.equal(getGameCalls.filter((call) => call.consistentRead).length >= 2, true);
+  assert.equal(getGameCalls.filter((call) => call.consistentRead).length >= 3, true);
   const body = JSON.parse(response.body) as { status: string; result: GameResult | null };
   assert.equal(body.status, "finished");
   assert.ok(body.result);
