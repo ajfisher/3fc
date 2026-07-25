@@ -406,6 +406,21 @@ function goalResponsePayload(state: MockApiState, game: MockGame, extra: Record<
   };
 }
 
+function refreshMockFinishedResult(state: MockApiState, game: MockGame, computedAt: string): MockGame {
+  if (game.status !== "finished") {
+    return game;
+  }
+
+  const updated: MockGame = {
+    ...game,
+    finishedAt: game.finishedAt ?? computedAt,
+    result: buildMockGameResult(state, game, computedAt),
+    updatedAt: computedAt,
+  };
+  state.games.set(game.gameId, updated);
+  return updated;
+}
+
 function teamIdsForGame(state: MockApiState, game: MockGame): Set<TeamId> {
   return new Set(ensureGameTeams(state, game).map((team) => team.teamId));
 }
@@ -1123,9 +1138,10 @@ function createMockFetch(state: MockApiState) {
       }
 
       state.goalEvents.delete(latest.eventId);
+      const refreshedGame = refreshMockFinishedResult(state, game, "2026-03-28T11:02:00.000Z");
       return createJsonResponse(
         200,
-        goalResponsePayload(state, game, {
+        goalResponsePayload(state, refreshedGame, {
           deletedGoal: latest,
           audit: {
             auditId: `audit-${latest.eventId}`,
@@ -1159,9 +1175,10 @@ function createMockFetch(state: MockApiState) {
 
       if (method === "DELETE") {
         state.goalEvents.delete(eventId);
+        const refreshedGame = refreshMockFinishedResult(state, game, "2026-03-28T11:02:01.000Z");
         return createJsonResponse(
           200,
-          goalResponsePayload(state, game, {
+          goalResponsePayload(state, refreshedGame, {
             deletedGoal: existing,
             audit: {
               auditId: `audit-${eventId}`,
@@ -1200,9 +1217,10 @@ function createMockFetch(state: MockApiState) {
       }
 
       state.goalEvents.set(eventId, updated);
+      const refreshedGame = refreshMockFinishedResult(state, game, "2026-03-28T11:02:02.000Z");
       return createJsonResponse(
         200,
-        goalResponsePayload(state, game, {
+        goalResponsePayload(state, refreshedGame, {
           goal: updated,
           previousGoal: existing,
           audit: {
@@ -2885,6 +2903,10 @@ test("setup smoke completes live game through finish", async () => {
     scriptFile: "setup-flow.js",
     apiState,
   });
+  Object.defineProperty(gamePage.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
 
   const nicknameInput = gamePage.document.getElementById("player-nickname");
   const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
@@ -2998,9 +3020,9 @@ test("setup smoke completes live game through finish", async () => {
   assert.equal(startThirdButton.disabled, true);
   assert.equal(finishThirdButton.disabled, true);
   assert.equal(saveGoalButton.disabled, true);
-  assert.equal(undoLastGoalButton.disabled, true);
+  assert.equal(undoLastGoalButton.disabled, false);
   assert.equal(quickCreateButton.disabled, true);
-  assert.match(goalFormNote.textContent ?? "", /locked/);
+  assert.match(goalFormNote.textContent ?? "", /correct the result/);
 
   const editGoalButton = gamePage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   const deleteGoalButton = gamePage.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
@@ -3010,9 +3032,41 @@ test("setup smoke completes live game through finish", async () => {
   assert(editGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(deleteGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(lockedAssignButton instanceof gamePage.window.HTMLButtonElement);
-  assert.equal(editGoalButton.disabled, true);
-  assert.equal(deleteGoalButton.disabled, true);
+  assert.equal(editGoalButton.disabled, false);
+  assert.equal(deleteGoalButton.disabled, false);
   assert.equal(lockedAssignButton.disabled, true);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  assert.equal(saveGoalButton.disabled, false);
+  assert.match(goalFormNote.textContent ?? "", /Finished-game correction/);
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scorerInput.value = cy.playerId;
+  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "blue");
+  assert.equal(apiState.games.get("game-smoke-1")?.result?.winnerTeamId, "blue");
+  assert.match(resultSummary.textContent ?? "", /Blue win/);
+  assert.match(resultSummary.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*0/);
+  assert.match(resultSummary.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Scored\s*1/);
+
+  const refreshedDeleteGoalButton = gamePage.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(refreshedDeleteGoalButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(refreshedDeleteGoalButton.disabled, false);
+  dispatchClick(refreshedDeleteGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 0);
+  assert.equal(apiState.games.get("game-smoke-1")?.result?.winnerTeamId, null);
+  assert.match(resultSummary.textContent ?? "", /Draw/);
+  assert.equal(undoLastGoalButton.disabled, true);
 
   const repeatFinishResponse = await createMockFetch(apiState)(
     "http://localhost:3001/v1/games/game-smoke-1/finish",
@@ -3026,7 +3080,7 @@ test("setup smoke completes live game through finish", async () => {
   const repeatFinishBody = (await repeatFinishResponse.json()) as MockGame;
   assert.equal(repeatFinishResponse.status, 200);
   assert.equal(repeatFinishBody.status, "finished");
-  assert.equal(repeatFinishBody.result?.winnerTeamId, "red");
+  assert.equal(repeatFinishBody.result?.winnerTeamId, null);
   assert.equal(repeatFinishBody.finishedAt, finishedGame?.finishedAt);
 });
 

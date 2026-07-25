@@ -1108,6 +1108,14 @@
       return currentGame?.status === "finished";
     }
 
+    function isEditingGoal() {
+      return editingGoalId !== null;
+    }
+
+    function isFinishedGoalCorrection() {
+      return isGameFinished() && isEditingGoal();
+    }
+
     function nextStartableThird(timer) {
       if (timer.status === "running" || timer.status === "complete") {
         return null;
@@ -1530,7 +1538,7 @@
       goalAssistsElement.innerHTML = rostered
         .map((player) => {
           const checked = selected.has(player.playerId);
-          const disabled = isGameFinished() || (!checked && selected.size >= 3);
+          const disabled = (isGameFinished() && !isFinishedGoalCorrection()) || (!checked && selected.size >= 3);
           return `<label data-ui="check-row">
             <input type="checkbox" value="${escapeHtml(player.playerId)}"${checked ? " checked" : ""}${
               disabled ? " disabled" : ""
@@ -1603,11 +1611,11 @@
       const gameFinished = isGameFinished();
       saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
       cancelGoalEditButton.hidden = editingGoalId === null;
-      cancelGoalEditButton.disabled = gameFinished || editingGoalId === null;
-      undoLastGoalButton.disabled = gameFinished || goalTimeline.length === 0;
+      cancelGoalEditButton.disabled = editingGoalId === null;
+      undoLastGoalButton.disabled = goalTimeline.length === 0;
       undoLastGoalButton.textContent = "Undo last";
 
-      if (gameFinished) {
+      if (gameFinished && !isEditingGoal()) {
         goalScoringTeamInput.disabled = true;
         goalConcedingTeamInput.disabled = true;
         goalOwnGoalInput.disabled = true;
@@ -1618,7 +1626,7 @@
             input.disabled = true;
           }
         }
-        goalFormNote.textContent = "Game finished. Live scoring is locked.";
+        goalFormNote.textContent = "Game finished. Select a goal to correct the result.";
         return;
       }
 
@@ -1644,7 +1652,9 @@
 
       if (editingGoalId) {
         saveGoalButton.disabled = false;
-        goalFormNote.textContent = "Editing keeps the original timer stamp.";
+        goalFormNote.textContent = gameFinished
+          ? "Finished-game correction keeps the original timer stamp."
+          : "Editing keeps the original timer stamp.";
         return;
       }
 
@@ -1678,7 +1688,6 @@
       }
 
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
-      const locked = isGameFinished();
       goalTimelineElement.innerHTML = [...goalTimeline]
         .reverse()
         .map((goal) => {
@@ -1700,10 +1709,10 @@
               ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
               <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
                 goal.eventId,
-              )}"${locked ? " disabled" : ""}>Edit</button>
+              )}">Edit</button>
               <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
                 goal.eventId,
-              )}"${locked ? " disabled" : ""}>Delete</button>
+              )}">Delete</button>
             </div>
           </li>`;
         })
@@ -1762,9 +1771,9 @@
     }
 
     function buildGoalPayload() {
-      if (isGameFinished()) {
+      if (isGameFinished() && !isEditingGoal()) {
         return {
-          error: "Game finished. Live scoring is locked.",
+          error: "Game finished. Select a goal to correct the result.",
         };
       }
 
@@ -1843,6 +1852,22 @@
 
     function clearGoalMutationIdempotency(prefix, stablePart) {
       pendingGoalMutationIdempotency.delete(`${prefix}:${stablePart}`);
+    }
+
+    async function refreshGameAfterFinishedCorrection() {
+      if (!isGameFinished()) {
+        return true;
+      }
+
+      try {
+        await loadGame();
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not refresh finished game result.";
+        showError(message);
+        setStatus("Finished result refresh failed.", "error");
+        return false;
+      }
     }
 
     function idempotencyKeyForGoalSave(eventId, payload) {
@@ -2373,7 +2398,7 @@
       });
 
       saveGoalButton.addEventListener("click", async () => {
-        if (isGameFinished()) {
+        if (isGameFinished() && !isEditingGoal()) {
           renderLiveScoring();
           return;
         }
@@ -2412,6 +2437,10 @@
             if (!goalsLoaded) {
               throw new Error("Goal update was saved, but the latest goal state could not be loaded.");
             }
+            const gameRefreshed = await refreshGameAfterFinishedCorrection();
+            if (!gameRefreshed) {
+              throw new Error("Goal update was saved, but the finished result could not be refreshed.");
+            }
             editingGoalId = null;
             clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
           }
@@ -2432,11 +2461,6 @@
       });
 
       undoLastGoalButton.addEventListener("click", async () => {
-        if (isGameFinished()) {
-          renderLiveScoring();
-          return;
-        }
-
         const latest = goalTimeline.at(-1);
         if (!latest) {
           return;
@@ -2460,6 +2484,10 @@
           });
 
           applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!gameRefreshed) {
+            throw new Error("Latest goal was undone, but the finished result could not be refreshed.");
+          }
           clearGoalMutationIdempotency("undo-goal", stablePart);
           setStatus("Latest goal undone.", "success");
         } catch (error) {
@@ -2480,11 +2508,6 @@
 
         const action = target.getAttribute("data-action");
         if (action !== "edit-goal" && action !== "delete-goal") {
-          return;
-        }
-
-        if (isGameFinished()) {
-          renderLiveScoring();
           return;
         }
 
@@ -2525,6 +2548,10 @@
           );
 
           applyGoalMutationResult(result, { deletedEventId: eventId });
+          const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!gameRefreshed) {
+            throw new Error("Goal was deleted, but the finished result could not be refreshed.");
+          }
           clearGoalMutationIdempotency("delete-goal", stablePart);
           setStatus("Goal deleted.", "success");
         } catch (error) {
