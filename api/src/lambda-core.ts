@@ -1525,6 +1525,7 @@ async function executeIdempotentMutation(input: {
   origin: string | undefined;
   allowedOrigins: string[];
   execute: () => Promise<ApiGatewayHttpResponse>;
+  shouldPersistResponse?: (response: ApiGatewayHttpResponse) => boolean;
 }): Promise<ApiGatewayHttpResponse> {
   if (!input.idempotencyKey) {
     return input.execute();
@@ -1557,6 +1558,10 @@ async function executeIdempotentMutation(input: {
   }
 
   const mutationResponse = await input.execute();
+  if (input.shouldPersistResponse && !input.shouldPersistResponse(mutationResponse)) {
+    return mutationResponse;
+  }
+
   const created = await input.repository.createIdempotencyRecord({
     scope,
     key: idempotencyKey,
@@ -1963,6 +1968,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           origin,
           allowedOrigins: dependencies.corsAllowedOrigins,
           execute: executeJoin,
+          shouldPersistResponse: (response) => response.statusCode !== 404,
         });
         status = mutationResponse.statusCode;
         return mutationResponse;

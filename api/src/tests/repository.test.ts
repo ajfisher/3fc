@@ -1475,6 +1475,78 @@ test("repository repairs legacy game join-code collisions with a usable fallback
   });
 });
 
+test("repository repairs missing legacy join codes before game metadata mutations", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const updatedGame = await repository.updateGame({
+    gameId: "game-legacy",
+    gameStartTs: "2026-02-22T10:15:00.000Z",
+  });
+  assert.ok(updatedGame);
+  assert.match(updatedGame.joinCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.notEqual(updatedGame.joinCode, buildJoinCodeForGameId("game-legacy"));
+
+  const storedGame = client.readItem("GAME#game-legacy", "METADATA");
+  assert.equal(JSON.parse(storedGame?.data?.S ?? "{}").joinCode, updatedGame.joinCode);
+  const lookupItem = client.readItem(`JOIN_CODE#${updatedGame.joinCode}`, "METADATA");
+  assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
+    joinCode: updatedGame.joinCode,
+    gameId: "game-legacy",
+  });
+  assert.deepEqual(await repository.getGameByJoinCode(updatedGame.joinCode), updatedGame);
+});
+
+test("repository repairs stored join codes that are missing lookup ownership", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        joinCode: "LEGACY23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const repairedGame = await repository.getGame("game-legacy", { repairLegacyJoinCode: true });
+  assert.ok(repairedGame);
+  assert.equal(repairedGame.joinCode, "LEGACY23");
+  const lookupItem = client.readItem("JOIN_CODE#LEGACY23", "METADATA");
+  assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
+    joinCode: "LEGACY23",
+    gameId: "game-legacy",
+  });
+  assert.deepEqual(await repository.getGameByJoinCode("LEGACY23"), repairedGame);
+});
+
 test("repository does not delete another game's join-code lookup for legacy games", async () => {
   const { repository, client } = createRepositoryHarness();
   const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
@@ -1612,6 +1684,44 @@ test("repository rejects join registration if join code lookup changes before wr
   );
   assert.equal(await repository.getPlayer("player-racy-join"), null);
   assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+});
+
+test("repository replays existing public join registration after idempotency recording failures", async () => {
+  const repository = createRepository();
+  const game = await repository.createGame({
+    gameId: "game-join-replay",
+    joinCode: "REPLAY23",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  const firstJoin = await repository.joinGameByCode({
+    joinCode: game.joinCode,
+    playerId: "player-join-replay",
+    nickname: "Nia",
+  });
+  assert.ok(firstJoin);
+
+  const replayedJoin = await repository.joinGameByCode({
+    joinCode: game.joinCode,
+    playerId: "player-join-replay",
+    nickname: "Nia",
+  });
+  assert.deepEqual(replayedJoin, firstJoin);
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-join-replay",
+      nickname: "Mia",
+    }),
+    (error) =>
+      error instanceof GameJoinRegistrationError &&
+      error.code === "join_state_changed",
+  );
 });
 
 test("repository rethrows non-conditional transaction cancellation when joining by code", async () => {

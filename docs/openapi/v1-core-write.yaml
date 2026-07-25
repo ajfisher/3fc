@@ -31,6 +31,7 @@ paths:
             minLength: 8
             maxLength: 8
             pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -748,7 +749,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     JoinGameConflict:
-      description: Join registration is closed or the join state changed while registering
+      description: Idempotency key was reused with a different request payload, join registration is closed, or the join state changed while registering
       content:
         application/json:
           schema:

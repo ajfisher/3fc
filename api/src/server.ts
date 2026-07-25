@@ -1182,6 +1182,7 @@ async function executeIdempotentMutation(input: {
   requestPayload: unknown;
   execute: () => Promise<JsonMutationResult>;
   repositoryClient?: LocalIdempotencyRepository;
+  shouldPersistResponse?: (response: JsonMutationResult) => boolean;
 }): Promise<number> {
   const repositoryClient = input.repositoryClient ?? repository;
   const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
@@ -1221,6 +1222,11 @@ async function executeIdempotentMutation(input: {
   }
 
   const mutation = await input.execute();
+  if (input.shouldPersistResponse && !input.shouldPersistResponse(mutation)) {
+    sendJsonWithCors(input.request, input.response, mutation.statusCode, mutation.payload);
+    return mutation.statusCode;
+  }
+
   const mutationBody = JSON.stringify(mutation.payload);
   const created = await repositoryClient.createIdempotencyRecord({
     scope,
@@ -2395,6 +2401,7 @@ async function start(): Promise<void> {
           method,
           route: `/v1/join/${joinCode}`,
           requestPayload: parsedBody.data,
+          shouldPersistResponse: (mutation) => mutation.statusCode !== 404,
           execute: async () => {
             let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
             try {

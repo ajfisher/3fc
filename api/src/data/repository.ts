@@ -1430,12 +1430,8 @@ export class ThreeFcRepository {
       return null;
     }
 
-    const rawGame = item.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
     const game = withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
-    if (
-      options.repairLegacyJoinCode &&
-      (typeof rawGame.joinCode !== "string" || rawGame.joinCode.trim().length === 0)
-    ) {
+    if (options.repairLegacyJoinCode) {
       return this.repairLegacyGameJoinCode(item);
     }
 
@@ -1508,6 +1504,15 @@ export class ThreeFcRepository {
     );
     if (normalizeJoinCode(game.joinCode) !== normalizedJoinCode) {
       return null;
+    }
+
+    const existingReplay = await this.readExistingJoinRegistration({
+      game,
+      playerId: input.playerId,
+      nickname: input.nickname,
+    });
+    if (existingReplay) {
+      return existingReplay;
     }
 
     if (game.status === "finished") {
@@ -1594,6 +1599,15 @@ export class ThreeFcRepository {
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
+        const replayedJoin = await this.readExistingJoinRegistration({
+          game,
+          playerId: input.playerId,
+          nickname: input.nickname,
+        });
+        if (replayedJoin) {
+          return replayedJoin;
+        }
+
         throw new GameJoinRegistrationError(
           "join_state_changed",
           409,
@@ -1608,6 +1622,49 @@ export class ThreeFcRepository {
       game,
       player: withTimestamps(playerPayload, now, now),
       link: withTimestamps(linkPayload, now, now),
+    };
+  }
+
+  private async readExistingJoinRegistration(input: {
+    game: GameRecord;
+    playerId: string;
+    nickname: string;
+  }): Promise<JoinGameByCodeResult | null> {
+    const [playerItem, linkItem] = await Promise.all([
+      this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
+      this.getEntity(gamePk(input.game.gameId), gamePlayerSk(input.playerId), {
+        consistentRead: true,
+      }),
+    ]);
+    if (playerItem?.entityType !== ENTITY_TYPE.player || linkItem?.entityType !== ENTITY_TYPE.gamePlayer) {
+      return null;
+    }
+
+    const player = withTimestamps(
+      playerItem.data as Omit<PlayerRecord, "createdAt" | "updatedAt">,
+      playerItem.createdAt,
+      playerItem.updatedAt,
+    );
+    const link = withTimestamps(
+      linkItem.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">,
+      linkItem.createdAt,
+      linkItem.updatedAt,
+    );
+
+    if (
+      player.playerId !== input.playerId ||
+      player.nickname !== input.nickname ||
+      player.claimedByUserId !== null ||
+      link.gameId !== input.game.gameId ||
+      link.playerId !== input.playerId
+    ) {
+      return null;
+    }
+
+    return {
+      game: input.game,
+      player,
+      link,
     };
   }
 
@@ -1695,7 +1752,7 @@ export class ThreeFcRepository {
       throw new Error("At least one game field must be updated.");
     }
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -1813,7 +1870,7 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireThirdNumber(input.third);
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -1890,7 +1947,7 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireThirdNumber(input.third);
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -1956,9 +2013,7 @@ export class ThreeFcRepository {
   async finishGame(input: FinishGameInput): Promise<GameRecord | null> {
     requireNonEmpty("gameId", input.gameId);
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk(), {
-      consistentRead: true,
-    });
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -2074,7 +2129,7 @@ export class ThreeFcRepository {
   async deleteGame(gameId: string): Promise<boolean> {
     requireNonEmpty("gameId", gameId);
 
-    const gameItem = await this.getEntity(gamePk(gameId), metadataSk(), { consistentRead: true });
+    const gameItem = await this.readMutableGameEntity(gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return false;
     }
@@ -2941,7 +2996,7 @@ export class ThreeFcRepository {
     finishedMessage: string;
     changedMessage: string;
   }): Promise<{ item: StoredEntity<unknown>; game: Omit<GameRecord, "createdAt" | "updatedAt"> }> {
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       throw new GameMutationStateError("game_state_changed", input.changedMessage);
     }
@@ -2952,6 +3007,25 @@ export class ThreeFcRepository {
     }
 
     return { item: gameItem, game };
+  }
+
+  private async readMutableGameEntity(gameId: string): Promise<StoredEntity<unknown> | null> {
+    const gameItem = await this.getEntity(gamePk(gameId), metadataSk(), { consistentRead: true });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const originalGame = normalizeGamePayload(gameItem.data);
+    const repairedGame = await this.repairLegacyGameJoinCode(gameItem);
+    if (
+      repairedGame.updatedAt === gameItem.updatedAt &&
+      normalizeJoinCode(repairedGame.joinCode) === normalizeJoinCode(originalGame.joinCode)
+    ) {
+      return gameItem;
+    }
+
+    const repairedItem = await this.getEntity(gamePk(gameId), metadataSk(), { consistentRead: true });
+    return repairedItem?.entityType === ENTITY_TYPE.game ? repairedItem : null;
   }
 
   private buildTeamConditionChecks(
@@ -3585,11 +3659,7 @@ export class ThreeFcRepository {
       return replayed;
     }
 
-    const gameItem = await this.getEntity(
-      gamePk(input.gameId),
-      metadataSk(),
-      { consistentRead: true },
-    );
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -3772,11 +3842,7 @@ export class ThreeFcRepository {
       return replayed;
     }
 
-    const gameItem = await this.getEntity(
-      gamePk(input.gameId),
-      metadataSk(),
-      { consistentRead: true },
-    );
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -4089,8 +4155,53 @@ export class ThreeFcRepository {
     for (let raceAttempt = 0; raceAttempt < LEGACY_JOIN_CODE_REPAIR_RACE_RETRIES; raceAttempt += 1) {
       const rawGame = currentStored.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
       const currentGame = normalizeGamePayload(currentStored.data);
-      if (typeof rawGame.joinCode === "string" && rawGame.joinCode.trim().length > 0) {
-        return withTimestamps(currentGame, currentStored.createdAt, currentStored.updatedAt);
+      const storedJoinCode =
+        typeof rawGame.joinCode === "string" && rawGame.joinCode.trim().length > 0
+          ? normalizeJoinCode(rawGame.joinCode)
+          : null;
+      if (storedJoinCode && JOIN_CODE_PATTERN.test(storedJoinCode)) {
+        const joinCodeItem = await this.getEntity(joinCodePk(storedJoinCode), metadataSk(), {
+          consistentRead: true,
+        });
+        if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+          const joinCodeRecord = joinCodeItem.data as Partial<GameJoinCodeRecord>;
+          const lookupHasSameGame = joinCodeRecord.gameId === currentGame.gameId;
+          const lookupHasSameCode =
+            typeof joinCodeRecord.joinCode === "string" &&
+            normalizeJoinCode(joinCodeRecord.joinCode) === storedJoinCode;
+          if (lookupHasSameGame && lookupHasSameCode) {
+            return withTimestamps(
+              { ...currentGame, joinCode: storedJoinCode },
+              currentStored.createdAt,
+              currentStored.updatedAt,
+            );
+          }
+          if (lookupHasSameGame) {
+            const repairedGame = await this.writeLegacyGameJoinCodeRepair({
+              stored: currentStored,
+              game: currentGame,
+              joinCode: storedJoinCode,
+              joinCodeItem,
+            });
+            if (repairedGame) {
+              return repairedGame;
+            }
+
+            break;
+          }
+        } else if (!joinCodeItem) {
+          const repairedGame = await this.writeLegacyGameJoinCodeRepair({
+            stored: currentStored,
+            game: currentGame,
+            joinCode: storedJoinCode,
+            joinCodeItem: null,
+          });
+          if (repairedGame) {
+            return repairedGame;
+          }
+
+          break;
+        }
       }
 
       const seenCandidates = new Set<string>();
@@ -4165,12 +4276,19 @@ export class ThreeFcRepository {
 
     if (input.joinCodeItem) {
       transactionItems.push({
-        ConditionCheck: {
+        Put: {
           TableName: this.tableName,
-          Key: {
-            pk: { S: joinCodePk(input.joinCode) },
-            sk: { S: metadataSk() },
-          },
+          Item: buildItemWithTimestamps(
+            joinCodePk(input.joinCode),
+            metadataSk(),
+            ENTITY_TYPE.gameJoinCode,
+            {
+              joinCode: input.joinCode,
+              gameId: input.game.gameId,
+            },
+            input.joinCodeItem.createdAt,
+            now,
+          ),
           ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
           ExpressionAttributeNames: {
             "#updatedAt": "updatedAt",

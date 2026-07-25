@@ -2426,6 +2426,29 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
     code: "invalid_join_code",
     message: "Join code was not found.",
   });
+  assert.equal(harness.idempotencyRecords.size, 0);
+
+  const invalidResponseWithIdempotencyKey = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/ABCDEFGH",
+      headers: {
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "unknown-public-join-1",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(invalidResponseWithIdempotencyKey.statusCode, 404);
+  assert.deepEqual(JSON.parse(invalidResponseWithIdempotencyKey.body), {
+    error: "not_found",
+    code: "invalid_join_code",
+    message: "Join code was not found.",
+  });
+  assert.equal(harness.idempotencyRecords.size, 0);
 
   const missingResponse = await harness.handler(
     createEvent({
