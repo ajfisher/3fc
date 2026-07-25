@@ -580,7 +580,9 @@ async function ensureSeasonDefaultTeams(
   seasonId: string,
   repositoryClient: Pick<ThreeFcRepository, "listTeamsForSeason" | "createTeam"> = repository,
 ) {
-  const existingTeams = await repositoryClient.listTeamsForSeason(seasonId);
+  const existingTeams = await repositoryClient.listTeamsForSeason(seasonId, {
+    consistentRead: true,
+  });
   const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
 
   for (const defaultTeam of DEFAULT_TEAMS) {
@@ -593,6 +595,7 @@ async function ensureSeasonDefaultTeams(
       teamId: defaultTeam.teamId,
       name: defaultTeam.name,
       color: defaultTeam.color,
+      createOnly: true,
     });
     teamsById.set(createdTeam.teamId, createdTeam);
   }
@@ -2438,11 +2441,6 @@ async function start(): Promise<void> {
         const game = await repository.getGame(gameId);
         if (!game) {
           status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-        if (game.status === "finished") {
-          status = 409;
-          sendJsonWithCors(request, response, status, finishedGameGoalMutationPayload());
           return;
         }
 

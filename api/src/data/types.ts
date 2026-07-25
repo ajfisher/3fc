@@ -216,6 +216,7 @@ export interface CreateTeamInput {
   teamId: TeamId;
   name: string;
   color?: string | null;
+  createOnly?: boolean;
 }
 
 export interface CreateGameTeamInput {

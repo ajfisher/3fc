@@ -865,6 +865,17 @@ export class ThreeFcRepository {
     requireNonEmpty("name", input.name);
 
     const now = this.clock.now();
+    const existing = await this.getEntity(seasonPk(input.seasonId), teamSk(input.teamId), {
+      consistentRead: input.createOnly,
+    });
+    const existingTeam = existing?.entityType === ENTITY_TYPE.team ? existing : null;
+    const existingPayload = existingTeam
+      ? (existingTeam.data as Omit<TeamRecord, "createdAt" | "updatedAt">)
+      : null;
+    if (input.createOnly && existingTeam && existingPayload) {
+      return withTimestamps(existingPayload, existingTeam.createdAt, existingTeam.updatedAt);
+    }
+
     const payload = {
       seasonId: input.seasonId,
       teamId: input.teamId,
@@ -872,13 +883,57 @@ export class ThreeFcRepository {
       color: input.color ?? null,
     };
 
+    if (input.createOnly) {
+      try {
+        await this.client.send(
+          new PutItemCommand({
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              seasonPk(input.seasonId),
+              teamSk(input.teamId),
+              ENTITY_TYPE.team,
+              payload,
+              now,
+              now,
+            ),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          const concurrent = await this.getEntity(seasonPk(input.seasonId), teamSk(input.teamId), {
+            consistentRead: true,
+          });
+          if (concurrent?.entityType === ENTITY_TYPE.team) {
+            return withTimestamps(
+              concurrent.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
+              concurrent.createdAt,
+              concurrent.updatedAt,
+            );
+          }
+
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
+          );
+        }
+
+        throw error;
+      }
+
+      return withTimestamps(payload, now, now);
+    }
+
     await this.putEntity(seasonPk(input.seasonId), teamSk(input.teamId), ENTITY_TYPE.team, payload, now);
     return withTimestamps(payload, now, now);
   }
 
-  async listTeamsForSeason(seasonId: string): Promise<TeamRecord[]> {
+  async listTeamsForSeason(
+    seasonId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<TeamRecord[]> {
     requireNonEmpty("seasonId", seasonId);
-    const items = await this.queryByPrefix(seasonPk(seasonId), "TEAM#");
+    const items = await this.queryByPrefix(seasonPk(seasonId), "TEAM#", options);
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.team)

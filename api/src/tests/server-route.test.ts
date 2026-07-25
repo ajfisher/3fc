@@ -411,6 +411,7 @@ test("local server finish route uses a consistent finished read after team setup
     result,
   });
   const getGameCalls: Array<{ consistentRead: boolean }> = [];
+  const listTeamsForSeasonCalls: Array<{ consistentRead: boolean }> = [];
   let storedStatusCode: number | null = null;
   const repositoryClient = {
     async getGame(_gameId: string, options: { consistentRead?: boolean } = {}) {
@@ -430,7 +431,8 @@ test("local server finish route uses a consistent finished read after team setup
       storedStatusCode = record.responseStatusCode;
       return true;
     },
-    async listTeamsForSeason() {
+    async listTeamsForSeason(_seasonId: string, options: { consistentRead?: boolean } = {}) {
+      listTeamsForSeasonCalls.push({ consistentRead: options.consistentRead ?? false });
       return seasonTeams;
     },
     async createTeam() {
@@ -464,6 +466,10 @@ test("local server finish route uses a consistent finished read after team setup
     getGameCalls.some((call) => call.consistentRead),
     true,
   );
+  assert.equal(
+    listTeamsForSeasonCalls.some((call) => call.consistentRead),
+    true,
+  );
   const body = JSON.parse(response.body) as { status: string; result: GameResult };
   assert.equal(body.status, "finished");
   assert.equal(body.result.winnerTeamId, "red");
@@ -486,7 +492,10 @@ test("local server finish route repairs incomplete finished games after team set
     finishedAt: "2026-02-23T00:05:00.000Z",
     result,
   });
+  const storedSeasonTeams = seasonTeams.slice(1);
+  const createdSeasonTeams: Array<{ teamId: TeamId; createOnly?: boolean }> = [];
   const createdGameTeams: Array<{ teamId: TeamId; allowFinished?: boolean; createOnly?: boolean }> = [];
+  const listTeamsForSeasonCalls: Array<{ consistentRead: boolean }> = [];
   const listTeamsForGameCalls: Array<{ consistentRead: boolean }> = [];
   const getGameCalls: Array<{ consistentRead: boolean }> = [];
   let finishGameCalls = 0;
@@ -509,11 +518,25 @@ test("local server finish route repairs incomplete finished games after team set
     async createIdempotencyRecord() {
       return true;
     },
-    async listTeamsForSeason() {
-      return seasonTeams;
+    async listTeamsForSeason(_seasonId: string, options: { consistentRead?: boolean } = {}) {
+      listTeamsForSeasonCalls.push({ consistentRead: options.consistentRead ?? false });
+      return storedSeasonTeams;
     },
-    async createTeam() {
-      throw new Error("season teams should already exist");
+    async createTeam(input: { teamId: TeamId; createOnly?: boolean }) {
+      createdSeasonTeams.push({
+        teamId: input.teamId,
+        createOnly: input.createOnly,
+      });
+      const record = {
+        seasonId: "season-1",
+        teamId: input.teamId,
+        name: "Red",
+        color: "#d83b36",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+      storedSeasonTeams.push(record);
+      return record;
     },
     async listTeamsForGame(_gameId: string, options: { consistentRead?: boolean } = {}) {
       listTeamsForGameCalls.push({ consistentRead: options.consistentRead ?? false });
@@ -563,6 +586,8 @@ test("local server finish route repairs incomplete finished games after team set
   assert.equal(status, 200);
   assert.equal(response.statusCode, 200);
   assert.equal(finishGameCalls, 1);
+  assert.equal(listTeamsForSeasonCalls.some((call) => call.consistentRead), true);
+  assert.deepEqual(createdSeasonTeams, [{ teamId: "red", createOnly: true }]);
   assert.equal(listTeamsForGameCalls.some((call) => call.consistentRead), true);
   assert.deepEqual(createdGameTeams, [
     { teamId: "red", allowFinished: true, createOnly: true },

@@ -402,6 +402,34 @@ function seedStoredGameTeam(
   });
 }
 
+function seedStoredSeasonTeam(
+  client: InMemoryDynamoClient,
+  input: {
+    seasonId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    createdAt: string;
+    updatedAt: string;
+  },
+): void {
+  client.seedItem({
+    pk: { S: `SEASON#${input.seasonId}` },
+    sk: { S: `TEAM#${input.teamId}` },
+    entityType: { S: "team" },
+    createdAt: { S: input.createdAt },
+    updatedAt: { S: input.updatedAt },
+    data: {
+      S: JSON.stringify({
+        seasonId: input.seasonId,
+        teamId: input.teamId,
+        name: input.name,
+        color: input.color,
+      }),
+    },
+  });
+}
+
 test("repository supports round-trip create/read for core entities", async () => {
   const repository = createRepository();
 
@@ -1025,6 +1053,68 @@ test("repository create-only team overrides preserve existing score state", asyn
     updatedAt: "2026-02-22T10:02:00.000Z",
   });
   assert.deepEqual(await repository.listTeamsForGame("game-1"), [preserved]);
+});
+
+test("repository create-only season teams preserve existing configuration", async () => {
+  const { repository, client } = createRepositoryHarness();
+  seedStoredSeasonTeam(client, {
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Custom Red",
+    color: "#aa0000",
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+
+  const preserved = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(preserved, {
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Custom Red",
+    color: "#aa0000",
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForSeason("season-1"), [preserved]);
+});
+
+test("repository create-only season teams do not replace concurrent teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+  client.runBeforeNextPut(() => {
+    seedStoredSeasonTeam(client, {
+      seasonId: "season-1",
+      teamId: "red",
+      name: "Concurrent Red",
+      color: "#bb0000",
+      createdAt: "2026-02-22T10:01:00.000Z",
+      updatedAt: "2026-02-22T10:03:00.000Z",
+    });
+  });
+
+  const concurrent = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(concurrent, {
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Concurrent Red",
+    color: "#bb0000",
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:03:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForSeason("season-1"), [concurrent]);
 });
 
 test("repository create-only team overrides do not replace concurrent teams", async () => {

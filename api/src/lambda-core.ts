@@ -202,6 +202,7 @@ interface RepositoryContract {
     teamId: TeamId;
     name: string;
     color?: string | null;
+    createOnly?: boolean;
   }): Promise<{
     seasonId: string;
     teamId: TeamId;
@@ -210,7 +211,7 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listTeamsForSeason(seasonId: string): Promise<
+  listTeamsForSeason(seasonId: string, options?: { consistentRead?: boolean }): Promise<
     Array<{
       seasonId: string;
       teamId: TeamId;
@@ -931,7 +932,9 @@ async function readSeasonTeams(
 }
 
 async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId: string) {
-  const existingTeams = await repository.listTeamsForSeason(seasonId);
+  const existingTeams = await repository.listTeamsForSeason(seasonId, {
+    consistentRead: true,
+  });
   const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
 
   for (const defaultTeam of DEFAULT_TEAMS) {
@@ -944,6 +947,7 @@ async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId
       teamId: defaultTeam.teamId,
       name: defaultTeam.name,
       color: defaultTeam.color,
+      createOnly: true,
     });
     teamsById.set(createdTeam.teamId, createdTeam);
   }
@@ -2503,10 +2507,6 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
-          if (game.status === "finished") {
-            status = 409;
-            return finishedGameGoalMutationConflictResponse(origin, dependencies.corsAllowedOrigins);
-          }
 
           let rawBody: Record<string, unknown>;
           try {
@@ -2612,18 +2612,6 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           if (!game) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
-          }
-
-          const finishedBlock = await buildFinishedGameMutationBlock({
-            repository: dependencies.repository,
-            game,
-            sessionEmail: session.email,
-            origin,
-            allowedOrigins: dependencies.corsAllowedOrigins,
-          });
-          if (finishedBlock) {
-            status = finishedBlock.statusCode;
-            return finishedBlock;
           }
 
           let rawBody: Record<string, unknown>;
@@ -2819,18 +2807,6 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           if (!game) {
             status = 404;
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
-          }
-
-          const finishedBlock = await buildFinishedGameMutationBlock({
-            repository: dependencies.repository,
-            game,
-            sessionEmail: session.email,
-            origin,
-            allowedOrigins: dependencies.corsAllowedOrigins,
-          });
-          if (finishedBlock) {
-            status = finishedBlock.statusCode;
-            return finishedBlock;
           }
 
           let rawBody: Record<string, unknown>;

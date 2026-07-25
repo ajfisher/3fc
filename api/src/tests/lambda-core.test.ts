@@ -262,7 +262,13 @@ function createHarness(config: HarnessConfig = {}) {
   const createdSessions: CreatedSessionInput[] = [];
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
-  const createdSeasonTeams: Array<{ seasonId: string; teamId: TeamId; name: string; color?: string | null }> = [];
+  const createdSeasonTeams: Array<{
+    seasonId: string;
+    teamId: TeamId;
+    name: string;
+    color?: string | null;
+    createOnly?: boolean;
+  }> = [];
   const createdGameTeams: Array<{
     gameId: string;
     teamId: TeamId;
@@ -292,6 +298,7 @@ function createHarness(config: HarnessConfig = {}) {
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
   const getGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
+  const listTeamsForSeasonCalls: Array<{ seasonId: string; consistentRead: boolean }> = [];
   const listTeamsForGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
@@ -723,7 +730,8 @@ function createHarness(config: HarnessConfig = {}) {
         seasonTeams.set(`${input.seasonId}:${input.teamId}`, record);
         return record;
       },
-      async listTeamsForSeason(seasonId: string) {
+      async listTeamsForSeason(seasonId: string, options: { consistentRead?: boolean } = {}) {
+        listTeamsForSeasonCalls.push({ seasonId, consistentRead: options.consistentRead ?? false });
         return [...seasonTeams.values()].filter((team) => team.seasonId === seasonId);
       },
       async createGameTeamOverride(input) {
@@ -1430,6 +1438,7 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkCompletes,
     magicLinkRateLimitChecks,
     getGameCalls,
+    listTeamsForSeasonCalls,
     listTeamsForGameCalls,
     idempotencyRecords,
     goalAuditEntries,
@@ -2598,6 +2607,16 @@ test("core lambda uses a consistent finished read after team setup races", async
     true,
   );
   assert.equal(
+    harness.listTeamsForSeasonCalls.some(
+      (call) => call.seasonId === "season-1" && call.consistentRead,
+    ),
+    true,
+  );
+  assert.equal(
+    harness.createdSeasonTeams.every((team) => team.createOnly === true),
+    true,
+  );
+  assert.equal(
     harness.listTeamsForGameCalls.some((call) => call.gameId === "game-1" && call.consistentRead),
     true,
   );
@@ -2647,6 +2666,16 @@ test("core lambda repairs incomplete finished games after team setup races", asy
   assert.equal(body.status, "finished");
   assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
   assert.ok(body.result);
+  assert.equal(
+    harness.listTeamsForSeasonCalls.some(
+      (call) => call.seasonId === "season-1" && call.consistentRead,
+    ),
+    true,
+  );
+  assert.equal(
+    harness.createdSeasonTeams.every((team) => team.createOnly === true),
+    true,
+  );
   assert.deepEqual(
     harness.createdGameTeams.map((team) => ({
       teamId: team.teamId,
@@ -3325,12 +3354,14 @@ test("core lambda creates goals with idempotency replay and conflict behavior", 
   assert.deepEqual(body.timeline.map((goal) => goal.eventId), [body.goal.eventId]);
   assert.equal(harness.createdGoals.length, 1);
 
+  await completeGoalHarnessThirds(harness, { firstThirdAlreadyRunning: true });
   const finishResponse = await harness.handler(
     createEvent({
       method: "POST",
-      path: "/v1/games/game-1/thirds/1/finish",
+      path: "/v1/games/game-1/finish",
       headers: {
         Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-create-finish-1",
       },
     }),
   );
@@ -3772,6 +3803,74 @@ test("core lambda undo-last deletes latest goal only and rejects stale expected 
     (JSON.parse(thirdUndoResponse.body) as { deletedGoal: { eventId: string } }).deletedGoal.eventId,
     thirdGoalId,
   );
+});
+
+test("core lambda replays undo-last retries after the game is finished", async () => {
+  const harness = createGoalHarness();
+  const createResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-finished-create-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(createResponse.statusCode, 201);
+  const goalId = (JSON.parse(createResponse.body) as { goal: { eventId: string } }).goal.eventId;
+  const undoBody = {
+    expectedEventId: goalId,
+  };
+
+  const undoResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-finished-1",
+      },
+      body: undoBody,
+    }),
+  );
+  assert.equal(undoResponse.statusCode, 200);
+  const undoneCalls = harness.undoneGoals.length;
+
+  await completeGoalHarnessThirds(harness, { firstThirdAlreadyRunning: true });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-finished-finish-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const replayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-finished-1",
+      },
+      body: undoBody,
+    }),
+  );
+  assert.equal(replayResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(replayResponse.body), JSON.parse(undoResponse.body));
+  assert.equal(harness.undoneGoals.length, undoneCalls);
 });
 
 test("core lambda rejects goal creation when no third is running", async () => {
