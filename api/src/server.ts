@@ -1012,7 +1012,9 @@ export async function handleLocalFinishGameRoute(input: {
           await ensureGameTeamsForGame(currentGame, repositoryClient);
         } catch (error) {
           if (error instanceof GameMutationStateError) {
-            const current = await repositoryClient.getGame(input.gameId);
+            const current = await repositoryClient.getGame(input.gameId, {
+              consistentRead: true,
+            });
             if (current?.status === "finished") {
               return {
                 statusCode: 200,
@@ -1050,7 +1052,9 @@ export async function handleLocalFinishGameRoute(input: {
                 return replay;
               }
 
-              const current = await repositoryClient.getGame(input.gameId);
+              const current = await repositoryClient.getGame(input.gameId, {
+                consistentRead: true,
+              });
               if (current?.status === "finished" && current.finishedAt && current.result) {
                 return {
                   statusCode: 200,

@@ -284,6 +284,7 @@ function createHarness(config: HarnessConfig = {}) {
   const magicLinkStarts: string[] = [];
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
+  const getGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
   let deleteGameFinishesBeforeDeleteOnce = config.deleteGameFinishesBeforeDeleteOnce ?? false;
@@ -749,7 +750,8 @@ function createHarness(config: HarnessConfig = {}) {
       async listGamesForSeason(seasonId: string) {
         return [...games.values()].filter((game) => game.seasonId === seasonId);
       },
-      async getGame(gameId: string) {
+      async getGame(gameId: string, options: { consistentRead?: boolean } = {}) {
+        getGameCalls.push({ gameId, consistentRead: options.consistentRead ?? false });
         return games.get(gameId) ?? null;
       },
       async updateGame(input) {
@@ -1327,6 +1329,7 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkStarts,
     magicLinkCompletes,
     magicLinkRateLimitChecks,
+    getGameCalls,
     idempotencyRecords,
     goalAuditEntries,
   };
@@ -1342,6 +1345,7 @@ function createGoalHarness(input: {
   createGameTeamOverrideStateChangedOnce?: boolean;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
+  gameTeams?: Record<string, MockGameTeamInput>;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
   const role = input.role ?? "scorekeeper";
@@ -1405,7 +1409,7 @@ function createGoalHarness(input: {
         updatedAt: "2026-02-23T00:00:00.000Z",
       },
     },
-    gameTeams: {
+    gameTeams: input.gameTeams ?? {
       "game-1:red": {
         gameId: "game-1",
         teamId: "red",
@@ -2409,6 +2413,51 @@ test("core lambda replays concurrent same-key finish after game-state race", asy
   assert.equal(body.status, "finished");
   assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
   assert.ok(body.result);
+});
+
+test("core lambda uses a consistent finished read after team setup races", async () => {
+  const harness = createGoalHarness({
+    completedThirds: true,
+    createGameTeamOverrideStateChangedOnce: true,
+    gameTeams: {
+      "game-1:blue": {
+        gameId: "game-1",
+        teamId: "blue",
+        name: "Blue",
+        color: "#2364d2",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:yellow": {
+        gameId: "game-1",
+        teamId: "yellow",
+        name: "Yellow",
+        color: "#e0a612",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-team-race-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as { status: string; finishedAt: string | null };
+  assert.equal(body.status, "finished");
+  assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
+  assert.equal(
+    harness.getGameCalls.some((call) => call.gameId === "game-1" && call.consistentRead),
+    true,
+  );
 });
 
 test("core lambda finishes a game with full draw result", async () => {

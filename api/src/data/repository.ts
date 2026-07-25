@@ -1113,9 +1113,9 @@ export class ThreeFcRepository {
     return withTimestamps(payload, now, now);
   }
 
-  async getGame(gameId: string): Promise<GameRecord | null> {
+  async getGame(gameId: string, options: { consistentRead?: boolean } = {}): Promise<GameRecord | null> {
     requireNonEmpty("gameId", gameId);
-    const item = await this.getEntity(gamePk(gameId), metadataSk());
+    const item = await this.getEntity(gamePk(gameId), metadataSk(), options);
 
     if (!item || item.entityType !== ENTITY_TYPE.game) {
       return null;

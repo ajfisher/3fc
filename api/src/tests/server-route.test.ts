@@ -10,7 +10,7 @@ import {
   handleLocalFinishGameRoute,
   handleLocalUpdateGameTeamRoute,
 } from "../server.js";
-import { GameTimerTransitionError } from "../data/repository.js";
+import { GameMutationStateError, GameTimerTransitionError } from "../data/repository.js";
 
 class MockResponse {
   statusCode = 0;
@@ -321,6 +321,77 @@ test("local server finish route recovers concurrent finished game state", async 
   assert.equal(response.statusCode, 200);
   assert.equal(storedStatusCode, 200);
   assert.equal((JSON.parse(storedBody ?? "{}") as { status?: string }).status, "finished");
+  const body = JSON.parse(response.body) as { status: string; result: GameResult };
+  assert.equal(body.status, "finished");
+  assert.equal(body.result.winnerTeamId, "red");
+});
+
+test("local server finish route uses a consistent finished read after team setup races", async () => {
+  const request = createMockRequest({
+    headers: {
+      "idempotency-key": "finish-local-team-race-1",
+    },
+  });
+  const response = createMockResponse();
+  const finished = gameRecord({
+    status: "finished",
+    finishedAt: "2026-02-23T00:05:00.000Z",
+    result,
+  });
+  const getGameCalls: Array<{ consistentRead: boolean }> = [];
+  let storedStatusCode: number | null = null;
+  const repositoryClient = {
+    async getGame(_gameId: string, options: { consistentRead?: boolean } = {}) {
+      getGameCalls.push({ consistentRead: options.consistentRead ?? false });
+      return getGameCalls.length === 1 ? gameRecord() : finished;
+    },
+    async finishGame() {
+      throw new Error("finishGame should not be called after team setup race recovery");
+    },
+    async getLeagueAccess() {
+      return scorekeeperAccess;
+    },
+    async getIdempotencyRecord() {
+      return null;
+    },
+    async createIdempotencyRecord(record: { responseStatusCode: number }) {
+      storedStatusCode = record.responseStatusCode;
+      return true;
+    },
+    async listTeamsForSeason() {
+      return seasonTeams;
+    },
+    async createTeam() {
+      throw new Error("season teams should already exist");
+    },
+    async listTeamsForGame() {
+      return gameTeams.slice(1);
+    },
+    async createGameTeamOverride() {
+      throw new GameMutationStateError(
+        "game_state_changed",
+        "Game game-1 changed before the team override could be saved. Reload and try again.",
+      );
+    },
+  };
+
+  const status = await handleLocalFinishGameRoute({
+    request,
+    response,
+    method: "POST",
+    route: "/v1/games/game-1/finish",
+    gameId: "game-1",
+    sessionEmail: "scorekeeper@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 200);
+  assert.equal(response.statusCode, 200);
+  assert.equal(storedStatusCode, 200);
+  assert.equal(
+    getGameCalls.some((call) => call.consistentRead),
+    true,
+  );
   const body = JSON.parse(response.body) as { status: string; result: GameResult };
   assert.equal(body.status, "finished");
   assert.equal(body.result.winnerTeamId, "red");

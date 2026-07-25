@@ -266,7 +266,10 @@ interface RepositoryContract {
     seasonId: string;
   }): Promise<unknown>;
   listGamesForSeason(seasonId: string): Promise<RepositoryGameRecord[]>;
-  getGame(gameId: string): Promise<RepositoryGameRecord | null>;
+  getGame(
+    gameId: string,
+    options?: { consistentRead?: boolean },
+  ): Promise<RepositoryGameRecord | null>;
   updateGame(input: {
     gameId: string;
     status?: "scheduled" | "live" | "finished";
@@ -2295,7 +2298,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                       return replayResponse;
                     }
 
-                    const finishedGame = await dependencies.repository.getGame(gameId);
+                    const finishedGame = await dependencies.repository.getGame(gameId, {
+                      consistentRead: true,
+                    });
                     if (finishedGame?.status === "finished") {
                       return createJsonResponse(
                         200,
@@ -2336,7 +2341,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                       return replayResponse;
                     }
 
-                    const finishedGame = await dependencies.repository.getGame(gameId);
+                    const finishedGame = await dependencies.repository.getGame(gameId, {
+                      consistentRead: true,
+                    });
                     if (finishedGame?.status === "finished") {
                       return createJsonResponse(
                         200,
