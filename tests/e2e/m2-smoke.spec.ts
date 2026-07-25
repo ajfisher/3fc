@@ -1,6 +1,7 @@
 import {
   DeleteItemCommand,
   DynamoDBClient,
+  PutItemCommand,
   QueryCommand,
   ScanCommand,
   type AttributeValue,
@@ -27,6 +28,7 @@ interface SmokeRunCleanupInput {
   gameId: string;
   sessionId: string;
   playerIds: string[];
+  originalSessionMetadata: DynamoItem | null;
 }
 
 function uniqueRunId(): string {
@@ -71,6 +73,10 @@ function itemSearchText(item: DynamoItem): string {
     .join("\n");
 }
 
+function cloneDynamoItem(item: DynamoItem): DynamoItem {
+  return structuredClone(item) as DynamoItem;
+}
+
 async function queryPartition(client: DynamoDBClient, pk: string): Promise<DynamoItem[]> {
   const items: DynamoItem[] = [];
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
@@ -91,6 +97,16 @@ async function queryPartition(client: DynamoDBClient, pk: string): Promise<Dynam
   } while (exclusiveStartKey);
 
   return items;
+}
+
+async function readSessionMetadataSnapshot(
+  client: DynamoDBClient,
+  sessionId: string,
+): Promise<DynamoItem | null> {
+  const metadata = (await queryPartition(client, `SESSION#${sessionId}`)).find(
+    (item) => item.sk?.S === "METADATA",
+  );
+  return metadata ? cloneDynamoItem(metadata) : null;
 }
 
 async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promise<DynamoItem[]> {
@@ -147,6 +163,15 @@ async function deleteItems(client: DynamoDBClient, items: DynamoItem[]): Promise
   }
 }
 
+async function putItem(client: DynamoDBClient, item: DynamoItem): Promise<void> {
+  await client.send(
+    new PutItemCommand({
+      TableName: dynamodbTableName,
+      Item: cloneDynamoItem(item),
+    }),
+  );
+}
+
 async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
   if (process.env.THREEFC_SKIP_SMOKE_CLEANUP === "1") {
     return;
@@ -177,14 +202,12 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
       );
 
       const remainingSessionItems = await queryPartition(client, sessionPk);
-      const hasRemainingGameIndexes = remainingSessionItems.some((item) =>
-        (item.sk?.S ?? "").startsWith("GAME#"),
+      await deleteItems(
+        client,
+        remainingSessionItems.filter((item) => item.sk?.S === "METADATA"),
       );
-      if (!hasRemainingGameIndexes) {
-        await deleteItems(
-          client,
-          remainingSessionItems.filter((item) => item.sk?.S === "METADATA"),
-        );
+      if (input.originalSessionMetadata) {
+        await putItem(client, input.originalSessionMetadata);
       }
     }
 
@@ -195,8 +218,6 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
         [input.runId, input.leagueSlug, input.seasonSlug, input.gameId].filter(Boolean),
       ),
     );
-  } catch (error) {
-    console.warn(`M2 smoke cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     client.destroy();
   }
@@ -267,7 +288,12 @@ async function waitForMagicLink(email: string): Promise<string> {
   return magicLink;
 }
 
-async function createAndAssignPlayer(page: Page, nickname: string, teamId: "red" | "blue" | "yellow"): Promise<string> {
+async function createAndAssignPlayer(
+  page: Page,
+  nickname: string,
+  teamId: "red" | "blue" | "yellow",
+  onCreatedPlayerId: (playerId: string) => void,
+): Promise<string> {
   await page.locator("#player-nickname").fill(nickname);
   await page.getByTestId("quick-create-player").click();
 
@@ -278,6 +304,7 @@ async function createAndAssignPlayer(page: Page, nickname: string, teamId: "red"
   if (!playerId) {
     throw new Error(`Created player ${nickname} did not expose a data-player-id.`);
   }
+  onCreatedPlayerId(playerId);
 
   await playerCard.locator(`[data-action="assign-player"][data-team-id="${teamId}"]`).click();
   await expect(page.locator(`[data-ui="roster-team"][data-team-id="${teamId}"]`)).toContainText(nickname);
@@ -324,7 +351,15 @@ test.describe("M2 local-stack smoke", () => {
     const sessionId = schedule.gameDate.replaceAll("-", "");
     let gameId = "";
     const playerIds: string[] = [];
+    const snapshotClient = createLocalDynamoClient();
+    let originalSessionMetadata: DynamoItem | null = null;
+    try {
+      originalSessionMetadata = await readSessionMetadataSnapshot(snapshotClient, sessionId);
+    } finally {
+      snapshotClient.destroy();
+    }
 
+    let testFailed = false;
     try {
       await page.goto("/sign-in?returnTo=%2Fsetup");
       await expect(page.getByTestId("signin-shell")).toBeVisible();
@@ -367,10 +402,12 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
 
-      const ariPlayerId = await createAndAssignPlayer(page, "Ari", "red");
-      playerIds.push(ariPlayerId);
-      const beaPlayerId = await createAndAssignPlayer(page, "Bea", "blue");
-      playerIds.push(beaPlayerId);
+      const ariPlayerId = await createAndAssignPlayer(page, "Ari", "red", (playerId) => {
+        playerIds.push(playerId);
+      });
+      const beaPlayerId = await createAndAssignPlayer(page, "Bea", "blue", (playerId) => {
+        playerIds.push(playerId);
+      });
 
       await startThird(page, 1);
       await page.locator("#goal-scoring-team").selectOption("red");
@@ -409,15 +446,26 @@ test.describe("M2 local-stack smoke", () => {
       await expectAllDisabled(page.locator('[data-action="assign-player"]'));
       await expectAllDisabled(page.locator('[data-action="edit-goal"]'));
       await expectAllDisabled(page.locator('[data-action="delete-goal"]'));
+    } catch (error) {
+      testFailed = true;
+      throw error;
     } finally {
-      await cleanupSmokeRun({
-        runId,
-        leagueSlug,
-        seasonSlug,
-        gameId,
-        sessionId,
-        playerIds,
-      });
+      try {
+        await cleanupSmokeRun({
+          runId,
+          leagueSlug,
+          seasonSlug,
+          gameId,
+          sessionId,
+          playerIds,
+          originalSessionMetadata,
+        });
+      } catch (error) {
+        if (!testFailed) {
+          throw error;
+        }
+        console.warn(`M2 smoke cleanup failed after test failure: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   });
 });
