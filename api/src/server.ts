@@ -69,6 +69,7 @@ import {
   GoalCreationError,
   ThreeFcRepository,
 } from "./data/repository.js";
+import type { GameRecord } from "./data/types.js";
 import { buildHealthResponse } from "./index.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -605,6 +606,7 @@ async function ensureGameTeamsForGame(
     ThreeFcRepository,
     "listTeamsForSeason" | "createTeam" | "listTeamsForGame" | "createGameTeamOverride"
   > = repository,
+  options: { allowFinished?: boolean } = {},
 ) {
   const seasonTeams = await ensureSeasonDefaultTeams(game.seasonId, repositoryClient);
   const existingGameTeams = await repositoryClient.listTeamsForGame(game.gameId);
@@ -620,11 +622,20 @@ async function ensureGameTeamsForGame(
       teamId: seasonTeam.teamId,
       name: seasonTeam.name,
       color: seasonTeam.color,
+      allowFinished: options.allowFinished,
     });
     gameTeamsById.set(gameTeam.teamId, gameTeam);
   }
 
   return sortTeams([...gameTeamsById.values()]);
+}
+
+function isCompleteFinishedGame(game: GameRecord | null): game is GameRecord {
+  return game?.status === "finished" && Boolean(game.finishedAt && game.result);
+}
+
+async function waitForIdempotencyRecord(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 25));
 }
 
 async function readGameTeams(game: {
@@ -867,6 +878,36 @@ interface JsonMutationResult {
   payload: unknown;
 }
 
+async function recoverLocalFinishedGameForFinishRoute(input: {
+  repositoryClient: LocalFinishGameRouteRepository;
+  gameId: string;
+}): Promise<JsonMutationResult | null> {
+  const current = await input.repositoryClient.getGame(input.gameId, {
+    consistentRead: true,
+  });
+  if (!current || current.status !== "finished") {
+    return null;
+  }
+
+  if (isCompleteFinishedGame(current)) {
+    return {
+      statusCode: 200,
+      payload: buildGameResponse(current),
+    };
+  }
+
+  await ensureGameTeamsForGame(current, input.repositoryClient, { allowFinished: true });
+  const repaired = await input.repositoryClient.finishGame({ gameId: input.gameId });
+  if (!isCompleteFinishedGame(repaired)) {
+    return null;
+  }
+
+  return {
+    statusCode: 200,
+    payload: buildGameResponse(repaired),
+  };
+}
+
 async function readStoredIdempotentMutation(input: {
   request: IncomingMessage;
   sessionEmail: string;
@@ -1012,14 +1053,12 @@ export async function handleLocalFinishGameRoute(input: {
           await ensureGameTeamsForGame(currentGame, repositoryClient);
         } catch (error) {
           if (error instanceof GameMutationStateError) {
-            const current = await repositoryClient.getGame(input.gameId, {
-              consistentRead: true,
+            const recovered = await recoverLocalFinishedGameForFinishRoute({
+              repositoryClient,
+              gameId: input.gameId,
             });
-            if (current?.status === "finished") {
-              return {
-                statusCode: 200,
-                payload: buildGameResponse(current),
-              };
+            if (recovered) {
+              return recovered;
             }
 
             return {
@@ -1052,14 +1091,56 @@ export async function handleLocalFinishGameRoute(input: {
                 return replay;
               }
 
-              const current = await repositoryClient.getGame(input.gameId, {
-                consistentRead: true,
+              const recovered = await recoverLocalFinishedGameForFinishRoute({
+                repositoryClient,
+                gameId: input.gameId,
               });
-              if (current?.status === "finished" && current.finishedAt && current.result) {
-                return {
-                  statusCode: 200,
-                  payload: buildGameResponse(current),
-                };
+              if (recovered) {
+                return recovered;
+              }
+
+              await waitForIdempotencyRecord();
+              const replayAfterWait = await readStoredIdempotentMutation({
+                request: input.request,
+                sessionEmail: input.sessionEmail,
+                method: input.method,
+                route: input.route,
+                requestPayload: {},
+                repositoryClient,
+              });
+              if (replayAfterWait) {
+                return replayAfterWait;
+              }
+
+              const recoveredAfterWait = await recoverLocalFinishedGameForFinishRoute({
+                repositoryClient,
+                gameId: input.gameId,
+              });
+              if (recoveredAfterWait) {
+                return recoveredAfterWait;
+              }
+
+              let retryFailure: unknown = null;
+              try {
+                result = await repositoryClient.finishGame({ gameId: input.gameId });
+              } catch (retryError) {
+                if (
+                  retryError instanceof GameTimerTransitionError &&
+                  retryError.code === "game_state_changed"
+                ) {
+                  const recoveredAfterRetry = await recoverLocalFinishedGameForFinishRoute({
+                    repositoryClient,
+                    gameId: input.gameId,
+                  });
+                  if (recoveredAfterRetry) {
+                    return recoveredAfterRetry;
+                  }
+                }
+                retryFailure = retryError;
+              }
+
+              if (retryFailure) {
+                throw retryFailure;
               }
 
               if (replay) {
@@ -1067,6 +1148,23 @@ export async function handleLocalFinishGameRoute(input: {
               }
             }
 
+            if (!result) {
+              return {
+                statusCode: 409,
+                payload: {
+                  error: "conflict",
+                  code: error.code,
+                  message: error.message,
+                },
+              };
+            }
+          }
+
+          if (!(error instanceof GameTimerTransitionError)) {
+            throw error;
+          }
+
+          if (!result) {
             return {
               statusCode: 409,
               payload: {
@@ -1076,8 +1174,6 @@ export async function handleLocalFinishGameRoute(input: {
               },
             };
           }
-
-          throw error;
         }
         if (!result) {
           return {

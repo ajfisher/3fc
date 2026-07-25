@@ -953,6 +953,7 @@ async function ensureGameTeamsForGame(
     gameId: string;
     seasonId: string;
   },
+  options: { allowFinished?: boolean } = {},
 ) {
   const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId);
   const existingGameTeams = await repository.listTeamsForGame(game.gameId);
@@ -968,11 +969,50 @@ async function ensureGameTeamsForGame(
       teamId: seasonTeam.teamId,
       name: seasonTeam.name,
       color: seasonTeam.color,
+      allowFinished: options.allowFinished,
     });
     gameTeamsById.set(gameTeam.teamId, gameTeam);
   }
 
   return sortTeams([...gameTeamsById.values()]);
+}
+
+function isCompleteFinishedGame(game: RepositoryGameRecord | null): game is RepositoryGameRecord {
+  return game?.status === "finished" && Boolean(game.finishedAt && game.result);
+}
+
+async function recoverFinishedGameForFinishRoute(input: {
+  repository: RepositoryContract;
+  gameId: string;
+  origin: string | undefined;
+  allowedOrigins: string[];
+}): Promise<ApiGatewayHttpResponse | null> {
+  const current = await input.repository.getGame(input.gameId, {
+    consistentRead: true,
+  });
+  if (!current || current.status !== "finished") {
+    return null;
+  }
+
+  if (isCompleteFinishedGame(current)) {
+    return createJsonResponse(
+      200,
+      buildGameResponse(current),
+      buildCorsHeaders(input.origin, input.allowedOrigins),
+    );
+  }
+
+  await ensureGameTeamsForGame(input.repository, current, { allowFinished: true });
+  const repaired = await input.repository.finishGame({ gameId: input.gameId });
+  if (!isCompleteFinishedGame(repaired)) {
+    return null;
+  }
+
+  return createJsonResponse(
+    200,
+    buildGameResponse(repaired),
+    buildCorsHeaders(input.origin, input.allowedOrigins),
+  );
 }
 
 async function readGameTeams(
@@ -2301,15 +2341,14 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                       return replayResponse;
                     }
 
-                    const finishedGame = await dependencies.repository.getGame(gameId, {
-                      consistentRead: true,
+                    const recovered = await recoverFinishedGameForFinishRoute({
+                      repository: dependencies.repository,
+                      gameId,
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
                     });
-                    if (finishedGame?.status === "finished") {
-                      return createJsonResponse(
-                        200,
-                        buildGameResponse(finishedGame),
-                        buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-                      );
+                    if (recovered) {
+                      return recovered;
                     }
 
                     return createJsonResponse(
@@ -2344,19 +2383,68 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                       return replayResponse;
                     }
 
-                    const finishedGame = await dependencies.repository.getGame(gameId, {
-                      consistentRead: true,
+                    const recovered = await recoverFinishedGameForFinishRoute({
+                      repository: dependencies.repository,
+                      gameId,
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
                     });
-                    if (finishedGame?.status === "finished") {
-                      return createJsonResponse(
-                        200,
-                        buildGameResponse(finishedGame),
-                        buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-                      );
+                    if (recovered) {
+                      return recovered;
+                    }
+
+                    await waitForIdempotencyRecord();
+                    const replayResponseAfterWait = await replayStoredIdempotencyMutation({
+                      repository: dependencies.repository,
+                      idempotencyKey,
+                      sessionEmail: session.email,
+                      method,
+                      route,
+                      requestPayload: {},
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
+                    });
+                    if (replayResponseAfterWait) {
+                      return replayResponseAfterWait;
+                    }
+
+                    const recoveredAfterWait = await recoverFinishedGameForFinishRoute({
+                      repository: dependencies.repository,
+                      gameId,
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
+                    });
+                    if (recoveredAfterWait) {
+                      return recoveredAfterWait;
+                    }
+
+                    let retryFailure: unknown = null;
+                    try {
+                      result = await dependencies.repository.finishGame({ gameId });
+                    } catch (retryError) {
+                      if (
+                        retryError instanceof GameTimerTransitionError &&
+                        retryError.code === "game_state_changed"
+                      ) {
+                        const recoveredAfterRetry = await recoverFinishedGameForFinishRoute({
+                          repository: dependencies.repository,
+                          gameId,
+                          origin,
+                          allowedOrigins: dependencies.corsAllowedOrigins,
+                        });
+                        if (recoveredAfterRetry) {
+                          return recoveredAfterRetry;
+                        }
+                      }
+                      retryFailure = retryError;
+                    }
+
+                    if (retryFailure) {
+                      throw retryFailure;
                     }
                   }
 
-                  if (error instanceof GameTimerTransitionError) {
+                  if (!result && error instanceof GameTimerTransitionError) {
                     return timerTransitionConflictResponse(
                       origin,
                       dependencies.corsAllowedOrigins,
@@ -2364,7 +2452,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     );
                   }
 
-                  throw error;
+                  if (!result) {
+                    throw error;
+                  }
                 }
                 if (!result) {
                   return notFound(

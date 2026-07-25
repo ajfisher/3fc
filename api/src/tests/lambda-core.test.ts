@@ -212,8 +212,10 @@ interface HarnessConfig {
   rosterAssignments?: Record<string, MockRosterAssignmentRecord>;
   gamePlayers?: Record<string, MockGamePlayerRecord>;
   finishGameStateChangedOnce?: boolean;
+  finishGameStateChangedWithoutFinishOnce?: boolean;
   deleteGameFinishesBeforeDeleteOnce?: boolean;
   createGameTeamOverrideStateChangedOnce?: boolean;
+  createGameTeamOverrideFinishesIncompleteOnce?: boolean;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
@@ -291,8 +293,11 @@ function createHarness(config: HarnessConfig = {}) {
   const getGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
+  let finishGameStateChangedWithoutFinishOnce = config.finishGameStateChangedWithoutFinishOnce ?? false;
   let deleteGameFinishesBeforeDeleteOnce = config.deleteGameFinishesBeforeDeleteOnce ?? false;
   let createGameTeamOverrideStateChangedOnce = config.createGameTeamOverrideStateChangedOnce ?? false;
+  let createGameTeamOverrideFinishesIncompleteOnce =
+    config.createGameTeamOverrideFinishesIncompleteOnce ?? false;
   let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   let finishBeforeGoalCorrectionOnce = config.finishBeforeGoalCorrectionOnce ?? false;
@@ -720,6 +725,24 @@ function createHarness(config: HarnessConfig = {}) {
         return [...seasonTeams.values()].filter((team) => team.seasonId === seasonId);
       },
       async createGameTeamOverride(input) {
+        if (createGameTeamOverrideFinishesIncompleteOnce) {
+          createGameTeamOverrideFinishesIncompleteOnce = false;
+          const existingGame = games.get(input.gameId);
+          if (existingGame) {
+            games.set(input.gameId, {
+              ...existingGame,
+              status: "finished",
+              finishedAt: null,
+              result: null,
+              updatedAt: "2026-02-23T00:00:05.000Z",
+            });
+          }
+          throw new GameMutationStateError(
+            "game_finished",
+            `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+          );
+        }
+
         if (createGameTeamOverrideStateChangedOnce) {
           createGameTeamOverrideStateChangedOnce = false;
           const existingGame = games.get(input.gameId);
@@ -971,6 +994,14 @@ function createHarness(config: HarnessConfig = {}) {
         }
 
         const finishedAt = "2026-02-23T00:00:05.000Z";
+        if (finishGameStateChangedWithoutFinishOnce) {
+          finishGameStateChangedWithoutFinishOnce = false;
+          throw new GameTimerTransitionError(
+            "game_state_changed",
+            "Game or scoreboard state changed while finishing this game. Reload and try again.",
+          );
+        }
+
         if (finishGameStateChangedOnce) {
           finishGameStateChangedOnce = false;
           games.set(input.gameId, {
@@ -1407,8 +1438,10 @@ function createGoalHarness(input: {
   runningThird?: boolean;
   completedThirds?: boolean;
   finishGameStateChangedOnce?: boolean;
+  finishGameStateChangedWithoutFinishOnce?: boolean;
   deleteGameFinishesBeforeDeleteOnce?: boolean;
   createGameTeamOverrideStateChangedOnce?: boolean;
+  createGameTeamOverrideFinishesIncompleteOnce?: boolean;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
@@ -1450,8 +1483,10 @@ function createGoalHarness(input: {
       },
     },
     finishGameStateChangedOnce: input.finishGameStateChangedOnce,
+    finishGameStateChangedWithoutFinishOnce: input.finishGameStateChangedWithoutFinishOnce,
     deleteGameFinishesBeforeDeleteOnce: input.deleteGameFinishesBeforeDeleteOnce,
     createGameTeamOverrideStateChangedOnce: input.createGameTeamOverrideStateChangedOnce,
+    createGameTeamOverrideFinishesIncompleteOnce: input.createGameTeamOverrideFinishesIncompleteOnce,
     createAndLinkGamePlayerStateChangedOnce: input.createAndLinkGamePlayerStateChangedOnce,
     assignRosterPlayerStateChangedOnce: input.assignRosterPlayerStateChangedOnce,
     finishBeforeGoalCorrectionOnce: input.finishBeforeGoalCorrectionOnce,
@@ -2483,6 +2518,38 @@ test("core lambda replays concurrent same-key finish after game-state race", asy
   assert.ok(body.result);
 });
 
+test("core lambda retries finish conflicts before persisting idempotency results", async () => {
+  const harness = createGoalHarness({
+    completedThirds: true,
+    finishGameStateChangedWithoutFinishOnce: true,
+  });
+
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-retry-conflict-1",
+      },
+    }),
+  );
+
+  assert.equal(finishResponse.statusCode, 200);
+  const body = JSON.parse(finishResponse.body) as {
+    status: string;
+    finishedAt: string | null;
+    result: GameResult;
+  };
+  assert.equal(body.status, "finished");
+  assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
+  assert.ok(body.result);
+  const record = harness.idempotencyRecords.get(
+    "scorekeeper@example.com:POST:/v1/games/game-1/finish:finish-retry-conflict-1",
+  );
+  assert.equal(record?.responseStatusCode, 200);
+});
+
 test("core lambda uses a consistent finished read after team setup races", async () => {
   const harness = createGoalHarness({
     completedThirds: true,
@@ -2525,6 +2592,56 @@ test("core lambda uses a consistent finished read after team setup races", async
   assert.equal(
     harness.getGameCalls.some((call) => call.gameId === "game-1" && call.consistentRead),
     true,
+  );
+});
+
+test("core lambda repairs incomplete finished games after team setup races", async () => {
+  const harness = createGoalHarness({
+    completedThirds: true,
+    createGameTeamOverrideFinishesIncompleteOnce: true,
+    gameTeams: {
+      "game-1:blue": {
+        gameId: "game-1",
+        teamId: "blue",
+        name: "Blue",
+        color: "#2364d2",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:yellow": {
+        gameId: "game-1",
+        teamId: "yellow",
+        name: "Yellow",
+        color: "#e0a612",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-incomplete-repair-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as {
+    status: string;
+    finishedAt: string | null;
+    result: GameResult | null;
+  };
+  assert.equal(body.status, "finished");
+  assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
+  assert.ok(body.result);
+  assert.deepEqual(
+    harness.createdGameTeams.map((team) => ({ teamId: team.teamId, allowFinished: team.allowFinished })),
+    [{ teamId: "red", allowFinished: true }],
   );
 });
 
