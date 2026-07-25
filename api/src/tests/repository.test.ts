@@ -350,6 +350,25 @@ function createRepositoryHarness(): { repository: ThreeFcRepository; client: InM
   };
 }
 
+function markStoredGameFinished(client: InMemoryDynamoClient, gameId: string): void {
+  const item = client.readItem(`GAME#${gameId}`, "METADATA");
+  assert.ok(item);
+  const rawData = item.data?.S;
+  if (typeof rawData !== "string") {
+    throw new Error("Stored game metadata is missing JSON data.");
+  }
+  const data = JSON.parse(rawData) as Record<string, unknown>;
+  item.data = {
+    S: JSON.stringify({
+      ...data,
+      status: "finished",
+      finishedAt: "2026-02-23T00:00:59.000Z",
+    }),
+  };
+  item.updatedAt = { S: "2026-02-23T00:00:59.000Z" };
+  client.seedItem(item);
+}
+
 test("repository supports round-trip create/read for core entities", async () => {
   const repository = createRepository();
 
@@ -1796,6 +1815,72 @@ test("repository replays duplicate correction operation IDs without duplicate PA
     }),
     /different request payload/,
   );
+});
+
+test("repository rejects live goal updates when game metadata changes before write", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-live-race-update",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-live-race-update",
+      actorUserId: "scorekeeper@example.com",
+      scoringTeamId: "blue",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-blue",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Goal or scoreboard state changed while updating this goal/,
+  );
+
+  const [goal] = await repository.listGoalEvents("game-1");
+  assert.equal(goal?.scoringTeamId, "red");
+});
+
+test("repository rejects live goal deletes when game metadata changes before write", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-live-race-delete",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.deleteGoal({
+      gameId: "game-1",
+      eventId: "goal-live-race-delete",
+      actorUserId: "scorekeeper@example.com",
+    }),
+    /Goal or scoreboard state changed while deleting this goal/,
+  );
+
+  assert.equal((await repository.listGoalEvents("game-1")).length, 1);
 });
 
 test("repository deletes goals and recomputes tallies from remaining timeline", async () => {

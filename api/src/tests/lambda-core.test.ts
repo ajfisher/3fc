@@ -206,6 +206,7 @@ interface HarnessConfig {
   players?: Record<string, MockPlayerRecord>;
   rosterAssignments?: Record<string, MockRosterAssignmentRecord>;
   gamePlayers?: Record<string, MockGamePlayerRecord>;
+  finishGameStateChangedOnce?: boolean;
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
@@ -269,6 +270,7 @@ function createHarness(config: HarnessConfig = {}) {
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
+  let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
   const sessionEntities = new Map<string, MockSessionEntity>(
@@ -888,6 +890,21 @@ function createHarness(config: HarnessConfig = {}) {
         }
 
         const finishedAt = "2026-02-23T00:00:05.000Z";
+        if (finishGameStateChangedOnce) {
+          finishGameStateChangedOnce = false;
+          games.set(input.gameId, {
+            ...existing,
+            status: "finished" as const,
+            finishedAt,
+            result: buildMockGameResult(input.gameId, finishedAt),
+            updatedAt: finishedAt,
+          });
+          throw new GameTimerTransitionError(
+            "game_state_changed",
+            "Game or scoreboard state changed while finishing this game. Reload and try again.",
+          );
+        }
+
         const updated = {
           ...existing,
           status: "finished" as const,
@@ -1209,6 +1226,7 @@ function createGoalHarness(input: {
   role?: "admin" | "scorekeeper" | "viewer";
   runningThird?: boolean;
   completedThirds?: boolean;
+  finishGameStateChangedOnce?: boolean;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
   const role = input.role ?? "scorekeeper";
@@ -1245,6 +1263,7 @@ function createGoalHarness(input: {
         updatedAt: "2026-02-23T00:00:00.000Z",
       },
     },
+    finishGameStateChangedOnce: input.finishGameStateChangedOnce,
     seasons: {
       "season-1": {
         leagueId: "league-1",
@@ -2167,6 +2186,46 @@ test("core lambda finishes a game with clear winner and idempotency replay", asy
       { teamId: "blue", scored: 0, conceded: 2, rank: 3, outcome: "loss" },
     ],
   );
+});
+
+test("core lambda replays concurrent same-key finish after game-state race", async () => {
+  const harness = createGoalHarness({
+    completedThirds: true,
+    finishGameStateChangedOnce: true,
+  });
+
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-race-1",
+      },
+    }),
+  );
+  const replayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-race-1",
+      },
+    }),
+  );
+
+  assert.equal(finishResponse.statusCode, 200);
+  assert.equal(replayResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(replayResponse.body), JSON.parse(finishResponse.body));
+  const body = JSON.parse(finishResponse.body) as {
+    status: string;
+    finishedAt: string | null;
+    result: GameResult;
+  };
+  assert.equal(body.status, "finished");
+  assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
+  assert.ok(body.result);
 });
 
 test("core lambda finishes a game with full draw result", async () => {

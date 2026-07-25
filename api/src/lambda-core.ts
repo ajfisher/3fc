@@ -2208,7 +2208,23 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 }
 
                 await ensureGameTeamsForGame(dependencies.repository, currentGame);
-                const result = await dependencies.repository.finishGame({ gameId });
+                let result;
+                try {
+                  result = await dependencies.repository.finishGame({ gameId });
+                } catch (error) {
+                  if (error instanceof GameTimerTransitionError && error.code === "game_state_changed") {
+                    const finishedGame = await dependencies.repository.getGame(gameId);
+                    if (finishedGame?.status === "finished") {
+                      return createJsonResponse(
+                        200,
+                        buildGameResponse(finishedGame),
+                        buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                      );
+                    }
+                  }
+
+                  throw error;
+                }
                 if (!result) {
                   return notFound(
                     origin,

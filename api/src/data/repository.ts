@@ -2031,6 +2031,27 @@ export class ThreeFcRepository {
     };
   }
 
+  private buildGameConditionCheck(gameId: string, stored: StoredEntity<unknown>) {
+    return {
+      ConditionCheck: {
+        TableName: this.tableName,
+        Key: {
+          pk: { S: gamePk(gameId) },
+          sk: { S: metadataSk() },
+        },
+        ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedGameUpdatedAt": { S: stored.updatedAt },
+          ":expectedGameData": { S: stored.rawData },
+        },
+      },
+    };
+  }
+
   private buildTeamConditionChecks(
     teams: GameTeamRecord[],
     originalTeamStatesById: Map<TeamId, { record: GameTeamRecord; rawData: string }>,
@@ -2743,7 +2764,7 @@ export class ThreeFcRepository {
                     now,
                   }),
                 ]
-              : []),
+              : [this.buildGameConditionCheck(input.gameId, gameItem)]),
             {
               Put: {
                 TableName: this.tableName,
@@ -2938,7 +2959,7 @@ export class ThreeFcRepository {
                     now,
                   }),
                 ]
-              : []),
+              : [this.buildGameConditionCheck(input.gameId, gameItem)]),
             {
               Delete: {
                 TableName: this.tableName,
