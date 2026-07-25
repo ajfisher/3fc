@@ -604,12 +604,13 @@ function joinStateChangedConflict(request: IncomingMessage, response: ServerResp
   return 409;
 }
 
-function hasJoinStateChangedCode(payload: unknown): boolean {
+function hasNonPersistedPublicJoinConflictCode(payload: unknown): boolean {
+  const code = typeof payload === "object" && payload !== null && "code" in payload
+    ? (payload as { code?: unknown }).code
+    : null;
   return (
-    typeof payload === "object" &&
-    payload !== null &&
-    "code" in payload &&
-    (payload as { code?: unknown }).code === "join_state_changed"
+    code === "join_state_changed" ||
+    code === "game_finished"
   );
 }
 
@@ -618,7 +619,7 @@ function shouldPersistPublicJoinMutation(mutation: JsonMutationResult): boolean 
     return false;
   }
 
-  if (mutation.statusCode === 409 && hasJoinStateChangedCode(mutation.payload)) {
+  if (mutation.statusCode === 409 && hasNonPersistedPublicJoinConflictCode(mutation.payload)) {
     return false;
   }
 
@@ -815,10 +816,6 @@ async function waitForLocalFinishedRepairCompletion(input: {
   }
 
   return latest;
-}
-
-async function waitForIdempotencyRecord(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 25));
 }
 
 async function readGameTeams(game: {

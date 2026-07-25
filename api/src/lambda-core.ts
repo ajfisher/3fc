@@ -965,12 +965,13 @@ function joinStateChangedResponse(
   );
 }
 
-function hasJoinStateChangedCode(payload: unknown): boolean {
+function hasNonPersistedPublicJoinConflictCode(payload: unknown): boolean {
+  const code = typeof payload === "object" && payload !== null && "code" in payload
+    ? (payload as { code?: unknown }).code
+    : null;
   return (
-    typeof payload === "object" &&
-    payload !== null &&
-    "code" in payload &&
-    (payload as { code?: unknown }).code === "join_state_changed"
+    code === "join_state_changed" ||
+    code === "game_finished"
   );
 }
 
@@ -984,7 +985,7 @@ function shouldPersistPublicJoinResponse(response: ApiGatewayHttpResponse): bool
   }
 
   try {
-    return !hasJoinStateChangedCode(JSON.parse(response.body));
+    return !hasNonPersistedPublicJoinConflictCode(JSON.parse(response.body));
   } catch {
     return true;
   }

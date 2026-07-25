@@ -2437,6 +2437,52 @@ test("core lambda retries retryable public join conflicts without persisting the
   assert.equal(harness.idempotencyRecords.size, 1);
 });
 
+test("core lambda does not persist closed-game public join conflicts", async () => {
+  const harness = createHarness({
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "JNABCD23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        finishedAt: "2026-02-23T00:00:05.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:05.000Z",
+      },
+    },
+  });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await harness.handler(
+      createEvent({
+        method: "POST",
+        path: "/v1/join/JNABCD23",
+        headers: {
+          Origin: "https://qa.3fc.football",
+          "Idempotency-Key": "public-join-finished-1",
+        },
+        body: {
+          nickname: "Nia",
+        },
+      }),
+    );
+
+    assert.equal(response.statusCode, 409);
+    assert.deepEqual(JSON.parse(response.body), {
+      error: "conflict",
+      code: "game_finished",
+      message: "Game game-1 is finished. Join registration is closed.",
+    });
+  }
+
+  assert.equal(harness.createdPlayers.length, 0);
+  assert.equal(harness.linkedGamePlayers.length, 0);
+  assert.equal(harness.idempotencyRecords.size, 0);
+});
+
 test("core lambda rejects oversized public join nicknames before persistence", async () => {
   const harness = createHarness({
     games: {
