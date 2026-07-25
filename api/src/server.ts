@@ -62,7 +62,13 @@ import {
   updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
+import {
+  GameMutationStateError,
+  GameTimerTransitionError,
+  GoalCorrectionError,
+  GoalCreationError,
+  ThreeFcRepository,
+} from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -1065,7 +1071,24 @@ export async function handleLocalDeleteGameRoute(input: {
     return finishedGameDeleteConflict(input.request, input.response, input.gameId);
   }
 
-  await repositoryClient.deleteGame(input.gameId);
+  const deleted = await repositoryClient.deleteGame(input.gameId);
+  if (!deleted) {
+    const currentGame = await repositoryClient.getGame(input.gameId);
+    if (currentGame?.status === "finished") {
+      return finishedGameDeleteConflict(input.request, input.response, input.gameId);
+    }
+    if (!currentGame) {
+      return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+    }
+
+    sendJsonWithCors(input.request, input.response, 409, {
+      error: "conflict",
+      code: "game_state_changed",
+      message: `Game ${input.gameId} changed before it could be deleted. Reload and try again.`,
+    });
+    return 409;
+  }
+
   sendNoContentWithCors(input.request, input.response);
   return 204;
 }
@@ -2920,6 +2943,7 @@ async function start(): Promise<void> {
           return;
         }
 
+        const isAdmin = await ensureLeagueAdmin(game.leagueId, authGate.session.email);
         let rawBody: Record<string, unknown>;
         try {
           rawBody = await parseJsonBody(request);
@@ -2946,11 +2970,41 @@ async function start(): Promise<void> {
           return;
         }
 
-        const assignment = await repository.assignRosterPlayer({
-          gameId,
-          teamId: parsedBody.data.teamId,
-          playerId,
-        });
+        let assignment;
+        try {
+          assignment = await repository.assignRosterPlayer({
+            gameId,
+            teamId: parsedBody.data.teamId,
+            playerId,
+            allowFinished: isAdmin,
+          });
+        } catch (error) {
+          if (error instanceof GameMutationStateError) {
+            const currentGame = await repository.getGame(gameId);
+            if (currentGame) {
+              const finishedLock = await ensureFinishedGameMutationAllowed(
+                request,
+                response,
+                currentGame,
+                authGate.session.email,
+              );
+              if (!finishedLock.allowed) {
+                status = finishedLock.status;
+                return;
+              }
+            }
+
+            status = 409;
+            sendJsonWithCors(request, response, status, {
+              error: "conflict",
+              code: error.code,
+              message: error.message,
+            });
+            return;
+          }
+
+          throw error;
+        }
         status = 200;
         sendJsonWithCors(request, response, status, {
           ...assignment,

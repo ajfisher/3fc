@@ -52,7 +52,13 @@ import {
   updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
+import {
+  GameMutationStateError,
+  GameTimerTransitionError,
+  GoalCorrectionError,
+  GoalCreationError,
+  ThreeFcRepository,
+} from "./data/repository.js";
 import type { CreateGoalResult, DeleteGoalResult, GameStatus, UpdateGoalResult } from "./data/types.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -328,6 +334,7 @@ interface RepositoryContract {
     gameId: string;
     teamId: TeamId;
     playerId: string;
+    allowFinished?: boolean;
   }): Promise<{
     gameId: string;
     teamId: TeamId;
@@ -1245,6 +1252,55 @@ async function executeIdempotentMutation(input: {
     parseStoredIdempotencyResponseBody(raceRecord.responseBody),
     buildCorsHeaders(input.origin, input.allowedOrigins),
   );
+}
+
+async function waitForIdempotencyRecord(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+async function replayStoredIdempotencyMutation(input: {
+  repository: RepositoryContract;
+  idempotencyKey: string | undefined;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  origin: string | undefined;
+  allowedOrigins: string[];
+}): Promise<ApiGatewayHttpResponse | null> {
+  if (!input.idempotencyKey) {
+    return null;
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);
+  if (!parsedHeader.success) {
+    return null;
+  }
+
+  const idempotencyKey = parsedHeader.data;
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
+    if (record) {
+      if (record.requestHash !== requestHash) {
+        return idempotencyConflictResponse(input.origin, input.allowedOrigins);
+      }
+
+      return createJsonResponse(
+        record.responseStatusCode,
+        parseStoredIdempotencyResponseBody(record.responseBody),
+        buildCorsHeaders(input.origin, input.allowedOrigins),
+      );
+    }
+
+    if (attempt < 2) {
+      await waitForIdempotencyRecord();
+    }
+  }
+
+  return null;
 }
 
 function decodeRouteParam(value: string): string {
@@ -2213,6 +2269,20 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   result = await dependencies.repository.finishGame({ gameId });
                 } catch (error) {
                   if (error instanceof GameTimerTransitionError && error.code === "game_state_changed") {
+                    const replayResponse = await replayStoredIdempotencyMutation({
+                      repository: dependencies.repository,
+                      idempotencyKey,
+                      sessionEmail: session.email,
+                      method,
+                      route,
+                      requestPayload: {},
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
+                    });
+                    if (replayResponse) {
+                      return replayResponse;
+                    }
+
                     const finishedGame = await dependencies.repository.getGame(gameId);
                     if (finishedGame?.status === "finished") {
                       return createJsonResponse(
@@ -3016,6 +3086,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return finishedBlock;
           }
 
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, game.leagueId, session.email);
           let rawBody: Record<string, unknown>;
           try {
             rawBody = parseJsonBody(event);
@@ -3046,11 +3117,45 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Player ${playerId} was not found.`);
           }
 
-          const assignment = await dependencies.repository.assignRosterPlayer({
-            gameId,
-            teamId: parsedBody.data.teamId,
-            playerId,
-          });
+          let assignment;
+          try {
+            assignment = await dependencies.repository.assignRosterPlayer({
+              gameId,
+              teamId: parsedBody.data.teamId,
+              playerId,
+              allowFinished: isAdmin,
+            });
+          } catch (error) {
+            if (error instanceof GameMutationStateError) {
+              const currentGame = await dependencies.repository.getGame(gameId);
+              if (currentGame) {
+                const finishedBlock = await buildFinishedGameMutationBlock({
+                  repository: dependencies.repository,
+                  game: currentGame,
+                  sessionEmail: session.email,
+                  origin,
+                  allowedOrigins: dependencies.corsAllowedOrigins,
+                });
+                if (finishedBlock) {
+                  status = finishedBlock.statusCode;
+                  return finishedBlock;
+                }
+              }
+
+              status = 409;
+              return createJsonResponse(
+                status,
+                {
+                  error: "conflict",
+                  code: error.code,
+                  message: error.message,
+                },
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            }
+
+            throw error;
+          }
           status = 200;
           return createJsonResponse(
             status,
@@ -3171,7 +3276,33 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          await dependencies.repository.deleteGame(gameId);
+          const deleted = await dependencies.repository.deleteGame(gameId);
+          if (!deleted) {
+            const currentGame = await dependencies.repository.getGame(gameId);
+            if (currentGame?.status === "finished") {
+              status = 409;
+              return finishedGameDeleteConflictResponse(
+                origin,
+                dependencies.corsAllowedOrigins,
+                gameId,
+              );
+            }
+            if (!currentGame) {
+              status = 404;
+              return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
+            }
+
+            status = 409;
+            return createJsonResponse(
+              status,
+              {
+                error: "conflict",
+                code: "game_state_changed",
+                message: `Game ${gameId} changed before it could be deleted. Reload and try again.`,
+              },
+              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            );
+          }
           status = 204;
           return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
         }

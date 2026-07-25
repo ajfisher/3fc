@@ -276,6 +276,7 @@ export interface AssignRosterInput {
   gameId: string;
   teamId: TeamId;
   playerId: string;
+  allowFinished?: boolean;
 }
 
 export interface CreateGoalInput {

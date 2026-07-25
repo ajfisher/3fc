@@ -16,7 +16,12 @@ import {
   type ThirdLengthMinutes,
   type ThirdTimerSegment,
 } from "@3fc/contracts";
-import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError } from "../data/repository.js";
+import {
+  GameMutationStateError,
+  GameTimerTransitionError,
+  GoalCorrectionError,
+  GoalCreationError,
+} from "../data/repository.js";
 
 interface MockSessionRecord {
   sessionId: string;
@@ -207,6 +212,8 @@ interface HarnessConfig {
   rosterAssignments?: Record<string, MockRosterAssignmentRecord>;
   gamePlayers?: Record<string, MockGamePlayerRecord>;
   finishGameStateChangedOnce?: boolean;
+  deleteGameFinishesBeforeDeleteOnce?: boolean;
+  assignRosterPlayerStateChangedOnce?: boolean;
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
@@ -271,6 +278,8 @@ function createHarness(config: HarnessConfig = {}) {
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
+  let deleteGameFinishesBeforeDeleteOnce = config.deleteGameFinishesBeforeDeleteOnce ?? false;
+  let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
   const sessionEntities = new Map<string, MockSessionEntity>(
@@ -916,6 +925,21 @@ function createHarness(config: HarnessConfig = {}) {
         return updated;
       },
       async deleteGame(gameId: string) {
+        if (deleteGameFinishesBeforeDeleteOnce) {
+          deleteGameFinishesBeforeDeleteOnce = false;
+          const existing = games.get(gameId);
+          if (existing) {
+            games.set(gameId, {
+              ...existing,
+              status: "finished",
+              finishedAt: "2026-02-23T00:00:05.000Z",
+              result: buildMockGameResult(gameId, "2026-02-23T00:00:05.000Z"),
+              updatedAt: "2026-02-23T00:00:05.000Z",
+            });
+          }
+          return false;
+        }
+
         deletedGames.push(gameId);
         return games.delete(gameId);
       },
@@ -962,6 +986,24 @@ function createHarness(config: HarnessConfig = {}) {
         return [...gamePlayers.values()].filter((player) => player.gameId === gameId);
       },
       async assignRosterPlayer(input) {
+        if (assignRosterPlayerStateChangedOnce) {
+          assignRosterPlayerStateChangedOnce = false;
+          const existing = games.get(input.gameId);
+          if (existing) {
+            games.set(input.gameId, {
+              ...existing,
+              status: "finished",
+              finishedAt: "2026-02-23T00:00:05.000Z",
+              result: buildMockGameResult(input.gameId, "2026-02-23T00:00:05.000Z"),
+              updatedAt: "2026-02-23T00:00:05.000Z",
+            });
+          }
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Game ${input.gameId} changed before the roster assignment could be saved. Reload and try again.`,
+          );
+        }
+
         assignedRosterPlayers.push(input);
         for (const [key, assignment] of rosterAssignments.entries()) {
           if (assignment.gameId === input.gameId && assignment.playerId === input.playerId) {
@@ -1227,6 +1269,8 @@ function createGoalHarness(input: {
   runningThird?: boolean;
   completedThirds?: boolean;
   finishGameStateChangedOnce?: boolean;
+  deleteGameFinishesBeforeDeleteOnce?: boolean;
+  assignRosterPlayerStateChangedOnce?: boolean;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
   const role = input.role ?? "scorekeeper";
@@ -1264,6 +1308,8 @@ function createGoalHarness(input: {
       },
     },
     finishGameStateChangedOnce: input.finishGameStateChangedOnce,
+    deleteGameFinishesBeforeDeleteOnce: input.deleteGameFinishesBeforeDeleteOnce,
+    assignRosterPlayerStateChangedOnce: input.assignRosterPlayerStateChangedOnce,
     seasons: {
       "season-1": {
         leagueId: "league-1",
@@ -2462,6 +2508,33 @@ test("core lambda locks scorekeeper player and roster mutations after finish", a
   });
 });
 
+test("core lambda blocks scorekeeper roster assignment if finish wins the write race", async () => {
+  const harness = createGoalHarness({
+    assignRosterPlayerStateChangedOnce: true,
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PUT",
+      path: "/v1/games/game-1/roster/player-red",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        teamId: "blue",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
+  });
+  assert.equal(harness.assignedRosterPlayers.length, 0);
+});
+
 test("core lambda allows admin player and roster corrections after finish", async () => {
   const harness = createGoalHarness({
     email: "admin@example.com",
@@ -2519,6 +2592,7 @@ test("core lambda allows admin player and roster corrections after finish", asyn
     gameId: "game-1",
     teamId: "blue",
     playerId: "player-red",
+    allowFinished: true,
   });
 });
 
@@ -2540,6 +2614,32 @@ test("core lambda locks admin game deletion after finish", async () => {
     }),
   );
   assert.equal(finishResponse.statusCode, 200);
+
+  const deleteResponse = await harness.handler(
+    createEvent({
+      method: "DELETE",
+      path: "/v1/games/game-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(deleteResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(deleteResponse.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Finished games cannot be deleted.",
+  });
+  assert.deepEqual(harness.deletedGames, []);
+});
+
+test("core lambda blocks admin delete if finish wins the delete race", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    deleteGameFinishesBeforeDeleteOnce: true,
+  });
 
   const deleteResponse = await harness.handler(
     createEvent({

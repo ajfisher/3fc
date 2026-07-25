@@ -409,3 +409,52 @@ test("local server delete game route locks finished games", async () => {
     message: "Game game-1 is finished. Finished games cannot be deleted.",
   });
 });
+
+test("local server delete game route maps concurrent finish to conflict", async () => {
+  const request = createMockRequest();
+  const response = createMockResponse();
+  let getGameCalls = 0;
+  let deleteCalls = 0;
+  const repositoryClient = {
+    async getGame() {
+      getGameCalls += 1;
+      return getGameCalls === 1
+        ? gameRecord({ status: "live" })
+        : gameRecord({
+            status: "finished",
+            finishedAt: "2026-02-23T00:05:00.000Z",
+            result,
+          });
+    },
+    async getLeagueAccess() {
+      return {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin" as const,
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+    },
+    async deleteGame() {
+      deleteCalls += 1;
+      return false;
+    },
+  };
+
+  const status = await handleLocalDeleteGameRoute({
+    request,
+    response,
+    gameId: "game-1",
+    sessionEmail: "admin@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 409);
+  assert.equal(deleteCalls, 1);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Finished games cannot be deleted.",
+  });
+});

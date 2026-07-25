@@ -16,7 +16,7 @@ import {
   formatThirdDisplayTime,
 } from "@3fc/contracts";
 
-import { ThreeFcRepository } from "../data/repository.js";
+import { GameMutationStateError, ThreeFcRepository } from "../data/repository.js";
 
 type Item = Record<string, AttributeValue>;
 
@@ -851,6 +851,56 @@ test("repository supports update and delete of games", async () => {
   assert.equal(deleted, true);
   assert.equal(await repository.getGame("game-1"), null);
   assert.deepEqual(await repository.listSessionsForSeason("season-1"), []);
+});
+
+test("repository does not delete a game if it finishes before the delete transaction commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  assert.equal(await repository.deleteGame("game-1"), false);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository rejects roster assignment if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createPlayer({
+    playerId: "player-red",
+    nickname: "Red Player",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.assignRosterPlayer({
+      gameId: "game-1",
+      teamId: "red",
+      playerId: "player-red",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.deepEqual(await repository.listGameRoster("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
 });
 
 test("repository gives legacy games default timer state", async () => {

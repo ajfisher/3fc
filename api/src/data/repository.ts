@@ -9,6 +9,7 @@ import {
   type ScanCommandOutput,
   TransactWriteItemsCommand,
   type AttributeValue,
+  type TransactWriteItem,
 } from "@aws-sdk/client-dynamodb";
 import { randomUUID } from "node:crypto";
 import {
@@ -173,6 +174,16 @@ export class GoalCorrectionError extends Error {
   ) {
     super(message);
     this.name = "GoalCorrectionError";
+  }
+}
+
+export class GameMutationStateError extends Error {
+  constructor(
+    readonly code: "game_finished" | "game_state_changed",
+    message: string,
+  ) {
+    super(message);
+    this.name = "GameMutationStateError";
   }
 }
 
@@ -1434,18 +1445,57 @@ export class ThreeFcRepository {
   async deleteGame(gameId: string): Promise<boolean> {
     requireNonEmpty("gameId", gameId);
 
-    const gameItem = await this.getEntity(gamePk(gameId), metadataSk());
+    const gameItem = await this.getEntity(gamePk(gameId), metadataSk(), { consistentRead: true });
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return false;
     }
 
     const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished") {
+      return false;
+    }
 
-    await this.deleteEntity(gamePk(gameId), metadataSk());
-    await this.deleteEntity(
-      gameSessionIndexPk(game.sessionId),
-      gameSessionIndexSk(game.gameStartTs, game.gameId),
-    );
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gamePk(gameId) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedGameUpdatedAt": { S: gameItem.updatedAt },
+                  ":expectedGameData": { S: gameItem.rawData },
+                },
+              },
+            },
+            {
+              Delete: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gameSessionIndexPk(game.sessionId) },
+                  sk: { S: gameSessionIndexSk(game.gameStartTs, game.gameId) },
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        return false;
+      }
+
+      throw error;
+    }
 
     const remainingGames = await this.listGamesForSession(game.sessionId);
     if (remainingGames.length === 0) {
@@ -1636,6 +1686,22 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("playerId", input.playerId);
 
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      throw new GameMutationStateError(
+        "game_state_changed",
+        `Game ${input.gameId} changed before the roster assignment could be saved. Reload and try again.`,
+      );
+    }
+
+    const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GameMutationStateError(
+        "game_finished",
+        `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      );
+    }
+
     const existingAssignments = await this.listGameRoster(input.gameId);
     const currentAssignmentsForPlayer = existingAssignments.filter(
       (assignment) => assignment.playerId === input.playerId,
@@ -1653,23 +1719,70 @@ export class ThreeFcRepository {
       teamId: input.teamId,
       playerId: input.playerId,
     };
-
-    await Promise.all(
-      currentAssignmentsForPlayer.map((assignment) =>
-        this.deleteEntity(gamePk(input.gameId), rosterSk(assignment.teamId, assignment.playerId)),
-      ),
+    const existingGamePlayer = await this.getEntity(
+      gamePk(input.gameId),
+      gamePlayerSk(input.playerId),
+      { consistentRead: true },
     );
-    await this.linkGamePlayer({
+    const linkPayload = {
       gameId: input.gameId,
       playerId: input.playerId,
-    });
-    await this.putEntity(
-      gamePk(input.gameId),
-      rosterSk(input.teamId, input.playerId),
-      ENTITY_TYPE.roster,
-      payload,
-      now,
-    );
+    };
+    const transactionItems: TransactWriteItem[] = [
+      this.buildGameConditionCheck(input.gameId, gameItem),
+      ...currentAssignmentsForPlayer.map((assignment) => ({
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gamePk(input.gameId) },
+            sk: { S: rosterSk(assignment.teamId, assignment.playerId) },
+          },
+        },
+      })),
+      {
+        Put: {
+          TableName: this.tableName,
+          Item: buildItemWithTimestamps(
+            gamePk(input.gameId),
+            gamePlayerSk(input.playerId),
+            ENTITY_TYPE.gamePlayer,
+            linkPayload,
+            existingGamePlayer?.createdAt ?? now,
+            now,
+          ),
+        },
+      },
+      {
+        Put: {
+          TableName: this.tableName,
+          Item: buildItem(
+            gamePk(input.gameId),
+            rosterSk(input.teamId, input.playerId),
+            ENTITY_TYPE.roster,
+            payload,
+            now,
+          ),
+        },
+      },
+    ];
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: transactionItems,
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the roster assignment could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+
     return withTimestamps(payload, now, now);
   }
 
