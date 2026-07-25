@@ -33,6 +33,7 @@ interface SmokeRunCleanupInput {
   sessionId: string;
   playerIds: string[];
   originalSessionMetadata: DynamoItem | null;
+  originalAuthRateLimitItems: DynamoItem[];
 }
 
 function authRateLimitHash(dimension: "email" | "ip", identifier: string): string {
@@ -270,6 +271,9 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
       ),
     );
     await deleteItems(client, await scanAuthRateLimitItems(client, input));
+    for (const item of input.originalAuthRateLimitItems) {
+      await putItem(client, item);
+    }
 
     await deleteFakeSesMessages(input.email);
   } finally {
@@ -419,8 +423,13 @@ test.describe("M2 local-stack smoke", () => {
     const playerIds: string[] = [];
     const snapshotClient = createLocalDynamoClient();
     let originalSessionMetadata: DynamoItem | null = null;
+    let originalAuthRateLimitItems: DynamoItem[] = [];
     try {
       originalSessionMetadata = await readSessionMetadataSnapshot(snapshotClient, sessionId);
+      originalAuthRateLimitItems = await scanAuthRateLimitItems(snapshotClient, {
+        email,
+        clientIps: localBrowserClientIps,
+      });
     } finally {
       snapshotClient.destroy();
     }
@@ -527,6 +536,7 @@ test.describe("M2 local-stack smoke", () => {
           sessionId,
           playerIds,
           originalSessionMetadata,
+          originalAuthRateLimitItems,
         });
       } catch (error) {
         if (!testFailed) {
