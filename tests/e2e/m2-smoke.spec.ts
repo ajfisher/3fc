@@ -23,6 +23,7 @@ type DynamoItem = Record<string, AttributeValue>;
 
 interface SmokeRunCleanupInput {
   runId: string;
+  email: string;
   leagueSlug: string;
   seasonSlug: string;
   gameId: string;
@@ -218,16 +219,18 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
         [input.runId, input.leagueSlug, input.seasonSlug, input.gameId].filter(Boolean),
       ),
     );
+
+    await deleteFakeSesMessages(input.email);
   } finally {
     client.destroy();
   }
 }
 
-async function fetchWithTimeout(url: string): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
@@ -257,6 +260,16 @@ async function readFakeSesMessages(): Promise<FakeSesMessage[]> {
 
   const payload = (await response.json()) as { messages?: FakeSesMessage[] };
   return Array.isArray(payload.messages) ? payload.messages : [];
+}
+
+async function deleteFakeSesMessages(email: string): Promise<void> {
+  const response = await fetchWithTimeout(
+    `${fakeSesBaseUrl}/messages?to=${encodeURIComponent(email)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(`Fake SES message cleanup failed with ${response.status}.`);
+  }
 }
 
 function extractMagicLink(message: FakeSesMessage): string | null {
@@ -347,6 +360,8 @@ test.describe("M2 local-stack smoke", () => {
     const seasonSlug = `m2-smoke-season-${runId}`;
     const leagueName = `M2 Smoke League ${runId}`;
     const seasonName = `M2 Smoke Season ${runId}`;
+    const ariNickname = `Ari ${runId}`;
+    const beaNickname = `Bea ${runId}`;
     const schedule = scheduleForRun(runId);
     const sessionId = schedule.gameDate.replaceAll("-", "");
     let gameId = "";
@@ -402,10 +417,10 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
 
-      const ariPlayerId = await createAndAssignPlayer(page, "Ari", "red", (playerId) => {
+      const ariPlayerId = await createAndAssignPlayer(page, ariNickname, "red", (playerId) => {
         playerIds.push(playerId);
       });
-      const beaPlayerId = await createAndAssignPlayer(page, "Bea", "blue", (playerId) => {
+      const beaPlayerId = await createAndAssignPlayer(page, beaNickname, "blue", (playerId) => {
         playerIds.push(playerId);
       });
 
@@ -416,8 +431,8 @@ test.describe("M2 local-stack smoke", () => {
       await page.locator(`#goal-assists input[value="${beaPlayerId}"]`).check();
       await page.getByTestId("add-goal").click();
 
-      await expect(page.getByTestId("goal-timeline")).toContainText("Ari for Red");
-      await expect(page.getByTestId("goal-timeline")).toContainText("Assists: Bea");
+      await expect(page.getByTestId("goal-timeline")).toContainText(`${ariNickname} for Red`);
+      await expect(page.getByTestId("goal-timeline")).toContainText(`Assists: ${beaNickname}`);
       await expect(page.locator('[data-ui="score-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(page.locator('[data-ui="score-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
 
@@ -453,6 +468,7 @@ test.describe("M2 local-stack smoke", () => {
       try {
         await cleanupSmokeRun({
           runId,
+          email,
           leagueSlug,
           seasonSlug,
           gameId,

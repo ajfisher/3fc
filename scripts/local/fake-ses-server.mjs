@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, appendFile, readFile } from "node:fs/promises";
+import { mkdir, appendFile, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createServer } from "node:http";
 
@@ -50,6 +50,18 @@ async function listMessages() {
   }
 }
 
+async function deleteMessagesForRecipient(to) {
+  const messages = await listMessages();
+  const retained = messages.filter((message) => message?.to !== to);
+  await mkdir(dirname(LOG_FILE), { recursive: true });
+  await writeFile(
+    LOG_FILE,
+    retained.length > 0 ? `${retained.map((message) => JSON.stringify(message)).join("\n")}\n` : "",
+    "utf8",
+  );
+  return messages.length - retained.length;
+}
+
 const server = createServer(async (request, response) => {
   const method = request.method ?? "GET";
   const url = request.url ?? "/";
@@ -62,6 +74,22 @@ const server = createServer(async (request, response) => {
 
     if (method === "GET" && url === "/messages") {
       sendJson(response, 200, { messages: await listMessages() });
+      return;
+    }
+
+    if (method === "DELETE" && url.startsWith("/messages")) {
+      const requestUrl = new URL(url, "http://localhost");
+      const to = requestUrl.searchParams.get("to");
+      if (!to) {
+        sendJson(response, 400, {
+          error: "Missing required `to` query parameter.",
+        });
+        return;
+      }
+
+      sendJson(response, 200, {
+        deleted: await deleteMessagesForRecipient(to),
+      });
       return;
     }
 
