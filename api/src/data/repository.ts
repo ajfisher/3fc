@@ -1495,6 +1495,7 @@ export class ThreeFcRepository {
     teams: GameTeamRecord[],
     roster: RosterAssignmentRecord[],
     errorKind: GoalRuleErrorKind,
+    previousGoal?: GoalEventRecord,
   ): void {
     requireGoalTeamId(input.concedingTeamId, "concedingTeamId", errorKind);
     if (input.scoringTeamId !== null) {
@@ -1562,7 +1563,14 @@ export class ThreeFcRepository {
 
     const rosterByPlayerId = new Map(roster.map((assignment) => [assignment.playerId, assignment]));
     const scorerRoster = rosterByPlayerId.get(input.scorerPlayerId);
-    if (!scorerRoster) {
+    const preservesOriginalScorerContext =
+      errorKind === "correction" &&
+      previousGoal !== undefined &&
+      input.scorerPlayerId === previousGoal.scorerPlayerId &&
+      input.ownGoal === previousGoal.ownGoal &&
+      input.scoringTeamId === previousGoal.scoringTeamId &&
+      input.concedingTeamId === previousGoal.concedingTeamId;
+    if (!scorerRoster && !preservesOriginalScorerContext) {
       throw goalRuleError(
         errorKind,
         "scorer_not_rostered",
@@ -1571,7 +1579,12 @@ export class ThreeFcRepository {
       );
     }
 
-    if (!input.ownGoal && scorerRoster.teamId !== input.scoringTeamId) {
+    if (
+      scorerRoster &&
+      !preservesOriginalScorerContext &&
+      !input.ownGoal &&
+      scorerRoster.teamId !== input.scoringTeamId
+    ) {
       throw goalRuleError(
         errorKind,
         "scorer_not_on_scoring_team",
@@ -1580,7 +1593,12 @@ export class ThreeFcRepository {
       );
     }
 
-    if (input.ownGoal && scorerRoster.teamId !== input.concedingTeamId) {
+    if (
+      scorerRoster &&
+      !preservesOriginalScorerContext &&
+      input.ownGoal &&
+      scorerRoster.teamId !== input.concedingTeamId
+    ) {
       throw goalRuleError(
         errorKind,
         "scorer_not_on_conceding_team",
@@ -2348,7 +2366,7 @@ export class ThreeFcRepository {
       { consistentRead: true },
     );
     const roster = await this.listGameRoster(input.gameId);
-    this.validateGoalRules(goal, teams, roster, "correction");
+    this.validateGoalRules(goal, teams, roster, "correction", previousGoal);
 
     const now = this.clock.now();
     const updatedGoal = {

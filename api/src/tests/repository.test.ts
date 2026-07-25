@@ -1313,6 +1313,51 @@ test("repository updates goals, recomputes tallies, and records audit entries", 
   );
 });
 
+test("repository allows goal corrections to preserve the original scorer after reassignment", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-historical-scorer",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.assignRosterPlayer({
+    gameId: "game-1",
+    teamId: "blue",
+    playerId: "player-red",
+  });
+
+  const preserved = await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-historical-scorer",
+    actorUserId: "admin@example.com",
+    assistPlayerIds: ["player-yellow"],
+  });
+  assert.equal(preserved?.goal.scorerPlayerId, "player-red");
+  assert.equal(preserved?.goal.scoringTeamId, "red");
+  assert.deepEqual(preserved?.goal.assistPlayerIds, ["player-yellow"]);
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-historical-scorer",
+      actorUserId: "admin@example.com",
+      concedingTeamId: "yellow",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Scorer must be rostered on the scoring team/,
+  );
+});
+
 test("repository normalizes malformed goal audit snapshots to documented response bounds", async () => {
   const { repository, client } = createRepositoryHarness();
 
