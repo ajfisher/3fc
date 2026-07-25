@@ -2138,6 +2138,42 @@ test("repository creates finished-game goal corrections and recomputes result", 
   assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
 });
 
+test("repository creates finished-game goal corrections for legacy games without completed thirds", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  markStoredGameFinished(client, "game-1");
+
+  const legacyFinished = await repository.getGame("game-1");
+  assert.equal(legacyFinished?.status, "finished");
+  assert.deepEqual(
+    legacyFinished?.thirds.map((third) => third.finishedAt),
+    [null, null, null],
+  );
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-created-after-legacy-finish",
+    actorUserId: "admin@example.com",
+    allowFinished: true,
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.third, 3);
+  assert.equal(result.goal.thirdMinute, DEFAULT_THIRD_LENGTH_MINUTES);
+  assert.equal(result.goal.gameMinute, DEFAULT_THIRD_LENGTH_MINUTES * 3);
+  assert.equal(result.goal.displayTime, `${DEFAULT_THIRD_LENGTH_MINUTES}:00`);
+  assert.equal(result.goal.elapsedSeconds, DEFAULT_THIRD_LENGTH_MINUTES * 60);
+
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
+});
+
 test("repository requires finished-game authority for goal corrections", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);

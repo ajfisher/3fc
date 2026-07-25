@@ -1126,19 +1126,26 @@ function createMockFetch(state: MockApiState) {
       }
 
       const activeThird = activeMockThird(game);
+      const configuredThirds = game.thirds
+        .map((thirdSegment) => thirdSegment.third)
+        .sort((left, right) => left - right);
       const finishedCorrectionThird = finishedCorrection
-        ? game.thirds
-            .filter((thirdSegment) => thirdSegment.finishedAt)
-            .map((thirdSegment) => thirdSegment.third)
-            .sort((left, right) => left - right)
-            .at(-1) ?? null
+        ? configuredThirds
+            .filter((third) =>
+              game.thirds.some(
+                (thirdSegment) => thirdSegment.third === third && thirdSegment.finishedAt,
+              ),
+            )
+            .at(-1) ??
+          configuredThirds.at(-1) ??
+          null
         : null;
       const third = activeThird ?? finishedCorrectionThird;
       if (!third) {
         return createJsonResponse(409, {
           error: "no_running_third",
           message: finishedCorrection
-            ? "A finished-game correction needs at least one completed third."
+            ? "A finished-game correction needs at least one configured third."
             : "A goal can only be created while a third is running.",
         });
       }

@@ -1260,11 +1260,9 @@ function createHarness(config: HarnessConfig = {}) {
         }
 
         const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
+        const sortedThirds = [...game.thirds].sort((left, right) => left.third - right.third);
         const finishedCorrectionThird = allowFinished
-          ? [...game.thirds]
-              .filter((third) => third.finishedAt)
-              .sort((left, right) => left.third - right.third)
-              .at(-1)
+          ? sortedThirds.filter((third) => third.finishedAt).at(-1) ?? sortedThirds.at(-1)
           : null;
         const goalThird = activeThird ?? finishedCorrectionThird;
         if (!goalThird || (!activeThird?.startedAt && !allowFinished)) {
@@ -1272,7 +1270,7 @@ function createHarness(config: HarnessConfig = {}) {
             "no_active_third",
             409,
             allowFinished
-              ? "A finished-game correction needs at least one completed third."
+              ? "A finished-game correction needs at least one configured third."
               : "A goal can only be created while a third is running.",
           );
         }
