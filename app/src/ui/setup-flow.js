@@ -1094,6 +1094,7 @@
     let goalTimeline = [];
     let editingGoalId = null;
     let pendingCreateGoalIdempotency = null;
+    const pendingGoalMutationIdempotency = new Map();
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -1332,9 +1333,19 @@
           return thirdDelta;
         }
 
+        const gameMinuteDelta = (left.gameMinute ?? 0) - (right.gameMinute ?? 0);
+        if (gameMinuteDelta !== 0) {
+          return gameMinuteDelta;
+        }
+
         const elapsedDelta = (left.elapsedSeconds ?? 0) - (right.elapsedSeconds ?? 0);
         if (elapsedDelta !== 0) {
           return elapsedDelta;
+        }
+
+        const createdAtDelta = String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
+        if (createdAtDelta !== 0) {
+          return createdAtDelta;
         }
 
         return String(left.eventId ?? "").localeCompare(String(right.eventId ?? ""));
@@ -1678,9 +1689,32 @@
       });
     }
 
+    function idempotencyKeyForGoalMutation(prefix, stablePart, fingerprint) {
+      const cacheKey = `${prefix}:${stablePart}`;
+      const existing = pendingGoalMutationIdempotency.get(cacheKey);
+      if (!existing || existing.fingerprint !== fingerprint) {
+        const next = {
+          fingerprint,
+          key: createIdempotencyKey(prefix, stablePart),
+        };
+        pendingGoalMutationIdempotency.set(cacheKey, next);
+        return next.key;
+      }
+
+      return existing.key;
+    }
+
+    function clearGoalMutationIdempotency(prefix, stablePart) {
+      pendingGoalMutationIdempotency.delete(`${prefix}:${stablePart}`);
+    }
+
     function idempotencyKeyForGoalSave(eventId, payload) {
       if (eventId) {
-        return createIdempotencyKey("update-goal", `${gameId}-${eventId}`);
+        return idempotencyKeyForGoalMutation(
+          "update-goal",
+          `${gameId}-${eventId}`,
+          goalCreatePayloadFingerprint(payload),
+        );
       }
 
       const fingerprint = goalCreatePayloadFingerprint(payload);
@@ -2158,6 +2192,8 @@
           applyGoalMutationResult(result);
           if (!eventId) {
             pendingCreateGoalIdempotency = null;
+          } else {
+            clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
           }
           setStatus(eventId ? "Goal updated." : "Goal added.", "success");
         } catch (error) {
@@ -2186,11 +2222,12 @@
         setStatus("Undoing latest goal…", "default");
 
         try {
+          const stablePart = `${gameId}-${latest.eventId}`;
           const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Idempotency-Key": createIdempotencyKey("undo-goal", `${gameId}-${latest.eventId}`),
+              "Idempotency-Key": idempotencyKeyForGoalMutation("undo-goal", stablePart, latest.eventId),
             },
             body: JSON.stringify({
               expectedEventId: latest.eventId,
@@ -2198,6 +2235,7 @@
           });
 
           applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          clearGoalMutationIdempotency("undo-goal", stablePart);
           setStatus("Latest goal undone.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not undo latest goal.";
@@ -2245,17 +2283,19 @@
         setStatus("Deleting goal…", "default");
 
         try {
+          const stablePart = `${gameId}-${eventId}`;
           const result = await requestJsonOrThrow(
             `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
             {
               method: "DELETE",
               headers: {
-                "Idempotency-Key": createIdempotencyKey("delete-goal", `${gameId}-${eventId}`),
+                "Idempotency-Key": idempotencyKeyForGoalMutation("delete-goal", stablePart, eventId),
               },
             },
           );
 
           applyGoalMutationResult(result, { deletedEventId: eventId });
+          clearGoalMutationIdempotency("delete-goal", stablePart);
           setStatus("Goal deleted.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete goal.";

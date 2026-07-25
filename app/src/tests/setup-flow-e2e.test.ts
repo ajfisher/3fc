@@ -277,9 +277,19 @@ function sortedGoalTimeline(state: MockApiState, gameId: string): MockGoalEvent[
         return thirdDelta;
       }
 
+      const gameMinuteDelta = left.gameMinute - right.gameMinute;
+      if (gameMinuteDelta !== 0) {
+        return gameMinuteDelta;
+      }
+
       const elapsedDelta = left.elapsedSeconds - right.elapsedSeconds;
       if (elapsedDelta !== 0) {
         return elapsedDelta;
+      }
+
+      const createdAtDelta = left.createdAt.localeCompare(right.createdAt);
+      if (createdAtDelta !== 0) {
+        return createdAtDelta;
       }
 
       return left.eventId.localeCompare(right.eventId);
@@ -1882,6 +1892,221 @@ test("game page reuses create goal idempotency key for unchanged retry", async (
   assert.equal(createGoalIdempotencyKeys.length, 2);
   assert.ok(createGoalIdempotencyKeys[0]);
   assert.equal(createGoalIdempotencyKeys[0], createGoalIdempotencyKeys[1]);
+});
+
+test("game page treats later created same-second goals as latest", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-goal-order",
+    status: "live",
+    thirds,
+  });
+
+  apiState.goalEvents.set("goal-z-old", {
+    gameId: "game-goal-order",
+    eventId: "goal-z-old",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-a-new", {
+    gameId: "game-goal-order",
+    eventId: "goal-a-new",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-goal-order" }),
+    url: "http://localhost:3000/games/game-goal-order",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  const latestGoal = page.document.querySelector('[data-ui="goal-event"][data-state="latest"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(latestGoal instanceof page.window.HTMLElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  assert.equal(latestGoal.getAttribute("data-event-id"), "goal-a-new");
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.has("goal-a-new"), false);
+  assert.equal(apiState.goalEvents.has("goal-z-old"), true);
+});
+
+test("game page reuses correction idempotency keys for unchanged retries", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-correction-retry",
+    status: "live",
+    thirds,
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-correction-retry",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-2", {
+    gameId: "game-correction-retry",
+    eventId: "goal-2",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 40,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const updateKeys: Array<string | null> = [];
+  const deleteKeys: Array<string | null> = [];
+  const undoKeys: Array<string | null> = [];
+  let failNextUpdate = true;
+  let failNextDelete = true;
+  let failNextUndo = true;
+  const flakyCorrectionFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "PATCH" && target.pathname === "/v1/games/game-correction-retry/goals/goal-1") {
+      updateKeys.push(readInitHeader(init, "idempotency-key"));
+      if (failNextUpdate) {
+        failNextUpdate = false;
+        return createJsonResponse(503, {
+          error: "unavailable",
+          message: "Goal update unavailable.",
+        });
+      }
+    }
+    if (method === "DELETE" && target.pathname === "/v1/games/game-correction-retry/goals/goal-1") {
+      deleteKeys.push(readInitHeader(init, "idempotency-key"));
+      if (failNextDelete) {
+        failNextDelete = false;
+        return createJsonResponse(503, {
+          error: "unavailable",
+          message: "Goal delete unavailable.",
+        });
+      }
+    }
+    if (method === "POST" && target.pathname === "/v1/games/game-correction-retry/goals/undo-last") {
+      undoKeys.push(readInitHeader(init, "idempotency-key"));
+      if (failNextUndo) {
+        failNextUndo = false;
+        return createJsonResponse(503, {
+          error: "unavailable",
+          message: "Goal undo unavailable.",
+        });
+      }
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-correction-retry" }),
+    url: "http://localhost:3000/games/game-correction-retry",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: flakyCorrectionFetch,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateKeys.length, 2);
+  assert.ok(updateKeys[0]);
+  assert.equal(updateKeys[0], updateKeys[1]);
+
+  const deleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteGoalButton);
+  await flushAsync();
+  const retryDeleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(retryDeleteGoalButton);
+  await flushAsync();
+
+  assert.equal(deleteKeys.length, 2);
+  assert.ok(deleteKeys[0]);
+  assert.equal(deleteKeys[0], deleteKeys[1]);
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+
+  assert.equal(undoKeys.length, 2);
+  assert.ok(undoKeys[0]);
+  assert.equal(undoKeys[0], undoKeys[1]);
+  assert.equal(apiState.goalEvents.size, 0);
 });
 
 test("game page runs live goal scoring, corrections, undo, and delete", async () => {
