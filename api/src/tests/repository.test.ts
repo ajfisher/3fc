@@ -1848,6 +1848,60 @@ test("repository recomputes finished game result after team corrections", async 
   assert.equal(finishedAfterCorrection?.result?.teams[0]?.color, "#aa0000");
 });
 
+test("repository create-only team overrides repair missing finished-game teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await completeAllThirds(repository);
+  const finishedBeforeRepair = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeRepair?.status, "finished");
+
+  await client.send(
+    new DeleteItemCommand({
+      TableName: "threefc_test",
+      Key: {
+        pk: { S: "GAME#game-1" },
+        sk: { S: "TEAM#yellow" },
+      },
+    }),
+  );
+
+  const repairedTeam = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "yellow",
+    name: "Yellow",
+    color: "#e0a612",
+    allowFinished: true,
+    createOnly: true,
+  });
+
+  assert.deepEqual(
+    {
+      teamId: repairedTeam.teamId,
+      name: repairedTeam.name,
+      color: repairedTeam.color,
+      scored: repairedTeam.scored,
+      conceded: repairedTeam.conceded,
+    },
+    {
+      teamId: "yellow",
+      name: "Yellow",
+      color: "#e0a612",
+      scored: 0,
+      conceded: 0,
+    },
+  );
+  const finishedAfterRepair = await repository.getGame("game-1");
+  assert.equal(finishedAfterRepair?.status, "finished");
+  assert.equal(
+    finishedAfterRepair?.result?.teams.some((team) => team.teamId === "yellow"),
+    true,
+  );
+  assert.deepEqual(
+    (await repository.listTeamsForGame("game-1")).map((team) => team.teamId),
+    ["red", "blue", "yellow"],
+  );
+});
+
 test("repository recomputes finished game result after goal corrections", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);

@@ -979,7 +979,8 @@ export class ThreeFcRepository {
       const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
         consistentRead: true,
       });
-      if (!teamStatesById.has(input.teamId)) {
+      const originalTeamState = teamStatesById.get(input.teamId);
+      if (!originalTeamState && !input.createOnly) {
         throw new GameMutationStateError(
           "game_state_changed",
           `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
@@ -987,22 +988,54 @@ export class ThreeFcRepository {
       }
 
       const nextTeams = sortGameTeams(
-        teams.map((team) =>
-          team.teamId === input.teamId
-            ? {
-                ...team,
-                name: payload.name,
-                color: payload.color,
+        originalTeamState
+          ? teams.map((team) =>
+              team.teamId === input.teamId
+                ? {
+                    ...team,
+                    name: payload.name,
+                    color: payload.color,
+                    updatedAt: now,
+                  }
+                : team,
+            )
+          : [
+              ...teams,
+              {
+                ...payload,
+                createdAt: now,
                 updatedAt: now,
-              }
-            : team,
-        ),
+              },
+            ],
       );
       const updatedGame = {
         ...game,
         finishedAt: game.finishedAt ?? now,
         result: buildGameResult(nextTeams, now),
       };
+      const existingTeamPutItems = this.buildTeamPutTransactionItems(
+        nextTeams.filter((team) => teamStatesById.has(team.teamId)),
+        teamStatesById,
+        now,
+      );
+      const missingTeamPutItems = originalTeamState
+        ? []
+        : [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  teamSk(input.teamId),
+                  ENTITY_TYPE.gameTeam,
+                  payload,
+                  now,
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+          ];
 
       try {
         await this.client.send(
@@ -1013,7 +1046,8 @@ export class ThreeFcRepository {
                 stored: gameItem,
                 now,
               }),
-              ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+              ...existingTeamPutItems,
+              ...missingTeamPutItems,
             ],
           }),
         );
