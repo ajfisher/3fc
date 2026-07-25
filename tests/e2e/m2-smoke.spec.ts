@@ -61,12 +61,14 @@ interface SmokeRunCleanupDependencies {
   deleteFakeSesMessages?: (email: string) => Promise<void>;
 }
 
-const localBrowserClientIpCandidates = ["::1", "::ffff:127.0.0.1", "127.0.0.1", "unknown"];
-
 function authRateLimitHash(dimension: RateLimitDimension, identifier: string): string {
   return createHash("sha256")
     .update(`magic-link-start:${dimension}:${identifier}`, "utf8")
     .digest("hex");
+}
+
+function authRateLimitDimensionPkPrefix(dimension: RateLimitDimension): string {
+  return ["AUTH_RATE_LIMIT", "magic-link-start", dimension, ""].join("#");
 }
 
 function authRateLimitPkPrefix(dimension: RateLimitDimension, identifier: string): string {
@@ -235,6 +237,33 @@ async function scanAuthRateLimitItemsForIdentifiers(
   return items;
 }
 
+async function scanAuthRateLimitItemsForDimension(
+  client: DynamoClientLike,
+  dimension: RateLimitDimension,
+): Promise<DynamoItem[]> {
+  const prefix = authRateLimitDimensionPkPrefix(dimension);
+  const items: DynamoItem[] = [];
+  let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+
+  do {
+    const response = await client.send(
+      new ScanCommand({
+        TableName: dynamodbTableName,
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+    items.push(
+      ...((response.Items ?? []) as DynamoItem[]).filter((item) => {
+        const pk = item.pk?.S ?? "";
+        return item.sk?.S === "METADATA" && pk.startsWith(prefix);
+      }),
+    );
+    exclusiveStartKey = response.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
+}
+
 async function scanAuthRateLimitItems(
   client: DynamoClientLike,
   input: { email: string },
@@ -247,9 +276,14 @@ async function scanAuthRateLimitItems(
 
 async function scanAuthRateLimitSnapshots(
   client: DynamoClientLike,
-  input: { dimension: RateLimitDimension; identifiers: string[] },
+  input: { dimension: RateLimitDimension; identifiers?: string[] },
 ): Promise<AuthRateLimitSnapshot[]> {
-  const items = await scanAuthRateLimitItemsForIdentifiers(client, input);
+  const items = input.identifiers
+    ? await scanAuthRateLimitItemsForIdentifiers(client, {
+        dimension: input.dimension,
+        identifiers: input.identifiers,
+      })
+    : await scanAuthRateLimitItemsForDimension(client, input.dimension);
   return items
     .map((item) => {
       const key = itemKey(item);
@@ -260,7 +294,7 @@ async function scanAuthRateLimitSnapshots(
 
 async function snapshotLocalAuthRateLimits(input: {
   dimension: RateLimitDimension;
-  identifiers: string[];
+  identifiers?: string[];
 }): Promise<AuthRateLimitSnapshot[]> {
   const client = createLocalDynamoClient();
   try {
@@ -277,9 +311,15 @@ function touchedAuthRateLimitKeys(
   const beforeByKey = new Map(
     before.map((snapshot) => [authRateLimitSnapshotKey(snapshot), snapshot.attemptCount]),
   );
-  return after
-    .filter((snapshot) => snapshot.attemptCount > (beforeByKey.get(authRateLimitSnapshotKey(snapshot)) ?? 0))
-    .map(({ pk, sk }) => ({ pk, sk }));
+  const increased = after
+    .map((snapshot) => ({
+      pk: snapshot.pk,
+      sk: snapshot.sk,
+      increase: snapshot.attemptCount - (beforeByKey.get(authRateLimitSnapshotKey(snapshot)) ?? 0),
+    }))
+    .filter((snapshot) => snapshot.increase > 0);
+  const totalIncrease = increased.reduce((sum, snapshot) => sum + snapshot.increase, 0);
+  return totalIncrease === 1 ? increased.map(({ pk, sk }) => ({ pk, sk })) : [];
 }
 
 function isConditionalCheckFailure(error: unknown): boolean {
@@ -724,6 +764,91 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
   expect(destroyed).toBe(true);
 });
 
+test("smoke cleanup detects touched IP rate-limit buckets without known client addresses", async () => {
+  const beforeClient: DynamoClientLike = {
+    async send(command) {
+      expect(command).toBeInstanceOf(ScanCommand);
+      return {
+        Items: [
+          {
+            pk: { S: "AUTH_RATE_LIMIT#magic-link-start#ip#docker-bridge-hash#bucket" },
+            sk: { S: "METADATA" },
+            attemptCount: { N: "2" },
+          },
+          {
+            pk: { S: "AUTH_RATE_LIMIT#magic-link-start#ip#unrelated-hash#bucket" },
+            sk: { S: "METADATA" },
+            attemptCount: { N: "4" },
+          },
+          {
+            pk: { S: "AUTH_RATE_LIMIT#magic-link-start#email#email-hash#bucket" },
+            sk: { S: "METADATA" },
+            attemptCount: { N: "9" },
+          },
+        ],
+      };
+    },
+    destroy() {},
+  };
+  const afterClient: DynamoClientLike = {
+    async send(command) {
+      expect(command).toBeInstanceOf(ScanCommand);
+      return {
+        Items: [
+          {
+            pk: { S: "AUTH_RATE_LIMIT#magic-link-start#ip#docker-bridge-hash#bucket" },
+            sk: { S: "METADATA" },
+            attemptCount: { N: "3" },
+          },
+          {
+            pk: { S: "AUTH_RATE_LIMIT#magic-link-start#ip#unrelated-hash#bucket" },
+            sk: { S: "METADATA" },
+            attemptCount: { N: "4" },
+          },
+          {
+            pk: { S: "AUTH_RATE_LIMIT#magic-link-start#email#email-hash#bucket" },
+            sk: { S: "METADATA" },
+            attemptCount: { N: "10" },
+          },
+        ],
+      };
+    },
+    destroy() {},
+  };
+
+  const before = await scanAuthRateLimitSnapshots(beforeClient, { dimension: "ip" });
+  const after = await scanAuthRateLimitSnapshots(afterClient, { dimension: "ip" });
+
+  expect(before).toEqual([
+    {
+      pk: "AUTH_RATE_LIMIT#magic-link-start#ip#docker-bridge-hash#bucket",
+      sk: "METADATA",
+      attemptCount: 2,
+    },
+    {
+      pk: "AUTH_RATE_LIMIT#magic-link-start#ip#unrelated-hash#bucket",
+      sk: "METADATA",
+      attemptCount: 4,
+    },
+  ]);
+  expect(touchedAuthRateLimitKeys(before, after)).toEqual([
+    {
+      pk: "AUTH_RATE_LIMIT#magic-link-start#ip#docker-bridge-hash#bucket",
+      sk: "METADATA",
+    },
+  ]);
+  expect(
+    touchedAuthRateLimitKeys(before, [
+      ...after,
+      {
+        pk: "AUTH_RATE_LIMIT#magic-link-start#ip#concurrent-hash#bucket",
+        sk: "METADATA",
+        attemptCount: 1,
+      },
+    ]),
+  ).toEqual([]);
+});
+
 test.describe("M2 local-stack smoke", () => {
   test.beforeEach(async () => {
     await waitForHealthy(`${apiBaseUrl}/v1/health`);
@@ -743,10 +868,7 @@ test.describe("M2 local-stack smoke", () => {
     const sessionId = sessionIdForGameDate(schedule.gameDate);
     let gameId = "";
     const playerIds: string[] = [];
-    const initialIpRateLimits = await snapshotLocalAuthRateLimits({
-      dimension: "ip",
-      identifiers: localBrowserClientIpCandidates,
-    });
+    const initialIpRateLimits = await snapshotLocalAuthRateLimits({ dimension: "ip" });
     let magicLinkStartReachedApi = false;
 
     let testFailed = false;
@@ -850,10 +972,7 @@ test.describe("M2 local-stack smoke", () => {
     } finally {
       try {
         const currentIpRateLimits = magicLinkStartReachedApi
-          ? await snapshotLocalAuthRateLimits({
-              dimension: "ip",
-              identifiers: localBrowserClientIpCandidates,
-            })
+          ? await snapshotLocalAuthRateLimits({ dimension: "ip" })
           : [];
         await cleanupSmokeRun({
           runId,
