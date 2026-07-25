@@ -33,7 +33,7 @@ This document defines the baseline key structure and access patterns for the
 - Game metadata:
   - `pk=GAME#{gameId}`
   - `sk=METADATA`
-  - stores deterministic `joinCode`, game status, timer segments, `finishedAt`, and final `result`
+  - stores generated or custom `joinCode`, game status, timer segments, `finishedAt`, and final `result`
 - Join code lookup:
   - `pk=JOIN_CODE#{joinCode}`
   - `sk=METADATA`
@@ -67,6 +67,11 @@ This document defines the baseline key structure and access patterns for the
   - `sk=PROFILE`
 
 `gameMinuteSortable` is zero-padded to preserve lexical ordering.
+
+Persisted join codes are bearer codes generated randomly at game creation unless
+an organizer supplies a validated custom code. Deterministic join-code fallback
+exists only to normalize legacy game records before repair replaces missing
+lookup ownership.
 
 ## Item Envelope
 
