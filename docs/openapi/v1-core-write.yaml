@@ -30,7 +30,7 @@ paths:
             type: string
             minLength: 8
             maxLength: 8
-            pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$"
+            pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$"
       requestBody:
         required: true
         content:
