@@ -386,7 +386,7 @@ test("local server finish route maps incomplete thirds to conflict", async () =>
   });
 });
 
-test("local server team override route locks finished games", async () => {
+test("local server team override route allows finished-game admin corrections", async () => {
   const request = createMockRequest({
     body: {
       name: "Renamed Red",
@@ -412,9 +412,19 @@ test("local server team override route locks finished games", async () => {
     async listTeamsForGame() {
       return gameTeams;
     },
-    async createGameTeamOverride() {
+    async createGameTeamOverride(input: { allowFinished?: boolean }) {
       overrideWrites += 1;
-      throw new Error("finished games should not accept team overrides");
+      assert.equal(input.allowFinished, true);
+      return {
+        gameId: "game-1",
+        teamId: "red" as const,
+        name: "Renamed Red",
+        color: "#cc0000",
+        scored: 0,
+        conceded: 0,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
     },
   };
 
@@ -426,12 +436,17 @@ test("local server team override route locks finished games", async () => {
     repositoryClient,
   });
 
-  assert.equal(status, 409);
-  assert.equal(overrideWrites, 0);
+  assert.equal(status, 200);
+  assert.equal(overrideWrites, 1);
   assert.deepEqual(JSON.parse(response.body), {
-    error: "conflict",
-    code: "game_finished",
-    message: "Game game-1 is finished. Team overrides are locked after finish.",
+    gameId: "game-1",
+    teamId: "red",
+    name: "Renamed Red",
+    color: "#cc0000",
+    scored: 0,
+    conceded: 0,
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
   });
 });
 

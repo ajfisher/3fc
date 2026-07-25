@@ -1551,6 +1551,38 @@ test("repository rejects finish until all thirds are completed", async () => {
   );
 });
 
+test("repository backfills legacy finished games without completed thirds", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  const item = client.readItem("GAME#game-1", "METADATA");
+  assert.ok(item);
+  const rawData = item.data?.S;
+  if (typeof rawData !== "string") {
+    throw new Error("Stored game metadata is missing JSON data.");
+  }
+  const data = JSON.parse(rawData) as Record<string, unknown>;
+  item.data = {
+    S: JSON.stringify({
+      ...data,
+      status: "finished",
+      finishedAt: null,
+      result: null,
+    }),
+  };
+  item.updatedAt = { S: "2026-02-23T00:00:59.000Z" };
+  client.seedItem(item);
+
+  const repaired = await repository.finishGame({ gameId: "game-1" });
+
+  assert.equal(repaired?.status, "finished");
+  assert.ok(repaired?.finishedAt);
+  assert.equal(repaired?.result?.outcome, "draw");
+  assert.equal(repaired?.result?.teams.length, 3);
+  const stored = await repository.getGame("game-1");
+  assert.equal(stored?.finishedAt, repaired?.finishedAt);
+  assert.deepEqual(stored?.result, repaired?.result);
+});
+
 test("repository rejects manual finished status changes through updateGame", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);
@@ -1568,6 +1600,41 @@ test("repository rejects manual finished status changes through updateGame", asy
     repository.updateGame({ gameId: "game-1", status: "live" }),
     /Finished games cannot be moved back to scheduled or live/,
   );
+});
+
+test("repository recomputes finished game result after team corrections", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-team-result-correction",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await completeAllThirds(repository, { firstThirdStarted: true });
+  const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeCorrection?.result?.teams[0]?.name, "Red");
+
+  const updatedTeam = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Ruby",
+    color: "#aa0000",
+    allowFinished: true,
+  });
+
+  assert.equal(updatedTeam.name, "Ruby");
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
+  assert.equal(finishedAfterCorrection?.result?.teams[0]?.teamId, "red");
+  assert.equal(finishedAfterCorrection?.result?.teams[0]?.name, "Ruby");
+  assert.equal(finishedAfterCorrection?.result?.teams[0]?.color, "#aa0000");
 });
 
 test("repository recomputes finished game result after goal corrections", async () => {

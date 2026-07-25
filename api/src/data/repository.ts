@@ -895,7 +895,7 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("name", input.name);
 
-    const { item: gameItem } = await this.readGameForMutation({
+    const { item: gameItem, game } = await this.readGameForMutation({
       gameId: input.gameId,
       allowFinished: input.allowFinished,
       finishedMessage: `Game ${input.gameId} is finished. Team overrides are locked after finish.`,
@@ -912,6 +912,70 @@ export class ThreeFcRepository {
       scored: existingPayload?.scored ?? 0,
       conceded: existingPayload?.conceded ?? 0,
     };
+
+    if (game.status === "finished") {
+      const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
+        consistentRead: true,
+      });
+      if (!teamStatesById.has(input.teamId)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+        );
+      }
+
+      const nextTeams = sortGameTeams(
+        teams.map((team) =>
+          team.teamId === input.teamId
+            ? {
+                ...team,
+                name: payload.name,
+                color: payload.color,
+                updatedAt: now,
+              }
+            : team,
+        ),
+      );
+      const updatedGame = {
+        ...game,
+        finishedAt: game.finishedAt ?? now,
+        result: buildGameResult(nextTeams, now),
+      };
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              this.buildGamePutTransactionItem({
+                game: updatedGame,
+                stored: gameItem,
+                now,
+              }),
+              ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            ],
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+          );
+        }
+
+        throw error;
+      }
+
+      const updatedTeam = nextTeams.find((team) => team.teamId === input.teamId);
+      if (!updatedTeam) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+        );
+      }
+
+      return updatedTeam;
+    }
 
     try {
       await this.client.send(
@@ -1415,6 +1479,47 @@ export class ThreeFcRepository {
     const existing = normalizeGamePayload(gameItem.data);
     if (existing.status === "finished" && existing.result && existing.finishedAt) {
       return withTimestamps(existing, gameItem.createdAt, gameItem.updatedAt);
+    }
+
+    if (existing.status === "finished") {
+      const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
+        consistentRead: true,
+      });
+      const missingTeams = TEAM_IDS.filter((teamId) => !teamStatesById.has(teamId));
+      if (missingTeams.length > 0) {
+        throw new GameTimerTransitionError(
+          "teams_not_ready",
+          "All three game teams must exist before finishing the game.",
+        );
+      }
+
+      const now = this.clock.now();
+      const repairedGame = {
+        ...existing,
+        finishedAt: existing.finishedAt ?? now,
+        result: existing.result ?? buildGameResult(teams, now),
+      };
+
+      const repairApplied = await this.putEntityWithTimestampsIfUnchanged(
+        gamePk(existing.gameId),
+        metadataSk(),
+        ENTITY_TYPE.game,
+        repairedGame,
+        gameItem.createdAt,
+        now,
+        {
+          updatedAt: gameItem.updatedAt,
+          rawData: gameItem.rawData,
+        },
+      );
+      if (!repairApplied) {
+        throw new GameTimerTransitionError(
+          "game_state_changed",
+          "Game changed while finishing. Reload the game and try again.",
+        );
+      }
+
+      return withTimestamps(repairedGame, gameItem.createdAt, now);
     }
 
     const runningThird = existing.thirds.find((third) => third.startedAt && !third.finishedAt);

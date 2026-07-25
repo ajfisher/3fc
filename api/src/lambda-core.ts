@@ -225,6 +225,7 @@ interface RepositoryContract {
     teamId: TeamId;
     name: string;
     color?: string | null;
+    allowFinished?: boolean;
   }): Promise<{
     gameId: string;
     teamId: TeamId;
@@ -2907,19 +2908,6 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
 
-          if (game.status === "finished") {
-            status = 409;
-            return createJsonResponse(
-              status,
-              {
-                error: "conflict",
-                code: "game_finished",
-                message: `Game ${gameId} is finished. Team overrides are locked after finish.`,
-              },
-              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-            );
-          }
-
           let rawBody: Record<string, unknown>;
           try {
             rawBody = parseJsonBody(event);
@@ -2946,11 +2934,15 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               teamId,
               name: parsedBody.data.name,
               color: parsedBody.data.color ?? null,
+              allowFinished: game.status === "finished",
             });
           } catch (error) {
             if (error instanceof GameMutationStateError) {
               const currentGame = await dependencies.repository.getGame(gameId);
-              if (currentGame?.status === "finished" || error.code === "game_finished") {
+              if (
+                error.code === "game_finished" ||
+                (game.status !== "finished" && currentGame?.status === "finished")
+              ) {
                 status = 409;
                 return createJsonResponse(
                   status,

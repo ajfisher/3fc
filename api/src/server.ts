@@ -1113,10 +1113,6 @@ export async function handleLocalUpdateGameTeamRoute(input: {
     return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
   }
 
-  if (game.status === "finished") {
-    return finishedGameTeamOverrideConflict(input.request, input.response, input.gameId);
-  }
-
   let rawBody: Record<string, unknown>;
   try {
     rawBody = await parseJsonBody(input.request);
@@ -1137,11 +1133,15 @@ export async function handleLocalUpdateGameTeamRoute(input: {
       teamId: input.teamId,
       name: parsedBody.data.name,
       color: parsedBody.data.color ?? null,
+      allowFinished: game.status === "finished",
     });
   } catch (error) {
     if (error instanceof GameMutationStateError) {
       const currentGame = await repositoryClient.getGame(input.gameId);
-      if (currentGame?.status === "finished" || error.code === "game_finished") {
+      if (
+        error.code === "game_finished" ||
+        (game.status !== "finished" && currentGame?.status === "finished")
+      ) {
         return finishedGameTeamOverrideConflict(input.request, input.response, input.gameId);
       }
 

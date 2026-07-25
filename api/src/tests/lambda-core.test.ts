@@ -260,7 +260,13 @@ function createHarness(config: HarnessConfig = {}) {
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
   const createdSeasonTeams: Array<{ seasonId: string; teamId: TeamId; name: string; color?: string | null }> = [];
-  const createdGameTeams: Array<{ gameId: string; teamId: TeamId; name: string; color?: string | null }> = [];
+  const createdGameTeams: Array<{
+    gameId: string;
+    teamId: TeamId;
+    name: string;
+    color?: string | null;
+    allowFinished?: boolean;
+  }> = [];
   const createdPlayers: Array<{ playerId: string; nickname: string; claimedByUserId?: string | null }> = [];
   const createdGoals: Array<{
     gameId: string;
@@ -2570,7 +2576,7 @@ test("core lambda rejects goal creation after finish", async () => {
   assert.equal(harness.createdGoals.length, 0);
 });
 
-test("core lambda locks team overrides after finish", async () => {
+test("core lambda allows admin team corrections after finish", async () => {
   const harness = createGoalHarness({
     email: "admin@example.com",
     role: "admin",
@@ -2603,13 +2609,19 @@ test("core lambda locks team overrides after finish", async () => {
     }),
   );
 
-  assert.equal(response.statusCode, 409);
+  assert.equal(response.statusCode, 200);
   assert.deepEqual(JSON.parse(response.body), {
-    error: "conflict",
-    code: "game_finished",
-    message: "Game game-1 is finished. Team overrides are locked after finish.",
+    gameId: "game-1",
+    teamId: "red",
+    name: "Renamed Red",
+    color: "#cc0000",
+    scored: 0,
+    conceded: 0,
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
   });
-  assert.equal(harness.createdGameTeams.length, 0);
+  assert.equal(harness.createdGameTeams.length, 1);
+  assert.equal(harness.createdGameTeams[0]?.allowFinished, true);
 });
 
 test("core lambda blocks team overrides if finish wins the write race", async () => {
