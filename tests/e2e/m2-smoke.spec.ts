@@ -651,8 +651,9 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("quick-create-player")).toBeDisabled();
       await expect(page.getByTestId("add-goal")).toBeDisabled();
       await expectAllDisabled(page.locator('[data-action="assign-player"]'));
-      await expectAllDisabled(page.locator('[data-action="edit-goal"]'));
-      await expectAllDisabled(page.locator('[data-action="delete-goal"]'));
+      await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
+      await expect(page.locator('[data-action="delete-goal"]').first()).toBeEnabled();
+      await expect(page.getByTestId("undo-last-goal")).toBeEnabled();
     } catch (error) {
       testFailed = true;
       throw error;
