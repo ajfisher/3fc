@@ -189,6 +189,31 @@
     return `${prefix}-${safeStable}-${Date.now().toString(36)}`;
   }
 
+  function cachedIdempotencyKey(prefix, stablePart) {
+    const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 96);
+    const storageKey = `threefc-idempotency:${prefix}:${safeStable}`;
+
+    try {
+      const existing = window.localStorage?.getItem(storageKey);
+      if (existing) {
+        return existing;
+      }
+
+      const next = createIdempotencyKey(prefix, stablePart);
+      window.localStorage?.setItem(storageKey, next);
+      return next;
+    } catch {
+      return createIdempotencyKey(prefix, stablePart);
+    }
+  }
+
+  function idempotencyKeyForPublicJoin(joinCode, nickname) {
+    return cachedIdempotencyKey(
+      "join-player",
+      `${joinCode.trim().toUpperCase()}-${nickname.trim()}`,
+    );
+  }
+
   async function requestJson(path, init = {}) {
     const response = await fetch(buildApiUrl(path), {
       credentials: "include",
@@ -2722,14 +2747,13 @@
       setStatus("Joining game...", "default");
 
       try {
-        const playerId = createIdempotencyKey("join-player", `${joinCode}-${nickname}`);
         const result = await requestJsonOrThrow(`/v1/join/${encodeURIComponent(joinCode)}`, {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            "Idempotency-Key": idempotencyKeyForPublicJoin(joinCode, nickname),
           },
           body: JSON.stringify({
-            playerId,
             nickname,
           }),
         });

@@ -2285,6 +2285,87 @@ test("core lambda lets players join an active game by join code and appear in th
   });
 });
 
+test("core lambda replays public join retries by idempotency key", async () => {
+  const harness = createHarness({
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "JNABCD23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/jnabcd23",
+      headers: {
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "public-join-1",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+  assert.equal(response.statusCode, 201);
+  const body = JSON.parse(response.body) as {
+    gameId: string;
+    player: { playerId: string; nickname: string };
+  };
+  assert.equal(body.gameId, "game-1");
+  assert.equal(body.player.nickname, "Nia");
+  assert.match(body.player.playerId, /^player-join-/);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
+
+  const replayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/JNABCD23",
+      headers: {
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "public-join-1",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+  assert.equal(replayResponse.statusCode, 201);
+  assert.deepEqual(JSON.parse(replayResponse.body), body);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
+
+  const conflictResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/JNABCD23",
+      headers: {
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "public-join-1",
+      },
+      body: {
+        nickname: "Mia",
+      },
+    }),
+  );
+  assert.equal(conflictResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(conflictResponse.body), {
+    error: "idempotency_conflict",
+    message: "Idempotency key has already been used with a different payload.",
+  });
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
+});
+
 test("core lambda rejects oversized public join nicknames before persistence", async () => {
   const harness = createHarness({
     games: {
@@ -2869,6 +2950,28 @@ test("core lambda recovers idempotent create game retry after the game write com
   );
   assert.equal(unrelatedRetryResponse.statusCode, 409);
   assert.deepEqual(JSON.parse(unrelatedRetryResponse.body), {
+    error: "conflict",
+    code: "game_exists",
+    message: "Game game-1 already exists.",
+  });
+  assert.equal(harness.createdSessionGames.length, 0);
+
+  const differentKeyRetryResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "create-game-recover-2",
+      },
+      body: {
+        gameId: "game-1",
+        gameStartTs: "2026-02-23T10:00:00Z",
+      },
+    }),
+  );
+  assert.equal(differentKeyRetryResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(differentKeyRetryResponse.body), {
     error: "conflict",
     code: "game_exists",
     message: "Game game-1 already exists.",

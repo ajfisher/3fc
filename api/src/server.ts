@@ -973,6 +973,57 @@ function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
     .digest("hex");
 }
 
+function parseOptionalIdempotencyKey(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = idempotencyKeyHeaderSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function buildKeyedRecoveryRequestHash(input: {
+  scope: string;
+  idempotencyKey: string;
+  payload: unknown;
+}): string {
+  return buildIdempotencyRequestHash(input.scope, {
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
+}
+
+function buildCreateGameRecoveryRequestHash(input: {
+  request: IncomingMessage;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  payload: unknown;
+}): string | null {
+  const parsedIdempotencyKey = parseOptionalIdempotencyKey(
+    readHeaderValue(input.request, "idempotency-key") ?? undefined,
+  );
+  if (!parsedIdempotencyKey) {
+    return null;
+  }
+
+  return buildKeyedRecoveryRequestHash({
+    scope: buildIdempotencyScope(input.sessionEmail, input.method, input.route),
+    idempotencyKey: parsedIdempotencyKey,
+    payload: input.payload,
+  });
+}
+
+function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): string {
+  const fingerprint = createHash("sha256")
+    .update(`public-join:${joinCode}:${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `player-join-${fingerprint}`;
+}
+
+const PUBLIC_JOIN_IDEMPOTENCY_SUBJECT = "public-join";
+
 function buildGoalEventId(input: {
   request: IncomingMessage;
   sessionEmail: string;
@@ -1812,11 +1863,6 @@ async function createGameWithDerivedRecords(input: {
   return game;
 }
 
-function hasValidIdempotencyKey(request: IncomingMessage): boolean {
-  const raw = readHeaderValue(request, "idempotency-key");
-  return raw ? idempotencyKeyHeaderSchema.safeParse(raw).success : false;
-}
-
 export async function handleLocalCreateGameRoute(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -1845,12 +1891,13 @@ export async function handleLocalCreateGameRoute(input: {
   }
 
   try {
-    const createRequestHash = hasValidIdempotencyKey(input.request)
-      ? buildIdempotencyRequestHash(
-          buildIdempotencyScope(input.sessionEmail, input.method, input.route),
-          parsedBody.data,
-        )
-      : null;
+    const createRequestHash = buildCreateGameRecoveryRequestHash({
+      request: input.request,
+      sessionEmail: input.sessionEmail,
+      method: input.method,
+      route: input.route,
+      payload: parsedBody.data,
+    });
     return await executeIdempotentMutation({
       request: input.request,
       response: input.response,
@@ -2338,37 +2385,72 @@ async function start(): Promise<void> {
           return;
         }
 
-        let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
-        try {
-          joinResult = await repository.joinGameByCode({
-            joinCode,
-            playerId: `player-${randomUUID()}`,
-            nickname: parsedBody.data.nickname,
-          });
-        } catch (error) {
-          if (error instanceof GameJoinRegistrationError) {
-            if (error.code === "game_finished") {
-              status = finishedGameJoinConflict(request, response, error.message);
-              return;
+        const parsedIdempotencyKey = parseOptionalIdempotencyKey(
+          readHeaderValue(request, "idempotency-key") ?? undefined,
+        );
+        status = await executeIdempotentMutation({
+          request,
+          response,
+          sessionEmail: PUBLIC_JOIN_IDEMPOTENCY_SUBJECT,
+          method,
+          route: `/v1/join/${joinCode}`,
+          requestPayload: parsedBody.data,
+          execute: async () => {
+            let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
+            try {
+              joinResult = await repository.joinGameByCode({
+                joinCode,
+                playerId: parsedIdempotencyKey
+                  ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
+                  : `player-${randomUUID()}`,
+                nickname: parsedBody.data.nickname,
+              });
+            } catch (error) {
+              if (error instanceof GameJoinRegistrationError) {
+                if (error.code === "game_finished") {
+                  return {
+                    statusCode: 409,
+                    payload: {
+                      error: "conflict",
+                      code: "game_finished",
+                      message: error.message,
+                    },
+                  };
+                }
+
+                return {
+                  statusCode: 409,
+                  payload: {
+                    error: "conflict",
+                    code: "join_state_changed",
+                    message: "Game join state changed while registering this player. Reload and try again.",
+                  },
+                };
+              }
+
+              throw error;
             }
 
-            status = joinStateChangedConflict(request, response);
-            return;
-          }
+            if (!joinResult) {
+              return {
+                statusCode: 404,
+                payload: {
+                  error: "not_found",
+                  code: "invalid_join_code",
+                  message: "Join code was not found.",
+                },
+              };
+            }
 
-          throw error;
-        }
-
-        if (!joinResult) {
-          status = invalidJoinCode(request, response);
-          return;
-        }
-
-        status = 201;
-        sendJsonWithCors(request, response, status, {
-          gameId: joinResult.game.gameId,
-          joinCode: joinResult.game.joinCode,
-          player: toPublicPlayer(joinResult.player),
+            return {
+              statusCode: 201,
+              payload: {
+                gameId: joinResult.game.gameId,
+                joinCode: joinResult.game.joinCode,
+                player: toPublicPlayer(joinResult.player),
+              },
+            };
+          },
         });
         return;
       }

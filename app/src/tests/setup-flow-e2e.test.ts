@@ -148,6 +148,7 @@ interface MockApiState {
   roster: Map<string, MockRosterAssignment>;
   goalEvents: Map<string, MockGoalEvent>;
   goalSequence: number;
+  lastPublicJoinRequest: { body: Record<string, unknown>; idempotencyKey: string | null } | null;
 }
 
 function readUiScript(fileName: string): string {
@@ -173,6 +174,7 @@ function createMockApiState(): MockApiState {
     roster: new Map<string, MockRosterAssignment>(),
     goalEvents: new Map<string, MockGoalEvent>(),
     goalSequence: 0,
+    lastPublicJoinRequest: null,
   };
 }
 
@@ -657,7 +659,8 @@ function createMockFetch(state: MockApiState) {
     if (method === "POST" && joinMatch) {
       const joinCode = decodeURIComponent(joinMatch[1]).trim().toUpperCase();
       const nickname = String(body.nickname ?? "").trim();
-      const playerId = String(body.playerId ?? "").trim();
+      const idempotencyKey = readInitHeader(init, "idempotency-key");
+      state.lastPublicJoinRequest = { body, idempotencyKey };
       const game = [...state.games.values()].find((candidate) => candidate.joinCode === joinCode);
       if (!game) {
         return createJsonResponse(404, {
@@ -671,13 +674,26 @@ function createMockFetch(state: MockApiState) {
           message: "Finished games cannot accept new joins.",
         });
       }
-      if (!nickname || !playerId) {
+      if (!idempotencyKey?.trim()) {
         return createJsonResponse(400, {
           error: "bad_request",
-          message: "playerId and nickname are required.",
+          message: "Idempotency-Key header is required.",
+        });
+      }
+      if ("playerId" in body) {
+        return createJsonResponse(400, {
+          error: "bad_request",
+          message: "playerId is not accepted on public join.",
+        });
+      }
+      if (!nickname) {
+        return createJsonResponse(400, {
+          error: "bad_request",
+          message: "nickname is required.",
         });
       }
 
+      const playerId = `player-${idempotencyKey}`;
       const now = "2026-03-28T11:00:12.000Z";
       const player: MockPlayer = {
         playerId,
@@ -3615,6 +3631,9 @@ test("join page registers a player without organizer authentication", async () =
   const player = [...apiState.players.values()][0];
   assert(player);
   assert.equal(player.nickname, "Cy");
+  assert.equal(apiState.lastPublicJoinRequest?.body.nickname, "Cy");
+  assert.equal("playerId" in (apiState.lastPublicJoinRequest?.body ?? {}), false);
+  assert.match(apiState.lastPublicJoinRequest?.idempotencyKey ?? "", /^join-player-JOIN0001-Cy-/);
   assert.equal(apiState.gamePlayers.has(`game-join-1:${player.playerId}`), true);
   assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
   assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Cy");

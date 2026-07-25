@@ -239,10 +239,11 @@ test("local server create game route recovers retry after the game write commits
       gameId: "game-local",
       gameStartTs: "2026-02-23T10:00:00.000Z",
     },
+    idempotencyKey = "local-create-game-recover-1",
   ) =>
     createMockRequest({
       headers: {
-        "idempotency-key": "local-create-game-recover-1",
+        "idempotency-key": idempotencyKey,
       },
       body,
     });
@@ -391,6 +392,24 @@ test("local server create game route recovers retry after the game write commits
   });
   assert.equal(unrelatedRetryStatus, 409);
   assert.deepEqual(JSON.parse(unrelatedRetryResponse.body), {
+    error: "conflict",
+    code: "game_exists",
+    message: "Game game-local already exists.",
+  });
+  assert.equal(createdSessionGames.length, 0);
+
+  const differentKeyRetryResponse = createMockResponse();
+  const differentKeyRetryStatus = await handleLocalCreateGameRoute({
+    request: buildRequest(undefined, "local-create-game-recover-2"),
+    response: differentKeyRetryResponse,
+    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+    sessionEmail: "admin@example.com",
+    method: "POST",
+    route: "/v1/sessions/session-1/games",
+    repositoryClient,
+  });
+  assert.equal(differentKeyRetryStatus, 409);
+  assert.deepEqual(JSON.parse(differentKeyRetryResponse.body), {
     error: "conflict",
     code: "game_exists",
     message: "Game game-local already exists.",

@@ -1392,6 +1392,55 @@ function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
     .digest("hex");
 }
 
+function parseOptionalIdempotencyKey(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = idempotencyKeyHeaderSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function buildKeyedRecoveryRequestHash(input: {
+  scope: string;
+  idempotencyKey: string;
+  payload: unknown;
+}): string {
+  return buildIdempotencyRequestHash(input.scope, {
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
+}
+
+function buildCreateGameRecoveryRequestHash(input: {
+  idempotencyKey: string | undefined;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  payload: unknown;
+}): string | null {
+  const parsedIdempotencyKey = parseOptionalIdempotencyKey(input.idempotencyKey);
+  if (!parsedIdempotencyKey) {
+    return null;
+  }
+
+  return buildKeyedRecoveryRequestHash({
+    scope: buildIdempotencyScope(input.sessionEmail, input.method, input.route),
+    idempotencyKey: parsedIdempotencyKey,
+    payload: input.payload,
+  });
+}
+
+function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): string {
+  const fingerprint = createHash("sha256")
+    .update(`public-join:${joinCode}:${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `player-join-${fingerprint}`;
+}
+
+const PUBLIC_JOIN_IDEMPOTENCY_SUBJECT = "public-join";
+
 function buildGoalEventId(input: {
   idempotencyKey: string | undefined;
   sessionEmail: string;
@@ -1862,45 +1911,61 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
-        let joinResult: Awaited<ReturnType<RepositoryContract["joinGameByCode"]>>;
-        try {
-          joinResult = await dependencies.repository.joinGameByCode({
-            joinCode,
-            playerId: `player-${randomUUID()}`,
-            nickname: parsedBody.data.nickname,
-          });
-        } catch (error) {
-          if (error instanceof GameJoinRegistrationError) {
-            status = error.statusCode;
-            if (error.code === "game_finished") {
-              return finishedGameJoinConflictResponse(
-                origin,
-                dependencies.corsAllowedOrigins,
-                error.message,
-              );
+        const parsedIdempotencyKey = parseOptionalIdempotencyKey(idempotencyKey);
+        const executeJoin = async () => {
+          let joinResult: Awaited<ReturnType<RepositoryContract["joinGameByCode"]>>;
+          try {
+            joinResult = await dependencies.repository.joinGameByCode({
+              joinCode,
+              playerId: parsedIdempotencyKey
+                ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
+                : `player-${randomUUID()}`,
+              nickname: parsedBody.data.nickname,
+            });
+          } catch (error) {
+            if (error instanceof GameJoinRegistrationError) {
+              if (error.code === "game_finished") {
+                return finishedGameJoinConflictResponse(
+                  origin,
+                  dependencies.corsAllowedOrigins,
+                  error.message,
+                );
+              }
+
+              return joinStateChangedResponse(origin, dependencies.corsAllowedOrigins);
             }
 
-            return joinStateChangedResponse(origin, dependencies.corsAllowedOrigins);
+            throw error;
           }
 
-          throw error;
-        }
+          if (!joinResult) {
+            return invalidJoinCodeResponse(origin, dependencies.corsAllowedOrigins);
+          }
 
-        if (!joinResult) {
-          status = 404;
-          return invalidJoinCodeResponse(origin, dependencies.corsAllowedOrigins);
-        }
+          return createJsonResponse(
+            201,
+            {
+              gameId: joinResult.game.gameId,
+              joinCode: joinResult.game.joinCode,
+              player: toPublicPlayer(joinResult.player),
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        };
 
-        status = 201;
-        return createJsonResponse(
-          status,
-          {
-            gameId: joinResult.game.gameId,
-            joinCode: joinResult.game.joinCode,
-            player: toPublicPlayer(joinResult.player),
-          },
-          buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-        );
+        const mutationResponse = await executeIdempotentMutation({
+          repository: dependencies.repository,
+          idempotencyKey,
+          sessionEmail: PUBLIC_JOIN_IDEMPOTENCY_SUBJECT,
+          method,
+          route: `/v1/join/${joinCode}`,
+          requestPayload: parsedBody.data,
+          origin,
+          allowedOrigins: dependencies.corsAllowedOrigins,
+          execute: executeJoin,
+        });
+        status = mutationResponse.statusCode;
+        return mutationResponse;
       }
 
       let session: AuthSessionRecord | null = null;
@@ -2434,12 +2499,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           }
 
           let mutationResponse: ApiGatewayHttpResponse;
-          const createRequestHash = idempotencyKey
-            ? buildIdempotencyRequestHash(
-                buildIdempotencyScope(session.email, method, route),
-                parsedBody.data,
-              )
-            : null;
+          const createRequestHash = buildCreateGameRecoveryRequestHash({
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            payload: parsedBody.data,
+          });
           try {
             mutationResponse = await executeIdempotentMutation({
               repository: dependencies.repository,
