@@ -1155,6 +1155,23 @@ body {
   }
 }
 
+[data-ui="join-qr"] {
+  inline-size: min(11rem, 100%);
+  aspect-ratio: 1;
+  background: #fff;
+  border: 1px solid #d6e3df;
+  border-radius: 6px;
+  padding: 0.5rem;
+  display: grid;
+  place-items: center;
+
+  svg {
+    inline-size: 100%;
+    block-size: 100%;
+    display: block;
+  }
+}
+
 code {
   font-family: "SF Mono", "Menlo", "Monaco", monospace;
   background: #e8f0ec;

@@ -192,6 +192,273 @@
     return `${prefix}-${safeStable}-${Date.now().toString(36)}-${nonce}`;
   }
 
+  const JOIN_QR_VERSION = 5;
+  const JOIN_QR_SIZE = 21 + 4 * (JOIN_QR_VERSION - 1);
+  const JOIN_QR_DATA_CODEWORDS = 108;
+  const JOIN_QR_EC_CODEWORDS = 26;
+  const JOIN_QR_ALIGNMENT_CENTER = 30;
+  const JOIN_QR_MAX_BYTES = 106;
+
+  function utf8Bytes(value) {
+    try {
+      if (typeof TextEncoder === "function") {
+        return Array.from(new TextEncoder().encode(value));
+      }
+    } catch {
+      // Fall through to the percent-encoding path.
+    }
+
+    const encoded = encodeURIComponent(value);
+    const bytes = [];
+    for (let index = 0; index < encoded.length; index += 1) {
+      if (encoded[index] === "%") {
+        bytes.push(Number.parseInt(encoded.slice(index + 1, index + 3), 16));
+        index += 2;
+      } else {
+        bytes.push(encoded.charCodeAt(index));
+      }
+    }
+    return bytes;
+  }
+
+  function appendQrBits(bits, value, length) {
+    for (let index = length - 1; index >= 0; index -= 1) {
+      bits.push(((value >>> index) & 1) === 1);
+    }
+  }
+
+  function qrMultiply(left, right) {
+    let result = 0;
+    let a = left;
+    let b = right;
+
+    while (b > 0) {
+      if ((b & 1) !== 0) {
+        result ^= a;
+      }
+      a <<= 1;
+      if ((a & 0x100) !== 0) {
+        a ^= 0x11d;
+      }
+      b >>>= 1;
+    }
+
+    return result;
+  }
+
+  function qrReedSolomonDivisor(degree) {
+    const result = new Array(degree).fill(0);
+    result[degree - 1] = 1;
+    let root = 1;
+
+    for (let index = 0; index < degree; index += 1) {
+      for (let resultIndex = 0; resultIndex < result.length; resultIndex += 1) {
+        result[resultIndex] = qrMultiply(result[resultIndex], root);
+        if (resultIndex + 1 < result.length) {
+          result[resultIndex] ^= result[resultIndex + 1];
+        }
+      }
+      root = qrMultiply(root, 0x02);
+    }
+
+    return result;
+  }
+
+  function qrReedSolomonRemainder(data, divisor) {
+    const result = new Array(divisor.length).fill(0);
+
+    for (const byte of data) {
+      const factor = byte ^ result.shift();
+      result.push(0);
+      for (let index = 0; index < divisor.length; index += 1) {
+        result[index] ^= qrMultiply(divisor[index], factor);
+      }
+    }
+
+    return result;
+  }
+
+  function qrFormatBits(mask) {
+    const data = (1 << 3) | mask;
+    let remainder = data << 10;
+
+    for (let index = 14; index >= 10; index -= 1) {
+      if (((remainder >>> index) & 1) !== 0) {
+        remainder ^= 0x537 << (index - 10);
+      }
+    }
+
+    return ((data << 10) | (remainder & 0x3ff)) ^ 0x5412;
+  }
+
+  function qrDataCodewords(value) {
+    const bytes = utf8Bytes(value);
+    if (bytes.length > JOIN_QR_MAX_BYTES) {
+      return null;
+    }
+
+    const bits = [];
+    appendQrBits(bits, 0x4, 4);
+    appendQrBits(bits, bytes.length, 8);
+    for (const byte of bytes) {
+      appendQrBits(bits, byte, 8);
+    }
+
+    const capacity = JOIN_QR_DATA_CODEWORDS * 8;
+    const terminatorLength = Math.min(4, capacity - bits.length);
+    for (let index = 0; index < terminatorLength; index += 1) {
+      bits.push(false);
+    }
+    while (bits.length % 8 !== 0) {
+      bits.push(false);
+    }
+
+    const codewords = [];
+    for (let index = 0; index < bits.length; index += 8) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit += 1) {
+        byte = (byte << 1) | (bits[index + bit] ? 1 : 0);
+      }
+      codewords.push(byte);
+    }
+
+    const pads = [0xec, 0x11];
+    let padIndex = 0;
+    while (codewords.length < JOIN_QR_DATA_CODEWORDS) {
+      codewords.push(pads[padIndex % pads.length]);
+      padIndex += 1;
+    }
+
+    return codewords;
+  }
+
+  function createJoinQrSvg(value) {
+    const data = qrDataCodewords(value);
+    if (!data) {
+      return "";
+    }
+
+    const modules = Array.from({ length: JOIN_QR_SIZE }, () => new Array(JOIN_QR_SIZE).fill(false));
+    const reserved = Array.from({ length: JOIN_QR_SIZE }, () => new Array(JOIN_QR_SIZE).fill(false));
+
+    function setFunctionModule(x, y, isDark) {
+      if (x < 0 || y < 0 || x >= JOIN_QR_SIZE || y >= JOIN_QR_SIZE) {
+        return;
+      }
+      modules[y][x] = isDark;
+      reserved[y][x] = true;
+    }
+
+    function drawFinder(centerX, centerY) {
+      for (let dy = -4; dy <= 4; dy += 1) {
+        for (let dx = -4; dx <= 4; dx += 1) {
+          const distance = Math.max(Math.abs(dx), Math.abs(dy));
+          setFunctionModule(centerX + dx, centerY + dy, distance !== 2 && distance !== 4);
+        }
+      }
+    }
+
+    function drawAlignment(centerX, centerY) {
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          setFunctionModule(centerX + dx, centerY + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+        }
+      }
+    }
+
+    function drawFormat(mask) {
+      const bits = qrFormatBits(mask);
+      const bit = (index) => ((bits >>> index) & 1) !== 0;
+
+      for (let index = 0; index <= 5; index += 1) {
+        setFunctionModule(8, index, bit(index));
+      }
+      setFunctionModule(8, 7, bit(6));
+      setFunctionModule(8, 8, bit(7));
+      setFunctionModule(7, 8, bit(8));
+      for (let index = 9; index < 15; index += 1) {
+        setFunctionModule(14 - index, 8, bit(index));
+      }
+
+      for (let index = 0; index < 8; index += 1) {
+        setFunctionModule(JOIN_QR_SIZE - 1 - index, 8, bit(index));
+      }
+      for (let index = 8; index < 15; index += 1) {
+        setFunctionModule(8, JOIN_QR_SIZE - 15 + index, bit(index));
+      }
+    }
+
+    drawFinder(3, 3);
+    drawFinder(JOIN_QR_SIZE - 4, 3);
+    drawFinder(3, JOIN_QR_SIZE - 4);
+    drawAlignment(JOIN_QR_ALIGNMENT_CENTER, JOIN_QR_ALIGNMENT_CENTER);
+    for (let index = 0; index < JOIN_QR_SIZE; index += 1) {
+      if (!reserved[6][index]) {
+        setFunctionModule(index, 6, index % 2 === 0);
+      }
+      if (!reserved[index][6]) {
+        setFunctionModule(6, index, index % 2 === 0);
+      }
+    }
+    setFunctionModule(8, JOIN_QR_SIZE - 8, true);
+    drawFormat(0);
+
+    const divisor = qrReedSolomonDivisor(JOIN_QR_EC_CODEWORDS);
+    const codewords = [...data, ...qrReedSolomonRemainder(data, divisor)];
+    const dataBits = [];
+    for (const codeword of codewords) {
+      appendQrBits(dataBits, codeword, 8);
+    }
+
+    let bitIndex = 0;
+    let upward = true;
+    for (let right = JOIN_QR_SIZE - 1; right >= 1; right -= 2) {
+      if (right === 6) {
+        right -= 1;
+      }
+
+      for (let vertical = 0; vertical < JOIN_QR_SIZE; vertical += 1) {
+        const y = upward ? JOIN_QR_SIZE - 1 - vertical : vertical;
+        for (let dx = 0; dx < 2; dx += 1) {
+          const x = right - dx;
+          if (reserved[y][x]) {
+            continue;
+          }
+          let isDark = bitIndex < dataBits.length ? dataBits[bitIndex] : false;
+          bitIndex += 1;
+          if ((x + y) % 2 === 0) {
+            isDark = !isDark;
+          }
+          modules[y][x] = isDark;
+        }
+      }
+      upward = !upward;
+    }
+
+    const quiet = 4;
+    const viewBoxSize = JOIN_QR_SIZE + quiet * 2;
+    let path = "";
+    for (let y = 0; y < JOIN_QR_SIZE; y += 1) {
+      for (let x = 0; x < JOIN_QR_SIZE; x += 1) {
+        if (modules[y][x]) {
+          path += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+        }
+      }
+    }
+
+    const label = escapeHtml(`Join QR code for ${value}`);
+    return `<svg data-ui="join-qr-svg" viewBox="0 0 ${viewBoxSize} ${viewBoxSize}" role="img" aria-label="${label}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#111"/></svg>`;
+  }
+
+  function renderJoinQrCode(container, joinUrl) {
+    if (!(container instanceof HTMLElement)) {
+      return;
+    }
+
+    const svg = createJoinQrSvg(joinUrl);
+    container.innerHTML = svg || "QR unavailable";
+  }
+
   function encodeStablePartForStorage(stablePart) {
     try {
       return encodeURIComponent(stablePart);
@@ -1093,6 +1360,7 @@
     const gameIdValue = document.getElementById("game-id-value");
     const gameJoinCodeValue = document.getElementById("game-join-code-value");
     const gameJoinLink = document.getElementById("game-join-link");
+    const gameJoinQr = document.getElementById("game-join-qr");
     const gameLeagueId = document.getElementById("game-league-id");
     const gameSeasonId = document.getElementById("game-season-id");
 
@@ -2145,11 +2413,16 @@
       if (gameJoinLink instanceof HTMLAnchorElement) {
         if (typeof game.joinCode === "string" && game.joinCode.length > 0) {
           const joinPath = `/join/${encodeURIComponent(game.joinCode)}`;
-          gameJoinLink.href = joinPath;
-          gameJoinLink.textContent = joinPath;
+          const joinUrl = new URL(joinPath, window.location.origin).toString();
+          gameJoinLink.href = joinUrl;
+          gameJoinLink.textContent = joinUrl;
+          renderJoinQrCode(gameJoinQr, joinUrl);
         } else {
           gameJoinLink.href = "/join";
           gameJoinLink.textContent = "Unavailable";
+          if (gameJoinQr instanceof HTMLElement) {
+            gameJoinQr.textContent = "Unavailable";
+          }
         }
       }
       if (gameLeagueId) {

@@ -3107,6 +3107,7 @@ test("setup smoke completes live game through finish", async () => {
   const statusInput = gamePage.document.getElementById("game-edit-status");
   const joinCodeValue = gamePage.document.getElementById("game-join-code-value");
   const joinLink = gamePage.document.getElementById("game-join-link");
+  const joinQr = gamePage.document.getElementById("game-join-qr");
   const scoreboard = gamePage.document.getElementById("live-scoreboard");
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
   const resultSummary = gamePage.document.getElementById("game-result-summary");
@@ -3125,13 +3126,18 @@ test("setup smoke completes live game through finish", async () => {
   assert(statusInput instanceof gamePage.window.HTMLSelectElement);
   assert(joinCodeValue instanceof gamePage.window.HTMLElement);
   assert(joinLink instanceof gamePage.window.HTMLAnchorElement);
+  assert(joinQr instanceof gamePage.window.HTMLElement);
   assert(scoreboard instanceof gamePage.window.HTMLElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
   assert(resultSummary instanceof gamePage.window.HTMLElement);
   assert.equal(finishGameButton.disabled, true);
   assert.equal(joinCodeValue.textContent, "SMOKE123");
-  assert.equal(joinLink.getAttribute("href"), "/join/SMOKE123");
-  assert.equal(joinLink.textContent, "/join/SMOKE123");
+  assert.equal(joinLink.getAttribute("href"), "http://localhost:3000/join/SMOKE123");
+  assert.equal(joinLink.textContent, "http://localhost:3000/join/SMOKE123");
+  const joinQrSvg = joinQr.querySelector("svg");
+  assert(joinQrSvg instanceof gamePage.window.SVGElement);
+  assert.equal(joinQrSvg.getAttribute("aria-label"), "Join QR code for http://localhost:3000/join/SMOKE123");
+  assert.match(joinQrSvg.innerHTML, /<path/);
   assert.equal(resultSummary.hidden, true);
 
   nicknameInput.value = "Ari";

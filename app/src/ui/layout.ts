@@ -738,6 +738,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               <div><dt>Game ID</dt><dd id="game-id-value">${gameHeading}</dd></div>
               <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
               <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
+              <div data-ui="join-qr-row"><dt>Join QR</dt><dd id="game-join-qr" data-ui="join-qr" data-testid="game-join-qr">Loading…</dd></div>
               <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
               <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
             </dl>
