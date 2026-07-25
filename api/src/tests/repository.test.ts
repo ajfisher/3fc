@@ -1366,7 +1366,7 @@ test("repository rejects quick player creation if the game finalizes before the 
   assert.equal((await repository.getGame("game-1"))?.status, "finished");
 });
 
-test("repository gives legacy games default timer state", async () => {
+test("repository gives legacy games default timer state without repairing join codes by default", async () => {
   const { repository, client } = createRepositoryHarness();
 
   client.seedItem({
@@ -1391,11 +1391,40 @@ test("repository gives legacy games default timer state", async () => {
   assert.equal(game?.thirdLengthMinutes, DEFAULT_THIRD_LENGTH_MINUTES);
   assert.deepEqual(game?.thirds, createDefaultThirdTimerSegments());
   assert.equal(game?.joinCode, buildJoinCodeForGameId("game-legacy"));
-  assert.deepEqual(await repository.getGameByJoinCode(buildJoinCodeForGameId("game-legacy")), game);
   const lookupItem = client.readItem(`JOIN_CODE#${buildJoinCodeForGameId("game-legacy")}`, "METADATA");
+  assert.equal(lookupItem ?? null, null);
+});
+
+test("repository repairs legacy game join codes with a random usable lookup when requested", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const game = await repository.getGame("game-legacy", { repairLegacyJoinCode: true });
+  assert.ok(game);
+  assert.match(game.joinCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.notEqual(game.joinCode, buildJoinCodeForGameId("game-legacy"));
+  assert.deepEqual(await repository.getGameByJoinCode(game.joinCode), game);
+  const lookupItem = client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA");
   assert.equal(lookupItem?.entityType?.S, "gameJoinCode");
   assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
-    joinCode: buildJoinCodeForGameId("game-legacy"),
+    joinCode: game.joinCode,
     gameId: "game-legacy",
   });
 });
@@ -1431,7 +1460,7 @@ test("repository repairs legacy game join-code collisions with a usable fallback
     },
   });
 
-  const repairedGame = await repository.getGame("game-legacy");
+  const repairedGame = await repository.getGame("game-legacy", { repairLegacyJoinCode: true });
   assert.ok(repairedGame);
   assert.notEqual(repairedGame.joinCode, claimedJoinCode);
   assert.deepEqual(await repository.getGameByJoinCode(claimedJoinCode), currentGame);

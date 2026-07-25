@@ -340,10 +340,6 @@ function normalizeJoinCode(joinCode: string): string {
   return joinCode.trim().toUpperCase();
 }
 
-function buildLegacyJoinCodeRepairCandidate(gameId: string, attempt: number): string {
-  return attempt === 0 ? buildJoinCodeForGameId(gameId) : buildJoinCodeForGameId(`${gameId}:${attempt}`);
-}
-
 function normalizeCustomJoinCode(joinCode: string): string {
   const normalizedJoinCode = normalizeJoinCode(joinCode);
   if (!JOIN_CODE_PATTERN.test(normalizedJoinCode)) {
@@ -1423,7 +1419,10 @@ export class ThreeFcRepository {
     throw new GameJoinCodeCollisionError();
   }
 
-  async getGame(gameId: string, options: { consistentRead?: boolean } = {}): Promise<GameRecord | null> {
+  async getGame(
+    gameId: string,
+    options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {},
+  ): Promise<GameRecord | null> {
     requireNonEmpty("gameId", gameId);
     const item = await this.getEntity(gamePk(gameId), metadataSk(), options);
 
@@ -1433,7 +1432,10 @@ export class ThreeFcRepository {
 
     const rawGame = item.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
     const game = withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
-    if (typeof rawGame.joinCode !== "string" || rawGame.joinCode.trim().length === 0) {
+    if (
+      options.repairLegacyJoinCode &&
+      (typeof rawGame.joinCode !== "string" || rawGame.joinCode.trim().length === 0)
+    ) {
       return this.repairLegacyGameJoinCode(item);
     }
 
@@ -4097,7 +4099,7 @@ export class ThreeFcRepository {
         candidateAttempt < LEGACY_JOIN_CODE_REPAIR_ATTEMPTS;
         candidateAttempt += 1
       ) {
-        const joinCode = buildLegacyJoinCodeRepairCandidate(currentGame.gameId, candidateAttempt);
+        const joinCode = generateJoinCode();
         if (seenCandidates.has(joinCode)) {
           continue;
         }

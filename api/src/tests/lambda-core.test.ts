@@ -216,6 +216,7 @@ interface HarnessConfig {
   seasons?: Record<string, MockSeasonRecord>;
   seasonSessions?: Record<string, MockSessionEntity>;
   games?: Record<string, MockGameInput>;
+  legacyJoinCodeRepairs?: Record<string, string>;
   seasonTeams?: Record<string, MockSeasonTeamRecord>;
   gameTeams?: Record<string, MockGameTeamInput>;
   players?: Record<string, MockPlayerRecord>;
@@ -340,7 +341,11 @@ function createHarness(config: HarnessConfig = {}) {
   const magicLinkStarts: string[] = [];
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
-  const getGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
+  const getGameCalls: Array<{
+    gameId: string;
+    consistentRead: boolean;
+    repairLegacyJoinCode: boolean;
+  }> = [];
   const listTeamsForSeasonCalls: Array<{ seasonId: string; consistentRead: boolean }> = [];
   const listTeamsForGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
@@ -904,8 +909,15 @@ function createHarness(config: HarnessConfig = {}) {
       async listGamesForSeason(seasonId: string) {
         return [...games.values()].filter((game) => game.seasonId === seasonId);
       },
-      async getGame(gameId: string, options: { consistentRead?: boolean } = {}) {
-        getGameCalls.push({ gameId, consistentRead: options.consistentRead ?? false });
+      async getGame(
+        gameId: string,
+        options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {},
+      ) {
+        getGameCalls.push({
+          gameId,
+          consistentRead: options.consistentRead ?? false,
+          repairLegacyJoinCode: options.repairLegacyJoinCode ?? false,
+        });
         const game = games.get(gameId) ?? null;
         if (
           game &&
@@ -925,6 +937,18 @@ function createHarness(config: HarnessConfig = {}) {
             });
           }
         }
+
+        const repairedJoinCode = config.legacyJoinCodeRepairs?.[gameId];
+        if (game && options.repairLegacyJoinCode && repairedJoinCode) {
+          const repairedGame = {
+            ...game,
+            joinCode: repairedJoinCode,
+            updatedAt: "2026-02-23T00:00:05.000Z",
+          };
+          games.set(gameId, repairedGame);
+          return repairedGame;
+        }
+
         return game;
       },
       async getGameByJoinCode(joinCode: string) {
@@ -1992,6 +2016,118 @@ test("core lambda completes magic-link auth and returns a session cookie", async
       expiresAt: "2026-02-24T00:00:00.000Z",
     },
   });
+});
+
+test("core lambda does not repair legacy join codes before game access is authorized", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "outsider@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-legacy": {
+        gameId: "game-legacy",
+        joinCode: buildJoinCodeForGameId("game-legacy"),
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    legacyJoinCodeRepairs: {
+      "game-legacy": "RNDM2345",
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-legacy",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(harness.getGameCalls, [
+    {
+      gameId: "game-legacy",
+      consistentRead: false,
+      repairLegacyJoinCode: false,
+    },
+  ]);
+});
+
+test("core lambda repairs legacy join codes only after game access is authorized", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-legacy": {
+        gameId: "game-legacy",
+        joinCode: buildJoinCodeForGameId("game-legacy"),
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    legacyJoinCodeRepairs: {
+      "game-legacy": "RNDM2345",
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-legacy",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal((JSON.parse(response.body) as { joinCode: string }).joinCode, "RNDM2345");
+  assert.deepEqual(harness.getGameCalls, [
+    {
+      gameId: "game-legacy",
+      consistentRead: false,
+      repairLegacyJoinCode: false,
+    },
+    {
+      gameId: "game-legacy",
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+    },
+  ]);
 });
 
 test("core lambda lets players join an active game by join code and appear in the player pool", async () => {

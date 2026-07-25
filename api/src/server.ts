@@ -156,6 +156,8 @@ const magicLinkRateLimiter = new AuthRateLimiter(
 );
 const repository = new ThreeFcRepository(ddbClient, TABLE_NAME);
 
+type LocalGetGameRouteRepository = Pick<ThreeFcRepository, "getGame" | "getLeagueAccess">;
+
 type LocalFinishGameRouteRepository = Pick<
   ThreeFcRepository,
   | "getGame"
@@ -1248,6 +1250,39 @@ async function replayStoredIdempotencyMutation(input: {
   }
 
   return null;
+}
+
+export async function handleLocalGetGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  gameId: string;
+  sessionEmail: string;
+  repositoryClient?: LocalGetGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const game = await repositoryClient.getGame(input.gameId);
+  if (!game) {
+    return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+  }
+
+  const access = await ensureLeagueAccess(game.leagueId, input.sessionEmail, repositoryClient);
+  if (!access.allowed) {
+    return forbidden(
+      input.request,
+      input.response,
+      "league_access_required",
+      `Access to league ${game.leagueId} is required.`,
+    );
+  }
+
+  const responseGame =
+    (await repositoryClient.getGame(input.gameId, {
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+    })) ?? game;
+
+  sendJsonWithCors(input.request, input.response, 200, buildGameResponse(responseGame));
+  return 200;
 }
 
 export async function handleLocalFinishGameRoute(input: {
@@ -2748,26 +2783,12 @@ async function start(): Promise<void> {
           return;
         }
 
-        const gameId = decodeURIComponent(getGameMatch[1]);
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
-        if (!access.allowed) {
-          status = forbidden(
-            request,
-            response,
-            "league_access_required",
-            `Access to league ${game.leagueId} is required.`,
-          );
-          return;
-        }
-
-        status = 200;
-        sendJsonWithCors(request, response, status, buildGameResponse(game));
+        status = await handleLocalGetGameRoute({
+          request,
+          response,
+          gameId: decodeURIComponent(getGameMatch[1]),
+          sessionEmail: authGate.session.email,
+        });
         return;
       }
 

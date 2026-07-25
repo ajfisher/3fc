@@ -9,6 +9,7 @@ import {
   handleLocalCreateGameRoute,
   handleLocalDeleteGameRoute,
   handleLocalFinishGameRoute,
+  handleLocalGetGameRoute,
   handleLocalUpdateGameTeamRoute,
 } from "../server.js";
 import {
@@ -146,6 +147,72 @@ const scorekeeperAccess = {
   createdAt: "2026-02-23T00:00:00.000Z",
   updatedAt: "2026-02-23T00:00:00.000Z",
 };
+
+test("local server get game route does not repair legacy join codes before access is authorized", async () => {
+  const request = createMockRequest();
+  const response = createMockResponse();
+  const getGameCalls: Array<{ consistentRead: boolean; repairLegacyJoinCode: boolean }> = [];
+  const repositoryClient = {
+    async getGame(_gameId: string, options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {}) {
+      getGameCalls.push({
+        consistentRead: options.consistentRead ?? false,
+        repairLegacyJoinCode: options.repairLegacyJoinCode ?? false,
+      });
+      return gameRecord({ status: "scheduled", joinCode: "FALL2345" });
+    },
+    async getLeagueAccess() {
+      return null;
+    },
+  };
+
+  const status = await handleLocalGetGameRoute({
+    request,
+    response,
+    gameId: "game-1",
+    sessionEmail: "outsider@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 403);
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(getGameCalls, [{ consistentRead: false, repairLegacyJoinCode: false }]);
+});
+
+test("local server get game route repairs legacy join codes after access is authorized", async () => {
+  const request = createMockRequest();
+  const response = createMockResponse();
+  const getGameCalls: Array<{ consistentRead: boolean; repairLegacyJoinCode: boolean }> = [];
+  const repositoryClient = {
+    async getGame(_gameId: string, options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {}) {
+      getGameCalls.push({
+        consistentRead: options.consistentRead ?? false,
+        repairLegacyJoinCode: options.repairLegacyJoinCode ?? false,
+      });
+      return options.repairLegacyJoinCode
+        ? gameRecord({ status: "scheduled", joinCode: "RNDM2345" })
+        : gameRecord({ status: "scheduled", joinCode: "FALL2345" });
+    },
+    async getLeagueAccess() {
+      return scorekeeperAccess;
+    },
+  };
+
+  const status = await handleLocalGetGameRoute({
+    request,
+    response,
+    gameId: "game-1",
+    sessionEmail: "scorekeeper@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 200);
+  assert.equal(response.statusCode, 200);
+  assert.equal((JSON.parse(response.body) as { joinCode: string }).joinCode, "RNDM2345");
+  assert.deepEqual(getGameCalls, [
+    { consistentRead: false, repairLegacyJoinCode: false },
+    { consistentRead: true, repairLegacyJoinCode: true },
+  ]);
+});
 
 test("local server create game route recovers retry after the game write commits", async () => {
   const idempotencyRecords = new Map<string, {

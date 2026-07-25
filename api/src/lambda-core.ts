@@ -287,7 +287,7 @@ interface RepositoryContract {
   listGamesForSeason(seasonId: string): Promise<RepositoryGameRecord[]>;
   getGame(
     gameId: string,
-    options?: { consistentRead?: boolean },
+    options?: { consistentRead?: boolean; repairLegacyJoinCode?: boolean },
   ): Promise<RepositoryGameRecord | null>;
   getGameByJoinCode(joinCode: string): Promise<RepositoryGameRecord | null>;
   joinGameByCode(input: {
@@ -2584,10 +2584,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
+          const responseGame =
+            (await dependencies.repository.getGame(gameId, {
+              consistentRead: true,
+              repairLegacyJoinCode: true,
+            })) ?? game;
+
           status = 200;
           return createJsonResponse(
             status,
-            buildGameResponse(game),
+            buildGameResponse(responseGame),
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
         }
