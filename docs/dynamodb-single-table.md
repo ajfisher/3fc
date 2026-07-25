@@ -39,6 +39,15 @@ This document defines the baseline key structure and access patterns for the
 - Goal event id marker:
   - `pk=GAME#{gameId}`
   - `sk=GOAL_EVENT#{eventId}`
+- Goal correction state:
+  - `pk=GAME#{gameId}`
+  - `sk=GOAL_STATE`
+- Goal correction operation marker:
+  - `pk=GAME#{gameId}`
+  - `sk=GOAL_CORRECTION#{operationId}`
+- Goal audit entry:
+  - `pk=GAME#{gameId}`
+  - `sk=AUDIT#GOAL#{createdAt}#{auditId}`
 - Roster assignment:
   - `pk=GAME#{gameId}`
   - `sk=ROSTER#{teamId}#{playerId}`

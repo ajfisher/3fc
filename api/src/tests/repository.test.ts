@@ -133,13 +133,13 @@ class InMemoryDynamoClient {
     }
 
     if (command instanceof TransactWriteItemsCommand) {
-      const puts = (command.input.TransactItems ?? []).flatMap((item) => {
-        if (!item.Put) {
-          throw new Error("Test client only supports Put transaction items.");
-        }
+      const writes = command.input.TransactItems ?? [];
 
-        return [item.Put];
-      });
+      for (const write of writes) {
+        if (!write.Put && !write.Delete) {
+          throw new Error("Test client only supports Put and Delete transaction items.");
+        }
+      }
 
       if (this.beforeNextPut) {
         const callback = this.beforeNextPut;
@@ -147,53 +147,95 @@ class InMemoryDynamoClient {
         callback();
       }
 
-      for (const put of puts) {
-        const item = put.Item;
-        if (!item) {
-          throw new Error("TransactWriteItemsCommand Put is missing Item.");
+      const throwConditionalCancellation = (failedWrite: (typeof writes)[number]): never => {
+        const error = new Error("Conditional transaction request failed.");
+        (
+          error as Error & {
+            name: string;
+            CancellationReasons: Array<{ Code: string }>;
+          }
+        ).name = "TransactionCanceledException";
+        (
+          error as Error & {
+            name: string;
+            CancellationReasons: Array<{ Code: string }>;
+          }
+        ).CancellationReasons = writes.map((write) => ({
+          Code: write === failedWrite ? "ConditionalCheckFailed" : "None",
+        }));
+        throw error;
+      };
+
+      for (const write of writes) {
+        if (write.Put) {
+          const item = write.Put.Item;
+          if (!item) {
+            throw new Error("TransactWriteItemsCommand Put is missing Item.");
+          }
+
+          const pk = this.readString(item.pk, "pk");
+          const sk = this.readString(item.sk, "sk");
+          const id = `${pk}|${sk}`;
+
+          if (
+            write.Put.ConditionExpression &&
+            !this.conditionMatches(
+              write.Put.ConditionExpression,
+              this.items.get(id),
+              write.Put.ExpressionAttributeNames ?? {},
+              write.Put.ExpressionAttributeValues ?? {},
+            )
+          ) {
+            throwConditionalCancellation(write);
+          }
         }
 
-        const pk = this.readString(item.pk, "pk");
-        const sk = this.readString(item.sk, "sk");
-        const id = `${pk}|${sk}`;
+        if (write.Delete) {
+          const key = write.Delete.Key;
+          if (!key) {
+            throw new Error("TransactWriteItemsCommand Delete is missing Key.");
+          }
 
-        if (
-          put.ConditionExpression &&
-          !this.conditionMatches(
-            put.ConditionExpression,
-            this.items.get(id),
-            put.ExpressionAttributeNames ?? {},
-            put.ExpressionAttributeValues ?? {},
-          )
-        ) {
-          const error = new Error("Conditional transaction request failed.");
-          (
-            error as Error & {
-              name: string;
-              CancellationReasons: Array<{ Code: string }>;
-            }
-          ).name = "TransactionCanceledException";
-          (
-            error as Error & {
-              name: string;
-              CancellationReasons: Array<{ Code: string }>;
-            }
-          ).CancellationReasons = puts.map((candidate) => ({
-            Code: candidate === put ? "ConditionalCheckFailed" : "None",
-          }));
-          throw error;
+          const pk = this.readString(key.pk, "pk");
+          const sk = this.readString(key.sk, "sk");
+          const id = `${pk}|${sk}`;
+
+          if (
+            write.Delete.ConditionExpression &&
+            !this.conditionMatches(
+              write.Delete.ConditionExpression,
+              this.items.get(id),
+              write.Delete.ExpressionAttributeNames ?? {},
+              write.Delete.ExpressionAttributeValues ?? {},
+            )
+          ) {
+            throwConditionalCancellation(write);
+          }
         }
       }
 
-      for (const put of puts) {
-        const item = put.Item;
-        if (!item) {
-          throw new Error("TransactWriteItemsCommand Put is missing Item.");
+      for (const write of writes) {
+        if (write.Put) {
+          const item = write.Put.Item;
+          if (!item) {
+            throw new Error("TransactWriteItemsCommand Put is missing Item.");
+          }
+
+          const pk = this.readString(item.pk, "pk");
+          const sk = this.readString(item.sk, "sk");
+          this.items.set(`${pk}|${sk}`, item);
         }
 
-        const pk = this.readString(item.pk, "pk");
-        const sk = this.readString(item.sk, "sk");
-        this.items.set(`${pk}|${sk}`, item);
+        if (write.Delete) {
+          const key = write.Delete.Key;
+          if (!key) {
+            throw new Error("TransactWriteItemsCommand Delete is missing Key.");
+          }
+
+          const pk = this.readString(key.pk, "pk");
+          const sk = this.readString(key.sk, "sk");
+          this.items.delete(`${pk}|${sk}`);
+        }
       }
 
       return {};
@@ -537,6 +579,64 @@ test("repository orders stoppage goals by elapsed time before event ID", async (
     timeline.map((goal) => goal.eventId),
     ["goal-a-earlier", "goal-z-later"],
   );
+});
+
+test("repository uses creation order to break same-second goal ties", async () => {
+  const clock = new MutableClock("2026-02-22T00:00:00.000Z");
+  const repository = new ThreeFcRepository(
+    new InMemoryDynamoClient(),
+    "threefc_test",
+    clock,
+  );
+  await setupScoringGame(repository);
+  clock.set("2026-02-22T00:00:00.000Z");
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  clock.set("2026-02-22T00:00:10.100Z");
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-z-earlier",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  clock.set("2026-02-22T00:00:10.900Z");
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-a-later",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.deepEqual((await repository.listGoalEvents("game-1")).map((goal) => goal.eventId), [
+    "goal-z-earlier",
+    "goal-a-later",
+  ]);
+  await assert.rejects(
+    repository.undoLastGoal({
+      gameId: "game-1",
+      actorUserId: "scorekeeper@example.com",
+      expectedEventId: "goal-z-earlier",
+    }),
+    /Latest goal changed/,
+  );
+
+  const result = await repository.undoLastGoal({
+    gameId: "game-1",
+    actorUserId: "scorekeeper@example.com",
+    expectedEventId: "goal-a-later",
+  });
+
+  assert.ok(result);
+  assert.equal(result.deletedGoal.eventId, "goal-a-later");
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-z-earlier"]);
 });
 
 test("repository normalizes partial legacy goal records to documented response bounds", async () => {
@@ -1031,6 +1131,7 @@ test("repository creates standard goals with timer stamping, mixed-team assists,
   const result = await repository.createGoal({
     gameId: "game-1",
     eventId: "goal-1",
+    actorUserId: "scorekeeper@example.com",
     scoringTeamId: "red",
     concedingTeamId: "blue",
     scorerPlayerId: "player-red",
@@ -1094,6 +1195,7 @@ test("repository stamps regulation-boundary goals at the final regulation minute
   const result = await repository.createGoal({
     gameId: "game-1",
     eventId: "goal-boundary",
+    actorUserId: "scorekeeper@example.com",
     scoringTeamId: "red",
     concedingTeamId: "blue",
     scorerPlayerId: "player-red",
@@ -1116,6 +1218,7 @@ test("repository rejects duplicate goal event IDs without double-counting tallie
   await repository.createGoal({
     gameId: "game-1",
     eventId: "goal-idem-duplicate",
+    actorUserId: "scorekeeper@example.com",
     scoringTeamId: "red",
     concedingTeamId: "blue",
     scorerPlayerId: "player-red",
@@ -1132,6 +1235,7 @@ test("repository rejects duplicate goal event IDs without double-counting tallie
       scorerPlayerId: "player-red",
       assistPlayerIds: [],
       ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
     }),
     /Goal event has already been created/,
   );
@@ -1150,6 +1254,421 @@ test("repository rejects duplicate goal event IDs without double-counting tallie
   );
   assert.deepEqual((await repository.listGoalEvents("game-1")).map((goal) => goal.eventId), [
     "goal-idem-duplicate",
+  ]);
+});
+
+test("repository updates goals, recomputes tallies, and records audit entries", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-correct-own",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: null,
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-blue",
+    assistPlayerIds: [],
+    ownGoal: true,
+  });
+
+  const result = await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-correct-own",
+    actorUserId: "admin@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: ["player-yellow"],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.eventId, "goal-correct-own");
+  assert.equal(result.goal.displayTime, result.previousGoal.displayTime);
+  assert.equal(result.goal.scoringTeamId, "red");
+  assert.equal(result.goal.ownGoal, false);
+  assert.deepEqual(result.goal.assistPlayerIds, ["player-yellow"]);
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+  assert.equal(result.audit.action, "goal_updated");
+  assert.equal(result.audit.actorUserId, "admin@example.com");
+  assert.equal(result.audit.before?.ownGoal, true);
+  assert.equal(result.audit.after?.scoringTeamId, "red");
+  assert.deepEqual(result.timeline, [result.goal]);
+  assert.deepEqual(
+    (await repository.listGoalAuditEntries("game-1")).map((entry) => entry.action),
+    ["goal_created", "goal_updated"],
+  );
+});
+
+test("repository normalizes malformed goal audit snapshots to documented response bounds", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-1" },
+    sk: { S: "AUDIT#GOAL#2026-02-22T00:00:00.000Z#audit-legacy" },
+    entityType: { S: "goalAudit" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        auditId: "audit-legacy",
+        gameId: "game-1",
+        eventId: "goal-legacy",
+        actorUserId: "admin@example.com",
+        action: "legacy_unknown",
+        before: {
+          eventId: "goal-legacy",
+          third: 7,
+          thirdMinute: 0,
+          gameMinute: 0,
+          elapsedSeconds: -1,
+          stoppageMinute: 0,
+          scoringTeamId: "green",
+          concedingTeamId: "orange",
+          scorerPlayerId: "player-red",
+          assistPlayerIds: [123, "player-blue"],
+          ownGoal: "false",
+        },
+        after: null,
+      }),
+    },
+  });
+
+  const [audit] = await repository.listGoalAuditEntries("game-1");
+  assert.equal(audit.action, "goal_updated");
+  assert.equal(audit.before?.third, 1);
+  assert.equal(audit.before?.thirdMinute, 1);
+  assert.equal(audit.before?.gameMinute, 1);
+  assert.equal(audit.before?.elapsedSeconds, 0);
+  assert.equal(audit.before?.stoppageMinute, null);
+  assert.equal(audit.before?.displayTime, "1");
+  assert.equal(audit.before?.scoringTeamId, null);
+  assert.equal(audit.before?.concedingTeamId, "red");
+  assert.deepEqual(audit.before?.assistPlayerIds, ["player-blue"]);
+  assert.equal(audit.before?.ownGoal, false);
+});
+
+test("repository replays duplicate correction operation IDs without duplicate PATCH side effects", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-op-replay",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  const first = await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-op-replay",
+    actorUserId: "scorekeeper@example.com",
+    operationId: "correction-op-1",
+    operationRequestHash: "hash-1",
+    assistPlayerIds: ["player-yellow"],
+  });
+  const operationItem = client.readItem("GAME#game-1", "GOAL_CORRECTION#correction-op-1");
+  assert.ok(operationItem);
+  const operationJson = operationItem.data.S;
+  if (typeof operationJson !== "string") {
+    throw new Error("Expected correction operation data to be stored as JSON.");
+  }
+  const operationData = JSON.parse(operationJson) as Record<string, unknown>;
+  operationItem.data = { S: JSON.stringify({ ...operationData, action: "legacy_unknown" }) };
+  client.seedItem(operationItem);
+
+  const storedOperation = await (
+    repository as unknown as {
+      getGoalCorrectionOperation(
+        gameId: string,
+        operationId: string,
+      ): Promise<{ action: string } | null>;
+    }
+  ).getGoalCorrectionOperation("game-1", "correction-op-1");
+  assert.equal(storedOperation?.action, "goal_updated");
+
+  const second = await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-op-replay",
+    actorUserId: "scorekeeper@example.com",
+    operationId: "correction-op-1",
+    operationRequestHash: "hash-1",
+    assistPlayerIds: ["player-yellow"],
+  });
+
+  assert.deepEqual(second, first);
+  assert.deepEqual(
+    (await repository.listGoalAuditEntries("game-1")).map((entry) => entry.action),
+    ["goal_created", "goal_updated"],
+  );
+  assert.deepEqual((await repository.listGoalEvents("game-1"))[0]?.assistPlayerIds, ["player-yellow"]);
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-op-replay",
+      actorUserId: "scorekeeper@example.com",
+      operationId: "correction-op-1",
+      operationRequestHash: "different-hash",
+      assistPlayerIds: [],
+    }),
+    /different request payload/,
+  );
+});
+
+test("repository deletes goals and recomputes tallies from remaining timeline", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-delete-1",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-delete-2",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  const result = await repository.deleteGoal({
+    gameId: "game-1",
+    eventId: "goal-delete-1",
+    actorUserId: "scorekeeper@example.com",
+  });
+
+  assert.ok(result);
+  assert.equal(result.deletedGoal.eventId, "goal-delete-1");
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-delete-2"]);
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 1 },
+      { teamId: "blue", scored: 0, conceded: 0 },
+      { teamId: "yellow", scored: 1, conceded: 0 },
+    ],
+  );
+  assert.equal(result.audit.action, "goal_deleted");
+  assert.equal(result.audit.before?.eventId, "goal-delete-1");
+  assert.equal(result.audit.after, null);
+});
+
+test("repository undo-last deletes only the current latest goal and rejects stale expectations", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-undo-1",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-undo-2",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  await assert.rejects(
+    repository.undoLastGoal({
+      gameId: "game-1",
+      actorUserId: "scorekeeper@example.com",
+      expectedEventId: "",
+    }),
+    /expectedEventId must be a non-empty string/,
+  );
+
+  await assert.rejects(
+    repository.undoLastGoal({
+      gameId: "game-1",
+      actorUserId: "scorekeeper@example.com",
+      expectedEventId: "goal-undo-1",
+    }),
+    /Latest goal changed/,
+  );
+  assert.deepEqual((await repository.listGoalEvents("game-1")).map((goal) => goal.eventId), [
+    "goal-undo-1",
+    "goal-undo-2",
+  ]);
+
+  const result = await repository.undoLastGoal({
+    gameId: "game-1",
+    actorUserId: "scorekeeper@example.com",
+    expectedEventId: "goal-undo-2",
+  });
+
+  assert.ok(result);
+  assert.equal(result.deletedGoal.eventId, "goal-undo-2");
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-undo-1"]);
+  assert.equal(result.audit.action, "goal_undo_last");
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+});
+
+test("repository undo-last backfills missing legacy goal state", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+
+  for (const goal of [
+    {
+      eventId: "goal-legacy-1",
+      sk: "GOAL#1#0001#0000060#goal-legacy-1",
+      elapsedSeconds: 60,
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+    },
+    {
+      eventId: "goal-legacy-2",
+      sk: "GOAL#1#0002#0000120#goal-legacy-2",
+      elapsedSeconds: 120,
+      scoringTeamId: "yellow",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-yellow",
+    },
+  ] as const) {
+    client.seedItem({
+      pk: { S: "GAME#game-1" },
+      sk: { S: goal.sk },
+      entityType: { S: "goal" },
+      createdAt: { S: "2026-02-22T00:00:00.000Z" },
+      updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          gameId: "game-1",
+          eventId: goal.eventId,
+          third: 1,
+          thirdMinute: Math.floor(goal.elapsedSeconds / 60) + 1,
+          gameMinute: Math.floor(goal.elapsedSeconds / 60) + 1,
+          elapsedSeconds: goal.elapsedSeconds,
+          stoppageMinute: null,
+          displayTime: `${String(Math.floor(goal.elapsedSeconds / 60)).padStart(2, "0")}:00`,
+          scoringTeamId: goal.scoringTeamId,
+          concedingTeamId: goal.concedingTeamId,
+          scorerPlayerId: goal.scorerPlayerId,
+          assistPlayerIds: [],
+          ownGoal: false,
+        }),
+      },
+    });
+  }
+
+  const result = await repository.undoLastGoal({
+    gameId: "game-1",
+    actorUserId: "scorekeeper@example.com",
+    expectedEventId: "goal-legacy-2",
+  });
+
+  assert.ok(result);
+  assert.equal(result.deletedGoal.eventId, "goal-legacy-2");
+  assert.deepEqual(result.timeline.map((goal) => goal.eventId), ["goal-legacy-1"]);
+  const stateItem = client.readItem("GAME#game-1", "GOAL_STATE");
+  assert.ok(stateItem?.data?.S);
+  assert.equal(
+    (JSON.parse(stateItem.data.S) as { latestEventId: string | null }).latestEventId,
+    "goal-legacy-1",
+  );
+});
+
+test("repository undo-last rejects when strongly read goal-state latest is stale", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-state-1",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-state-2",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  const stateItem = client.readItem("GAME#game-1", "GOAL_STATE");
+  assert.ok(stateItem?.data?.S);
+  const statePayload = JSON.parse(stateItem.data.S) as {
+    latestEventId: string | null;
+  };
+  statePayload.latestEventId = "goal-state-1";
+  stateItem.data.S = JSON.stringify(statePayload);
+  client.seedItem(stateItem);
+
+  await assert.rejects(
+    repository.undoLastGoal({
+      gameId: "game-1",
+      actorUserId: "scorekeeper@example.com",
+      expectedEventId: "goal-state-2",
+    }),
+    /Latest goal changed/,
+  );
+  assert.deepEqual((await repository.listGoalEvents("game-1")).map((goal) => goal.eventId), [
+    "goal-state-1",
+    "goal-state-2",
   ]);
 });
 
@@ -1182,6 +1701,7 @@ test("repository rejects stale scoreboard writes without creating the goal", asy
       scorerPlayerId: "player-red",
       assistPlayerIds: [],
       ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
     }),
     /Scoreboard changed while creating this goal/,
   );
@@ -1221,6 +1741,7 @@ test("repository rethrows non-conditional transaction cancellation when creating
       scorerPlayerId: "player-red",
       assistPlayerIds: [],
       ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
     }),
     /Transaction validation failed/,
   );
@@ -1236,6 +1757,7 @@ test("repository own goals increment conceding only and require scorer on conced
   const result = await repository.createGoal({
     gameId: "game-1",
     eventId: "goal-own",
+    actorUserId: "scorekeeper@example.com",
     scoringTeamId: null,
     concedingTeamId: "blue",
     scorerPlayerId: "player-blue",
@@ -1263,6 +1785,7 @@ test("repository own goals increment conceding only and require scorer on conced
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-own-invalid",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: null,
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
@@ -1281,6 +1804,7 @@ test("repository rejects goal creation unless a third is running", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-no-timer",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
@@ -1300,6 +1824,7 @@ test("repository validates goal roster and team rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-unrostered-scorer",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-missing",
@@ -1313,6 +1838,7 @@ test("repository validates goal roster and team rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-wrong-team",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-blue",
@@ -1326,6 +1852,7 @@ test("repository validates goal roster and team rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-unrostered-assist",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-red",
@@ -1361,6 +1888,7 @@ test("repository enforces goal validation rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-invalid",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-1",
@@ -1374,6 +1902,7 @@ test("repository enforces goal validation rules", async () => {
     repository.createGoal({
       gameId: "game-1",
       eventId: "goal-own",
+      actorUserId: "scorekeeper@example.com",
       scoringTeamId: "red",
       concedingTeamId: "blue",
       scorerPlayerId: "player-1",

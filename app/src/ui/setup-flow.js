@@ -318,7 +318,7 @@
   function formatTimerDisplay(totalSeconds, thirdLengthMinutes) {
     const safeSeconds = Math.max(0, Math.floor(totalSeconds));
     const nominalSeconds = thirdLengthMinutes * 60;
-    if (safeSeconds < nominalSeconds) {
+    if (safeSeconds <= nominalSeconds) {
       const minutes = Math.floor(safeSeconds / 60);
       const seconds = safeSeconds % 60;
       return {

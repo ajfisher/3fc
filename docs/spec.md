@@ -56,6 +56,10 @@ gameId.
 - GoalEvent (timeline): PK=GAME#{gameId}
   SK=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}
 - GoalEvent id marker: PK=GAME#{gameId} SK=GOAL_EVENT#{eventId}
+- Goal correction state: PK=GAME#{gameId} SK=GOAL_STATE
+- Goal correction operation marker: PK=GAME#{gameId}
+  SK=GOAL_CORRECTION#{operationId}
+- Goal audit entry: PK=GAME#{gameId} SK=AUDIT#GOAL#{createdAt}#{auditId}
 - Roster assignment: PK=GAME#{gameId} SK=ROSTER#{teamId}#{playerId}
 - Session→Game index: PK=SESSION#{sessionId} SK=GAME#{gameStartTs}#{gameId}
 - Player: PK=PLAYER#{playerId} SK=PROFILE

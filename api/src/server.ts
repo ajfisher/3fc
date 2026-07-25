@@ -57,9 +57,11 @@ import {
   formatSchemaValidationError,
   idempotencyKeyHeaderSchema,
   quickCreateGamePlayerRequestSchema,
+  undoLastGoalRequestSchema,
+  updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { GameTimerTransitionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
+import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
 import { buildHealthResponse } from "./index.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -390,6 +392,19 @@ function goalCreationError(
   return error.statusCode;
 }
 
+function goalCorrectionError(
+  request: IncomingMessage,
+  response: ServerResponse,
+  error: GoalCorrectionError,
+): number {
+  sendJsonWithCors(request, response, error.statusCode, {
+    error: error.statusCode === 409 ? "conflict" : "bad_request",
+    code: error.code,
+    message: error.message,
+  });
+  return error.statusCode;
+}
+
 function toPublicPlayer(player: {
   playerId: string;
   nickname: string;
@@ -685,6 +700,34 @@ function buildGoalEventId(input: {
     .digest("hex")
     .slice(0, 32);
   return `goal-idem-${digest}`;
+}
+
+function buildGoalCorrectionOperation(input: {
+  request: IncomingMessage;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+}): { operationId: string; operationRequestHash: string } | null {
+  const rawIdempotencyKey = readHeaderValue(input.request, "idempotency-key");
+  const parsedIdempotencyKey = rawIdempotencyKey
+    ? idempotencyKeyHeaderSchema.safeParse(rawIdempotencyKey)
+    : null;
+
+  if (!parsedIdempotencyKey?.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const digest = createHash("sha256")
+    .update(`${scope}:${parsedIdempotencyKey.data}`)
+    .digest("hex")
+    .slice(0, 32);
+
+  return {
+    operationId: `goal-correction-idem-${digest}`,
+    operationRequestHash: buildIdempotencyRequestHash(scope, input.requestPayload),
+  };
 }
 
 function parseStoredIdempotencyResponseBody(responseBody: string): unknown {
@@ -1936,6 +1979,7 @@ async function start(): Promise<void> {
                   method,
                   route,
                 }),
+                actorUserId: sessionEmail,
                 scoringTeamId: parsedBody.data.scoringTeamId,
                 concedingTeamId: parsedBody.data.concedingTeamId,
                 scorerPlayerId: parsedBody.data.scorerPlayerId,
@@ -1962,6 +2006,254 @@ async function start(): Promise<void> {
         } catch (error) {
           if (error instanceof GoalCreationError) {
             status = goalCreationError(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
+        return;
+      }
+
+      const updateGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/);
+      if (method === "PATCH" && updateGoalMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(updateGoalMatch[1]);
+        const eventId = decodeURIComponent(updateGoalMatch[2]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = updateGoalRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        try {
+          const sessionEmail = authGate.session.email;
+          const correctionOperation = buildGoalCorrectionOperation({
+            request,
+            sessionEmail,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+          });
+          status = await executeIdempotentMutation({
+            request,
+            response,
+            sessionEmail,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            execute: async () => {
+              const result = await repository.updateGoal({
+                gameId,
+                eventId,
+                actorUserId: sessionEmail,
+                operationId: correctionOperation?.operationId,
+                operationRequestHash: correctionOperation?.operationRequestHash,
+                ...parsedBody.data,
+              });
+
+              if (!result) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Goal ${eventId} was not found for game ${gameId}.`,
+                  },
+                };
+              }
+
+              return {
+                statusCode: 200,
+                payload: result,
+              };
+            },
+          });
+        } catch (error) {
+          if (error instanceof GoalCorrectionError) {
+            status = error.code === "idempotency_conflict"
+              ? idempotencyConflict(request, response)
+              : goalCorrectionError(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
+        return;
+      }
+
+      const deleteGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/);
+      if (method === "DELETE" && deleteGoalMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(deleteGoalMatch[1]);
+        const eventId = decodeURIComponent(deleteGoalMatch[2]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        try {
+          const sessionEmail = authGate.session.email;
+          const requestPayload = { eventId };
+          const correctionOperation = buildGoalCorrectionOperation({
+            request,
+            sessionEmail,
+            method,
+            route,
+            requestPayload,
+          });
+          status = await executeIdempotentMutation({
+            request,
+            response,
+            sessionEmail,
+            method,
+            route,
+            requestPayload,
+            execute: async () => {
+              const result = await repository.deleteGoal({
+                gameId,
+                eventId,
+                actorUserId: sessionEmail,
+                operationId: correctionOperation?.operationId,
+                operationRequestHash: correctionOperation?.operationRequestHash,
+              });
+
+              if (!result) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Goal ${eventId} was not found for game ${gameId}.`,
+                  },
+                };
+              }
+
+              return {
+                statusCode: 200,
+                payload: result,
+              };
+            },
+          });
+        } catch (error) {
+          if (error instanceof GoalCorrectionError) {
+            status = error.code === "idempotency_conflict"
+              ? idempotencyConflict(request, response)
+              : goalCorrectionError(request, response, error);
+            return;
+          }
+
+          throw error;
+        }
+        return;
+      }
+
+      const undoLastGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals\/undo-last$/);
+      if (method === "POST" && undoLastGoalMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(undoLastGoalMatch[1]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = undoLastGoalRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        try {
+          const sessionEmail = authGate.session.email;
+          const correctionOperation = buildGoalCorrectionOperation({
+            request,
+            sessionEmail,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+          });
+          status = await executeIdempotentMutation({
+            request,
+            response,
+            sessionEmail,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            execute: async () => {
+              const result = await repository.undoLastGoal({
+                gameId,
+                actorUserId: sessionEmail,
+                operationId: correctionOperation?.operationId,
+                operationRequestHash: correctionOperation?.operationRequestHash,
+                expectedEventId: parsedBody.data.expectedEventId,
+              });
+
+              if (!result) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `No goal events were found for game ${gameId}.`,
+                  },
+                };
+              }
+
+              return {
+                statusCode: 200,
+                payload: result,
+              };
+            },
+          });
+        } catch (error) {
+          if (error instanceof GoalCorrectionError) {
+            status = error.code === "idempotency_conflict"
+              ? idempotencyConflict(request, response)
+              : goalCorrectionError(request, response, error);
             return;
           }
 

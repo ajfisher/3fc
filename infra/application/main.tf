@@ -573,6 +573,7 @@ data "aws_iam_policy_document" "lambda_data_access" {
       "dynamodb:PutItem",
       "dynamodb:Query",
       "dynamodb:Scan",
+      "dynamodb:TransactWriteItems",
       "dynamodb:UpdateItem",
     ]
     resources = [

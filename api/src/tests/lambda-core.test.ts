@@ -15,7 +15,7 @@ import {
   type ThirdLengthMinutes,
   type ThirdTimerSegment,
 } from "@3fc/contracts";
-import { GameTimerTransitionError, GoalCreationError } from "../data/repository.js";
+import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError } from "../data/repository.js";
 
 interface MockSessionRecord {
   sessionId: string;
@@ -244,6 +244,7 @@ function createHarness(config: HarnessConfig = {}) {
   const createdGoals: Array<{
     gameId: string;
     eventId: string;
+    actorUserId: string;
     scoringTeamId: TeamId | null;
     concedingTeamId: TeamId;
     scorerPlayerId: string;
@@ -292,6 +293,188 @@ function createHarness(config: HarnessConfig = {}) {
     Object.entries(config.gamePlayers ?? {}),
   );
   const goalEvents = new Map<string, MockGoalEventRecord>();
+  const goalAuditEntries: Array<{
+    auditId: string;
+    gameId: string;
+    eventId: string;
+    actorUserId: string;
+    action: "goal_created" | "goal_updated" | "goal_deleted" | "goal_undo_last";
+    before: MockGoalEventRecord | null;
+    after: MockGoalEventRecord | null;
+    createdAt: string;
+    updatedAt: string;
+  }> = [];
+
+  function sortedGameTeams(gameId: string): MockGameTeamRecord[] {
+    return [...gameTeams.values()]
+      .filter((team) => team.gameId === gameId)
+      .sort((left, right) => TEAM_IDS.indexOf(left.teamId) - TEAM_IDS.indexOf(right.teamId));
+  }
+
+  function sortedGoalTimeline(gameId: string): MockGoalEventRecord[] {
+    return [...goalEvents.values()]
+      .filter((entry) => entry.gameId === gameId)
+      .sort((left, right) => {
+        const thirdSort = left.third - right.third;
+        if (thirdSort !== 0) {
+          return thirdSort;
+        }
+
+        const minuteSort = left.gameMinute - right.gameMinute;
+        if (minuteSort !== 0) {
+          return minuteSort;
+        }
+
+        const elapsedSort = left.elapsedSeconds - right.elapsedSeconds;
+        if (elapsedSort !== 0) {
+          return elapsedSort;
+        }
+
+        return left.eventId.localeCompare(right.eventId);
+      });
+  }
+
+  function latestGoal(gameId: string): MockGoalEventRecord | null {
+    return sortedGoalTimeline(gameId).at(-1) ?? null;
+  }
+
+  function validateMockGoal(goal: {
+    gameId: string;
+    scoringTeamId: TeamId | null;
+    concedingTeamId: TeamId;
+    scorerPlayerId: string;
+    assistPlayerIds: string[];
+    ownGoal: boolean;
+  }): void {
+    const gameTeamIds = new Set(sortedGameTeams(goal.gameId).map((team) => team.teamId));
+    if (!gameTeamIds.has(goal.concedingTeamId)) {
+      throw new GoalCorrectionError(
+        "invalid_conceding_team",
+        400,
+        "concedingTeamId must be an active team for this game.",
+      );
+    }
+
+    if (!goal.ownGoal && (!goal.scoringTeamId || !gameTeamIds.has(goal.scoringTeamId))) {
+      throw new GoalCorrectionError(
+        "invalid_scoring_team",
+        400,
+        "scoringTeamId must be an active team for this game.",
+      );
+    }
+
+    if (goal.ownGoal && goal.scoringTeamId !== null) {
+      throw new GoalCorrectionError(
+        "own_goal_scoring_team",
+        400,
+        "ownGoal=true requires scoringTeamId to be null.",
+      );
+    }
+
+    if (!goal.ownGoal && goal.scoringTeamId === goal.concedingTeamId) {
+      throw new GoalCorrectionError(
+        "same_team_goal",
+        400,
+        "scoringTeamId and concedingTeamId must be different for a standard goal.",
+      );
+    }
+
+    const rosterByPlayerId = new Map(
+      [...rosterAssignments.values()]
+        .filter((assignment) => assignment.gameId === goal.gameId)
+        .map((assignment) => [assignment.playerId, assignment]),
+    );
+    const scorerRoster = rosterByPlayerId.get(goal.scorerPlayerId);
+    if (!scorerRoster) {
+      throw new GoalCorrectionError("scorer_not_rostered", 400, "Scorer must be rostered in this game.");
+    }
+
+    if (!goal.ownGoal && scorerRoster.teamId !== goal.scoringTeamId) {
+      throw new GoalCorrectionError(
+        "scorer_not_on_scoring_team",
+        400,
+        "Scorer must be rostered on the scoring team for a standard goal.",
+      );
+    }
+
+    if (goal.ownGoal && scorerRoster.teamId !== goal.concedingTeamId) {
+      throw new GoalCorrectionError(
+        "scorer_not_on_conceding_team",
+        400,
+        "Own-goal scorer must be rostered on the conceding team.",
+      );
+    }
+
+    for (const assistPlayerId of goal.assistPlayerIds) {
+      if (!rosterByPlayerId.has(assistPlayerId)) {
+        throw new GoalCorrectionError(
+          "assist_not_rostered",
+          400,
+          "Assist players must be rostered in this game.",
+        );
+      }
+    }
+  }
+
+  function recomputeMockGameTeams(gameId: string): MockGameTeamRecord[] {
+    const counts = new Map<TeamId, { scored: number; conceded: number }>();
+    for (const team of sortedGameTeams(gameId)) {
+      counts.set(team.teamId, { scored: 0, conceded: 0 });
+    }
+
+    for (const goal of sortedGoalTimeline(gameId)) {
+      if (!goal.ownGoal && goal.scoringTeamId) {
+        const scoringCounts = counts.get(goal.scoringTeamId);
+        if (scoringCounts) {
+          scoringCounts.scored += 1;
+        }
+      }
+
+      const concedingCounts = counts.get(goal.concedingTeamId);
+      if (concedingCounts) {
+        concedingCounts.conceded += 1;
+      }
+    }
+
+    for (const [key, team] of gameTeams.entries()) {
+      if (team.gameId !== gameId) {
+        continue;
+      }
+
+      const teamCounts = counts.get(team.teamId) ?? { scored: 0, conceded: 0 };
+      gameTeams.set(key, {
+        ...team,
+        scored: teamCounts.scored,
+        conceded: teamCounts.conceded,
+        updatedAt: "2026-02-23T00:00:04.000Z",
+      });
+    }
+
+    return sortedGameTeams(gameId);
+  }
+
+  function createMockGoalAudit(input: {
+    gameId: string;
+    eventId: string;
+    actorUserId: string;
+    action: "goal_created" | "goal_updated" | "goal_deleted" | "goal_undo_last";
+    before: MockGoalEventRecord | null;
+    after: MockGoalEventRecord | null;
+  }) {
+    const audit = {
+      auditId: `audit-${goalAuditEntries.length + 1}`,
+      gameId: input.gameId,
+      eventId: input.eventId,
+      actorUserId: input.actorUserId,
+      action: input.action,
+      before: input.before,
+      after: input.after,
+      createdAt: "2026-02-23T00:00:04.000Z",
+      updatedAt: "2026-02-23T00:00:04.000Z",
+    };
+    goalAuditEntries.push(audit);
+    return audit;
+  }
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
@@ -668,7 +851,7 @@ function createHarness(config: HarnessConfig = {}) {
           );
         }
 
-        const now = "2026-02-23T00:00:03.000Z";
+        const now = `2026-02-23T00:00:${String(3 + goalEvents.size).padStart(2, "0")}.000Z`;
         const elapsedSeconds = Math.max(
           0,
           Math.floor((Date.parse(now) - Date.parse(activeThird.startedAt)) / 1000),
@@ -698,51 +881,16 @@ function createHarness(config: HarnessConfig = {}) {
         };
 
         goalEvents.set(`${input.gameId}:${input.eventId}`, goal);
-        for (const [key, team] of gameTeams.entries()) {
-          if (team.gameId !== input.gameId) {
-            continue;
-          }
-
-          const scored = !input.ownGoal && team.teamId === input.scoringTeamId
-            ? team.scored + 1
-            : team.scored;
-          const conceded = team.teamId === input.concedingTeamId
-            ? team.conceded + 1
-            : team.conceded;
-
-          if (scored !== team.scored || conceded !== team.conceded) {
-            gameTeams.set(key, {
-              ...team,
-              scored,
-              conceded,
-              updatedAt: now,
-            });
-          }
-        }
-
-        const teams = [...gameTeams.values()]
-          .filter((team) => team.gameId === input.gameId)
-          .sort((left, right) => TEAM_IDS.indexOf(left.teamId) - TEAM_IDS.indexOf(right.teamId));
-        const timeline = [...goalEvents.values()]
-          .filter((entry) => entry.gameId === input.gameId)
-          .sort((left, right) => {
-            const thirdSort = left.third - right.third;
-            if (thirdSort !== 0) {
-              return thirdSort;
-            }
-
-            const minuteSort = left.gameMinute - right.gameMinute;
-            if (minuteSort !== 0) {
-              return minuteSort;
-            }
-
-            const elapsedSort = left.elapsedSeconds - right.elapsedSeconds;
-            if (elapsedSort !== 0) {
-              return elapsedSort;
-            }
-
-            return left.eventId.localeCompare(right.eventId);
-          });
+        const teams = recomputeMockGameTeams(input.gameId);
+        const timeline = sortedGoalTimeline(input.gameId);
+        createMockGoalAudit({
+          gameId: input.gameId,
+          eventId: input.eventId,
+          actorUserId: input.actorUserId,
+          action: "goal_created",
+          before: null,
+          after: goal,
+        });
 
         return {
           goal,
@@ -750,6 +898,107 @@ function createHarness(config: HarnessConfig = {}) {
             teams,
           },
           timeline,
+        };
+      },
+      async updateGoal(input) {
+        const existing = goalEvents.get(`${input.gameId}:${input.eventId}`);
+        if (!games.has(input.gameId) || !existing) {
+          return null;
+        }
+
+        const updated = {
+          ...existing,
+          scoringTeamId:
+            input.scoringTeamId === undefined ? existing.scoringTeamId : input.scoringTeamId,
+          concedingTeamId: input.concedingTeamId ?? existing.concedingTeamId,
+          scorerPlayerId: input.scorerPlayerId ?? existing.scorerPlayerId,
+          assistPlayerIds: input.assistPlayerIds ?? existing.assistPlayerIds,
+          ownGoal: input.ownGoal ?? existing.ownGoal,
+          updatedAt: "2026-02-23T00:00:04.000Z",
+        };
+        validateMockGoal(updated);
+        goalEvents.set(`${input.gameId}:${input.eventId}`, updated);
+        const teams = recomputeMockGameTeams(input.gameId);
+        const timeline = sortedGoalTimeline(input.gameId);
+        const audit = createMockGoalAudit({
+          gameId: input.gameId,
+          eventId: input.eventId,
+          actorUserId: input.actorUserId,
+          action: "goal_updated",
+          before: existing,
+          after: updated,
+        });
+
+        return {
+          goal: updated,
+          previousGoal: existing,
+          scoreboard: {
+            teams,
+          },
+          timeline,
+          audit,
+        };
+      },
+      async deleteGoal(input) {
+        const existing = goalEvents.get(`${input.gameId}:${input.eventId}`);
+        if (!games.has(input.gameId) || !existing) {
+          return null;
+        }
+
+        goalEvents.delete(`${input.gameId}:${input.eventId}`);
+        const teams = recomputeMockGameTeams(input.gameId);
+        const timeline = sortedGoalTimeline(input.gameId);
+        const audit = createMockGoalAudit({
+          gameId: input.gameId,
+          eventId: input.eventId,
+          actorUserId: input.actorUserId,
+          action: "goal_deleted",
+          before: existing,
+          after: null,
+        });
+
+        return {
+          deletedGoal: existing,
+          scoreboard: {
+            teams,
+          },
+          timeline,
+          audit,
+        };
+      },
+      async undoLastGoal(input) {
+        const latest = latestGoal(input.gameId);
+        if (!games.has(input.gameId) || !latest) {
+          return null;
+        }
+
+        if (latest.eventId !== input.expectedEventId) {
+          throw new GoalCorrectionError(
+            "latest_goal_changed",
+            409,
+            "Latest goal changed before undo could be applied. Reload the game and try again.",
+          );
+        }
+
+        goalEvents.delete(`${input.gameId}:${latest.eventId}`);
+        const teams = recomputeMockGameTeams(input.gameId);
+        const timeline = sortedGoalTimeline(input.gameId);
+        const audit = createMockGoalAudit({
+          gameId: input.gameId,
+          eventId: latest.eventId,
+          actorUserId: input.actorUserId,
+          action: "goal_undo_last",
+          before: latest,
+          after: null,
+        });
+
+        return {
+          deletedGoal: latest,
+          scoreboard: {
+            teams,
+          },
+          timeline,
+          audit,
         };
       },
       async getLeagueAccess(leagueId: string, userId: string) {
@@ -798,6 +1047,7 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkCompletes,
     magicLinkRateLimitChecks,
     idempotencyRecords,
+    goalAuditEntries,
   };
 }
 
@@ -1740,6 +1990,350 @@ test("core lambda creates goals with idempotency replay and conflict behavior", 
     error: "idempotency_conflict",
     message: "Idempotency key has already been used with a different payload.",
   });
+});
+
+test("core lambda updates and deletes goals with idempotency replay", async () => {
+  const harness = createGoalHarness();
+  const createResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-correction-create-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(createResponse.statusCode, 201);
+  const createdBody = JSON.parse(createResponse.body) as {
+    goal: { eventId: string };
+  };
+
+  const updateBody = {
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: ["player-blue"],
+    ownGoal: false,
+  };
+  const updateResponse = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: `/v1/games/game-1/goals/${createdBody.goal.eventId}`,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-update-1",
+      },
+      body: updateBody,
+    }),
+  );
+
+  assert.equal(updateResponse.statusCode, 200);
+  const updateResponseBody = JSON.parse(updateResponse.body) as {
+    goal: { scoringTeamId: string; concedingTeamId: string; scorerPlayerId: string };
+    scoreboard: { teams: Array<{ teamId: string; scored: number; conceded: number }> };
+    audit: { action: string; actorUserId: string };
+  };
+  assert.deepEqual(updateResponseBody.goal, {
+    ...updateResponseBody.goal,
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+  });
+  assert.deepEqual(
+    updateResponseBody.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 1 },
+      { teamId: "blue", scored: 0, conceded: 0 },
+      { teamId: "yellow", scored: 1, conceded: 0 },
+    ],
+  );
+  assert.equal(updateResponseBody.audit.action, "goal_updated");
+  assert.equal(updateResponseBody.audit.actorUserId, "scorekeeper@example.com");
+  assert.equal(harness.goalAuditEntries.length, 2);
+
+  const updateReplayResponse = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: `/v1/games/game-1/goals/${createdBody.goal.eventId}`,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-update-1",
+      },
+      body: updateBody,
+    }),
+  );
+  assert.equal(updateReplayResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(updateReplayResponse.body), updateResponseBody);
+  assert.equal(harness.goalAuditEntries.length, 2);
+
+  const deleteResponse = await harness.handler(
+    createEvent({
+      method: "DELETE",
+      path: `/v1/games/game-1/goals/${createdBody.goal.eventId}`,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-delete-1",
+      },
+    }),
+  );
+  assert.equal(deleteResponse.statusCode, 200);
+  const deleteBody = JSON.parse(deleteResponse.body) as {
+    deletedGoal: { eventId: string };
+    timeline: Array<{ eventId: string }>;
+    scoreboard: { teams: Array<{ teamId: string; scored: number; conceded: number }> };
+    audit: { action: string };
+  };
+  assert.equal(deleteBody.deletedGoal.eventId, createdBody.goal.eventId);
+  assert.deepEqual(deleteBody.timeline, []);
+  assert.deepEqual(
+    deleteBody.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 0 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+  assert.equal(deleteBody.audit.action, "goal_deleted");
+  assert.equal(harness.goalAuditEntries.length, 3);
+
+  const deleteReplayResponse = await harness.handler(
+    createEvent({
+      method: "DELETE",
+      path: `/v1/games/game-1/goals/${createdBody.goal.eventId}`,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-delete-1",
+      },
+    }),
+  );
+  assert.equal(deleteReplayResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(deleteReplayResponse.body), deleteBody);
+  assert.equal(harness.goalAuditEntries.length, 3);
+});
+
+test("core lambda rejects viewer goal corrections through ACL", async () => {
+  const harness = createGoalHarness({
+    email: "viewer@example.com",
+    role: "viewer",
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1/goals/goal-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        scorerPlayerId: "player-red",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "forbidden",
+    code: "scorekeeper_required",
+    message: "Admin or scorekeeper role is required for league league-1.",
+  });
+});
+
+test("core lambda rejects invalid goal correction payloads", async () => {
+  const harness = createGoalHarness();
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PATCH",
+      path: "/v1/games/game-1/goals/goal-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        assistPlayerIds: ["player-blue", "player-blue"],
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "Field `assistPlayerIds` must be unique.",
+  });
+});
+
+test("core lambda requires expectedEventId for undo-last", async () => {
+  const harness = createGoalHarness();
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {},
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match((JSON.parse(response.body) as { error: string }).error, /expectedEventId/);
+});
+
+test("core lambda undo-last deletes latest goal only and rejects stale expected event", async () => {
+  const harness = createGoalHarness();
+  const firstCreateResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-create-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  const secondCreateResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-create-2",
+      },
+      body: {
+        scoringTeamId: "yellow",
+        concedingTeamId: "red",
+        scorerPlayerId: "player-yellow",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(firstCreateResponse.statusCode, 201);
+  assert.equal(secondCreateResponse.statusCode, 201);
+  const firstGoalId = (JSON.parse(firstCreateResponse.body) as { goal: { eventId: string } }).goal.eventId;
+  const secondGoalId = (JSON.parse(secondCreateResponse.body) as { goal: { eventId: string } }).goal.eventId;
+
+  const staleUndoResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        expectedEventId: firstGoalId,
+      },
+    }),
+  );
+  assert.equal(staleUndoResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(staleUndoResponse.body), {
+    error: "conflict",
+    code: "latest_goal_changed",
+    message: "Latest goal changed before undo could be applied. Reload the game and try again.",
+  });
+
+  const undoResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-1",
+      },
+      body: {
+        expectedEventId: secondGoalId,
+      },
+    }),
+  );
+
+  assert.equal(undoResponse.statusCode, 200);
+  const undoBody = JSON.parse(undoResponse.body) as {
+    deletedGoal: { eventId: string };
+    timeline: Array<{ eventId: string }>;
+    audit: { action: string };
+  };
+  assert.equal(undoBody.deletedGoal.eventId, secondGoalId);
+  assert.deepEqual(undoBody.timeline.map((goal) => goal.eventId), [firstGoalId]);
+  assert.equal(undoBody.audit.action, "goal_undo_last");
+
+  const auditCountAfterUndo = harness.goalAuditEntries.length;
+  const thirdCreateResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-create-3",
+      },
+      body: {
+        scoringTeamId: "yellow",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-yellow",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+  assert.equal(thirdCreateResponse.statusCode, 201);
+  const thirdGoalId = (JSON.parse(thirdCreateResponse.body) as { goal: { eventId: string } }).goal.eventId;
+
+  const undoReplayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-1",
+      },
+      body: {
+        expectedEventId: secondGoalId,
+      },
+    }),
+  );
+  assert.equal(undoReplayResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(undoReplayResponse.body), undoBody);
+  assert.equal(harness.goalAuditEntries.length, auditCountAfterUndo + 1);
+
+  const thirdUndoResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals/undo-last",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "goal-undo-3",
+      },
+      body: {
+        expectedEventId: thirdGoalId,
+      },
+    }),
+  );
+  assert.equal(thirdUndoResponse.statusCode, 200);
+  assert.equal(
+    (JSON.parse(thirdUndoResponse.body) as { deletedGoal: { eventId: string } }).deletedGoal.eventId,
+    thirdGoalId,
+  );
 });
 
 test("core lambda rejects goal creation when no third is running", async () => {

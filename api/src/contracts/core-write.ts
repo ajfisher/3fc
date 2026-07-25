@@ -128,6 +128,62 @@ export const createGoalRequestSchema = z
     }
   });
 
+export const updateGoalRequestSchema = z
+  .object({
+    scoringTeamId: teamIdSchema.nullable().optional(),
+    concedingTeamId: teamIdSchema.optional(),
+    scorerPlayerId: nonEmptyTrimmedString.optional(),
+    assistPlayerIds: z
+      .array(nonEmptyTrimmedString)
+      .max(MAX_ASSISTS, `must contain no more than ${MAX_ASSISTS} player IDs`)
+      .optional(),
+    ownGoal: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.scoringTeamId === undefined &&
+      value.concedingTeamId === undefined &&
+      value.scorerPlayerId === undefined &&
+      value.assistPlayerIds === undefined &&
+      value.ownGoal === undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "must include at least one goal field to update",
+      });
+    }
+
+    if (value.assistPlayerIds !== undefined) {
+      const uniqueAssistPlayerIds = new Set(value.assistPlayerIds);
+
+      if (uniqueAssistPlayerIds.size !== value.assistPlayerIds.length) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["assistPlayerIds"],
+          message: "must be unique",
+        });
+      }
+
+      if (
+        value.scorerPlayerId !== undefined &&
+        uniqueAssistPlayerIds.has(value.scorerPlayerId)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["assistPlayerIds"],
+          message: "must not include the scorer",
+        });
+      }
+    }
+  });
+
+export const undoLastGoalRequestSchema = z
+  .object({
+    expectedEventId: nonEmptyTrimmedString,
+  })
+  .strict();
+
 export type CreateLeagueRequest = z.infer<typeof createLeagueRequestSchema>;
 export type CreateSeasonRequest = z.infer<typeof createSeasonRequestSchema>;
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
@@ -136,6 +192,8 @@ export type UpsertTeamRequest = z.infer<typeof upsertTeamRequestSchema>;
 export type QuickCreateGamePlayerRequest = z.infer<typeof quickCreateGamePlayerRequestSchema>;
 export type AssignRosterPlayerRequest = z.infer<typeof assignRosterPlayerRequestSchema>;
 export type CreateGoalRequest = z.infer<typeof createGoalRequestSchema>;
+export type UpdateGoalRequest = z.infer<typeof updateGoalRequestSchema>;
+export type UndoLastGoalRequest = z.infer<typeof undoLastGoalRequestSchema>;
 
 export function formatSchemaValidationError(error: z.ZodError): string {
   if (error.issues.length === 0) {
