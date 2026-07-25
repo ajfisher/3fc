@@ -126,6 +126,8 @@ interface MockGoalEvent {
   updatedAt: string;
 }
 
+type MockLeagueRole = "admin" | "scorekeeper" | "viewer";
+
 interface MockApiState {
   cookieJar: string;
   storage: Map<string, string>;
@@ -133,6 +135,7 @@ interface MockApiState {
   pendingEmail: string | null;
   session: MockSession | null;
   leagues: Map<string, MockLeague>;
+  leagueAccess: Map<string, MockLeagueRole>;
   seasons: Map<string, MockSeason>;
   sessions: Map<string, MockSessionEntity>;
   games: Map<string, MockGame>;
@@ -157,6 +160,7 @@ function createMockApiState(): MockApiState {
     pendingEmail: null,
     session: null,
     leagues: new Map<string, MockLeague>(),
+    leagueAccess: new Map<string, MockLeagueRole>(),
     seasons: new Map<string, MockSeason>(),
     sessions: new Map<string, MockSessionEntity>(),
     games: new Map<string, MockGame>(),
@@ -190,6 +194,39 @@ function isValidEmail(value: unknown): value is string {
 
 function isAuthenticated(state: MockApiState): boolean {
   return Boolean(state.session && state.cookieJar.includes(`threefc_session=${state.session.sessionId}`));
+}
+
+function leagueAccessKey(leagueId: string, userId: string): string {
+  return `${leagueId}:${userId}`;
+}
+
+function grantMockLeagueAccess(
+  state: MockApiState,
+  leagueId: string,
+  userId: string,
+  role: MockLeagueRole,
+): void {
+  state.leagueAccess.set(leagueAccessKey(leagueId, userId), role);
+}
+
+function mockLeagueRoleForSession(state: MockApiState, league: MockLeague): MockLeagueRole | null {
+  if (!state.session) {
+    return null;
+  }
+
+  return state.leagueAccess.get(leagueAccessKey(league.leagueId, state.session.email)) ?? null;
+}
+
+function canMockCorrectFinishedGame(state: MockApiState, game: MockGame): boolean {
+  const league = state.leagues.get(game.leagueId);
+  return Boolean(league && mockLeagueRoleForSession(state, league) === "admin");
+}
+
+function mockFinishedGameMutationError(game: MockGame): Response {
+  return createJsonResponse(409, {
+    error: "finished_game_locked",
+    message: `Game ${game.gameId} is finished. Admin role is required to mutate finished games.`,
+  });
 }
 
 function parseMockThirdRouteParam(value: string): 1 | 2 | 3 | null {
@@ -641,6 +678,7 @@ function createMockFetch(state: MockApiState) {
         updatedAt: now,
       };
       state.leagues.set(leagueId, league);
+      grantMockLeagueAccess(state, leagueId, state.session.email, "admin");
       return createJsonResponse(201, league);
     }
 
@@ -651,7 +689,20 @@ function createMockFetch(state: MockApiState) {
         return createJsonResponse(404, { error: "not_found", message: "League not found." });
       }
 
-      return createJsonResponse(200, league);
+      const role = mockLeagueRoleForSession(state, league);
+      if (!role) {
+        return createJsonResponse(403, {
+          error: "league_access_required",
+          message: `Access to league ${league.leagueId} is required.`,
+        });
+      }
+
+      return createJsonResponse(200, {
+        ...league,
+        access: {
+          role,
+        },
+      });
     }
 
     if (method === "DELETE" && leagueMatch) {
@@ -1125,6 +1176,10 @@ function createMockFetch(state: MockApiState) {
         return idempotencyError;
       }
 
+      if (game.status === "finished" && !canMockCorrectFinishedGame(state, game)) {
+        return mockFinishedGameMutationError(game);
+      }
+
       const latest = sortedGoalTimeline(state, gameId).at(-1);
       if (!latest) {
         return createJsonResponse(404, { error: "not_found", message: "No goals found." });
@@ -1171,6 +1226,10 @@ function createMockFetch(state: MockApiState) {
       const idempotencyError = requireIdempotencyKey(init);
       if (idempotencyError) {
         return idempotencyError;
+      }
+
+      if (game.status === "finished" && !canMockCorrectFinishedGame(state, game)) {
+        return mockFinishedGameMutationError(game);
       }
 
       if (method === "DELETE") {
@@ -1330,15 +1389,31 @@ function dispatchSubmit(form: HTMLFormElement): void {
 
 function seedGoalScoringGame(
   apiState: MockApiState,
-  input: { gameId: string; status?: MockGame["status"]; thirds?: ThirdTimerSegment[] },
+  input: {
+    gameId: string;
+    status?: MockGame["status"];
+    thirds?: ThirdTimerSegment[];
+    role?: MockLeagueRole;
+    sessionEmail?: string;
+  },
 ): void {
+  const sessionEmail = input.sessionEmail ?? "scorekeeper@3fc.football";
   apiState.session = {
     sessionId: "session-1",
-    email: "scorekeeper@3fc.football",
+    email: sessionEmail,
     createdAt: "2026-03-28T11:00:00.000Z",
     expiresAt: "2026-03-29T11:00:00.000Z",
   };
   apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("three-sided-football-club", {
+    leagueId: "three-sided-football-club",
+    name: "Three Sided Football Club",
+    slug: "three-sided-football-club",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  grantMockLeagueAccess(apiState, "three-sided-football-club", sessionEmail, input.role ?? "scorekeeper");
   apiState.seasons.set("autumn-cup", {
     leagueId: "three-sided-football-club",
     seasonId: "autumn-cup",
@@ -2872,6 +2947,20 @@ test("setup smoke completes live game through finish", async () => {
     expiresAt: "2026-03-29T11:00:00.000Z",
   };
   apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("three-sided-football-club", {
+    leagueId: "three-sided-football-club",
+    name: "Three Sided Football Club",
+    slug: "three-sided-football-club",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  grantMockLeagueAccess(
+    apiState,
+    "three-sided-football-club",
+    "scorekeeper@3fc.football",
+    "scorekeeper",
+  );
   apiState.seasons.set("autumn-cup", {
     leagueId: "three-sided-football-club",
     seasonId: "autumn-cup",
@@ -3020,9 +3109,9 @@ test("setup smoke completes live game through finish", async () => {
   assert.equal(startThirdButton.disabled, true);
   assert.equal(finishThirdButton.disabled, true);
   assert.equal(saveGoalButton.disabled, true);
-  assert.equal(undoLastGoalButton.disabled, false);
+  assert.equal(undoLastGoalButton.disabled, true);
   assert.equal(quickCreateButton.disabled, true);
-  assert.match(goalFormNote.textContent ?? "", /correct the result/);
+  assert.match(goalFormNote.textContent ?? "", /Admin role is required/);
 
   const editGoalButton = gamePage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   const deleteGoalButton = gamePage.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
@@ -3032,41 +3121,19 @@ test("setup smoke completes live game through finish", async () => {
   assert(editGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(deleteGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(lockedAssignButton instanceof gamePage.window.HTMLButtonElement);
-  assert.equal(editGoalButton.disabled, false);
-  assert.equal(deleteGoalButton.disabled, false);
+  assert.equal(editGoalButton.disabled, true);
+  assert.equal(deleteGoalButton.disabled, true);
   assert.equal(lockedAssignButton.disabled, true);
 
   dispatchClick(editGoalButton);
   await flushAsync();
-  assert.equal(saveGoalButton.disabled, false);
-  assert.match(goalFormNote.textContent ?? "", /Finished-game correction/);
-  scoringTeamInput.value = "blue";
-  scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "red";
-  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  scorerInput.value = cy.playerId;
-  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  dispatchClick(saveGoalButton);
+  assert.equal(saveGoalButton.disabled, true);
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "red");
+
+  dispatchClick(undoLastGoalButton);
   await flushAsync();
-
-  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "blue");
-  assert.equal(apiState.games.get("game-smoke-1")?.result?.winnerTeamId, "blue");
-  assert.match(resultSummary.textContent ?? "", /Blue win/);
-  assert.match(resultSummary.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*0/);
-  assert.match(resultSummary.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Scored\s*1/);
-
-  const refreshedDeleteGoalButton = gamePage.document.querySelector(
-    '[data-action="delete-goal"][data-event-id="goal-1"]',
-  );
-  assert(refreshedDeleteGoalButton instanceof gamePage.window.HTMLButtonElement);
-  assert.equal(refreshedDeleteGoalButton.disabled, false);
-  dispatchClick(refreshedDeleteGoalButton);
-  await flushAsync();
-
-  assert.equal(apiState.goalEvents.size, 0);
-  assert.equal(apiState.games.get("game-smoke-1")?.result?.winnerTeamId, null);
-  assert.match(resultSummary.textContent ?? "", /Draw/);
-  assert.equal(undoLastGoalButton.disabled, true);
+  assert.equal(apiState.goalEvents.size, 1);
+  assert.equal(apiState.games.get("game-smoke-1")?.result?.winnerTeamId, "red");
 
   const repeatFinishResponse = await createMockFetch(apiState)(
     "http://localhost:3001/v1/games/game-smoke-1/finish",
@@ -3080,8 +3147,131 @@ test("setup smoke completes live game through finish", async () => {
   const repeatFinishBody = (await repeatFinishResponse.json()) as MockGame;
   assert.equal(repeatFinishResponse.status, 200);
   assert.equal(repeatFinishBody.status, "finished");
-  assert.equal(repeatFinishBody.result?.winnerTeamId, null);
+  assert.equal(repeatFinishBody.result?.winnerTeamId, "red");
   assert.equal(repeatFinishBody.finishedAt, finishedGame?.finishedAt);
+});
+
+test("game page allows admins to correct finished goals and refresh result", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-admin-finished-correction",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-admin-finished-correction",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-2", {
+    gameId: "game-admin-finished-correction",
+    eventId: "goal-2",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 40,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+  const seededGame = apiState.games.get("game-admin-finished-correction");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:00:12.000Z");
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-admin-finished-correction" }),
+    url: "http://localhost:3000/games/game-admin-finished-correction",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const goalFormNote = page.document.getElementById("goal-form-note");
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const deleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(goalFormNote instanceof page.window.HTMLElement);
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
+  assert.equal(editGoalButton.disabled, false);
+  assert.equal(deleteGoalButton.disabled, false);
+  assert.equal(undoLastGoalButton.disabled, false);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  assert.equal(saveGoalButton.disabled, false);
+  assert.match(goalFormNote.textContent ?? "", /Finished-game correction/);
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "blue");
+  assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, "blue");
+  assert.match(resultSummary.textContent ?? "", /Blue win/);
+
+  const refreshedDeleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(refreshedDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  assert.equal(refreshedDeleteGoalButton.disabled, false);
+  dispatchClick(refreshedDeleteGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.has("goal-1"), false);
+  assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, "blue");
+  assert.match(resultSummary.textContent ?? "", /Blue win/);
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 0);
+  assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, null);
+  assert.match(resultSummary.textContent ?? "", /Draw/);
+  assert.equal(undoLastGoalButton.disabled, true);
 });
 
 test("setup flow resolves route ids from static shells", async () => {
@@ -3102,6 +3292,7 @@ test("setup flow resolves route ids from static shells", async () => {
     createdAt: "2026-03-28T11:00:01.000Z",
     updatedAt: "2026-03-28T11:00:01.000Z",
   });
+  grantMockLeagueAccess(apiState, "autumn-league", apiState.session.email, "admin");
   apiState.seasons.set("autumn-cup", {
     leagueId: "autumn-league",
     seasonId: "autumn-cup",

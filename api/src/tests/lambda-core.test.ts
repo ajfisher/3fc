@@ -1913,6 +1913,62 @@ test("core lambda creates league for authenticated users", async () => {
   assert.equal(harness.createdLeagues[0].createdByUserId, "admin@example.com");
 });
 
+test("core lambda includes caller league role on league reads", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "scorekeeper@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League 1",
+        slug: null,
+        createdByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:scorekeeper@example.com": {
+        leagueId: "league-1",
+        userId: "scorekeeper@example.com",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/leagues/league-1",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), {
+    leagueId: "league-1",
+    name: "League 1",
+    slug: null,
+    createdByUserId: "admin@example.com",
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
+    access: {
+      role: "scorekeeper",
+    },
+  });
+});
+
 test("core lambda blocks non-admin season creation", async () => {
   const harness = createHarness({
     sessions: {

@@ -2025,7 +2025,12 @@ async function start(): Promise<void> {
         }
 
         status = 200;
-        sendJsonWithCors(request, response, status, league);
+        sendJsonWithCors(request, response, status, {
+          ...league,
+          access: {
+            role: access.role,
+          },
+        });
         return;
       }
 

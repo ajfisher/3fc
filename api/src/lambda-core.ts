@@ -1799,7 +1799,12 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           status = 200;
           return createJsonResponse(
             status,
-            league,
+            {
+              ...league,
+              access: {
+                role: access.role,
+              },
+            },
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
         }

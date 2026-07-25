@@ -930,6 +930,16 @@ components:
         updatedAt:
           type: string
           format: date-time
+        access:
+          type: object
+          additionalProperties: false
+          properties:
+            role:
+              type: string
+              enum:
+                - admin
+                - scorekeeper
+                - viewer
     Season:
       type: object
       required:

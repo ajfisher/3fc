@@ -1097,6 +1097,7 @@
     let scoreboardTeams = [];
     let goalTimeline = [];
     let editingGoalId = null;
+    let currentLeagueRole = null;
     let pendingCreateGoalIdempotency = null;
     const pendingGoalMutationIdempotency = new Map();
 
@@ -1112,8 +1113,16 @@
       return editingGoalId !== null;
     }
 
+    function normalizeLeagueRole(role) {
+      return role === "admin" || role === "scorekeeper" || role === "viewer" ? role : null;
+    }
+
+    function canCorrectFinishedGoals() {
+      return currentLeagueRole === "admin";
+    }
+
     function isFinishedGoalCorrection() {
-      return isGameFinished() && isEditingGoal();
+      return isGameFinished() && isEditingGoal() && canCorrectFinishedGoals();
     }
 
     function nextStartableThird(timer) {
@@ -1609,13 +1618,14 @@
 
       const activeThird = activeThirdNumber();
       const gameFinished = isGameFinished();
+      const finishedCorrectionsAllowed = canCorrectFinishedGoals();
       saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
       cancelGoalEditButton.hidden = editingGoalId === null;
       cancelGoalEditButton.disabled = editingGoalId === null;
-      undoLastGoalButton.disabled = goalTimeline.length === 0;
+      undoLastGoalButton.disabled = goalTimeline.length === 0 || (gameFinished && !finishedCorrectionsAllowed);
       undoLastGoalButton.textContent = "Undo last";
 
-      if (gameFinished && !isEditingGoal()) {
+      if (gameFinished && (!isEditingGoal() || !finishedCorrectionsAllowed)) {
         goalScoringTeamInput.disabled = true;
         goalConcedingTeamInput.disabled = true;
         goalOwnGoalInput.disabled = true;
@@ -1626,7 +1636,9 @@
             input.disabled = true;
           }
         }
-        goalFormNote.textContent = "Game finished. Select a goal to correct the result.";
+        goalFormNote.textContent = finishedCorrectionsAllowed
+          ? "Game finished. Select a goal to correct the result."
+          : "Game finished. Admin role is required to correct the result.";
         return;
       }
 
@@ -1688,6 +1700,8 @@
       }
 
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
+      const finishedActionsDisabled = isGameFinished() && !canCorrectFinishedGoals();
+      const disabledAttribute = finishedActionsDisabled ? " disabled" : "";
       goalTimelineElement.innerHTML = [...goalTimeline]
         .reverse()
         .map((goal) => {
@@ -1709,10 +1723,10 @@
               ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
               <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
                 goal.eventId,
-              )}">Edit</button>
+              )}"${disabledAttribute}>Edit</button>
               <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
                 goal.eventId,
-              )}">Delete</button>
+              )}"${disabledAttribute}>Delete</button>
             </div>
           </li>`;
         })
@@ -1771,6 +1785,12 @@
     }
 
     function buildGoalPayload() {
+      if (isGameFinished() && !canCorrectFinishedGoals()) {
+        return {
+          error: "Game finished. Admin role is required to correct the result.",
+        };
+      }
+
       if (isGameFinished() && !isEditingGoal()) {
         return {
           error: "Game finished. Select a goal to correct the result.",
@@ -2081,6 +2101,25 @@
       }
     }
 
+    async function loadLeagueAccess() {
+      currentLeagueRole = null;
+      if (!currentLeagueId) {
+        renderLiveScoring();
+        return;
+      }
+
+      try {
+        const league = await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(currentLeagueId)}`, {
+          method: "GET",
+        });
+        currentLeagueRole = normalizeLeagueRole(league?.access?.role);
+      } catch {
+        currentLeagueRole = null;
+      }
+
+      renderLiveScoring();
+    }
+
     saveButton.addEventListener("click", async () => {
       if (isGameFinished()) {
         return;
@@ -2243,6 +2282,9 @@
         if (Array.isArray(currentGame?.result?.teams)) {
           scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
         }
+        if (isGameFinished()) {
+          await loadLeagueAccess();
+        }
         statusInput.value = currentGame.status;
         renderTimer();
         renderRosterSetup();
@@ -2398,7 +2440,7 @@
       });
 
       saveGoalButton.addEventListener("click", async () => {
-        if (isGameFinished() && !isEditingGoal()) {
+        if (isGameFinished() && (!isEditingGoal() || !canCorrectFinishedGoals())) {
           renderLiveScoring();
           return;
         }
@@ -2461,6 +2503,11 @@
       });
 
       undoLastGoalButton.addEventListener("click", async () => {
+        if (isGameFinished() && !canCorrectFinishedGoals()) {
+          renderLiveScoring();
+          return;
+        }
+
         const latest = goalTimeline.at(-1);
         if (!latest) {
           return;
@@ -2521,6 +2568,11 @@
           return;
         }
 
+        if (isGameFinished() && !canCorrectFinishedGoals()) {
+          renderLiveScoring();
+          return;
+        }
+
         if (action === "edit-goal") {
           populateGoalForm(goal);
           setStatus("Goal ready to edit.", "default");
@@ -2566,6 +2618,9 @@
     }
 
     await loadGame();
+    if (isGameFinished()) {
+      await loadLeagueAccess();
+    }
     await loadRosterSetup({ updateStatus: false });
     const goalsLoaded = await loadGameGoals();
 
@@ -2573,9 +2628,13 @@
       const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {
         method: "GET",
       });
+      const previousLeagueId = currentLeagueId;
       currentLeagueId = season.leagueId;
       if (gameLeagueLink instanceof HTMLAnchorElement) {
         gameLeagueLink.href = `/leagues/${encodeURIComponent(currentLeagueId)}`;
+      }
+      if (isGameFinished() && currentLeagueId !== previousLeagueId) {
+        await loadLeagueAccess();
       }
     } catch {
       // Keep existing game context if season lookup fails.
