@@ -2699,6 +2699,61 @@ test("core lambda repairs incomplete finished games after team setup races", asy
   );
 });
 
+test("core lambda recovers finished repair conflicts by rereading completed results", async () => {
+  const harness = createGoalHarness({
+    completedThirds: true,
+    createGameTeamOverrideFinishesIncompleteOnce: true,
+    finishGameStateChangedOnce: true,
+    gameTeams: {
+      "game-1:blue": {
+        gameId: "game-1",
+        teamId: "blue",
+        name: "Blue",
+        color: "#2364d2",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-1:yellow": {
+        gameId: "game-1",
+        teamId: "yellow",
+        name: "Yellow",
+        color: "#e0a612",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-incomplete-repair-race-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as {
+    status: string;
+    finishedAt: string | null;
+    result: GameResult | null;
+  };
+  assert.equal(body.status, "finished");
+  assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
+  assert.ok(body.result);
+  assert.equal(
+    harness.getGameCalls.filter((call) => call.gameId === "game-1" && call.consistentRead).length >= 2,
+    true,
+  );
+  const record = harness.idempotencyRecords.get(
+    "scorekeeper@example.com:POST:/v1/games/game-1/finish:finish-incomplete-repair-race-1",
+  );
+  assert.equal(record?.responseStatusCode, 200);
+});
+
 test("core lambda finishes a game with full draw result", async () => {
   const harness = createGoalHarness({ runningThird: false, completedThirds: true });
 

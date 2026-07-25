@@ -597,6 +597,116 @@ test("local server finish route repairs incomplete finished games after team set
   assert.ok(body.result);
 });
 
+test("local server finish route rereads completed repair after repair conflicts", async () => {
+  const request = createMockRequest({
+    headers: {
+      "idempotency-key": "finish-local-incomplete-repair-race-1",
+    },
+  });
+  const response = createMockResponse();
+  const incompleteFinished = gameRecord({
+    status: "finished",
+    finishedAt: null,
+    result: null,
+  });
+  const repairedFinished = gameRecord({
+    status: "finished",
+    finishedAt: "2026-02-23T00:05:00.000Z",
+    result,
+  });
+  const storedSeasonTeams = seasonTeams.slice(1);
+  const getGameCalls: Array<{ consistentRead: boolean }> = [];
+  let createGameTeamOverrideCalls = 0;
+  let finishGameCalls = 0;
+  let storedStatusCode: number | null = null;
+  const repositoryClient = {
+    async getGame(_gameId: string, options: { consistentRead?: boolean } = {}) {
+      getGameCalls.push({ consistentRead: options.consistentRead ?? false });
+      if (getGameCalls.length === 1) {
+        return gameRecord();
+      }
+      if (getGameCalls.length === 2) {
+        return incompleteFinished;
+      }
+      return repairedFinished;
+    },
+    async finishGame() {
+      finishGameCalls += 1;
+      throw new GameTimerTransitionError(
+        "game_state_changed",
+        "Game changed while finishing. Reload the game and try again.",
+      );
+    },
+    async getLeagueAccess() {
+      return scorekeeperAccess;
+    },
+    async getIdempotencyRecord() {
+      return null;
+    },
+    async createIdempotencyRecord(record: { responseStatusCode: number }) {
+      storedStatusCode = record.responseStatusCode;
+      return true;
+    },
+    async listTeamsForSeason() {
+      return storedSeasonTeams;
+    },
+    async createTeam(input: { teamId: TeamId; createOnly?: boolean }) {
+      const record = {
+        seasonId: "season-1",
+        teamId: input.teamId,
+        name: "Red",
+        color: "#d83b36",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+      storedSeasonTeams.push(record);
+      return record;
+    },
+    async listTeamsForGame() {
+      return gameTeams.slice(1);
+    },
+    async createGameTeamOverride() {
+      createGameTeamOverrideCalls += 1;
+      if (createGameTeamOverrideCalls === 1) {
+        throw new GameMutationStateError(
+          "game_finished",
+          "Game game-1 is finished. Admin role is required to mutate finished games.",
+        );
+      }
+
+      return {
+        gameId: "game-1",
+        teamId: "red" as TeamId,
+        name: "Red",
+        color: "#d83b36",
+        scored: 0,
+        conceded: 0,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      };
+    },
+  };
+
+  const status = await handleLocalFinishGameRoute({
+    request,
+    response,
+    method: "POST",
+    route: "/v1/games/game-1/finish",
+    gameId: "game-1",
+    sessionEmail: "scorekeeper@example.com",
+    repositoryClient,
+  });
+
+  assert.equal(status, 200);
+  assert.equal(response.statusCode, 200);
+  assert.equal(storedStatusCode, 200);
+  assert.equal(finishGameCalls, 1);
+  assert.equal(getGameCalls.filter((call) => call.consistentRead).length >= 2, true);
+  const body = JSON.parse(response.body) as { status: string; result: GameResult | null };
+  assert.equal(body.status, "finished");
+  assert.ok(body.result);
+});
+
 test("local server finish route maps incomplete thirds to conflict", async () => {
   const request = createMockRequest({
     headers: {

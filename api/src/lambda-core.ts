@@ -1020,8 +1020,23 @@ async function recoverFinishedGameForFinishRoute(input: {
     );
   }
 
-  await ensureGameTeamsForGame(input.repository, current, { allowFinished: true });
-  const repaired = await input.repository.finishGame({ gameId: input.gameId });
+  let repaired: RepositoryGameRecord | null = null;
+  try {
+    await ensureGameTeamsForGame(input.repository, current, { allowFinished: true });
+    repaired = await input.repository.finishGame({ gameId: input.gameId });
+  } catch (error) {
+    const isRetryableRepairConflict =
+      error instanceof GameMutationStateError ||
+      (error instanceof GameTimerTransitionError && error.code === "game_state_changed");
+    if (!isRetryableRepairConflict) {
+      throw error;
+    }
+
+    repaired = await input.repository.getGame(input.gameId, {
+      consistentRead: true,
+    });
+  }
+
   if (!isCompleteFinishedGame(repaired)) {
     return null;
   }
