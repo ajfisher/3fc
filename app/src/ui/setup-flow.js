@@ -1036,6 +1036,7 @@
 
     const gameIdValue = document.getElementById("game-id-value");
     const gameJoinCodeValue = document.getElementById("game-join-code-value");
+    const gameJoinLink = document.getElementById("game-join-link");
     const gameLeagueId = document.getElementById("game-league-id");
     const gameSeasonId = document.getElementById("game-season-id");
 
@@ -2081,8 +2082,19 @@
         gameIdValue.textContent = game.gameId;
       }
       if (gameJoinCodeValue) {
-        gameJoinCodeValue.textContent =
-          typeof game.joinCode === "string" && game.joinCode.length > 0 ? game.joinCode : "Unavailable";
+        gameJoinCodeValue.textContent = typeof game.joinCode === "string" && game.joinCode.length > 0
+          ? game.joinCode
+          : "Unavailable";
+      }
+      if (gameJoinLink instanceof HTMLAnchorElement) {
+        if (typeof game.joinCode === "string" && game.joinCode.length > 0) {
+          const joinPath = `/join/${encodeURIComponent(game.joinCode)}`;
+          gameJoinLink.href = joinPath;
+          gameJoinLink.textContent = joinPath;
+        } else {
+          gameJoinLink.href = "/join";
+          gameJoinLink.textContent = "Unavailable";
+        }
       }
       if (gameLeagueId) {
         gameLeagueId.textContent = game.leagueId;
@@ -2661,8 +2673,105 @@
     }
   }
 
+  async function initJoinPage() {
+    const routeJoinCode = resolveRouteEntityId("data-join-code", "join") ?? "";
+    const joinCode = routeJoinCode.trim().toUpperCase();
+    const joinCodeValue = document.getElementById("join-code-value");
+    const form = document.getElementById("join-game-form");
+    const nicknameInput = document.getElementById("join-player-nickname");
+    const joinButton = root.querySelector('[data-action="join-game"]');
+    const resultElement = document.getElementById("join-result");
+    const resultPlayer = document.getElementById("join-result-player");
+    const resultGame = document.getElementById("join-result-game");
+
+    if (joinCodeValue) {
+      joinCodeValue.textContent = joinCode || "Missing";
+    }
+
+    if (!joinCode) {
+      setStatus("Join code missing.", "error");
+      showError("Open a join link from a game page.");
+      return;
+    }
+
+    if (!(form instanceof HTMLFormElement) || !(nicknameInput instanceof HTMLInputElement)) {
+      setStatus("Join form unavailable.", "error");
+      return;
+    }
+
+    nicknameInput.addEventListener("input", () => {
+      clearError();
+      setFieldMessage("join-player-nickname");
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+
+      const nickname = nicknameInput.value.trim();
+      if (!nickname) {
+        setFieldMessage("join-player-nickname", "invalid", "Nickname is required.");
+        setStatus("Nickname required.", "error");
+        return;
+      }
+
+      if (joinButton instanceof HTMLButtonElement) {
+        joinButton.disabled = true;
+      }
+      nicknameInput.disabled = true;
+      setStatus("Joining game...", "default");
+
+      try {
+        const playerId = createIdempotencyKey("join-player", `${joinCode}-${nickname}`);
+        const result = await requestJsonOrThrow(`/v1/join/${encodeURIComponent(joinCode)}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            playerId,
+            nickname,
+          }),
+        });
+
+        setFieldMessage("join-player-nickname", "valid", "Joined.");
+        setStatus("Joined game.", "success");
+        if (resultPlayer) {
+          resultPlayer.textContent = result?.player?.nickname ?? nickname;
+        }
+        if (resultGame) {
+          resultGame.textContent = result?.gameId ?? "";
+        }
+        if (resultElement) {
+          resultElement.hidden = false;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not join game.";
+        showError(message);
+        setStatus("Join failed.", "error");
+        nicknameInput.disabled = false;
+        if (joinButton instanceof HTMLButtonElement) {
+          joinButton.disabled = false;
+        }
+      }
+    });
+
+    setStatus("Join page ready.", "success");
+  }
+
   async function initialize() {
     clearError();
+
+    if (page === "join") {
+      try {
+        await initJoinPage();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unexpected join page error.";
+        showError(message);
+        setStatus("Page load failed.", "error");
+      }
+      return;
+    }
 
     try {
       await ensureAuthenticatedSession();

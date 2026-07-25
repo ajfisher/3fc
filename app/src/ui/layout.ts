@@ -643,6 +643,64 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
 </html>`;
 }
 
+export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
+  const safeJoinCode = escapeHtml(joinCode);
+  const joinHeading = safeJoinCode.length > 0 ? safeJoinCode : "Join game";
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3FC Join</title>
+    ${renderStylesheetLink()}
+  </head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell" data-testid="join-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
+      <section data-ui="hero">
+        <span data-ui="hero-kicker">3FC Join</span>
+        <h1>Join game</h1>
+        <p data-ui="hero-copy">Code <code>${joinHeading}</code></p>
+      </section>
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="join" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-join-code="${safeJoinCode}">
+        <p data-ui="status-note" id="setup-status">Ready.</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="join-grid">
+          ${renderPanel(
+            "Player registration",
+            "Enter the name that should appear on the scorekeeper roster.",
+            `<dl data-ui="id-preview" data-testid="join-context-details">
+              <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${joinHeading}</dd></div>
+            </dl>
+            <form data-ui="auth-form" id="join-game-form" novalidate>
+              ${renderValidatedField({
+                id: "join-player-nickname",
+                label: "Nickname",
+                placeholder: "Ari",
+                required: true,
+                hint: "Use the name the scorekeeper expects.",
+              })}
+              <div data-ui="button-row">${renderButton("Join game", "primary", {
+                type: "submit",
+                "data-action": "join-game",
+                "data-testid": "join-game",
+              })}</div>
+            </form>
+            <dl data-ui="id-preview" data-testid="join-result" id="join-result" hidden>
+              <div><dt>Player</dt><dd id="join-result-player"></dd></div>
+              <div><dt>Game</dt><dd id="join-result-game"></dd></div>
+            </dl>`,
+            "",
+            "panel-join-player",
+          )}
+        </section>
+      </section>
+    </main>
+    ${renderSetupScriptTag()}
+  </body>
+</html>`;
+}
+
 export interface GameContextPageInput {
   gameId: string;
   leagueId?: string;
@@ -679,6 +737,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             `<dl data-ui="id-preview" data-testid="game-context-details">
               <div><dt>Game ID</dt><dd id="game-id-value">${gameHeading}</dd></div>
               <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
+              <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
               <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
               <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
             </dl>

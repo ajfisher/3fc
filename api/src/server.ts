@@ -2621,9 +2621,19 @@ async function start(): Promise<void> {
         }
 
         const games = await repository.listGamesForSeason(seasonId);
+        const gamesWithUsableJoinCodes = await Promise.all(
+          games.map(async (game) => {
+            return (
+              (await repository.getGame(game.gameId, {
+                consistentRead: true,
+                repairLegacyJoinCode: true,
+              })) ?? game
+            );
+          }),
+        );
         status = 200;
         sendJsonWithCors(request, response, status, {
-          games: games.map((game) => buildGameResponse(game)),
+          games: gamesWithUsableJoinCodes.map((game) => buildGameResponse(game)),
         });
         return;
       }

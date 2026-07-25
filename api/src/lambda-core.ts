@@ -2264,11 +2264,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           }
 
           const games = await dependencies.repository.listGamesForSeason(seasonId);
+          const gamesWithUsableJoinCodes = await Promise.all(
+            games.map(async (game) => {
+              return (
+                (await dependencies.repository.getGame(game.gameId, {
+                  consistentRead: true,
+                  repairLegacyJoinCode: true,
+                })) ?? game
+              );
+            }),
+          );
           status = 200;
           return createJsonResponse(
             status,
             {
-              games: games.map((game) => buildGameResponse(game)),
+              games: gamesWithUsableJoinCodes.map((game) => buildGameResponse(game)),
             },
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );

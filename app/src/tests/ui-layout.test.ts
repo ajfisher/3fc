@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   renderComponentShowcasePage,
   renderGamePage,
+  renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -194,6 +195,7 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-page="game"/);
   assert.match(html, /game-20260223-a1b2c3d4/);
   assert.match(html, /data-testid="game-join-code-value"/);
+  assert.match(html, /data-testid="game-join-link"/);
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);
@@ -221,4 +223,17 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="panel-game-roster"/);
   assert.match(html, /data-testid="quick-create-player"/);
   assert.match(html, /data-testid="roster-teams"/);
+});
+
+test("join page renders player registration shell", () => {
+  const html = renderJoinPage("https://qa-api.3fc.football", "join0001");
+
+  assert.match(html, /data-testid="join-shell"/);
+  assert.match(html, /data-page="join"/);
+  assert.match(html, /data-join-code="join0001"/);
+  assert.match(html, /data-testid="join-code-value"/);
+  assert.match(html, /JOIN GAME|Join game/);
+  assert.match(html, /id="join-player-nickname"/);
+  assert.match(html, /data-testid="join-game"/);
+  assert.match(html, /data-testid="join-result"/);
 });

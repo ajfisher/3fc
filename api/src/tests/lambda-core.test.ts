@@ -2130,6 +2130,80 @@ test("core lambda repairs legacy join codes only after game access is authorized
   ]);
 });
 
+test("core lambda repairs legacy join codes in authorized season game listings", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-legacy": {
+        gameId: "game-legacy",
+        joinCode: buildJoinCodeForGameId("game-legacy"),
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    legacyJoinCodeRepairs: {
+      "game-legacy": "RNDM2345",
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/seasons/season-1/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as { games: Array<{ gameId: string; joinCode: string }> };
+  assert.deepEqual(body.games.map((game) => ({ gameId: game.gameId, joinCode: game.joinCode })), [
+    { gameId: "game-legacy", joinCode: "RNDM2345" },
+  ]);
+  assert.deepEqual(harness.getGameCalls, [
+    {
+      gameId: "game-legacy",
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+    },
+  ]);
+});
+
 test("core lambda lets players join an active game by join code and appear in the player pool", async () => {
   const harness = createHarness({
     sessions: {

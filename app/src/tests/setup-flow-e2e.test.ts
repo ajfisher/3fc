@@ -16,6 +16,7 @@ import {
 
 import {
   renderGamePage,
+  renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -649,6 +650,55 @@ function createMockFetch(state: MockApiState) {
       return createJsonResponse(200, {
         authenticated: true,
         session: state.session,
+      });
+    }
+
+    const joinMatch = path.match(/^\/v1\/join\/([^/]+)$/);
+    if (method === "POST" && joinMatch) {
+      const joinCode = decodeURIComponent(joinMatch[1]).trim().toUpperCase();
+      const nickname = String(body.nickname ?? "").trim();
+      const playerId = String(body.playerId ?? "").trim();
+      const game = [...state.games.values()].find((candidate) => candidate.joinCode === joinCode);
+      if (!game) {
+        return createJsonResponse(404, {
+          error: "not_found",
+          message: "Join code was not found.",
+        });
+      }
+      if (game.status === "finished") {
+        return createJsonResponse(409, {
+          error: "conflict",
+          message: "Finished games cannot accept new joins.",
+        });
+      }
+      if (!nickname || !playerId) {
+        return createJsonResponse(400, {
+          error: "bad_request",
+          message: "playerId and nickname are required.",
+        });
+      }
+
+      const now = "2026-03-28T11:00:12.000Z";
+      const player: MockPlayer = {
+        playerId,
+        nickname,
+        claimedByUserId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const link: MockGamePlayer = {
+        gameId: game.gameId,
+        playerId,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.players.set(playerId, player);
+      state.gamePlayers.set(`${game.gameId}:${playerId}`, link);
+      return createJsonResponse(201, {
+        gameId: game.gameId,
+        joinCode: game.joinCode,
+        player,
+        link,
       });
     }
 
@@ -3040,6 +3090,7 @@ test("setup smoke completes live game through finish", async () => {
   const deleteGameButton = gamePage.document.querySelector('[data-action="delete-game"]');
   const statusInput = gamePage.document.getElementById("game-edit-status");
   const joinCodeValue = gamePage.document.getElementById("game-join-code-value");
+  const joinLink = gamePage.document.getElementById("game-join-link");
   const scoreboard = gamePage.document.getElementById("live-scoreboard");
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
   const resultSummary = gamePage.document.getElementById("game-result-summary");
@@ -3057,11 +3108,14 @@ test("setup smoke completes live game through finish", async () => {
   assert(deleteGameButton instanceof gamePage.window.HTMLButtonElement);
   assert(statusInput instanceof gamePage.window.HTMLSelectElement);
   assert(joinCodeValue instanceof gamePage.window.HTMLElement);
+  assert(joinLink instanceof gamePage.window.HTMLAnchorElement);
   assert(scoreboard instanceof gamePage.window.HTMLElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
   assert(resultSummary instanceof gamePage.window.HTMLElement);
   assert.equal(finishGameButton.disabled, true);
   assert.equal(joinCodeValue.textContent, "SMOKE123");
+  assert.equal(joinLink.getAttribute("href"), "/join/SMOKE123");
+  assert.equal(joinLink.textContent, "/join/SMOKE123");
   assert.equal(resultSummary.hidden, true);
 
   nicknameInput.value = "Ari";
@@ -3518,4 +3572,51 @@ test("setup flow resolves route ids from static shells", async () => {
   });
   assert.equal(gamePage.document.getElementById("game-title")?.textContent, "game-20260328-abc123");
   assert.equal(gamePage.document.getElementById("game-id-value")?.textContent, "game-20260328-abc123");
+});
+
+test("join page registers a player without organizer authentication", async () => {
+  const apiState = createMockApiState();
+  apiState.games.set("game-join-1", {
+    gameId: "game-join-1",
+    joinCode: "JOIN0001",
+    leagueId: "autumn-league",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const joinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "join0001"),
+    url: "http://localhost:3000/join/join0001",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  assert.equal(joinPage.navigations.length, 0);
+  assert.equal(joinPage.document.getElementById("join-code-value")?.textContent, "JOIN0001");
+
+  const nicknameInput = joinPage.document.getElementById("join-player-nickname");
+  const form = joinPage.document.getElementById("join-game-form");
+  assert(nicknameInput instanceof joinPage.window.HTMLInputElement);
+  assert(form instanceof joinPage.window.HTMLFormElement);
+
+  nicknameInput.value = "Cy";
+  nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
+  dispatchSubmit(form);
+  await flushAsync();
+
+  const player = [...apiState.players.values()][0];
+  assert(player);
+  assert.equal(player.nickname, "Cy");
+  assert.equal(apiState.gamePlayers.has(`game-join-1:${player.playerId}`), true);
+  assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
+  assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Cy");
+  assert.equal(joinPage.document.getElementById("join-result-game")?.textContent, "game-join-1");
 });

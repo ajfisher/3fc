@@ -23,6 +23,7 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(existsSync(resolve(outputDir, "leagues/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "seasons/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "games/index.html")), true);
+    assert.equal(existsSync(resolve(outputDir, "join/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/styles.css")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/setup-flow.js")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/auth-flow.js")), true);
@@ -36,6 +37,10 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     const leagueHtml = readFileSync(resolve(outputDir, "leagues/index.html"), "utf8");
     assert.match(leagueHtml, /data-page="league"/);
     assert.match(leagueHtml, /data-league-id=""/);
+
+    const joinHtml = readFileSync(resolve(outputDir, "join/index.html"), "utf8");
+    assert.match(joinHtml, /data-page="join"/);
+    assert.match(joinHtml, /data-join-code=""/);
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }

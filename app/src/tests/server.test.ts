@@ -127,7 +127,7 @@ test("setup and auth flow script routes serve external javascript", () => {
   assert.match(authFlowResponse.body, /auth\/callback/);
 });
 
-test("league, season, and game routes render their shells", () => {
+test("league, season, game, and join routes render their shells", () => {
   const leagueResponse = executeRoute("GET", "/leagues/league-1");
   assert.equal(leagueResponse.statusCode, 200);
   assert.match(leagueResponse.body, /data-testid="league-shell"/);
@@ -149,6 +149,14 @@ test("league, season, and game routes render their shells", () => {
   assert.match(response.body, /data-testid="game-shell"/);
   assert.match(response.body, /data-page="game"/);
   assert.match(response.body, /game-123/);
+
+  const joinResponse = executeRoute("GET", "/join/join0001");
+  assert.equal(joinResponse.statusCode, 200);
+  assertSecurityHeaders(joinResponse.headers);
+  assert.equal(joinResponse.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.match(joinResponse.body, /data-testid="join-shell"/);
+  assert.match(joinResponse.body, /data-page="join"/);
+  assert.match(joinResponse.body, /data-join-code="join0001"/);
 });
 
 test("auth callback error and success responses include security headers", () => {
