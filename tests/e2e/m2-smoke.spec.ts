@@ -14,6 +14,7 @@ const fakeSesBaseUrl = process.env.THREEFC_FAKE_SES_BASE_URL ?? "http://localhos
 const dynamodbEndpoint = process.env.THREEFC_DYNAMODB_ENDPOINT ?? "http://localhost:8000";
 const dynamodbTableName = process.env.THREEFC_DYNAMODB_TABLE ?? "threefc_local";
 const fetchTimeoutMs = 5_000;
+const localBrowserClientIps = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
 
 interface FakeSesMessage {
   to?: string;
@@ -25,7 +26,7 @@ type DynamoItem = Record<string, AttributeValue>;
 interface SmokeRunCleanupInput {
   runId: string;
   email: string;
-  clientIp: string;
+  clientIps: string[];
   leagueSlug: string;
   seasonSlug: string;
   gameId: string;
@@ -158,11 +159,11 @@ async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promi
 
 async function scanAuthRateLimitItems(
   client: DynamoDBClient,
-  input: { email: string; clientIp: string },
+  input: { email: string; clientIps: string[] },
 ): Promise<DynamoItem[]> {
   const prefixes = [
     authRateLimitPkPrefix("email", input.email),
-    authRateLimitPkPrefix("ip", input.clientIp),
+    ...input.clientIps.map((clientIp) => authRateLimitPkPrefix("ip", clientIp)),
   ];
   const items: DynamoItem[] = [];
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
@@ -406,7 +407,6 @@ test.describe("M2 local-stack smoke", () => {
   test("scorekeeper can set up and finish a live game", async ({ page }) => {
     const runId = uniqueRunId();
     const email = `m2-smoke-${runId}@example.com`;
-    const clientIp = `m2-smoke-${runId}`;
     const leagueSlug = `m2-smoke-league-${runId}`;
     const seasonSlug = `m2-smoke-season-${runId}`;
     const leagueName = `M2 Smoke League ${runId}`;
@@ -427,7 +427,6 @@ test.describe("M2 local-stack smoke", () => {
 
     let testFailed = false;
     try {
-      await page.setExtraHTTPHeaders({ "x-forwarded-for": clientIp });
       await page.goto("/sign-in?returnTo=%2Fsetup");
       await expect(page.getByTestId("signin-shell")).toBeVisible();
       await page.locator("#auth-email").fill(email);
@@ -521,7 +520,7 @@ test.describe("M2 local-stack smoke", () => {
         await cleanupSmokeRun({
           runId,
           email,
-          clientIp,
+          clientIps: localBrowserClientIps,
           leagueSlug,
           seasonSlug,
           gameId,
