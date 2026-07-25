@@ -76,6 +76,7 @@ interface MockSessionEntity {
 interface MockGameRecord {
   gameId: string;
   joinCode: string;
+  createRequestHash?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -181,6 +182,7 @@ interface CreatedSessionInput {
 interface CreatedGameInput {
   gameId: string;
   joinCode?: string | null;
+  createRequestHash?: string | null;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -367,6 +369,7 @@ function createHarness(config: HarnessConfig = {}) {
       {
         ...game,
         joinCode: game.joinCode ?? buildJoinCodeForGameId(game.gameId),
+        ...(game.createRequestHash ? { createRequestHash: game.createRequestHash } : {}),
         thirdLengthMinutes: game.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
         thirds: game.thirds ?? createDefaultThirdTimerSegments(),
         finishedAt: game.finishedAt ?? null,
@@ -873,6 +876,7 @@ function createHarness(config: HarnessConfig = {}) {
         const record = {
           gameId: input.gameId,
           joinCode,
+          ...(input.createRequestHash ? { createRequestHash: input.createRequestHash } : {}),
           leagueId: input.leagueId,
           seasonId: input.seasonId,
           sessionId: input.sessionId,
@@ -2627,6 +2631,7 @@ test("core lambda recovers idempotent create game retry after the game write com
   const failedResponse = await harness.handler(event);
   assert.equal(failedResponse.statusCode, 500);
   assert.equal(harness.createdGames.length, 1);
+  assert.ok(harness.createdGames[0]?.createRequestHash);
   assert.equal(harness.createdSessionGames.length, 0);
   const existingGame = harness.games.get("game-1");
   assert.ok(existingGame);
@@ -2637,6 +2642,28 @@ test("core lambda recovers idempotent create game retry after the game write com
     thirdLengthMinutes: 25,
     updatedAt: "2026-02-23T00:01:00.000Z",
   });
+
+  const unrelatedRetryResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "create-game-recover-1",
+      },
+      body: {
+        gameId: "game-1",
+        gameStartTs: "2026-02-23T12:00:00Z",
+      },
+    }),
+  );
+  assert.equal(unrelatedRetryResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(unrelatedRetryResponse.body), {
+    error: "conflict",
+    code: "game_exists",
+    message: "Game game-1 already exists.",
+  });
+  assert.equal(harness.createdSessionGames.length, 0);
 
   const retryResponse = await harness.handler(event);
   assert.equal(retryResponse.statusCode, 201);
@@ -2656,6 +2683,7 @@ test("core lambda recovers idempotent create game retry after the game write com
   assert.equal(retryBody.status, "live");
   assert.equal(retryBody.gameStartTs, "2026-02-23T11:00:00Z");
   assert.equal(retryBody.thirdLengthMinutes, 25);
+  assert.equal("createRequestHash" in retryBody, false);
 
   const replayResponse = await harness.handler(event);
   assert.equal(replayResponse.statusCode, 201);

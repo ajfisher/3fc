@@ -130,6 +130,7 @@ interface MagicLinkServiceContract extends SessionLookup {
 interface RepositoryGameRecord {
   gameId: string;
   joinCode: string;
+  createRequestHash?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -268,6 +269,7 @@ interface RepositoryContract {
   createGame(input: {
     gameId: string;
     joinCode?: string | null;
+    createRequestHash?: string | null;
     leagueId: string;
     seasonId: string;
     sessionId: string;
@@ -770,8 +772,9 @@ function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
 }
 
 function buildGameResponse(game: RepositoryGameRecord) {
+  const { createRequestHash: _createRequestHash, ...publicGame } = game;
   return {
-    ...game,
+    ...publicGame,
     timer: buildGameTimerState({
       thirdLengthMinutes: game.thirdLengthMinutes,
       thirds: game.thirds,
@@ -784,12 +787,14 @@ function existingGameMatchesCreateRequest(input: {
   leagueId: string;
   seasonId: string;
   sessionId: string;
+  createRequestHash: string;
   request: {
     gameId: string;
   };
 }): boolean {
   return (
     input.game.gameId === input.request.gameId &&
+    input.game.createRequestHash === input.createRequestHash &&
     input.game.leagueId === input.leagueId &&
     input.game.seasonId === input.seasonId &&
     input.game.sessionId === input.sessionId
@@ -2419,6 +2424,12 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           }
 
           let mutationResponse: ApiGatewayHttpResponse;
+          const createRequestHash = idempotencyKey
+            ? buildIdempotencyRequestHash(
+                buildIdempotencyScope(session.email, method, route),
+                parsedBody.data,
+              )
+            : null;
           try {
             mutationResponse = await executeIdempotentMutation({
               repository: dependencies.repository,
@@ -2434,6 +2445,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 try {
                   createdGame = await dependencies.repository.createGame({
                     gameId: parsedBody.data.gameId,
+                    createRequestHash,
                     leagueId,
                     seasonId,
                     sessionId,
@@ -2459,7 +2471,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   if (replayResponse) {
                     return replayResponse;
                   }
-                  if (!idempotencyKey) {
+                  if (!idempotencyKey || !createRequestHash) {
                     throw error;
                   }
 
@@ -2471,6 +2483,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                       leagueId,
                       seasonId,
                       sessionId,
+                      createRequestHash,
                       request: parsedBody.data,
                     })
                   ) {

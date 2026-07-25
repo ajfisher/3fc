@@ -394,6 +394,7 @@ function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
 function buildGameResponse(game: {
   gameId: string;
   joinCode: string;
+  createRequestHash?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -410,8 +411,9 @@ function buildGameResponse(game: {
   createdAt: string;
   updatedAt: string;
 }) {
+  const { createRequestHash: _createRequestHash, ...publicGame } = game;
   return {
-    ...game,
+    ...publicGame,
     timer: buildGameTimerState({
       thirdLengthMinutes: game.thirdLengthMinutes,
       thirds: game.thirds,
@@ -425,16 +427,19 @@ function existingGameMatchesCreateRequest(input: {
     leagueId: string;
     seasonId: string;
     sessionId: string;
+    createRequestHash?: string;
   };
   leagueId: string;
   seasonId: string;
   sessionId: string;
+  createRequestHash: string;
   request: {
     gameId: string;
   };
 }): boolean {
   return (
     input.game.gameId === input.request.gameId &&
+    input.game.createRequestHash === input.createRequestHash &&
     input.game.leagueId === input.leagueId &&
     input.game.seasonId === input.seasonId &&
     input.game.sessionId === input.sessionId
@@ -1717,11 +1722,13 @@ async function createGameWithDerivedRecords(input: {
     status?: "scheduled" | "live" | "finished";
     thirdLengthMinutes?: ThirdLengthMinutes;
   };
+  createRequestHash: string | null;
 }) {
   let game;
   try {
     game = await input.repositoryClient.createGame({
       gameId: input.request.gameId,
+      createRequestHash: input.createRequestHash,
       leagueId: input.scope.leagueId,
       seasonId: input.scope.seasonId,
       sessionId: input.scope.sessionId,
@@ -1736,6 +1743,9 @@ async function createGameWithDerivedRecords(input: {
     if (!input.allowExistingGameRecovery) {
       throw error;
     }
+    if (!input.createRequestHash) {
+      throw error;
+    }
 
     const existingGame = await input.repositoryClient.getGame(input.request.gameId);
     if (
@@ -1745,6 +1755,7 @@ async function createGameWithDerivedRecords(input: {
         leagueId: input.scope.leagueId,
         seasonId: input.scope.seasonId,
         sessionId: input.scope.sessionId,
+        createRequestHash: input.createRequestHash,
         request: input.request,
       })
     ) {
@@ -1799,6 +1810,12 @@ export async function handleLocalCreateGameRoute(input: {
   }
 
   try {
+    const createRequestHash = hasValidIdempotencyKey(input.request)
+      ? buildIdempotencyRequestHash(
+          buildIdempotencyScope(input.sessionEmail, input.method, input.route),
+          parsedBody.data,
+        )
+      : null;
     return await executeIdempotentMutation({
       request: input.request,
       response: input.response,
@@ -1811,8 +1828,9 @@ export async function handleLocalCreateGameRoute(input: {
         const game = await createGameWithDerivedRecords({
           repositoryClient,
           scope: input.scope,
-          allowExistingGameRecovery: hasValidIdempotencyKey(input.request),
+          allowExistingGameRecovery: createRequestHash !== null,
           request: parsedBody.data,
+          createRequestHash,
         });
 
         return {

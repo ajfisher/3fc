@@ -60,6 +60,7 @@ export interface SessionRecord {
 export interface GameRecord {
   gameId: string;
   joinCode: string;
+  createRequestHash?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -245,6 +246,7 @@ export interface CreateSessionInput {
 export interface CreateGameInput {
   gameId: string;
   joinCode?: string | null;
+  createRequestHash?: string | null;
   leagueId: string;
   seasonId: string;
   sessionId: string;

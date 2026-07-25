@@ -406,8 +406,12 @@ function normalizeGameResultPayload(value: unknown): GameResult | null {
 
 function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "updatedAt"> {
   const raw = data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+  const createRequestHash =
+    typeof raw.createRequestHash === "string" && raw.createRequestHash.trim().length > 0
+      ? raw.createRequestHash.trim()
+      : null;
 
-  return {
+  const game = {
     gameId: raw.gameId ?? "",
     joinCode:
       typeof raw.joinCode === "string" && raw.joinCode.trim().length > 0
@@ -423,6 +427,8 @@ function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "up
     finishedAt: isValidTimestamp(raw.finishedAt) ? raw.finishedAt : null,
     result: normalizeGameResultPayload(raw.result),
   };
+
+  return createRequestHash ? { ...game, createRequestHash } : game;
 }
 
 function normalizeNonNegativeInteger(value: unknown): number {
@@ -1334,9 +1340,11 @@ export class ThreeFcRepository {
 
     for (let attempt = 0; attempt < (customJoinCode ? 1 : JOIN_CODE_GENERATION_ATTEMPTS); attempt += 1) {
       const joinCode = customJoinCode ?? generateJoinCode();
+      const createRequestHash = input.createRequestHash?.trim() || null;
       const payload = {
         gameId: input.gameId,
         joinCode,
+        ...(createRequestHash ? { createRequestHash } : {}),
         leagueId: input.leagueId,
         seasonId: input.seasonId,
         sessionId: input.sessionId,

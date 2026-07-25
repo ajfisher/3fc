@@ -167,15 +167,17 @@ test("local server create game route recovers retry after the game write commits
   }> = [];
   const createdGameTeams: GameTeamRecord[] = [];
   let createSessionGameFailures = 1;
-  const buildRequest = () =>
+  const buildRequest = (
+    body: { gameId: string; gameStartTs: string; thirdLengthMinutes?: ThirdLengthMinutes } = {
+      gameId: "game-local",
+      gameStartTs: "2026-02-23T10:00:00.000Z",
+    },
+  ) =>
     createMockRequest({
       headers: {
         "idempotency-key": "local-create-game-recover-1",
       },
-      body: {
-        gameId: "game-local",
-        gameStartTs: "2026-02-23T10:00:00.000Z",
-      },
+      body,
     });
   const repositoryClient = {
     async getIdempotencyRecord(scope: string, key: string) {
@@ -202,6 +204,7 @@ test("local server create game route recovers retry after the game write commits
     },
     async createGame(input: {
       gameId: string;
+      createRequestHash?: string | null;
       leagueId: string;
       seasonId: string;
       sessionId: string;
@@ -220,6 +223,7 @@ test("local server create game route recovers retry after the game write commits
         }),
         gameId: input.gameId,
         joinCode: "LOCAL234",
+        ...(input.createRequestHash ? { createRequestHash: input.createRequestHash } : {}),
         leagueId: input.leagueId,
         seasonId: input.seasonId,
         sessionId: input.sessionId,
@@ -305,6 +309,27 @@ test("local server create game route recovers retry after the game write commits
     updatedAt: "2026-02-23T00:01:00.000Z",
   });
 
+  const unrelatedRetryResponse = createMockResponse();
+  const unrelatedRetryStatus = await handleLocalCreateGameRoute({
+    request: buildRequest({
+      gameId: "game-local",
+      gameStartTs: "2026-02-23T12:00:00.000Z",
+    }),
+    response: unrelatedRetryResponse,
+    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+    sessionEmail: "admin@example.com",
+    method: "POST",
+    route: "/v1/sessions/session-1/games",
+    repositoryClient,
+  });
+  assert.equal(unrelatedRetryStatus, 409);
+  assert.deepEqual(JSON.parse(unrelatedRetryResponse.body), {
+    error: "conflict",
+    code: "game_exists",
+    message: "Game game-local already exists.",
+  });
+  assert.equal(createdSessionGames.length, 0);
+
   const retryResponse = createMockResponse();
   const retryStatus = await handleLocalCreateGameRoute({
     request: buildRequest(),
@@ -350,6 +375,7 @@ test("local server create game route recovers retry after the game write commits
   assert.equal(replayStatus, 201);
   assert.equal(createdSessionGames.length, 1);
   assert.equal(JSON.parse(replayResponse.body).gameId, "game-local");
+  assert.equal("createRequestHash" in JSON.parse(replayResponse.body), false);
 });
 
 test("local server finish route returns finished game result", async () => {
