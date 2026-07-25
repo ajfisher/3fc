@@ -486,7 +486,8 @@ test("local server finish route repairs incomplete finished games after team set
     finishedAt: "2026-02-23T00:05:00.000Z",
     result,
   });
-  const createdGameTeams: Array<{ teamId: TeamId; allowFinished?: boolean }> = [];
+  const createdGameTeams: Array<{ teamId: TeamId; allowFinished?: boolean; createOnly?: boolean }> = [];
+  const listTeamsForGameCalls: Array<{ consistentRead: boolean }> = [];
   const getGameCalls: Array<{ consistentRead: boolean }> = [];
   let finishGameCalls = 0;
   let createGameTeamOverrideCalls = 0;
@@ -514,10 +515,15 @@ test("local server finish route repairs incomplete finished games after team set
     async createTeam() {
       throw new Error("season teams should already exist");
     },
-    async listTeamsForGame() {
+    async listTeamsForGame(_gameId: string, options: { consistentRead?: boolean } = {}) {
+      listTeamsForGameCalls.push({ consistentRead: options.consistentRead ?? false });
       return gameTeams.slice(1);
     },
-    async createGameTeamOverride(input: { teamId: TeamId; allowFinished?: boolean }) {
+    async createGameTeamOverride(input: {
+      teamId: TeamId;
+      allowFinished?: boolean;
+      createOnly?: boolean;
+    }) {
       createGameTeamOverrideCalls += 1;
       if (createGameTeamOverrideCalls === 1) {
         throw new GameMutationStateError(
@@ -526,7 +532,11 @@ test("local server finish route repairs incomplete finished games after team set
         );
       }
 
-      createdGameTeams.push({ teamId: input.teamId, allowFinished: input.allowFinished });
+      createdGameTeams.push({
+        teamId: input.teamId,
+        allowFinished: input.allowFinished,
+        createOnly: input.createOnly,
+      });
       return {
         gameId: "game-1",
         teamId: input.teamId,
@@ -553,7 +563,10 @@ test("local server finish route repairs incomplete finished games after team set
   assert.equal(status, 200);
   assert.equal(response.statusCode, 200);
   assert.equal(finishGameCalls, 1);
-  assert.deepEqual(createdGameTeams, [{ teamId: "red", allowFinished: true }]);
+  assert.equal(listTeamsForGameCalls.some((call) => call.consistentRead), true);
+  assert.deepEqual(createdGameTeams, [
+    { teamId: "red", allowFinished: true, createOnly: true },
+  ]);
   const body = JSON.parse(response.body) as { status: string; result: GameResult | null };
   assert.equal(body.status, "finished");
   assert.ok(body.result);

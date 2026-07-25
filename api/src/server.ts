@@ -609,7 +609,9 @@ async function ensureGameTeamsForGame(
   options: { allowFinished?: boolean } = {},
 ) {
   const seasonTeams = await ensureSeasonDefaultTeams(game.seasonId, repositoryClient);
-  const existingGameTeams = await repositoryClient.listTeamsForGame(game.gameId);
+  const existingGameTeams = await repositoryClient.listTeamsForGame(game.gameId, {
+    consistentRead: true,
+  });
   const gameTeamsById = new Map(existingGameTeams.map((team) => [team.teamId, team]));
 
   for (const seasonTeam of seasonTeams) {
@@ -623,6 +625,7 @@ async function ensureGameTeamsForGame(
       name: seasonTeam.name,
       color: seasonTeam.color,
       allowFinished: options.allowFinished,
+      createOnly: true,
     });
     gameTeamsById.set(gameTeam.teamId, gameTeam);
   }

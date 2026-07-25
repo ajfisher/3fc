@@ -224,6 +224,7 @@ export interface CreateGameTeamInput {
   name: string;
   color?: string | null;
   allowFinished?: boolean;
+  createOnly?: boolean;
 }
 
 export interface CreateSessionInput {

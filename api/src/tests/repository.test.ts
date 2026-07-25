@@ -14,6 +14,7 @@ import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
   formatThirdDisplayTime,
+  type TeamId,
 } from "@3fc/contracts";
 
 import { GameMutationStateError, GameTimerTransitionError, ThreeFcRepository } from "../data/repository.js";
@@ -367,6 +368,38 @@ function markStoredGameFinished(client: InMemoryDynamoClient, gameId: string): v
   };
   item.updatedAt = { S: "2026-02-23T00:00:59.000Z" };
   client.seedItem(item);
+}
+
+function seedStoredGameTeam(
+  client: InMemoryDynamoClient,
+  input: {
+    gameId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    scored: number;
+    conceded: number;
+    createdAt: string;
+    updatedAt: string;
+  },
+): void {
+  client.seedItem({
+    pk: { S: `GAME#${input.gameId}` },
+    sk: { S: `TEAM#${input.teamId}` },
+    entityType: { S: "gameTeam" },
+    createdAt: { S: input.createdAt },
+    updatedAt: { S: input.updatedAt },
+    data: {
+      S: JSON.stringify({
+        gameId: input.gameId,
+        teamId: input.teamId,
+        name: input.name,
+        color: input.color,
+        scored: input.scored,
+        conceded: input.conceded,
+      }),
+    },
+  });
 }
 
 test("repository supports round-trip create/read for core entities", async () => {
@@ -949,6 +982,94 @@ test("repository rejects team overrides if the game finalizes before the write c
   );
   assert.deepEqual(await repository.listTeamsForGame("game-1"), []);
   assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository create-only team overrides preserve existing score state", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  seedStoredGameTeam(client, {
+    gameId: "game-1",
+    teamId: "red",
+    name: "Live Red",
+    color: "#d83b36",
+    scored: 3,
+    conceded: 1,
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+
+  const preserved = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(preserved, {
+    gameId: "game-1",
+    teamId: "red",
+    name: "Live Red",
+    color: "#d83b36",
+    scored: 3,
+    conceded: 1,
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), [preserved]);
+});
+
+test("repository create-only team overrides do not replace concurrent teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  client.runBeforeNextPut(() => {
+    seedStoredGameTeam(client, {
+      gameId: "game-1",
+      teamId: "red",
+      name: "Concurrent Red",
+      color: "#d83b36",
+      scored: 2,
+      conceded: 4,
+      createdAt: "2026-02-22T10:01:00.000Z",
+      updatedAt: "2026-02-22T10:03:00.000Z",
+    });
+  });
+
+  const concurrent = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(concurrent, {
+    gameId: "game-1",
+    teamId: "red",
+    name: "Concurrent Red",
+    color: "#d83b36",
+    scored: 2,
+    conceded: 4,
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:03:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), [concurrent]);
 });
 
 test("repository rejects game player links if the game finalizes before the write commits", async () => {

@@ -902,8 +902,15 @@ export class ThreeFcRepository {
       changedMessage: `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
     });
     const now = this.clock.now();
-    const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId));
-    const existingPayload = existing ? normalizeGameTeamPayload(existing.data) : null;
+    const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId), {
+      consistentRead: input.createOnly,
+    });
+    const existingTeam = existing?.entityType === ENTITY_TYPE.gameTeam ? existing : null;
+    const existingPayload = existingTeam ? normalizeGameTeamPayload(existingTeam.data) : null;
+    if (input.createOnly && existingTeam && existingPayload) {
+      return withTimestamps(existingPayload, existingTeam.createdAt, existingTeam.updatedAt);
+    }
+
     const payload = {
       gameId: input.gameId,
       teamId: input.teamId,
@@ -990,9 +997,12 @@ export class ThreeFcRepository {
                   teamSk(input.teamId),
                   ENTITY_TYPE.gameTeam,
                   payload,
-                  existing?.createdAt ?? now,
+                  existingTeam?.createdAt ?? now,
                   now,
                 ),
+                ...(input.createOnly
+                  ? { ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" }
+                  : {}),
               },
             },
           ],
@@ -1000,6 +1010,19 @@ export class ThreeFcRepository {
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
+        if (input.createOnly) {
+          const concurrent = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId), {
+            consistentRead: true,
+          });
+          if (concurrent?.entityType === ENTITY_TYPE.gameTeam) {
+            return withTimestamps(
+              normalizeGameTeamPayload(concurrent.data),
+              concurrent.createdAt,
+              concurrent.updatedAt,
+            );
+          }
+        }
+
         throw new GameMutationStateError(
           "game_state_changed",
           `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
@@ -1008,12 +1031,15 @@ export class ThreeFcRepository {
 
       throw error;
     }
-    return withTimestamps(payload, existing?.createdAt ?? now, now);
+    return withTimestamps(payload, existingTeam?.createdAt ?? now, now);
   }
 
-  async listTeamsForGame(gameId: string): Promise<GameTeamRecord[]> {
+  async listTeamsForGame(
+    gameId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<GameTeamRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "TEAM#");
+    const items = await this.queryByPrefix(gamePk(gameId), "TEAM#", options);
 
     const teams = items
       .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)

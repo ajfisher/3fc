@@ -226,6 +226,7 @@ interface RepositoryContract {
     name: string;
     color?: string | null;
     allowFinished?: boolean;
+    createOnly?: boolean;
   }): Promise<{
     gameId: string;
     teamId: TeamId;
@@ -236,7 +237,10 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listTeamsForGame(gameId: string): Promise<
+  listTeamsForGame(
+    gameId: string,
+    options?: { consistentRead?: boolean },
+  ): Promise<
     Array<{
       gameId: string;
       teamId: TeamId;
@@ -956,7 +960,9 @@ async function ensureGameTeamsForGame(
   options: { allowFinished?: boolean } = {},
 ) {
   const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId);
-  const existingGameTeams = await repository.listTeamsForGame(game.gameId);
+  const existingGameTeams = await repository.listTeamsForGame(game.gameId, {
+    consistentRead: true,
+  });
   const gameTeamsById = new Map(existingGameTeams.map((team) => [team.teamId, team]));
 
   for (const seasonTeam of seasonTeams) {
@@ -970,6 +976,7 @@ async function ensureGameTeamsForGame(
       name: seasonTeam.name,
       color: seasonTeam.color,
       allowFinished: options.allowFinished,
+      createOnly: true,
     });
     gameTeamsById.set(gameTeam.teamId, gameTeam);
   }

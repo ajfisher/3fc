@@ -269,6 +269,7 @@ function createHarness(config: HarnessConfig = {}) {
     name: string;
     color?: string | null;
     allowFinished?: boolean;
+    createOnly?: boolean;
   }> = [];
   const createdPlayers: Array<{ playerId: string; nickname: string; claimedByUserId?: string | null }> = [];
   const createdGoals: Array<{
@@ -291,6 +292,7 @@ function createHarness(config: HarnessConfig = {}) {
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
   const getGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
+  const listTeamsForGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
   let finishGameStateChangedWithoutFinishOnce = config.finishGameStateChangedWithoutFinishOnce ?? false;
@@ -776,7 +778,8 @@ function createHarness(config: HarnessConfig = {}) {
         gameTeams.set(`${input.gameId}:${input.teamId}`, record);
         return record;
       },
-      async listTeamsForGame(gameId: string) {
+      async listTeamsForGame(gameId: string, options: { consistentRead?: boolean } = {}) {
+        listTeamsForGameCalls.push({ gameId, consistentRead: options.consistentRead ?? false });
         return [...gameTeams.values()].filter((team) => team.gameId === gameId);
       },
       async createSession(input) {
@@ -1427,6 +1430,7 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkCompletes,
     magicLinkRateLimitChecks,
     getGameCalls,
+    listTeamsForGameCalls,
     idempotencyRecords,
     goalAuditEntries,
   };
@@ -2593,6 +2597,10 @@ test("core lambda uses a consistent finished read after team setup races", async
     harness.getGameCalls.some((call) => call.gameId === "game-1" && call.consistentRead),
     true,
   );
+  assert.equal(
+    harness.listTeamsForGameCalls.some((call) => call.gameId === "game-1" && call.consistentRead),
+    true,
+  );
 });
 
 test("core lambda repairs incomplete finished games after team setup races", async () => {
@@ -2640,8 +2648,12 @@ test("core lambda repairs incomplete finished games after team setup races", asy
   assert.equal(body.finishedAt, "2026-02-23T00:00:05.000Z");
   assert.ok(body.result);
   assert.deepEqual(
-    harness.createdGameTeams.map((team) => ({ teamId: team.teamId, allowFinished: team.allowFinished })),
-    [{ teamId: "red", allowFinished: true }],
+    harness.createdGameTeams.map((team) => ({
+      teamId: team.teamId,
+      allowFinished: team.allowFinished,
+      createOnly: team.createOnly,
+    })),
+    [{ teamId: "red", allowFinished: true, createOnly: true }],
   );
 });
 
