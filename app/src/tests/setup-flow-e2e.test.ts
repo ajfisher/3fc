@@ -3633,9 +3633,33 @@ test("join page registers a player without organizer authentication", async () =
   assert.equal(player.nickname, "Cy");
   assert.equal(apiState.lastPublicJoinRequest?.body.nickname, "Cy");
   assert.equal("playerId" in (apiState.lastPublicJoinRequest?.body ?? {}), false);
-  assert.match(apiState.lastPublicJoinRequest?.idempotencyKey ?? "", /^join-player-JOIN0001-Cy-/);
+  const firstJoinKey = apiState.lastPublicJoinRequest?.idempotencyKey ?? "";
+  assert.match(firstJoinKey, /^join-player-JOIN0001-Cy-/);
+  assert.equal(apiState.storage.has("threefc-idempotency:join-player:JOIN0001-Cy"), false);
   assert.equal(apiState.gamePlayers.has(`game-join-1:${player.playerId}`), true);
   assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
   assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Cy");
   assert.equal(joinPage.document.getElementById("join-result-game")?.textContent, "game-join-1");
+
+  const secondJoinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "join0001"),
+    url: "http://localhost:3000/join/join0001",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  const secondNicknameInput = secondJoinPage.document.getElementById("join-player-nickname");
+  const secondForm = secondJoinPage.document.getElementById("join-game-form");
+  assert(secondNicknameInput instanceof secondJoinPage.window.HTMLInputElement);
+  assert(secondForm instanceof secondJoinPage.window.HTMLFormElement);
+
+  secondNicknameInput.value = "Cy";
+  secondNicknameInput.dispatchEvent(new secondJoinPage.window.Event("input", { bubbles: true }));
+  dispatchSubmit(secondForm);
+  await flushAsync();
+
+  const secondJoinKey = apiState.lastPublicJoinRequest?.idempotencyKey ?? "";
+  assert.match(secondJoinKey, /^join-player-JOIN0001-Cy-/);
+  assert.notEqual(secondJoinKey, firstJoinKey);
+  assert.equal(apiState.players.size, 2);
+  assert.equal(apiState.storage.has("threefc-idempotency:join-player:JOIN0001-Cy"), false);
 });

@@ -604,6 +604,27 @@ function joinStateChangedConflict(request: IncomingMessage, response: ServerResp
   return 409;
 }
 
+function hasJoinStateChangedCode(payload: unknown): boolean {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "code" in payload &&
+    (payload as { code?: unknown }).code === "join_state_changed"
+  );
+}
+
+function shouldPersistPublicJoinMutation(mutation: JsonMutationResult): boolean {
+  if (mutation.statusCode === 404) {
+    return false;
+  }
+
+  if (mutation.statusCode === 409 && hasJoinStateChangedCode(mutation.payload)) {
+    return false;
+  }
+
+  return true;
+}
+
 function gameAlreadyExistsConflict(
   request: IncomingMessage,
   response: ServerResponse,
@@ -2401,7 +2422,7 @@ async function start(): Promise<void> {
           method,
           route: `/v1/join/${joinCode}`,
           requestPayload: parsedBody.data,
-          shouldPersistResponse: (mutation) => mutation.statusCode !== 404,
+          shouldPersistResponse: shouldPersistPublicJoinMutation,
           execute: async () => {
             let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
             try {

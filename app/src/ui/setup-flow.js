@@ -186,12 +186,19 @@
 
   function createIdempotencyKey(prefix, stablePart) {
     const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 56);
-    return `${prefix}-${safeStable}-${Date.now().toString(36)}`;
+    const nonce =
+      window.crypto?.randomUUID?.().replace(/-/g, "").slice(0, 8) ??
+      Math.random().toString(36).slice(2, 10);
+    return `${prefix}-${safeStable}-${Date.now().toString(36)}-${nonce}`;
+  }
+
+  function idempotencyStorageKey(prefix, stablePart) {
+    const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 96);
+    return `threefc-idempotency:${prefix}:${safeStable}`;
   }
 
   function cachedIdempotencyKey(prefix, stablePart) {
-    const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 96);
-    const storageKey = `threefc-idempotency:${prefix}:${safeStable}`;
+    const storageKey = idempotencyStorageKey(prefix, stablePart);
 
     try {
       const existing = window.localStorage?.getItem(storageKey);
@@ -207,11 +214,24 @@
     }
   }
 
+  function clearCachedIdempotencyKey(prefix, stablePart) {
+    try {
+      window.localStorage?.removeItem(idempotencyStorageKey(prefix, stablePart));
+    } catch {
+      // Ignore storage failures; the next uncached request still gets a fresh key.
+    }
+  }
+
+  function publicJoinIdempotencyStablePart(joinCode, nickname) {
+    return `${joinCode.trim().toUpperCase()}-${nickname.trim()}`;
+  }
+
   function idempotencyKeyForPublicJoin(joinCode, nickname) {
-    return cachedIdempotencyKey(
-      "join-player",
-      `${joinCode.trim().toUpperCase()}-${nickname.trim()}`,
-    );
+    return cachedIdempotencyKey("join-player", publicJoinIdempotencyStablePart(joinCode, nickname));
+  }
+
+  function clearIdempotencyKeyForPublicJoin(joinCode, nickname) {
+    clearCachedIdempotencyKey("join-player", publicJoinIdempotencyStablePart(joinCode, nickname));
   }
 
   async function requestJson(path, init = {}) {
@@ -2758,6 +2778,7 @@
           }),
         });
 
+        clearIdempotencyKeyForPublicJoin(joinCode, nickname);
         setFieldMessage("join-player-nickname", "valid", "Joined.");
         setStatus("Joined game.", "success");
         if (resultPlayer) {

@@ -229,6 +229,7 @@ interface HarnessConfig {
   createGameTeamOverrideStateChangedOnce?: boolean;
   createGameTeamOverrideFinishesIncompleteOnce?: boolean;
   completeFinishedRepairAfterConsistentReads?: number;
+  joinGameByCodeStateChangedOnce?: boolean;
   createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
@@ -358,6 +359,7 @@ function createHarness(config: HarnessConfig = {}) {
   let createGameTeamOverrideFinishesIncompleteOnce =
     config.createGameTeamOverrideFinishesIncompleteOnce ?? false;
   let completeFinishedRepairAfterConsistentReads = config.completeFinishedRepairAfterConsistentReads ?? 0;
+  let joinGameByCodeStateChangedOnce = config.joinGameByCodeStateChangedOnce ?? false;
   let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   let finishBeforeGoalCorrectionOnce = config.finishBeforeGoalCorrectionOnce ?? false;
@@ -974,6 +976,15 @@ function createHarness(config: HarnessConfig = {}) {
             "game_finished",
             409,
             `Game ${game.gameId} is finished. Join registration is closed.`,
+          );
+        }
+
+        if (joinGameByCodeStateChangedOnce) {
+          joinGameByCodeStateChangedOnce = false;
+          throw new GameJoinRegistrationError(
+            "join_state_changed",
+            409,
+            "Game join state changed while registering this player. Reload and try again.",
           );
         }
 
@@ -2364,6 +2375,66 @@ test("core lambda replays public join retries by idempotency key", async () => {
   });
   assert.equal(harness.createdPlayers.length, 1);
   assert.equal(harness.linkedGamePlayers.length, 1);
+});
+
+test("core lambda retries retryable public join conflicts without persisting them", async () => {
+  const harness = createHarness({
+    joinGameByCodeStateChangedOnce: true,
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "JNABCD23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const conflictResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/JNABCD23",
+      headers: {
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "public-join-retry-1",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(conflictResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(conflictResponse.body), {
+    error: "conflict",
+    code: "join_state_changed",
+    message: "Game join state changed while registering this player. Reload and try again.",
+  });
+  assert.equal(harness.idempotencyRecords.size, 0);
+
+  const retryResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/JNABCD23",
+      headers: {
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "public-join-retry-1",
+      },
+      body: {
+        nickname: "Nia",
+      },
+    }),
+  );
+
+  assert.equal(retryResponse.statusCode, 201);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
+  assert.equal(harness.idempotencyRecords.size, 1);
 });
 
 test("core lambda rejects oversized public join nicknames before persistence", async () => {

@@ -965,6 +965,31 @@ function joinStateChangedResponse(
   );
 }
 
+function hasJoinStateChangedCode(payload: unknown): boolean {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "code" in payload &&
+    (payload as { code?: unknown }).code === "join_state_changed"
+  );
+}
+
+function shouldPersistPublicJoinResponse(response: ApiGatewayHttpResponse): boolean {
+  if (response.statusCode === 404) {
+    return false;
+  }
+
+  if (response.statusCode !== 409) {
+    return true;
+  }
+
+  try {
+    return !hasJoinStateChangedCode(JSON.parse(response.body));
+  } catch {
+    return true;
+  }
+}
+
 function gameAlreadyExistsConflictResponse(
   origin: string | undefined,
   allowedOrigins: string[],
@@ -1968,7 +1993,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           origin,
           allowedOrigins: dependencies.corsAllowedOrigins,
           execute: executeJoin,
-          shouldPersistResponse: (response) => response.statusCode !== 404,
+          shouldPersistResponse: shouldPersistPublicJoinResponse,
         });
         status = mutationResponse.statusCode;
         return mutationResponse;
