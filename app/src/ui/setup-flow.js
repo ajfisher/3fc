@@ -2531,11 +2531,13 @@
           });
 
           applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          clearGoalMutationIdempotency("undo-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
           if (!gameRefreshed) {
-            throw new Error("Latest goal was undone, but the finished result could not be refreshed.");
+            showError("Latest goal was undone, but the finished result could not be refreshed.");
+            setStatus("Latest goal undone; result refresh failed.", "success");
+            return;
           }
-          clearGoalMutationIdempotency("undo-goal", stablePart);
           setStatus("Latest goal undone.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not undo latest goal.";
@@ -2600,11 +2602,13 @@
           );
 
           applyGoalMutationResult(result, { deletedEventId: eventId });
+          clearGoalMutationIdempotency("delete-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
           if (!gameRefreshed) {
-            throw new Error("Goal was deleted, but the finished result could not be refreshed.");
+            showError("Goal was deleted, but the finished result could not be refreshed.");
+            setStatus("Goal deleted; result refresh failed.", "success");
+            return;
           }
-          clearGoalMutationIdempotency("delete-goal", stablePart);
           setStatus("Goal deleted.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete goal.";

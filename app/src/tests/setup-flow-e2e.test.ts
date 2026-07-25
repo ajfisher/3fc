@@ -3274,6 +3274,113 @@ test("game page allows admins to correct finished goals and refresh result", asy
   assert.equal(undoLastGoalButton.disabled, true);
 });
 
+test("game page treats committed undo as success when finished result refresh fails", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-undo-refresh-fail",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-undo-refresh-fail",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-2", {
+    gameId: "game-undo-refresh-fail",
+    eventId: "goal-2",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 40,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+  const seededGame = apiState.games.get("game-undo-refresh-fail");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:00:12.000Z");
+
+  const defaultFetch = createMockFetch(apiState);
+  let failNextGameRefresh = false;
+  const staleResultFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (method === "POST" && target.pathname === "/v1/games/game-undo-refresh-fail/goals/undo-last") {
+      const response = await defaultFetch(input, init);
+      failNextGameRefresh = true;
+      return response;
+    }
+
+    if (method === "GET" && target.pathname === "/v1/games/game-undo-refresh-fail" && failNextGameRefresh) {
+      failNextGameRefresh = false;
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Game refresh unavailable.",
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-undo-refresh-fail" }),
+    url: "http://localhost:3000/games/game-undo-refresh-fail",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: staleResultFetch,
+  });
+
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  const timeline = page.document.getElementById("goal-timeline");
+  const status = page.document.getElementById("setup-status");
+  const error = page.document.getElementById("setup-error");
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  assert(timeline instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert(error instanceof page.window.HTMLElement);
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.has("goal-2"), false);
+  assert.equal(apiState.goalEvents.has("goal-1"), true);
+  assert.equal(apiState.games.get("game-undo-refresh-fail")?.result?.winnerTeamId, "red");
+  assert.match(timeline.textContent ?? "", /Ari for Red/);
+  assert.doesNotMatch(timeline.textContent ?? "", /Cy for Blue/);
+  assert.match(status.textContent ?? "", /Latest goal undone; result refresh failed/);
+  assert.match(error.textContent ?? "", /finished result could not be refreshed/);
+});
+
 test("setup flow resolves route ids from static shells", async () => {
   const apiState = createMockApiState();
   apiState.session = {
