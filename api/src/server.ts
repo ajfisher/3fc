@@ -977,8 +977,47 @@ export async function handleLocalFinishGameRoute(input: {
           };
         }
 
-        await ensureGameTeamsForGame(currentGame, repositoryClient);
-        const result = await repositoryClient.finishGame({ gameId: input.gameId });
+        try {
+          await ensureGameTeamsForGame(currentGame, repositoryClient);
+        } catch (error) {
+          if (error instanceof GameMutationStateError) {
+            const current = await repositoryClient.getGame(input.gameId);
+            if (current?.status === "finished") {
+              return {
+                statusCode: 200,
+                payload: buildGameResponse(current),
+              };
+            }
+
+            return {
+              statusCode: 409,
+              payload: {
+                error: "conflict",
+                code: error.code,
+                message: error.message,
+              },
+            };
+          }
+
+          throw error;
+        }
+        let result;
+        try {
+          result = await repositoryClient.finishGame({ gameId: input.gameId });
+        } catch (error) {
+          if (error instanceof GameTimerTransitionError) {
+            return {
+              statusCode: 409,
+              payload: {
+                error: "conflict",
+                code: error.code,
+                message: error.message,
+              },
+            };
+          }
+
+          throw error;
+        }
         if (!result) {
           return {
             statusCode: 404,
@@ -1033,13 +1072,32 @@ export async function handleLocalUpdateGameTeamRoute(input: {
     return badRequest(input.request, input.response, formatSchemaValidationError(parsedBody.error));
   }
 
-  await ensureGameTeamsForGame(game, repositoryClient);
-  const team = await repositoryClient.createGameTeamOverride({
-    gameId: input.gameId,
-    teamId: input.teamId,
-    name: parsedBody.data.name,
-    color: parsedBody.data.color ?? null,
-  });
+  let team;
+  try {
+    await ensureGameTeamsForGame(game, repositoryClient);
+    team = await repositoryClient.createGameTeamOverride({
+      gameId: input.gameId,
+      teamId: input.teamId,
+      name: parsedBody.data.name,
+      color: parsedBody.data.color ?? null,
+    });
+  } catch (error) {
+    if (error instanceof GameMutationStateError) {
+      const currentGame = await repositoryClient.getGame(input.gameId);
+      if (currentGame?.status === "finished" || error.code === "game_finished") {
+        return finishedGameTeamOverrideConflict(input.request, input.response, input.gameId);
+      }
+
+      sendJsonWithCors(input.request, input.response, 409, {
+        error: "conflict",
+        code: error.code,
+        message: error.message,
+      });
+      return 409;
+    }
+
+    throw error;
+  }
   sendJsonWithCors(input.request, input.response, 200, team);
   return 200;
 }
@@ -2860,14 +2918,45 @@ async function start(): Promise<void> {
               };
             }
 
-            const player = await repository.createPlayer({
-              playerId,
-              nickname: parsedBody.data.nickname,
-            });
-            await repository.linkGamePlayer({
-              gameId,
-              playerId: player.playerId,
-            });
+            const allowFinished =
+              currentGame.status === "finished" &&
+              (await ensureLeagueAdmin(currentGame.leagueId, sessionEmail));
+            let player;
+            try {
+              player = await repository.createAndLinkGamePlayer({
+                gameId,
+                playerId,
+                nickname: parsedBody.data.nickname,
+                allowFinished,
+              });
+            } catch (error) {
+              if (error instanceof GameMutationStateError) {
+                const latestGame = await repository.getGame(gameId);
+                if (latestGame) {
+                  const finishedBlockAfterRace = await buildFinishedGameMutationBlock(
+                    latestGame,
+                    sessionEmail,
+                  );
+                  if (finishedBlockAfterRace) {
+                    return {
+                      statusCode: finishedBlockAfterRace.statusCode,
+                      payload: finishedBlockAfterRace.payload,
+                    };
+                  }
+                }
+
+                return {
+                  statusCode: 409,
+                  payload: {
+                    error: "conflict",
+                    code: error.code,
+                    message: error.message,
+                  },
+                };
+              }
+
+              throw error;
+            }
 
             return {
               statusCode: 201,

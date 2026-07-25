@@ -223,6 +223,7 @@ export interface CreateGameTeamInput {
   teamId: TeamId;
   name: string;
   color?: string | null;
+  allowFinished?: boolean;
 }
 
 export interface CreateSessionInput {
@@ -255,6 +256,11 @@ export interface CreatePlayerInput {
   claimedByUserId?: string | null;
 }
 
+export interface CreateAndLinkGamePlayerInput extends CreatePlayerInput {
+  gameId: string;
+  allowFinished?: boolean;
+}
+
 export interface ListPlayersInput {
   search?: string | null;
   limit?: number;
@@ -263,6 +269,7 @@ export interface ListPlayersInput {
 export interface LinkGamePlayerInput {
   gameId: string;
   playerId: string;
+  allowFinished?: boolean;
 }
 
 export interface GrantLeagueAccessInput {

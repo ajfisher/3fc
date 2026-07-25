@@ -903,6 +903,95 @@ test("repository rejects roster assignment if the game finalizes before the writ
   assert.equal((await repository.getGame("game-1"))?.status, "finished");
 });
 
+test("repository rejects team overrides if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.createGameTeamOverride({
+      gameId: "game-1",
+      teamId: "red",
+      name: "Renamed Red",
+      color: "#cc0000",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository rejects game player links if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createPlayer({
+    playerId: "player-late",
+    nickname: "Late",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.linkGamePlayer({
+      gameId: "game-1",
+      playerId: "player-late",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.deepEqual(await repository.listGamePlayers("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository rejects quick player creation if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.createAndLinkGamePlayer({
+      gameId: "game-1",
+      playerId: "player-late",
+      nickname: "Late",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.equal(await repository.getPlayer("player-late"), null);
+  assert.deepEqual(await repository.listGamePlayers("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
 test("repository gives legacy games default timer state", async () => {
   const { repository, client } = createRepositoryHarness();
 

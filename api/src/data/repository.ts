@@ -52,6 +52,7 @@ import {
 } from "./keys.js";
 import type {
   AssignRosterInput,
+  CreateAndLinkGamePlayerInput,
   CreateGameTeamInput,
   CreateGameInput,
   CreateGoalInput,
@@ -894,6 +895,12 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("name", input.name);
 
+    const { item: gameItem } = await this.readGameForMutation({
+      gameId: input.gameId,
+      allowFinished: input.allowFinished,
+      finishedMessage: `Game ${input.gameId} is finished. Team overrides are locked after finish.`,
+      changedMessage: `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+    });
     const now = this.clock.now();
     const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId));
     const existingPayload = existing ? normalizeGameTeamPayload(existing.data) : null;
@@ -906,14 +913,37 @@ export class ThreeFcRepository {
       conceded: existingPayload?.conceded ?? 0,
     };
 
-    await this.putEntityWithTimestamps(
-      gamePk(input.gameId),
-      teamSk(input.teamId),
-      ENTITY_TYPE.gameTeam,
-      payload,
-      existing?.createdAt ?? now,
-      now,
-    );
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGameConditionCheck(input.gameId, gameItem),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  teamSk(input.teamId),
+                  ENTITY_TYPE.gameTeam,
+                  payload,
+                  existing?.createdAt ?? now,
+                  now,
+                ),
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
     return withTimestamps(payload, existing?.createdAt ?? now, now);
   }
 
@@ -1600,6 +1630,12 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("playerId", input.playerId);
 
+    const { item: gameItem } = await this.readGameForMutation({
+      gameId: input.gameId,
+      allowFinished: input.allowFinished,
+      finishedMessage: `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      changedMessage: `Game ${input.gameId} changed before the player link could be saved. Reload and try again.`,
+    });
     const now = this.clock.now();
     const existing = await this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId));
     const payload = {
@@ -1607,16 +1643,114 @@ export class ThreeFcRepository {
       playerId: input.playerId,
     };
 
-    await this.putEntityWithTimestamps(
-      gamePk(input.gameId),
-      gamePlayerSk(input.playerId),
-      ENTITY_TYPE.gamePlayer,
-      payload,
-      existing?.createdAt ?? now,
-      now,
-    );
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGameConditionCheck(input.gameId, gameItem),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  gamePlayerSk(input.playerId),
+                  ENTITY_TYPE.gamePlayer,
+                  payload,
+                  existing?.createdAt ?? now,
+                  now,
+                ),
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the player link could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
 
     return withTimestamps(payload, existing?.createdAt ?? now, now);
+  }
+
+  async createAndLinkGamePlayer(input: CreateAndLinkGamePlayerInput): Promise<PlayerRecord> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("nickname", input.nickname);
+
+    const { item: gameItem } = await this.readGameForMutation({
+      gameId: input.gameId,
+      allowFinished: input.allowFinished,
+      finishedMessage: `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      changedMessage: `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
+    });
+    const now = this.clock.now();
+    const playerPayload = {
+      playerId: input.playerId,
+      nickname: input.nickname,
+      claimedByUserId: input.claimedByUserId ?? null,
+    };
+    const existingGamePlayer = await this.getEntity(
+      gamePk(input.gameId),
+      gamePlayerSk(input.playerId),
+      { consistentRead: true },
+    );
+    const linkPayload = {
+      gameId: input.gameId,
+      playerId: input.playerId,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGameConditionCheck(input.gameId, gameItem),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  playerPk(input.playerId),
+                  profileSk(),
+                  ENTITY_TYPE.player,
+                  playerPayload,
+                  now,
+                  now,
+                ),
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  gamePlayerSk(input.playerId),
+                  ENTITY_TYPE.gamePlayer,
+                  linkPayload,
+                  existingGamePlayer?.createdAt ?? now,
+                  now,
+                ),
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+
+    return withTimestamps(playerPayload, now, now);
   }
 
   async listGamePlayers(gameId: string): Promise<GamePlayerRecord[]> {
@@ -2163,6 +2297,25 @@ export class ThreeFcRepository {
         },
       },
     };
+  }
+
+  private async readGameForMutation(input: {
+    gameId: string;
+    allowFinished?: boolean;
+    finishedMessage: string;
+    changedMessage: string;
+  }): Promise<{ item: StoredEntity<unknown>; game: Omit<GameRecord, "createdAt" | "updatedAt"> }> {
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      throw new GameMutationStateError("game_state_changed", input.changedMessage);
+    }
+
+    const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GameMutationStateError("game_finished", input.finishedMessage);
+    }
+
+    return { item: gameItem, game };
   }
 
   private buildTeamConditionChecks(

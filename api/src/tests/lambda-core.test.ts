@@ -213,6 +213,8 @@ interface HarnessConfig {
   gamePlayers?: Record<string, MockGamePlayerRecord>;
   finishGameStateChangedOnce?: boolean;
   deleteGameFinishesBeforeDeleteOnce?: boolean;
+  createGameTeamOverrideStateChangedOnce?: boolean;
+  createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
   rateLimitDecision?:
     | RateLimitDecision
@@ -279,6 +281,8 @@ function createHarness(config: HarnessConfig = {}) {
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
   let deleteGameFinishesBeforeDeleteOnce = config.deleteGameFinishesBeforeDeleteOnce ?? false;
+  let createGameTeamOverrideStateChangedOnce = config.createGameTeamOverrideStateChangedOnce ?? false;
+  let createAndLinkGamePlayerStateChangedOnce = config.createAndLinkGamePlayerStateChangedOnce ?? false;
   let assignRosterPlayerStateChangedOnce = config.assignRosterPlayerStateChangedOnce ?? false;
   const leagues = new Map<string, MockLeagueRecord>(Object.entries(config.leagues ?? {}));
   const seasons = new Map<string, MockSeasonRecord>(Object.entries(config.seasons ?? {}));
@@ -667,6 +671,24 @@ function createHarness(config: HarnessConfig = {}) {
         return [...seasonTeams.values()].filter((team) => team.seasonId === seasonId);
       },
       async createGameTeamOverride(input) {
+        if (createGameTeamOverrideStateChangedOnce) {
+          createGameTeamOverrideStateChangedOnce = false;
+          const existingGame = games.get(input.gameId);
+          if (existingGame) {
+            games.set(input.gameId, {
+              ...existingGame,
+              status: "finished",
+              finishedAt: "2026-02-23T00:00:05.000Z",
+              result: buildMockGameResult(input.gameId, "2026-02-23T00:00:05.000Z"),
+              updatedAt: "2026-02-23T00:00:05.000Z",
+            });
+          }
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+          );
+        }
+
         createdGameTeams.push(input);
         const existing = gameTeams.get(`${input.gameId}:${input.teamId}`);
         const record = {
@@ -959,6 +981,47 @@ function createHarness(config: HarnessConfig = {}) {
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
         players.set(input.playerId, record);
+        return record;
+      },
+      async createAndLinkGamePlayer(input) {
+        if (createAndLinkGamePlayerStateChangedOnce) {
+          createAndLinkGamePlayerStateChangedOnce = false;
+          const existingGame = games.get(input.gameId);
+          if (existingGame) {
+            games.set(input.gameId, {
+              ...existingGame,
+              status: "finished",
+              finishedAt: "2026-02-23T00:00:05.000Z",
+              result: buildMockGameResult(input.gameId, "2026-02-23T00:00:05.000Z"),
+              updatedAt: "2026-02-23T00:00:05.000Z",
+            });
+          }
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
+          );
+        }
+
+        createdPlayers.push(input);
+        const record = {
+          playerId: input.playerId,
+          nickname: input.nickname,
+          claimedByUserId: input.claimedByUserId ?? null,
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        };
+        players.set(input.playerId, record);
+        linkedGamePlayers.push({
+          gameId: input.gameId,
+          playerId: input.playerId,
+        });
+        const existing = gamePlayers.get(`${input.gameId}:${input.playerId}`);
+        gamePlayers.set(`${input.gameId}:${input.playerId}`, {
+          gameId: input.gameId,
+          playerId: input.playerId,
+          createdAt: existing?.createdAt ?? "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        });
         return record;
       },
       async getPlayer(playerId: string) {
@@ -1270,6 +1333,8 @@ function createGoalHarness(input: {
   completedThirds?: boolean;
   finishGameStateChangedOnce?: boolean;
   deleteGameFinishesBeforeDeleteOnce?: boolean;
+  createGameTeamOverrideStateChangedOnce?: boolean;
+  createAndLinkGamePlayerStateChangedOnce?: boolean;
   assignRosterPlayerStateChangedOnce?: boolean;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
@@ -1309,6 +1374,8 @@ function createGoalHarness(input: {
     },
     finishGameStateChangedOnce: input.finishGameStateChangedOnce,
     deleteGameFinishesBeforeDeleteOnce: input.deleteGameFinishesBeforeDeleteOnce,
+    createGameTeamOverrideStateChangedOnce: input.createGameTeamOverrideStateChangedOnce,
+    createAndLinkGamePlayerStateChangedOnce: input.createAndLinkGamePlayerStateChangedOnce,
     assignRosterPlayerStateChangedOnce: input.assignRosterPlayerStateChangedOnce,
     seasons: {
       "season-1": {
@@ -2334,6 +2401,40 @@ test("core lambda rejects finish before all thirds are completed", async () => {
   });
 });
 
+test("core lambda persists finish transition conflicts for idempotent replay", async () => {
+  const harness = createGoalHarness({ runningThird: false });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-incomplete-replay-1",
+      },
+    }),
+  );
+  const replayResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-incomplete-replay-1",
+      },
+    }),
+  );
+  const record = harness.idempotencyRecords.get(
+    "scorekeeper@example.com:POST:/v1/games/game-1/finish:finish-incomplete-replay-1",
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(replayResponse.statusCode, 409);
+  assert.deepEqual(JSON.parse(replayResponse.body), JSON.parse(response.body));
+  assert.equal(record?.responseStatusCode, 409);
+  assert.equal(record?.responseBody, response.body);
+});
+
 test("core lambda returns idempotency conflict for reused finish key with mismatched record", async () => {
   const harness = createGoalHarness({ runningThird: false });
   harness.idempotencyRecords.set("scorekeeper@example.com:POST:/v1/games/game-1/finish:finish-conflict", {
@@ -2447,6 +2548,36 @@ test("core lambda locks team overrides after finish", async () => {
   assert.equal(harness.createdGameTeams.length, 0);
 });
 
+test("core lambda blocks team overrides if finish wins the write race", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    role: "admin",
+    createGameTeamOverrideStateChangedOnce: true,
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "PUT",
+      path: "/v1/games/game-1/teams/red",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        name: "Renamed Red",
+        color: "#cc0000",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Team overrides are locked after finish.",
+  });
+  assert.equal(harness.createdGameTeams.length, 0);
+});
+
 test("core lambda locks scorekeeper player and roster mutations after finish", async () => {
   const harness = createGoalHarness({
     runningThird: false,
@@ -2533,6 +2664,36 @@ test("core lambda blocks scorekeeper roster assignment if finish wins the write 
     message: "Game game-1 is finished. Admin role is required to mutate finished games.",
   });
   assert.equal(harness.assignedRosterPlayers.length, 0);
+});
+
+test("core lambda blocks scorekeeper quick player creation if finish wins the write race", async () => {
+  const harness = createGoalHarness({
+    createAndLinkGamePlayerStateChangedOnce: true,
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "player-create-race-1",
+      },
+      body: {
+        playerId: "player-late",
+        nickname: "Late",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "conflict",
+    code: "game_finished",
+    message: "Game game-1 is finished. Admin role is required to mutate finished games.",
+  });
+  assert.equal(harness.createdPlayers.length, 0);
+  assert.equal(harness.linkedGamePlayers.length, 0);
 });
 
 test("core lambda allows admin player and roster corrections after finish", async () => {

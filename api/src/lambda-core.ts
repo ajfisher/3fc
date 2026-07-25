@@ -289,6 +289,19 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
+  createAndLinkGamePlayer(input: {
+    gameId: string;
+    playerId: string;
+    nickname: string;
+    claimedByUserId?: string | null;
+    allowFinished?: boolean;
+  }): Promise<{
+    playerId: string;
+    nickname: string;
+    claimedByUserId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
   getPlayer(
     playerId: string,
   ): Promise<
@@ -2263,7 +2276,46 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
-                await ensureGameTeamsForGame(dependencies.repository, currentGame);
+                try {
+                  await ensureGameTeamsForGame(dependencies.repository, currentGame);
+                } catch (error) {
+                  if (error instanceof GameMutationStateError) {
+                    const replayResponse = await replayStoredIdempotencyMutation({
+                      repository: dependencies.repository,
+                      idempotencyKey,
+                      sessionEmail: session.email,
+                      method,
+                      route,
+                      requestPayload: {},
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
+                    });
+                    if (replayResponse) {
+                      return replayResponse;
+                    }
+
+                    const finishedGame = await dependencies.repository.getGame(gameId);
+                    if (finishedGame?.status === "finished") {
+                      return createJsonResponse(
+                        200,
+                        buildGameResponse(finishedGame),
+                        buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                      );
+                    }
+
+                    return createJsonResponse(
+                      409,
+                      {
+                        error: "conflict",
+                        code: error.code,
+                        message: error.message,
+                      },
+                      buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                    );
+                  }
+
+                  throw error;
+                }
                 let result;
                 try {
                   result = await dependencies.repository.finishGame({ gameId });
@@ -2291,6 +2343,14 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                         buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
                       );
                     }
+                  }
+
+                  if (error instanceof GameTimerTransitionError) {
+                    return timerTransitionConflictResponse(
+                      origin,
+                      dependencies.corsAllowedOrigins,
+                      error,
+                    );
                   }
 
                   throw error;
@@ -2878,13 +2938,45 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          await ensureGameTeamsForGame(dependencies.repository, game);
-          const team = await dependencies.repository.createGameTeamOverride({
-            gameId,
-            teamId,
-            name: parsedBody.data.name,
-            color: parsedBody.data.color ?? null,
-          });
+          let team;
+          try {
+            await ensureGameTeamsForGame(dependencies.repository, game);
+            team = await dependencies.repository.createGameTeamOverride({
+              gameId,
+              teamId,
+              name: parsedBody.data.name,
+              color: parsedBody.data.color ?? null,
+            });
+          } catch (error) {
+            if (error instanceof GameMutationStateError) {
+              const currentGame = await dependencies.repository.getGame(gameId);
+              if (currentGame?.status === "finished" || error.code === "game_finished") {
+                status = 409;
+                return createJsonResponse(
+                  status,
+                  {
+                    error: "conflict",
+                    code: "game_finished",
+                    message: `Game ${gameId} is finished. Team overrides are locked after finish.`,
+                  },
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              }
+
+              status = 409;
+              return createJsonResponse(
+                status,
+                {
+                  error: "conflict",
+                  code: error.code,
+                  message: error.message,
+                },
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            }
+
+            throw error;
+          }
           status = 200;
           return createJsonResponse(
             status,
@@ -3010,14 +3102,50 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 return finishedBlock;
               }
 
-              const player = await dependencies.repository.createPlayer({
-                playerId,
-                nickname: parsedBody.data.nickname,
-              });
-              await dependencies.repository.linkGamePlayer({
-                gameId,
-                playerId: player.playerId,
-              });
+              const allowFinished =
+                currentGame.status === "finished" &&
+                (await ensureLeagueAccess(
+                  dependencies.repository,
+                  currentGame.leagueId,
+                  session.email,
+                )).role === "admin";
+              let player;
+              try {
+                player = await dependencies.repository.createAndLinkGamePlayer({
+                  gameId,
+                  playerId,
+                  nickname: parsedBody.data.nickname,
+                  allowFinished,
+                });
+              } catch (error) {
+                if (error instanceof GameMutationStateError) {
+                  const latestGame = await dependencies.repository.getGame(gameId);
+                  if (latestGame) {
+                    const finishedBlockAfterRace = await buildFinishedGameMutationBlock({
+                      repository: dependencies.repository,
+                      game: latestGame,
+                      sessionEmail: session.email,
+                      origin,
+                      allowedOrigins: dependencies.corsAllowedOrigins,
+                    });
+                    if (finishedBlockAfterRace) {
+                      return finishedBlockAfterRace;
+                    }
+                  }
+
+                  return createJsonResponse(
+                    409,
+                    {
+                      error: "conflict",
+                      code: error.code,
+                      message: error.message,
+                    },
+                    buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                  );
+                }
+
+                throw error;
+              }
 
               return createJsonResponse(
                 201,
