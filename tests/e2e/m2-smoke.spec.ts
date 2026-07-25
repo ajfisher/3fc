@@ -322,6 +322,18 @@ function touchedAuthRateLimitKeys(
   return totalIncrease === 1 ? increased.map(({ pk, sk }) => ({ pk, sk })) : [];
 }
 
+function smokeOwnedAuthRateLimitKeys(input: {
+  rateLimitConsumed: boolean;
+  before: AuthRateLimitSnapshot[];
+  after: AuthRateLimitSnapshot[];
+}): DynamoItemKey[] {
+  if (!input.rateLimitConsumed) {
+    return [];
+  }
+
+  return touchedAuthRateLimitKeys(input.before, input.after);
+}
+
 function isConditionalCheckFailure(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -764,7 +776,7 @@ test("smoke cleanup removes run-owned records without deleting unrelated session
   expect(destroyed).toBe(true);
 });
 
-test("smoke cleanup detects touched IP rate-limit buckets without known client addresses", async () => {
+test("smoke cleanup detects consumed IP rate-limit buckets without known client addresses", async () => {
   const beforeClient: DynamoClientLike = {
     async send(command) {
       expect(command).toBeInstanceOf(ScanCommand);
@@ -831,21 +843,43 @@ test("smoke cleanup detects touched IP rate-limit buckets without known client a
       attemptCount: 4,
     },
   ]);
-  expect(touchedAuthRateLimitKeys(before, after)).toEqual([
+  expect(smokeOwnedAuthRateLimitKeys({ rateLimitConsumed: true, before, after })).toEqual([
     {
       pk: "AUTH_RATE_LIMIT#magic-link-start#ip#docker-bridge-hash#bucket",
       sk: "METADATA",
     },
   ]);
   expect(
-    touchedAuthRateLimitKeys(before, [
-      ...after,
-      {
-        pk: "AUTH_RATE_LIMIT#magic-link-start#ip#concurrent-hash#bucket",
-        sk: "METADATA",
-        attemptCount: 1,
-      },
-    ]),
+    smokeOwnedAuthRateLimitKeys({
+      rateLimitConsumed: true,
+      before,
+      after: [
+        ...after,
+        {
+          pk: "AUTH_RATE_LIMIT#magic-link-start#ip#concurrent-hash#bucket",
+          sk: "METADATA",
+          attemptCount: 1,
+        },
+      ],
+    }),
+  ).toEqual([]);
+  expect(
+    smokeOwnedAuthRateLimitKeys({
+      rateLimitConsumed: false,
+      before,
+      after: [
+        {
+          pk: "AUTH_RATE_LIMIT#magic-link-start#ip#docker-bridge-hash#bucket",
+          sk: "METADATA",
+          attemptCount: 2,
+        },
+        {
+          pk: "AUTH_RATE_LIMIT#magic-link-start#ip#unrelated-hash#bucket",
+          sk: "METADATA",
+          attemptCount: 5,
+        },
+      ],
+    }),
   ).toEqual([]);
 });
 
@@ -869,7 +903,7 @@ test.describe("M2 local-stack smoke", () => {
     let gameId = "";
     const playerIds: string[] = [];
     const initialIpRateLimits = await snapshotLocalAuthRateLimits({ dimension: "ip" });
-    let magicLinkStartReachedApi = false;
+    let magicLinkStartConsumedRateLimit = false;
 
     let testFailed = false;
     try {
@@ -882,7 +916,7 @@ test.describe("M2 local-stack smoke", () => {
       );
       await page.getByTestId("send-magic-link").click();
       const magicStartResponse = await magicStartResponsePromise;
-      magicLinkStartReachedApi = magicStartResponse.status() > 0;
+      magicLinkStartConsumedRateLimit = magicStartResponse.status() === 202;
       await expect(page.locator("#auth-status")).toContainText("Magic link sent");
 
       const magicLink = await waitForMagicLink(email);
@@ -971,7 +1005,7 @@ test.describe("M2 local-stack smoke", () => {
       throw error;
     } finally {
       try {
-        const currentIpRateLimits = magicLinkStartReachedApi
+        const currentIpRateLimits = magicLinkStartConsumedRateLimit
           ? await snapshotLocalAuthRateLimits({ dimension: "ip" })
           : [];
         await cleanupSmokeRun({
@@ -982,7 +1016,11 @@ test.describe("M2 local-stack smoke", () => {
           gameId,
           sessionId,
           playerIds,
-          ipRateLimitKeys: touchedAuthRateLimitKeys(initialIpRateLimits, currentIpRateLimits),
+          ipRateLimitKeys: smokeOwnedAuthRateLimitKeys({
+            rateLimitConsumed: magicLinkStartConsumedRateLimit,
+            before: initialIpRateLimits,
+            after: currentIpRateLimits,
+          }),
         });
       } catch (error) {
         if (!testFailed) {
