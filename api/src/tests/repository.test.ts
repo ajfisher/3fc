@@ -1520,15 +1520,15 @@ test("repository leaves game and join-code lookup intact if delete sees a join-c
 });
 
 test("repository rejects join registration for finished games without creating a player", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
   const game = await repository.createGame({
     gameId: "game-finished-join",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
-    status: "finished",
     gameStartTs: "2026-02-22T10:00:00Z",
   });
+  markStoredGameFinished(client, "game-finished-join");
 
   await assert.rejects(
     repository.joinGameByCode({
