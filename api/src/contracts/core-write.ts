@@ -5,6 +5,7 @@ const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty stri
 const optionalNullableString = z.string().nullable().optional();
 const teamIdSchema = z.enum(TEAM_IDS);
 const joinCodePathPattern = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+export const PUBLIC_JOIN_NICKNAME_MAX_LENGTH = 80;
 const thirdLengthMinutesSchema = z.union([
   z.literal(THIRD_LENGTH_MINUTES[0]),
   z.literal(THIRD_LENGTH_MINUTES[1]),
@@ -67,7 +68,10 @@ export const quickCreateGamePlayerRequestSchema = z
 
 export const joinGameRequestSchema = z
   .object({
-    nickname: nonEmptyTrimmedString,
+    nickname: nonEmptyTrimmedString.max(
+      PUBLIC_JOIN_NICKNAME_MAX_LENGTH,
+      `must be ${PUBLIC_JOIN_NICKNAME_MAX_LENGTH} characters or fewer`,
+    ),
   })
   .strict();
 

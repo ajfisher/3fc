@@ -7,6 +7,7 @@ import {
   type ApiGatewayHttpEvent,
 } from "../lambda-core.js";
 import type { RateLimitDecision } from "../auth/rate-limit.js";
+import { PUBLIC_JOIN_NICKNAME_MAX_LENGTH } from "../contracts/core-write.js";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
@@ -2068,6 +2069,44 @@ test("core lambda lets players join an active game by join code and appear in th
   assert.deepEqual(JSON.parse(playerPoolResponse.body), {
     players: [joinBody.player],
   });
+});
+
+test("core lambda rejects oversized public join nicknames before persistence", async () => {
+  const harness = createHarness({
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "JNABCD23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/join/JNABCD23",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      body: {
+        nickname: "N".repeat(PUBLIC_JOIN_NICKNAME_MAX_LENGTH + 1),
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: `Field \`nickname\` must be ${PUBLIC_JOIN_NICKNAME_MAX_LENGTH} characters or fewer.`,
+  });
+  assert.equal(harness.createdPlayers.length, 0);
+  assert.equal(harness.linkedGamePlayers.length, 0);
 });
 
 test("core lambda returns stable errors for invalid and missing join codes", async () => {

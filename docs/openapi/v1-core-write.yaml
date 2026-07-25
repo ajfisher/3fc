@@ -874,6 +874,7 @@ components:
         nickname:
           type: string
           minLength: 1
+          maxLength: 80
     AssignRosterPlayerRequest:
       type: object
       additionalProperties: false
