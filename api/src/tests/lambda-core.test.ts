@@ -1994,7 +1994,7 @@ test("core lambda lets players join an active game by join code and appear in th
     games: {
       "game-1": {
         gameId: "game-1",
-        joinCode: "JOINABCD",
+        joinCode: "JNABCD23",
         leagueId: "league-1",
         seasonId: "season-1",
         sessionId: "session-1",
@@ -2019,7 +2019,7 @@ test("core lambda lets players join an active game by join code and appear in th
   const joinResponse = await harness.handler(
     createEvent({
       method: "POST",
-      path: "/v1/join/joinabcd",
+      path: "/v1/join/jnabcd23",
       headers: {
         Origin: "https://qa.3fc.football",
       },
@@ -2038,7 +2038,7 @@ test("core lambda lets players join an active game by join code and appear in th
     player: { playerId: string; nickname: string; createdAt: string; updatedAt: string };
   };
   assert.equal(joinBody.gameId, "game-1");
-  assert.equal(joinBody.joinCode, "JOINABCD");
+  assert.equal(joinBody.joinCode, "JNABCD23");
   assert.equal(joinBody.player.nickname, "Nia");
   assert.match(joinBody.player.playerId, /^player-/);
   assert.deepEqual(harness.linkedGamePlayers[0], {
@@ -2068,7 +2068,7 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
   const invalidResponse = await harness.handler(
     createEvent({
       method: "POST",
-      path: "/v1/join/NOPE1234",
+      path: "/v1/join/ABCDEFGH",
       headers: {
         Origin: "https://qa.3fc.football",
       },
@@ -2122,7 +2122,7 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
   assert.deepEqual(JSON.parse(invalidFormatResponse.body), {
     error: "bad_request",
     code: "join_code_invalid",
-    message: "Join code must be 8 letters or digits.",
+    message: "Join code must be 8 uppercase non-ambiguous letters or digits.",
   });
 
   const malformedResponse = await harness.handler(
@@ -2140,7 +2140,9 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
 
   assert.equal(malformedResponse.statusCode, 400);
   assert.deepEqual(JSON.parse(malformedResponse.body), {
-    error: "Join code must be URL encoded correctly.",
+    error: "bad_request",
+    code: "join_code_invalid",
+    message: "Join code must be URL encoded correctly.",
   });
   assert.equal(harness.createdPlayers.length, 0);
   assert.equal(harness.linkedGamePlayers.length, 0);
@@ -2151,7 +2153,7 @@ test("core lambda rejects join registration for finished games", async () => {
     games: {
       "game-1": {
         gameId: "game-1",
-        joinCode: "FINISHED",
+        joinCode: "FNSH2DAB",
         leagueId: "league-1",
         seasonId: "season-1",
         sessionId: "session-1",
@@ -2166,7 +2168,7 @@ test("core lambda rejects join registration for finished games", async () => {
   const response = await harness.handler(
     createEvent({
       method: "POST",
-      path: "/v1/join/FINISHED",
+      path: "/v1/join/FNSH2DAB",
       headers: {
         Origin: "https://qa.3fc.football",
       },

@@ -578,7 +578,7 @@ test("repository rejects duplicate join code lookup records", async () => {
 
   await repository.createGame({
     gameId: "game-join-a",
-    joinCode: "SHARED01",
+    joinCode: "SHARED23",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
@@ -588,7 +588,7 @@ test("repository rejects duplicate join code lookup records", async () => {
   await assert.rejects(
     repository.createGame({
       gameId: "game-join-b",
-      joinCode: "SHARED01",
+      joinCode: "SHARED23",
       leagueId: "league-1",
       seasonId: "season-1",
       sessionId: "session-1",
@@ -605,13 +605,13 @@ test("repository rejects custom join codes that do not match the public contract
   await assert.rejects(
     repository.createGame({
       gameId: "game-invalid-join-code",
-      joinCode: "STRONG1",
+      joinCode: "STRONG01",
       leagueId: "league-1",
       seasonId: "season-1",
       sessionId: "session-1",
       gameStartTs: "2026-02-22T10:00:00Z",
     }),
-    /joinCode must be 8 letters or digits/,
+    /joinCode must be 8 uppercase non-ambiguous letters or digits/,
   );
   assert.equal(await repository.getGame("game-invalid-join-code"), null);
 });
@@ -677,7 +677,7 @@ test("repository strongly reads game join-code lookups", async () => {
 
   const game = await repository.createGame({
     gameId: "game-join-strong",
-    joinCode: "STRONG01",
+    joinCode: "STRNG234",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
@@ -685,7 +685,7 @@ test("repository strongly reads game join-code lookups", async () => {
   });
   client.getItemRequests.length = 0;
 
-  assert.deepEqual(await repository.getGameByJoinCode("strong01"), game);
+  assert.deepEqual(await repository.getGameByJoinCode("strng234"), game);
   assert.deepEqual(
     client.getItemRequests.map((request) => request.consistentRead),
     [true, true],
@@ -1768,7 +1768,7 @@ test("repository blocks deleting season or league while descendants exist", asyn
 });
 
 test("repository supports idempotency record create/get semantics", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   const created = await repository.createIdempotencyRecord({
     scope: "admin@example.com:POST:/v1/leagues",
@@ -1786,6 +1786,7 @@ test("repository supports idempotency record create/get semantics", async () => 
     responseBody: JSON.stringify({ leagueId: "league-1" }),
   });
 
+  client.getItemRequests.length = 0;
   const record = await repository.getIdempotencyRecord(
     "admin@example.com:POST:/v1/leagues",
     "create-league-1",
@@ -1796,6 +1797,10 @@ test("repository supports idempotency record create/get semantics", async () => 
   assert.equal(record?.requestHash, "hash-1");
   assert.equal(record?.responseStatusCode, 201);
   assert.equal(record?.responseBody, JSON.stringify({ leagueId: "league-1" }));
+  assert.deepEqual(
+    client.getItemRequests.map((request) => request.consistentRead),
+    [true],
+  );
 });
 
 async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {

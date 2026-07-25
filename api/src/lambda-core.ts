@@ -876,7 +876,22 @@ function joinCodeInvalidFormatResponse(
     {
       error: "bad_request",
       code: "join_code_invalid",
-      message: "Join code must be 8 letters or digits.",
+      message: "Join code must be 8 uppercase non-ambiguous letters or digits.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function joinCodeMalformedResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    400,
+    {
+      error: "bad_request",
+      code: "join_code_invalid",
+      message: "Join code must be URL encoded correctly.",
     },
     buildCorsHeaders(origin, allowedOrigins),
   );
@@ -900,14 +915,14 @@ function invalidJoinCodeResponse(
 function finishedGameJoinConflictResponse(
   origin: string | undefined,
   allowedOrigins: string[],
-  gameId: string,
+  message: string,
 ): ApiGatewayHttpResponse {
   return createJsonResponse(
     409,
     {
       error: "conflict",
       code: "game_finished",
-      message: `Game ${gameId} is finished. Join registration is closed.`,
+      message,
     },
     buildCorsHeaders(origin, allowedOrigins),
   );
@@ -1796,7 +1811,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           joinCode = normalizeJoinCodePathParam(decodeURIComponent(joinGameMatch[1]));
         } catch {
           status = 400;
-          return badRequest(origin, dependencies.corsAllowedOrigins, "Join code must be URL encoded correctly.");
+          return joinCodeMalformedResponse(origin, dependencies.corsAllowedOrigins);
         }
         if (joinCode.length === 0) {
           status = 400;
@@ -1836,11 +1851,10 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           if (error instanceof GameJoinRegistrationError) {
             status = error.statusCode;
             if (error.code === "game_finished") {
-              const game = await dependencies.repository.getGameByJoinCode(joinCode);
               return finishedGameJoinConflictResponse(
                 origin,
                 dependencies.corsAllowedOrigins,
-                game?.gameId ?? "unknown",
+                error.message,
               );
             }
 

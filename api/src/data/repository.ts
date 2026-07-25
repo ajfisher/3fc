@@ -309,7 +309,7 @@ function isValidTimestamp(value: unknown): value is string {
 
 const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const JOIN_CODE_LENGTH = 8;
-const JOIN_CODE_PATTERN = /^[A-Z0-9]{8}$/;
+const JOIN_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
 
 export function buildJoinCodeForGameId(gameId: string): string {
   const digest = createHash("sha256").update(`3fc:join:${gameId}`).digest();
@@ -329,7 +329,7 @@ function normalizeJoinCode(joinCode: string): string {
 function normalizeCustomJoinCode(joinCode: string): string {
   const normalizedJoinCode = normalizeJoinCode(joinCode);
   if (!JOIN_CODE_PATTERN.test(normalizedJoinCode)) {
-    throw new Error("joinCode must be 8 letters or digits.");
+    throw new Error("joinCode must be 8 uppercase non-ambiguous letters or digits.");
   }
 
   return normalizedJoinCode;
@@ -721,9 +721,20 @@ function isConditionalWriteFailure(error: unknown): boolean {
     return false;
   }
 
-  return transactionCancellationReasons(error).some((reason) =>
-    isConditionalCancellationCode(reason.Code),
-  );
+  const reasons = transactionCancellationReasons(error);
+  let hasConditionalFailure = false;
+  for (const reason of reasons) {
+    if (!reason.Code || reason.Code === "None") {
+      continue;
+    }
+    if (isConditionalCancellationCode(reason.Code)) {
+      hasConditionalFailure = true;
+      continue;
+    }
+    return false;
+  }
+
+  return hasConditionalFailure;
 }
 
 function transactionCancellationReasons(error: unknown): Array<{ Code?: string }> {
@@ -3937,7 +3948,9 @@ export class ThreeFcRepository {
   async getIdempotencyRecord(scope: string, key: string): Promise<IdempotencyRecord | null> {
     requireNonEmpty("scope", scope);
     requireNonEmpty("key", key);
-    const item = await this.getEntity(idempotencyPk(scope, key), metadataSk());
+    const item = await this.getEntity(idempotencyPk(scope, key), metadataSk(), {
+      consistentRead: true,
+    });
 
     if (!item || item.entityType !== ENTITY_TYPE.idempotency) {
       return null;

@@ -518,7 +518,16 @@ function joinCodeInvalidFormat(request: IncomingMessage, response: ServerRespons
   sendJsonWithCors(request, response, 400, {
     error: "bad_request",
     code: "join_code_invalid",
-    message: "Join code must be 8 letters or digits.",
+    message: "Join code must be 8 uppercase non-ambiguous letters or digits.",
+  });
+  return 400;
+}
+
+function joinCodeMalformed(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 400, {
+    error: "bad_request",
+    code: "join_code_invalid",
+    message: "Join code must be URL encoded correctly.",
   });
   return 400;
 }
@@ -535,12 +544,12 @@ function invalidJoinCode(request: IncomingMessage, response: ServerResponse): nu
 function finishedGameJoinConflict(
   request: IncomingMessage,
   response: ServerResponse,
-  gameId: string,
+  message: string,
 ): number {
   sendJsonWithCors(request, response, 409, {
     error: "conflict",
     code: "game_finished",
-    message: `Game ${gameId} is finished. Join registration is closed.`,
+    message,
   });
   return 409;
 }
@@ -2137,7 +2146,7 @@ async function start(): Promise<void> {
         try {
           joinCode = normalizeJoinCodePathParam(decodeURIComponent(joinGameMatch[1]));
         } catch {
-          status = badRequest(request, response, "Join code must be URL encoded correctly.");
+          status = joinCodeMalformed(request, response);
           return;
         }
         if (joinCode.length === 0) {
@@ -2173,8 +2182,7 @@ async function start(): Promise<void> {
         } catch (error) {
           if (error instanceof GameJoinRegistrationError) {
             if (error.code === "game_finished") {
-              const game = await repository.getGameByJoinCode(joinCode);
-              status = finishedGameJoinConflict(request, response, game?.gameId ?? "unknown");
+              status = finishedGameJoinConflict(request, response, error.message);
               return;
             }
 

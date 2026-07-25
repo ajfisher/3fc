@@ -15,12 +15,6 @@ paths:
     post:
       summary: Reject join registration without a join code
       operationId: rejectMissingJoinCode
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/JoinGameRequest"
       responses:
         "400":
           $ref: "#/components/responses/BadRequest"
@@ -36,7 +30,7 @@ paths:
             type: string
             minLength: 8
             maxLength: 8
-            pattern: "^[A-Za-z0-9]{8}$"
+            pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$"
       requestBody:
         required: true
         content:
