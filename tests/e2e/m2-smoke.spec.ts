@@ -1,7 +1,6 @@
 import {
   DeleteItemCommand,
   DynamoDBClient,
-  PutItemCommand,
   QueryCommand,
   ScanCommand,
   type AttributeValue,
@@ -30,7 +29,6 @@ interface SmokeRunCleanupInput {
   gameId: string;
   sessionId: string;
   playerIds: string[];
-  originalSessionMetadata: DynamoItem | null;
 }
 
 function authRateLimitHash(dimension: "email" | "ip", identifier: string): string {
@@ -92,10 +90,6 @@ function itemSearchText(item: DynamoItem): string {
     .join("\n");
 }
 
-function cloneDynamoItem(item: DynamoItem): DynamoItem {
-  return structuredClone(item) as DynamoItem;
-}
-
 async function queryPartition(client: DynamoDBClient, pk: string): Promise<DynamoItem[]> {
   const items: DynamoItem[] = [];
   let exclusiveStartKey: Record<string, AttributeValue> | undefined;
@@ -116,16 +110,6 @@ async function queryPartition(client: DynamoDBClient, pk: string): Promise<Dynam
   } while (exclusiveStartKey);
 
   return items;
-}
-
-async function readSessionMetadataSnapshot(
-  client: DynamoDBClient,
-  sessionId: string,
-): Promise<DynamoItem | null> {
-  const metadata = (await queryPartition(client, `SESSION#${sessionId}`)).find(
-    (item) => item.sk?.S === "METADATA",
-  );
-  return metadata ? cloneDynamoItem(metadata) : null;
 }
 
 async function scanTaggedItems(client: DynamoDBClient, needles: string[]): Promise<DynamoItem[]> {
@@ -209,15 +193,6 @@ async function deleteItems(client: DynamoDBClient, items: DynamoItem[]): Promise
   }
 }
 
-async function putItem(client: DynamoDBClient, item: DynamoItem): Promise<void> {
-  await client.send(
-    new PutItemCommand({
-      TableName: dynamodbTableName,
-      Item: cloneDynamoItem(item),
-    }),
-  );
-}
-
 async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
   if (process.env.THREEFC_SKIP_SMOKE_CLEANUP === "1") {
     return;
@@ -225,6 +200,7 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
 
   const client = createLocalDynamoClient();
   try {
+    const runNeedles = [input.runId, input.leagueSlug, input.seasonSlug, input.gameId].filter(Boolean);
     const partitions = [
       `LEAGUE#${input.leagueSlug}`,
       `SEASON#${input.seasonSlug}`,
@@ -248,21 +224,25 @@ async function cleanupSmokeRun(input: SmokeRunCleanupInput): Promise<void> {
       );
 
       const remainingSessionItems = await queryPartition(client, sessionPk);
-      await deleteItems(
-        client,
-        remainingSessionItems.filter((item) => item.sk?.S === "METADATA"),
+      const remainingSessionGameItems = remainingSessionItems.filter((item) =>
+        (item.sk?.S ?? "").startsWith("GAME#"),
       );
-      if (input.originalSessionMetadata) {
-        await putItem(client, input.originalSessionMetadata);
+      const currentSessionMetadata = remainingSessionItems.find((item) => item.sk?.S === "METADATA");
+      const metadataBelongsToRun = currentSessionMetadata
+        ? runNeedles.some((needle) => itemSearchText(currentSessionMetadata).includes(needle))
+        : false;
+      if (currentSessionMetadata && metadataBelongsToRun && remainingSessionGameItems.length === 0) {
+        await deleteItems(client, [currentSessionMetadata]);
       }
     }
 
+    const taggedItems = await scanTaggedItems(client, runNeedles);
     await deleteItems(
       client,
-      await scanTaggedItems(
-        client,
-        [input.runId, input.leagueSlug, input.seasonSlug, input.gameId].filter(Boolean),
-      ),
+      taggedItems.filter((item) => {
+        const key = itemKey(item);
+        return !(key?.pk === `SESSION#${input.sessionId}` && key.sk === "METADATA");
+      }),
     );
     await deleteItems(client, await scanAuthRateLimitItems(client, input));
 
@@ -412,13 +392,6 @@ test.describe("M2 local-stack smoke", () => {
     const sessionId = schedule.gameDate.replaceAll("-", "");
     let gameId = "";
     const playerIds: string[] = [];
-    const snapshotClient = createLocalDynamoClient();
-    let originalSessionMetadata: DynamoItem | null = null;
-    try {
-      originalSessionMetadata = await readSessionMetadataSnapshot(snapshotClient, sessionId);
-    } finally {
-      snapshotClient.destroy();
-    }
 
     let testFailed = false;
     try {
@@ -520,7 +493,6 @@ test.describe("M2 local-stack smoke", () => {
           gameId,
           sessionId,
           playerIds,
-          originalSessionMetadata,
         });
       } catch (error) {
         if (!testFailed) {
