@@ -1551,6 +1551,9 @@
 
       const timer = buildTimerState(currentGame);
       const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
+      if (timer.status === "complete") {
+        return "final";
+      }
       if (hasStarted || rosteredPlayers().length > 0) {
         return hasStarted ? "run" : "players";
       }

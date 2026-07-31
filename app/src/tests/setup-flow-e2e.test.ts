@@ -2153,6 +2153,41 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert.match(resultSummary.textContent ?? "", /Draw/);
 });
 
+test("game page resumes completed live timers in finalisation mode", async () => {
+  const apiState = createMockApiState();
+  const completeThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:0${third.third}:00.000Z`,
+    finishedAt: `2026-03-28T11:1${third.third}:00.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-mode-complete",
+    status: "live",
+    thirds: completeThirds,
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-mode-complete" }),
+    url: "http://localhost:3000/games/game-mode-complete",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const runMode = page.document.getElementById("game-mode-run");
+  const finalMode = page.document.getElementById("game-mode-final");
+  const finishGameButton = page.document.querySelector('[data-action="finish-game"]');
+  const finalReadiness = page.document.getElementById("final-game-readiness");
+
+  assert(runMode instanceof page.window.HTMLElement);
+  assert(finalMode instanceof page.window.HTMLElement);
+  assert(finishGameButton instanceof page.window.HTMLButtonElement);
+  assert(finalReadiness instanceof page.window.HTMLElement);
+  assert.equal(runMode.hidden, true);
+  assert.equal(finalMode.hidden, false);
+  assert.equal(finishGameButton.disabled, false);
+  assert.match(finalReadiness.textContent ?? "", /Ready to finish/);
+});
+
 test("game page remains usable when goal timeline load fails", async () => {
   const apiState = createMockApiState();
   apiState.session = {
