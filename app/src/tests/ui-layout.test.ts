@@ -200,13 +200,37 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);
+  assert.match(html, /data-testid="game-mode-nav"/);
+  assert.match(html, /data-testid="game-mode-structure-tab"/);
+  assert.match(html, /data-testid="game-mode-players-tab"/);
+  assert.match(html, /data-testid="game-mode-run-tab"/);
+  assert.match(html, /data-testid="game-mode-final-tab"/);
+  assert.match(html, /data-testid="game-mode-status"/);
+  assert.match(html, /data-testid="game-mode-structure"/);
+  assert.match(html, /data-testid="game-mode-players" hidden/);
+  assert.match(html, /data-testid="game-mode-run" data-mode-layout="run" hidden/);
+  assert.match(html, /data-testid="game-mode-final" hidden/);
   assert.match(html, /data-testid="panel-game-timer"/);
   assert.match(html, /data-testid="third-timer"/);
   assert.match(html, /data-testid="start-third"/);
   assert.match(html, /data-testid="finish-third"/);
   assert.match(html, /data-testid="finish-game"/);
   assert.match(html, /data-testid="game-result-summary"/);
+  assert.match(html, /data-testid="panel-game-final"/);
+  assert.match(html, /data-testid="finalisation-board"/);
   assert.match(html, /data-testid="game-edit-third-length"/);
+  assert.ok(
+    html.indexOf('data-testid="game-mode-structure"') < html.indexOf('data-testid="game-mode-players"'),
+    "Structure mode should appear before player setup.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="game-mode-players"') < html.indexOf('data-testid="game-mode-run"'),
+    "Player setup should appear before run mode.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="game-mode-run"') < html.indexOf('data-testid="game-mode-final"'),
+    "Run mode should appear before finalisation.",
+  );
   assert.ok(
     html.indexOf('data-testid="panel-game-roster"') < html.indexOf('data-testid="panel-game-live"'),
     "Roster setup should appear before live scoring in the game workflow.",

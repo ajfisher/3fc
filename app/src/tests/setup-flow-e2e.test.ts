@@ -2009,6 +2009,150 @@ test("game page quick-creates and assigns roster players", async () => {
   assert.match(goalFormNote.textContent ?? "", /third 2/);
 });
 
+test("game page mode panels switch without resetting a goal draft", async () => {
+  const apiState = createMockApiState();
+  const runningThirds = createDefaultThirdTimerSegments();
+  runningThirds[0] = {
+    ...runningThirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-mode-draft",
+    status: "live",
+    thirds: runningThirds,
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-mode-draft" }),
+    url: "http://localhost:3000/games/game-mode-draft",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const runMode = page.document.getElementById("game-mode-run");
+  const playersMode = page.document.getElementById("game-mode-players");
+  const playersTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="players"]');
+  const runTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="run"]');
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const assistsElement = page.document.getElementById("goal-assists");
+
+  assert(runMode instanceof page.window.HTMLElement);
+  assert(playersMode instanceof page.window.HTMLElement);
+  assert(playersTab instanceof page.window.HTMLButtonElement);
+  assert(runTab instanceof page.window.HTMLButtonElement);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(assistsElement instanceof page.window.HTMLElement);
+  assert.equal(runMode.hidden, false);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  const beaAssist = assistsElement.querySelector('input[value="player-bea"]');
+  assert(beaAssist instanceof page.window.HTMLInputElement);
+  beaAssist.checked = true;
+  beaAssist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+
+  dispatchClick(playersTab);
+  await flushAsync();
+  assert.equal(playersMode.hidden, false);
+  assert.equal(runMode.hidden, true);
+
+  dispatchClick(runTab);
+  await flushAsync();
+  assert.equal(runMode.hidden, false);
+  assert.equal(scoringTeamInput.value, "red");
+  assert.equal(concedingTeamInput.value, "blue");
+  assert.equal(scorerInput.value, "player-ari");
+  const preservedAssist = assistsElement.querySelector('input[value="player-bea"]');
+  assert(preservedAssist instanceof page.window.HTMLInputElement);
+  assert.equal(preservedAssist.checked, true);
+});
+
+test("game page mode panels advance from setup to run and finalisation", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-mode-advance",
+  });
+  apiState.roster.clear();
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-mode-advance" }),
+    url: "http://localhost:3000/games/game-mode-advance",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const structureMode = page.document.getElementById("game-mode-structure");
+  const playersMode = page.document.getElementById("game-mode-players");
+  const runMode = page.document.getElementById("game-mode-run");
+  const finalMode = page.document.getElementById("game-mode-final");
+  const playersTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="players"]');
+  const runTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="run"]');
+  const startThirdButton = page.document.querySelector('[data-action="start-active-third"]');
+  const finishThirdButton = page.document.querySelector('[data-action="finish-active-third"]');
+  const finishGameButton = page.document.querySelector('[data-action="finish-game"]');
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const finalReadiness = page.document.getElementById("final-game-readiness");
+
+  assert(structureMode instanceof page.window.HTMLElement);
+  assert(playersMode instanceof page.window.HTMLElement);
+  assert(runMode instanceof page.window.HTMLElement);
+  assert(finalMode instanceof page.window.HTMLElement);
+  assert(playersTab instanceof page.window.HTMLButtonElement);
+  assert(runTab instanceof page.window.HTMLButtonElement);
+  assert(startThirdButton instanceof page.window.HTMLButtonElement);
+  assert(finishThirdButton instanceof page.window.HTMLButtonElement);
+  assert(finishGameButton instanceof page.window.HTMLButtonElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(finalReadiness instanceof page.window.HTMLElement);
+  assert.equal(structureMode.hidden, false);
+  assert.equal(playersMode.hidden, true);
+
+  dispatchClick(playersTab);
+  await flushAsync();
+  assert.equal(structureMode.hidden, true);
+  assert.equal(playersMode.hidden, false);
+
+  dispatchClick(runTab);
+  await flushAsync();
+  assert.equal(runMode.hidden, false);
+
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  assert.equal(runMode.hidden, false);
+  assert.match(finalReadiness.textContent ?? "", /Running/);
+
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+  dispatchClick(startThirdButton);
+  await flushAsync();
+  dispatchClick(finishThirdButton);
+  await flushAsync();
+
+  assert.equal(finalMode.hidden, false);
+  assert.match(finalReadiness.textContent ?? "", /Ready to finish/);
+  assert.equal(finishGameButton.disabled, false);
+
+  dispatchClick(finishGameButton);
+  await flushAsync();
+
+  assert.equal(apiState.games.get("game-mode-advance")?.status, "finished");
+  assert.equal(finalMode.hidden, false);
+  assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", /Draw/);
+});
+
 test("game page remains usable when goal timeline load fails", async () => {
   const apiState = createMockApiState();
   apiState.session = {

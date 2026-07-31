@@ -619,6 +619,11 @@ async function createAndAssignPlayer(
   return playerId;
 }
 
+async function selectGameMode(page: Page, mode: "structure" | "players" | "run" | "final"): Promise<void> {
+  await page.getByTestId(`game-mode-${mode}-tab`).click();
+  await expect(page.getByTestId(`game-mode-${mode}`)).toBeVisible();
+}
+
 async function startThird(page: Page, third: 1 | 2 | 3): Promise<void> {
   await expect(page.getByTestId("start-third")).toHaveText(`Start Third ${third}`);
   await page.getByTestId("start-third").click();
@@ -965,6 +970,8 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
+      await expect(page.getByTestId("game-mode-structure")).toBeVisible();
+      await expect(page.getByTestId("game-mode-players")).toBeHidden();
       const joinCodeValue = page.getByTestId("game-join-code-value");
       await expect(joinCodeValue).toHaveText(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
       const joinCode = (await joinCodeValue.innerText()).trim();
@@ -1009,6 +1016,7 @@ test.describe("M2 local-stack smoke", () => {
         playerIds.push(joinResult.body.player.playerId);
       }
 
+      await selectGameMode(page, "players");
       await page.locator("#player-search").fill("Cy");
       await expect(page.locator('[data-ui="roster-player"]').filter({ hasText: "Cy" })).toBeVisible();
       await page.locator("#player-search").fill("");
@@ -1020,6 +1028,9 @@ test.describe("M2 local-stack smoke", () => {
         playerIds.push(playerId);
       });
 
+      await selectGameMode(page, "run");
+      await expect(page.getByTestId("add-goal")).toBeVisible();
+      await expect(page.getByTestId("undo-last-goal")).toBeVisible();
       await startThird(page, 1);
       await page.locator("#goal-scoring-team").selectOption("red");
       await page.locator("#goal-conceding-team").selectOption("blue");
@@ -1038,6 +1049,7 @@ test.describe("M2 local-stack smoke", () => {
       await startThird(page, 3);
       await finishThird(page, 3);
 
+      await expect(page.getByTestId("game-mode-final")).toBeVisible();
       await expect(page.getByTestId("finish-game")).toBeEnabled();
       await page.getByTestId("finish-game").click();
 
@@ -1052,10 +1064,12 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("finish-game")).toBeDisabled();
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
       await expect(page.getByTestId("delete-game")).toBeDisabled();
+      await selectGameMode(page, "players");
       await expect(page.getByTestId("quick-create-player")).toBeEnabled();
+      await expectAllEnabled(page.locator('[data-action="assign-player"]'));
+      await selectGameMode(page, "run");
       await expect(page.getByTestId("add-goal")).toBeEnabled();
       await expect(page.locator("#goal-form-note")).toContainText("final whistle");
-      await expectAllEnabled(page.locator('[data-action="assign-player"]'));
       await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
       await expect(page.locator('[data-action="delete-goal"]').first()).toBeEnabled();
       await expect(page.getByTestId("undo-last-goal")).toBeEnabled();

@@ -1381,6 +1381,9 @@
     const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
     const finishGameButton = root.querySelector('[data-action="finish-game"]');
     const gameResultSummaryElement = document.getElementById("game-result-summary");
+    const finalGameIdValue = document.getElementById("final-game-id-value");
+    const finalGameStatus = document.getElementById("final-game-status");
+    const finalGameReadiness = document.getElementById("final-game-readiness");
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerSearchInput = document.getElementById("player-search");
@@ -1426,6 +1429,17 @@
     let currentLeagueRole = null;
     let pendingCreateGoalIdempotency = null;
     const pendingGoalMutationIdempotency = new Map();
+    const gameModes = ["structure", "players", "run", "final"];
+    const gameModeLabels = {
+      structure: "Game setup",
+      players: "Players",
+      run: "Run game",
+      final: "Finalisation",
+    };
+    const gameModeTabs = [...root.querySelectorAll('[role="tab"][data-game-mode]')];
+    const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
+    const gameModePanels = [...root.querySelectorAll('[data-ui="game-mode-panel"][data-game-mode]')];
+    const gameModeStatus = document.getElementById("game-mode-status");
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -1453,6 +1467,125 @@
 
     function isFinishedGoalCorrection() {
       return isGameFinished() && isEditingGoal() && canCorrectFinishedGoals();
+    }
+
+    function humanGameStatus(value) {
+      const labels = {
+        scheduled: "Scheduled",
+        live: "Live",
+        finished: "Finished",
+      };
+      return labels[value] ?? "Loading";
+    }
+
+    function isGameMode(value) {
+      return gameModes.includes(value);
+    }
+
+    function setModeMeta(mode, text) {
+      const meta = root.querySelector(`[data-mode-meta="${mode}"]`);
+      if (meta instanceof HTMLElement) {
+        meta.textContent = text;
+      }
+    }
+
+    function setGameMode(mode, options = {}) {
+      if (!isGameMode(mode)) {
+        return;
+      }
+
+      for (const panel of gameModePanels) {
+        if (!(panel instanceof HTMLElement)) {
+          continue;
+        }
+        const active = panel.getAttribute("data-game-mode") === mode;
+        panel.hidden = !active;
+        panel.setAttribute("tabindex", "-1");
+      }
+
+      for (const tab of gameModeTabs) {
+        if (!(tab instanceof HTMLElement)) {
+          continue;
+        }
+        const active = tab.getAttribute("data-game-mode") === mode;
+        tab.setAttribute("aria-selected", active ? "true" : "false");
+        tab.setAttribute("data-state", active ? "active" : "idle");
+      }
+
+      for (const trigger of gameModeTriggers) {
+        if (trigger instanceof HTMLElement) {
+          trigger.setAttribute("data-current", trigger.getAttribute("data-game-mode") === mode ? "true" : "false");
+        }
+      }
+
+      if (gameModeStatus instanceof HTMLElement) {
+        gameModeStatus.textContent = gameModeLabels[mode] ?? "Game setup";
+      }
+
+      if (options.focusPanel === true) {
+        const panel = gameModePanels.find((candidate) => candidate.getAttribute("data-game-mode") === mode);
+        if (panel instanceof HTMLElement) {
+          panel.focus({ preventScroll: false });
+        }
+      }
+    }
+
+    function gameModeFromHash() {
+      const hashMode = window.location.hash.replace(/^#/, "").replace(/^mode-/, "");
+      return isGameMode(hashMode) ? hashMode : null;
+    }
+
+    function preferredInitialGameMode() {
+      const requested = gameModeFromHash();
+      if (requested) {
+        return requested;
+      }
+
+      if (!currentGame) {
+        return "structure";
+      }
+
+      if (isGameFinished()) {
+        return "final";
+      }
+
+      const timer = buildTimerState(currentGame);
+      const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
+      if (hasStarted || rosteredPlayers().length > 0) {
+        return hasStarted ? "run" : "players";
+      }
+
+      return "structure";
+    }
+
+    function syncGameModeState() {
+      const timer = currentGame ? buildTimerState(currentGame) : null;
+      const rosteredCount = rosteredPlayers().length;
+      const hasStarted = timer ? timer.thirds.some((third) => third.startedAt !== null) : false;
+      const complete = timer?.status === "complete";
+      const finished = isGameFinished();
+      const finalReadiness = finished
+        ? "Summary posted"
+        : complete
+          ? "Ready to finish"
+          : hasStarted
+            ? humanTimerStatus(timer.status)
+            : "Not started";
+
+      setModeMeta("structure", humanGameStatus(currentGame?.status));
+      setModeMeta("players", `${rosteredCount} assigned`);
+      setModeMeta("run", timer ? humanTimerStatus(timer.status) : "Timer");
+      setModeMeta("final", finished || complete ? "Ready" : "Pending");
+
+      if (finalGameIdValue instanceof HTMLElement && currentGame?.gameId) {
+        finalGameIdValue.textContent = currentGame.gameId;
+      }
+      if (finalGameStatus instanceof HTMLElement) {
+        finalGameStatus.textContent = humanGameStatus(currentGame?.status);
+      }
+      if (finalGameReadiness instanceof HTMLElement) {
+        finalGameReadiness.textContent = finalReadiness;
+      }
     }
 
     function nextStartableThird(timer) {
@@ -1583,6 +1716,7 @@
         timerTickInterval = window.setInterval(renderTimer, 1000);
       }
       renderGameResult();
+      syncGameModeState();
     }
 
     function rosterControlsAvailable() {
@@ -1758,6 +1892,7 @@
       if (!isGameFinished() || !result || teams.length === 0) {
         gameResultSummaryElement.hidden = true;
         gameResultSummaryElement.innerHTML = "";
+        syncGameModeState();
         return;
       }
 
@@ -1793,6 +1928,7 @@
             .join("")}
         </div>
       </section>`;
+      syncGameModeState();
     }
 
     function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select", missingSelectedLabel = null) {
@@ -2072,6 +2208,7 @@
       renderLiveScoreboard();
       renderGoalControls(seed);
       renderGoalTimeline();
+      syncGameModeState();
     }
 
     function applyGoalMutationResult(result, fallback = {}) {
@@ -2328,6 +2465,7 @@
       }
       renderPlayerPool();
       renderRosterTeams();
+      syncGameModeState();
     }
 
     async function loadRosterSetup(options = {}) {
@@ -2405,6 +2543,9 @@
       if (gameIdValue) {
         gameIdValue.textContent = game.gameId;
       }
+      if (finalGameIdValue) {
+        finalGameIdValue.textContent = game.gameId;
+      }
       if (gameJoinCodeValue) {
         gameJoinCodeValue.textContent = typeof game.joinCode === "string" && game.joinCode.length > 0
           ? game.joinCode
@@ -2436,6 +2577,7 @@
       statusInput.value = game.status;
       thirdLengthInput.value = String(parseThirdLengthMinutes(game.thirdLengthMinutes ?? game.timer?.thirdLengthMinutes));
       renderTimer();
+      syncGameModeState();
 
       if (gameLeagueLink instanceof HTMLAnchorElement) {
         gameLeagueLink.href = `/leagues/${encodeURIComponent(game.leagueId)}`;
@@ -2499,6 +2641,7 @@
         });
 
         await loadGame();
+        setGameMode("players", { focusPanel: true });
         setStatus("Game updated.", "success");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not update game.";
@@ -2556,6 +2699,7 @@
           `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/start`,
           { method: "POST" },
         );
+        setGameMode("run");
         renderTimer();
         renderLiveScoring();
         statusInput.value = currentGame.status;
@@ -2590,6 +2734,9 @@
           `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/finish`,
           { method: "POST" },
         );
+        if (buildTimerState(currentGame).status === "complete") {
+          setGameMode("final");
+        }
         renderTimer();
         renderLiveScoring();
         statusInput.value = currentGame.status;
@@ -2632,6 +2779,7 @@
         if (isGameFinished()) {
           await loadLeagueAccess();
         }
+        setGameMode("final");
         statusInput.value = currentGame.status;
         renderTimer();
         renderRosterSetup();
@@ -2646,6 +2794,20 @@
         renderRosterSetup();
         renderLiveScoring();
       }
+    });
+
+    root.addEventListener("click", (event) => {
+      const target = event.target;
+      const trigger =
+        target instanceof Element
+          ? target.closest('[data-action="select-game-mode"][data-game-mode]')
+          : null;
+      if (!(trigger instanceof HTMLElement)) {
+        return;
+      }
+
+      const mode = trigger.getAttribute("data-game-mode");
+      setGameMode(mode, { focusPanel: trigger.getAttribute("role") !== "tab" });
     });
 
     if (rosterControlsAvailable()) {
@@ -2980,6 +3142,8 @@
     }
     await loadRosterSetup({ updateStatus: false });
     const goalsLoaded = await loadGameGoals();
+    setGameMode(preferredInitialGameMode());
+    syncGameModeState();
 
     try {
       const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {
