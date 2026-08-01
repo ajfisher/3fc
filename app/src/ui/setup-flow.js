@@ -672,6 +672,43 @@
     };
   }
 
+  function normalizePositiveInteger(value) {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  function normalizePositiveNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  function regulationMinuteForElapsedSeconds(totalSeconds, thirdLengthMinutes) {
+    const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+    const nominalSeconds = thirdLengthMinutes * 60;
+    return Math.max(1, Math.min(thirdLengthMinutes, Math.floor(Math.min(safeSeconds, nominalSeconds) / 60) + 1));
+  }
+
+  function fullMatchMinuteForThird(third, thirdMinute, thirdLengthMinutes) {
+    const safeThird = normalizePositiveInteger(third);
+    const safeThirdMinute = normalizePositiveInteger(thirdMinute);
+    if (!safeThird || !safeThirdMinute) {
+      return null;
+    }
+
+    return (safeThird - 1) * thirdLengthMinutes + Math.min(safeThirdMinute, thirdLengthMinutes);
+  }
+
+  function fullMatchMinuteForThirdElapsed(third, elapsedSecondsValue, thirdLengthMinutes) {
+    const safeThird = normalizePositiveInteger(third);
+    const safeElapsedSeconds = normalizePositiveNumber(elapsedSecondsValue);
+    if (!safeThird || safeElapsedSeconds === null) {
+      return null;
+    }
+
+    return (
+      (safeThird - 1) * thirdLengthMinutes +
+      regulationMinuteForElapsedSeconds(safeElapsedSeconds, thirdLengthMinutes)
+    );
+  }
+
   function humanTimerStatus(value) {
     const labels = {
       not_started: "Not started",
@@ -1390,6 +1427,7 @@
     const timerThirdLength = document.getElementById("timer-third-length");
     const timerStatus = document.getElementById("timer-status");
     const timerActiveThird = document.getElementById("timer-active-third");
+    const timerDisplayElement = document.getElementById("timer-display");
     const thirdStatusList = document.getElementById("third-status-list");
     const startThirdButton = root.querySelector('[data-action="start-active-third"]');
     const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
@@ -1741,7 +1779,7 @@
 
       setGameMode("run");
       const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
-      focusElementAction(activeSegment ? finishThirdButton : startThirdButton);
+      focusElementAction(activeSegment ? timerDisplayElement : startThirdButton);
       return true;
     }
 
@@ -2318,33 +2356,53 @@
     }
 
     function goalDisplayTime(goal) {
-      if (Number.isInteger(goal.gameMinute) && goal.gameMinute > 0) {
-        if (Number.isInteger(goal.stoppageMinute) && goal.stoppageMinute > 0) {
-          return `${goal.gameMinute}+${goal.stoppageMinute}"`;
+      const thirdLength = parseThirdLengthMinutes(currentGame?.thirdLengthMinutes ?? currentGame?.timer?.thirdLengthMinutes);
+      const stoppageMinute = normalizePositiveInteger(goal.stoppageMinute);
+      const safeThird = normalizePositiveInteger(goal.third);
+      if (stoppageMinute) {
+        const stoppageBaseMinute = safeThird
+          ? safeThird * thirdLength
+          : normalizePositiveInteger(goal.gameMinute);
+        if (stoppageBaseMinute) {
+          return `${stoppageBaseMinute}+${stoppageMinute}"`;
         }
-
-        return `${goal.gameMinute}"`;
       }
 
-      const thirdLength = parseThirdLengthMinutes(currentGame?.thirdLengthMinutes ?? currentGame?.timer?.thirdLengthMinutes);
-      if (Number.isInteger(goal.third) && Number.isInteger(goal.thirdMinute) && goal.third > 0 && goal.thirdMinute > 0) {
-        const regulationMinute = (goal.third - 1) * thirdLength + Math.min(goal.thirdMinute, thirdLength);
-        if (Number.isInteger(goal.stoppageMinute) && goal.stoppageMinute > 0) {
-          return `${goal.third * thirdLength}+${goal.stoppageMinute}"`;
-        }
-
+      const regulationMinute = fullMatchMinuteForThird(goal.third, goal.thirdMinute, thirdLength);
+      if (regulationMinute) {
         return `${regulationMinute}"`;
+      }
+
+      const elapsedMinute = fullMatchMinuteForThirdElapsed(goal.third, goal.elapsedSeconds, thirdLength);
+      if (elapsedMinute) {
+        return `${elapsedMinute}"`;
+      }
+
+      if (Number.isInteger(goal.gameMinute) && goal.gameMinute > 0) {
+        return `${goal.gameMinute}"`;
       }
 
       if (typeof goal.displayTime === "string" && goal.displayTime.length > 0) {
         const stoppageMatch = goal.displayTime.match(/^(\d+)\+0?(\d+)$/);
         if (stoppageMatch) {
-          return `${stoppageMatch[1]}+${Number.parseInt(stoppageMatch[2], 10)}"`;
+          const stoppageBaseMinute = safeThird
+            ? safeThird * thirdLength
+            : Number.parseInt(stoppageMatch[1], 10);
+          return `${stoppageBaseMinute}+${Number.parseInt(stoppageMatch[2], 10)}"`;
         }
 
         const clockMatch = goal.displayTime.match(/^(\d+):\d{2}$/);
         if (clockMatch) {
-          return `${Math.max(1, Number.parseInt(clockMatch[1], 10))}"`;
+          const periodMinute = Math.max(1, Number.parseInt(clockMatch[1], 10));
+          if (safeThird) {
+            return `${(safeThird - 1) * thirdLength + Math.min(periodMinute, thirdLength)}"`;
+          }
+          return `${periodMinute}"`;
+        }
+
+        const decimalMinuteMatch = goal.displayTime.match(/^(\d+(?:\.\d+)?)$/);
+        if (decimalMinuteMatch) {
+          return `${Math.max(1, Math.ceil(Number.parseFloat(decimalMinuteMatch[1])))}"`;
         }
 
         const minuteMatch = goal.displayTime.match(/^(\d+)'?$/);

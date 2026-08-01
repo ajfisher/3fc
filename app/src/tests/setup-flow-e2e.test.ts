@@ -2360,6 +2360,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   const startThirdButton = page.document.querySelector('[data-action="start-active-third"]');
   const finishThirdButton = page.document.querySelector('[data-action="finish-active-third"]');
   const finishGameButton = page.document.querySelector('[data-action="finish-game"]');
+  const timerDisplay = page.document.getElementById("timer-display");
   const resultSummary = page.document.getElementById("game-result-summary");
   const finalReadiness = page.document.getElementById("final-game-readiness");
   const thirdStatusList = page.document.getElementById("third-status-list");
@@ -2374,6 +2375,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert(startThirdButton instanceof page.window.HTMLButtonElement);
   assert(finishThirdButton instanceof page.window.HTMLButtonElement);
   assert(finishGameButton instanceof page.window.HTMLButtonElement);
+  assert(timerDisplay instanceof page.window.HTMLElement);
   assert(resultSummary instanceof page.window.HTMLElement);
   assert(finalReadiness instanceof page.window.HTMLElement);
   assert(thirdStatusList instanceof page.window.HTMLElement);
@@ -2412,7 +2414,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   dispatchClick(gameStateTab);
   await flushAsync();
   assert.equal(runMode.hidden, false);
-  assert.equal(page.document.activeElement, finishThirdButton);
+  assert.equal(page.document.activeElement, timerDisplay);
 
   dispatchClick(finishThirdButton);
   await flushAsync();
@@ -2672,6 +2674,79 @@ test("game page renders final team logs and aggregate player stats", async () =>
   assert.equal(fullGoalLog.querySelectorAll('[data-ui="final-goal-item"]').length, 3);
   assert.match(fullGoalLog.textContent ?? "", /43"/);
   assert.match(fullGoalLog.textContent ?? "", /Third 2/);
+});
+
+test("game page converts partial goal times into full-match football notation", async () => {
+  const apiState = createMockApiState();
+  const completeThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:0${third.third}:00.000Z`,
+    finishedAt: `2026-03-28T11:1${third.third}:00.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-football-time-format",
+    status: "finished",
+    thirds: completeThirds,
+  });
+
+  const seededGame = apiState.games.get("game-football-time-format");
+  assert(seededGame);
+  seededGame.thirdLengthMinutes = 25;
+
+  apiState.goalEvents.set("goal-partial-second-third", {
+    gameId: "game-football-time-format",
+    eventId: "goal-partial-second-third",
+    third: 2,
+    thirdMinute: 18,
+    gameMinute: 0,
+    elapsedSeconds: 0,
+    stoppageMinute: null,
+    displayTime: "18:00",
+    scoringTeamId: "blue",
+    concedingTeamId: "yellow",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-partial-stoppage", {
+    gameId: "game-football-time-format",
+    eventId: "goal-partial-stoppage",
+    third: 1,
+    thirdMinute: 25,
+    gameMinute: 0,
+    elapsedSeconds: 1680,
+    stoppageMinute: 3,
+    displayTime: "25+03",
+    scoringTeamId: null,
+    concedingTeamId: "red",
+    scorerPlayerId: "player-bea",
+    assistPlayerIds: [],
+    ownGoal: true,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-football-time-format" }),
+    url: "http://localhost:3000/games/game-football-time-format",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const fullGoalLog = page.document.querySelector('[data-testid="final-full-goal-log"]');
+
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(fullGoalLog instanceof page.window.HTMLElement);
+  assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", /43"/);
+  assert.match(resultSummary.textContent ?? "", /25\+3"/);
+  assert.match(fullGoalLog.textContent ?? "", /43"/);
+  assert.match(fullGoalLog.textContent ?? "", /25\+3"/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /18:00|25\+03|UTC|Z\b/);
 });
 
 test("game page remains usable when goal timeline load fails", async () => {

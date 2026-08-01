@@ -511,8 +511,9 @@ body {
 
 [data-ui="run-score-strip"] {
   position: sticky;
-  top: 4.45rem;
+  top: calc(4.45rem + env(safe-area-inset-top, 0px));
   z-index: 18;
+  align-self: start;
   border: 1px solid #c9ded7;
   border-radius: 8px;
   background: #f7fcfa;
@@ -632,6 +633,14 @@ body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.6rem;
+
+  [data-ui="field"] {
+    min-width: 0;
+  }
+
+  [data-ui="input"] {
+    min-width: 0;
+  }
 }
 
 [data-ui="run-goal-form"] [data-ui="field"]:nth-of-type(3),
@@ -1386,7 +1395,7 @@ body {
 
 [data-ui="game-mode-nav"] {
   position: sticky;
-  top: 0.35rem;
+  top: calc(0.35rem + env(safe-area-inset-top, 0px));
   z-index: 20;
   width: 100%;
   max-width: 100%;

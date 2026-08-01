@@ -802,7 +802,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </header>
     <div data-ui="timer-board" data-testid="third-timer">
       <div data-ui="run-timer-bar" data-testid="run-timer-bar">
-        <div data-ui="timer-display">
+        <div data-ui="timer-display" id="timer-display" data-testid="timer-display" tabindex="-1">
           <span id="timer-third-label">Third 1</span>
           <strong id="timer-display-value">00:00</strong>
           <span id="timer-phase-label">Not started</span>
