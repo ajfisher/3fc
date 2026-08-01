@@ -205,6 +205,7 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-mode-players-tab"/);
   assert.match(html, /data-testid="game-mode-run-tab"/);
   assert.match(html, /data-testid="game-mode-final-tab"/);
+  assert.match(html, /data-mode-label="final"/);
   assert.match(html, /data-testid="game-mode-status"/);
   assert.match(html, /data-testid="game-mode-structure"/);
   assert.match(html, /data-testid="game-mode-players" hidden/);

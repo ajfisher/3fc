@@ -1404,6 +1404,12 @@ async function flushAsync(): Promise<void> {
   await Promise.resolve();
 }
 
+function expectedLocalTimestamp(isoTimestamp: string): string {
+  const parsed = new Date(isoTimestamp);
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16).replace("T", " ");
+}
+
 async function bootPage(input: {
   html: string;
   url: string;
@@ -1680,6 +1686,27 @@ test("setup flow shows inline validation for blank required fields", async () =>
   assert.equal(gameKickoffNotice.textContent, "Kickoff time must be valid.");
 });
 
+test("season page renders game kickoff times in the user local timezone", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-season-local-time",
+  });
+
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
+    url: "http://localhost:3000/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const gamesBody = page.document.getElementById("season-games-body");
+  const game = apiState.games.get("game-season-local-time");
+  assert(gamesBody instanceof page.window.HTMLElement);
+  assert(game);
+  assert.match(gamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
+  assert.doesNotMatch(gamesBody.textContent ?? "", /Z\b|UTC/);
+});
+
 test("setup happy path runs from sign-in to created game context", async () => {
   const apiState = createMockApiState();
 
@@ -1782,6 +1809,9 @@ test("setup happy path runs from sign-in to created game context", async () => {
   dispatchClick(createGameButton);
   await flushAsync();
 
+  const createdGame = apiState.games.get(gameId);
+  assert(createdGame);
+
   const gameNavigation = seasonPage.navigations.at(-1);
   assert(gameNavigation);
   assert.equal(gameNavigation.url, `/games/${gameId}`);
@@ -1794,11 +1824,14 @@ test("setup happy path runs from sign-in to created game context", async () => {
   });
 
   const title = gamePage.document.getElementById("game-title");
+  const subtitle = gamePage.document.getElementById("game-subtitle");
   const leagueId = gamePage.document.getElementById("game-league-id");
   const seasonId = gamePage.document.getElementById("game-season-id");
   const createAnotherLink = gamePage.document.getElementById("create-another-game-link");
 
   assert.equal(title?.textContent, gameId);
+  assert.match(subtitle?.textContent ?? "", new RegExp(expectedLocalTimestamp(createdGame.gameStartTs)));
+  assert.doesNotMatch(subtitle?.textContent ?? "", /Z\b|UTC/);
   assert.equal(leagueId?.textContent, "three-sided-football-club");
   assert.equal(seasonId?.textContent, "autumn-cup");
   assert.equal(createAnotherLink?.getAttribute("href"), "/seasons/autumn-cup");
@@ -2143,11 +2176,13 @@ test("game page mode panels advance from setup to run and finalisation", async (
   const finalMode = page.document.getElementById("game-mode-final");
   const playersTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="players"]');
   const runTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="run"]');
+  const gameStateTab = page.document.querySelector('[data-testid="game-mode-final-tab"]');
   const startThirdButton = page.document.querySelector('[data-action="start-active-third"]');
   const finishThirdButton = page.document.querySelector('[data-action="finish-active-third"]');
   const finishGameButton = page.document.querySelector('[data-action="finish-game"]');
   const resultSummary = page.document.getElementById("game-result-summary");
   const finalReadiness = page.document.getElementById("final-game-readiness");
+  const thirdStatusList = page.document.getElementById("third-status-list");
 
   assert(structureMode instanceof page.window.HTMLElement);
   assert(playersMode instanceof page.window.HTMLElement);
@@ -2155,13 +2190,23 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert(finalMode instanceof page.window.HTMLElement);
   assert(playersTab instanceof page.window.HTMLButtonElement);
   assert(runTab instanceof page.window.HTMLButtonElement);
+  assert(gameStateTab instanceof page.window.HTMLButtonElement);
   assert(startThirdButton instanceof page.window.HTMLButtonElement);
   assert(finishThirdButton instanceof page.window.HTMLButtonElement);
   assert(finishGameButton instanceof page.window.HTMLButtonElement);
   assert(resultSummary instanceof page.window.HTMLElement);
   assert(finalReadiness instanceof page.window.HTMLElement);
+  assert(thirdStatusList instanceof page.window.HTMLElement);
   assert.equal(structureMode.hidden, false);
   assert.equal(playersMode.hidden, true);
+  assert.match(gameStateTab.textContent ?? "", /Pregame/);
+  assert.match(gameStateTab.textContent ?? "", /Start clock/);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "pregame");
+
+  dispatchClick(gameStateTab);
+  await flushAsync();
+  assert.equal(runMode.hidden, false);
+  assert.equal(page.document.activeElement, startThirdButton);
 
   dispatchClick(playersTab);
   await flushAsync();
@@ -2176,9 +2221,27 @@ test("game page mode panels advance from setup to run and finalisation", async (
   await flushAsync();
   assert.equal(runMode.hidden, false);
   assert.match(finalReadiness.textContent ?? "", /Running/);
+  assert.match(gameStateTab.textContent ?? "", /Third 1/);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "running");
+
+  dispatchClick(gameStateTab);
+  await flushAsync();
+  assert.equal(runMode.hidden, false);
+  assert.equal(page.document.activeElement, finishThirdButton);
 
   dispatchClick(finishThirdButton);
   await flushAsync();
+  assert.match(thirdStatusList.textContent ?? "", new RegExp(expectedLocalTimestamp("2026-03-28T11:00:11.000Z")));
+  assert.doesNotMatch(thirdStatusList.textContent ?? "", /Z\b|UTC/);
+  assert.match(gameStateTab.textContent ?? "", /Break/);
+  assert.match(gameStateTab.textContent ?? "", /Start T2/);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "break");
+
+  dispatchClick(gameStateTab);
+  await flushAsync();
+  assert.equal(runMode.hidden, false);
+  assert.equal(page.document.activeElement, startThirdButton);
+
   dispatchClick(startThirdButton);
   await flushAsync();
   dispatchClick(finishThirdButton);
@@ -2190,13 +2253,23 @@ test("game page mode panels advance from setup to run and finalisation", async (
 
   assert.equal(finalMode.hidden, false);
   assert.match(finalReadiness.textContent ?? "", /Ready to finish/);
+  assert.match(gameStateTab.textContent ?? "", /Final/);
+  assert.match(gameStateTab.textContent ?? "", /Finish game/);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "ready");
   assert.equal(finishGameButton.disabled, false);
+
+  dispatchClick(gameStateTab);
+  await flushAsync();
+  assert.equal(finalMode.hidden, false);
+  assert.equal(page.document.activeElement, finishGameButton);
 
   dispatchClick(finishGameButton);
   await flushAsync();
 
   assert.equal(apiState.games.get("game-mode-advance")?.status, "finished");
   assert.equal(finalMode.hidden, false);
+  assert.match(gameStateTab.textContent ?? "", /Summary/);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "finished");
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /Draw/);
 });
@@ -2270,12 +2343,12 @@ test("game page renders final team logs and aggregate player stats", async () =>
     {
       gameId: "game-final-stats",
       eventId: "goal-2",
-      third: 1,
-      thirdMinute: 2,
-      gameMinute: 2,
-      elapsedSeconds: 90,
+      third: 2,
+      thirdMinute: 18,
+      gameMinute: 43,
+      elapsedSeconds: 1080,
       stoppageMinute: null,
-      displayTime: "2'",
+      displayTime: "18:00",
       scoringTeamId: "blue",
       concedingTeamId: "yellow",
       scorerPlayerId: "player-cy",
@@ -2287,12 +2360,12 @@ test("game page renders final team logs and aggregate player stats", async () =>
     {
       gameId: "game-final-stats",
       eventId: "goal-3",
-      third: 2,
-      thirdMinute: 4,
-      gameMinute: 24,
-      elapsedSeconds: 240,
-      stoppageMinute: null,
-      displayTime: "4'",
+      third: 1,
+      thirdMinute: 25,
+      gameMinute: 25,
+      elapsedSeconds: 1680,
+      stoppageMinute: 3,
+      displayTime: "25+03",
       scoringTeamId: null,
       concedingTeamId: "red",
       scorerPlayerId: "player-bea",
@@ -2308,6 +2381,7 @@ test("game page renders final team logs and aggregate player stats", async () =>
 
   const seededGame = apiState.games.get("game-final-stats");
   assert(seededGame);
+  seededGame.thirdLengthMinutes = 25;
   refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
 
   const page = await bootPage({
@@ -2331,15 +2405,20 @@ test("game page renders final team logs and aggregate player stats", async () =>
   assert(ownGoalStats instanceof page.window.HTMLElement);
   assert(fullGoalLog instanceof page.window.HTMLElement);
   assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", new RegExp(expectedLocalTimestamp("2026-03-28T11:02:00.000Z")));
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Z\b|UTC/);
   assert.match(redTeamLog.textContent ?? "", /Ari/);
+  assert.match(redTeamLog.textContent ?? "", /1"/);
   assert.match(redTeamLog.textContent ?? "", /Assisted by Bea/);
   assert.match(redTeamLog.textContent ?? "", /Bea own goal/);
+  assert.match(redTeamLog.textContent ?? "", /25\+3"/);
   assert.match(redTeamLog.textContent ?? "", /Conceded-only own goal/);
   assert.match(scorerStats.textContent ?? "", /Ari\s*1/);
   assert.match(scorerStats.textContent ?? "", /Cy\s*1/);
   assert.match(assistStats.textContent ?? "", /Bea\s*1/);
   assert.match(ownGoalStats.textContent ?? "", /Bea\s*1/);
   assert.equal(fullGoalLog.querySelectorAll('[data-ui="final-goal-item"]').length, 3);
+  assert.match(fullGoalLog.textContent ?? "", /43"/);
 });
 
 test("game page remains usable when goal timeline load fails", async () => {

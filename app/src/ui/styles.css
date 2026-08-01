@@ -510,10 +510,14 @@ body {
 }
 
 [data-ui="run-score-strip"] {
+  position: sticky;
+  top: 4.45rem;
+  z-index: 18;
   border: 1px solid #c9ded7;
   border-radius: 8px;
   background: #f7fcfa;
   padding: 0.45rem;
+  box-shadow: 0 8px 20px rgba(31, 63, 57, 0.1);
 }
 
 [data-ui="live-scoreboard"] {
@@ -599,7 +603,14 @@ body {
 
 [data-ui="run-goal-form"] {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.6rem;
+}
+
+[data-ui="run-goal-form"] [data-ui="field"]:nth-of-type(3),
+[data-ui="run-goal-form"] > [data-ui="check-row"],
+[data-ui="run-secondary-scoring"] {
+  grid-column: 1 / -1;
 }
 
 [data-ui="run-secondary-scoring"],
@@ -1387,6 +1398,7 @@ body {
     color: var(--ink-strong);
     font-weight: 850;
     line-height: 1.05;
+    overflow-wrap: anywhere;
   }
 
   small {
@@ -1403,6 +1415,37 @@ body {
     span,
     small {
       color: var(--accent-strong);
+    }
+  }
+
+  &[data-game-state="running"] {
+    border-color: #d7983c;
+    background: #fff4dd;
+
+    span,
+    small {
+      color: #744412;
+    }
+  }
+
+  &[data-game-state="break"],
+  &[data-game-state="ready"] {
+    border-color: #79afa1;
+    background: #eaf7f2;
+
+    span,
+    small {
+      color: #174f47;
+    }
+  }
+
+  &[data-game-state="finished"] {
+    border-color: #9fb7c5;
+    background: #eef5f8;
+
+    span,
+    small {
+      color: #27495a;
     }
   }
 
@@ -1547,6 +1590,7 @@ code {
   }
 
   [data-ui="run-goal-form"] [data-ui="field"]:nth-of-type(3),
+  [data-ui="run-goal-form"] > [data-ui="check-row"],
   [data-ui="run-secondary-scoring"] {
     grid-column: 1 / -1;
   }

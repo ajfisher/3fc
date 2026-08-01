@@ -567,6 +567,11 @@
     return offsetAdjusted.toISOString().slice(0, 16);
   }
 
+  function formatLocalTimestamp(isoTimestamp) {
+    const localValue = toLocalDateTimeInput(isoTimestamp);
+    return localValue ? localValue.replace("T", " ") : String(isoTimestamp ?? "");
+  }
+
   function todayDate() {
     const now = new Date();
     const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
@@ -1196,7 +1201,7 @@
       gamesBody.innerHTML = games
         .map((game) => `<tr>
           <td><a href="/games/${encodeURIComponent(game.gameId)}">${escapeHtml(game.gameId)}</a></td>
-          <td>${escapeHtml(game.gameStartTs)}</td>
+          <td>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</td>
           <td>${escapeHtml(game.status)}</td>
           <td>
             <div data-ui="row-action-buttons">
@@ -1490,6 +1495,13 @@
       }
     }
 
+    function setModeLabel(mode, text) {
+      const label = root.querySelector(`[data-mode-label="${mode}"]`);
+      if (label instanceof HTMLElement) {
+        label.textContent = text;
+      }
+    }
+
     function setGameMode(mode, options = {}) {
       if (!isGameMode(mode)) {
         return;
@@ -1580,6 +1592,60 @@
       return hasStarted ? "run" : "players";
     }
 
+    function gameStateTabState(timer) {
+      if (!currentGame || !timer) {
+        return {
+          label: "Pregame",
+          meta: "Loading",
+          state: "loading",
+        };
+      }
+
+      if (isGameFinished()) {
+        return {
+          label: "Final",
+          meta: "Summary",
+          state: "finished",
+        };
+      }
+
+      if (timer.status === "complete") {
+        return {
+          label: "Final",
+          meta: "Finish game",
+          state: "ready",
+        };
+      }
+
+      const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      if (activeSegment?.startedAt) {
+        const timerDisplay = formatTimerDisplay(
+          elapsedSeconds(activeSegment.startedAt, activeSegment.finishedAt),
+          timer.thirdLengthMinutes,
+        ).displayTime;
+        return {
+          label: timerDisplay,
+          meta: `Third ${activeSegment.third}`,
+          state: "running",
+        };
+      }
+
+      if (timer.status === "between_thirds") {
+        const nextThird = nextStartableThird(timer);
+        return {
+          label: "Break",
+          meta: nextThird ? `Start T${nextThird}` : "Ready",
+          state: "break",
+        };
+      }
+
+      return {
+        label: "Pregame",
+        meta: "Start clock",
+        state: "pregame",
+      };
+    }
+
     function syncGameModeState() {
       const timer = currentGame ? buildTimerState(currentGame) : null;
       const rosteredCount = rosteredPlayers().length;
@@ -1597,7 +1663,13 @@
       setModeMeta("structure", humanGameStatus(currentGame?.status));
       setModeMeta("players", `${rosteredCount} assigned`);
       setModeMeta("run", timer ? humanTimerStatus(timer.status) : "Timer");
-      setModeMeta("final", finished || complete ? "Ready" : "Pending");
+      const gameState = gameStateTabState(timer);
+      setModeLabel("final", gameState.label);
+      setModeMeta("final", gameState.meta);
+      const gameStateTab = root.querySelector('[data-testid="game-mode-final-tab"]');
+      if (gameStateTab instanceof HTMLElement) {
+        gameStateTab.setAttribute("data-game-state", gameState.state);
+      }
 
       if (finalGameIdValue instanceof HTMLElement && currentGame?.gameId) {
         finalGameIdValue.textContent = currentGame.gameId;
@@ -1631,6 +1703,35 @@
 
       const finished = [...timer.thirds].reverse().find((third) => third.status === "finished");
       return finished ?? timer.thirds[0] ?? null;
+    }
+
+    function focusElementAction(element) {
+      if (!(element instanceof HTMLElement)) {
+        return;
+      }
+
+      if (typeof element.scrollIntoView === "function") {
+        element.scrollIntoView({ block: "center" });
+      }
+      element.focus({ preventScroll: true });
+    }
+
+    function selectGameStateAction() {
+      const timer = currentGame ? buildTimerState(currentGame) : null;
+      if (!timer) {
+        setGameMode("structure", { focusPanel: true });
+        return;
+      }
+
+      if (isGameFinished() || timer.status === "complete") {
+        setGameMode("final");
+        focusElementAction(finishGameButton);
+        return;
+      }
+
+      setGameMode("run");
+      const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      focusElementAction(activeSegment ? finishThirdButton : startThirdButton);
     }
 
     function syncStatusOptions(hasStarted) {
@@ -1697,9 +1798,9 @@
           .map((third) => {
             const status = humanTimerStatus(third.status);
             const detail = third.finishedAt
-              ? `Finished ${third.finishedAt}`
+              ? `Finished ${formatLocalTimestamp(third.finishedAt)}`
               : third.startedAt
-                ? `Started ${third.startedAt}`
+                ? `Started ${formatLocalTimestamp(third.startedAt)}`
                 : "Waiting";
             return `<li data-ui="third-status-item" data-state="${escapeHtml(third.status)}">
               <strong>Third ${third.third}</strong>
@@ -1921,7 +2022,7 @@
       const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
       const outcomeText = winner ? `${winner.name} win` : "Draw";
       const resultOutcome = result.outcome === "win" ? "win" : "draw";
-      const computedAt = typeof result.computedAt === "string" ? result.computedAt : "";
+      const computedAt = typeof result.computedAt === "string" ? formatLocalTimestamp(result.computedAt) : "";
 
       gameResultSummaryElement.hidden = false;
       gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
@@ -2188,12 +2289,39 @@
     }
 
     function goalDisplayTime(goal) {
-      if (typeof goal.displayTime === "string" && goal.displayTime.length > 0) {
-        return goal.displayTime;
+      if (Number.isInteger(goal.gameMinute) && goal.gameMinute > 0) {
+        if (Number.isInteger(goal.stoppageMinute) && goal.stoppageMinute > 0) {
+          return `${goal.gameMinute}+${goal.stoppageMinute}"`;
+        }
+
+        return `${goal.gameMinute}"`;
       }
 
-      if (Number.isInteger(goal.gameMinute) && goal.gameMinute > 0) {
-        return `${goal.gameMinute}'`;
+      const thirdLength = parseThirdLengthMinutes(currentGame?.thirdLengthMinutes ?? currentGame?.timer?.thirdLengthMinutes);
+      if (Number.isInteger(goal.third) && Number.isInteger(goal.thirdMinute) && goal.third > 0 && goal.thirdMinute > 0) {
+        const regulationMinute = (goal.third - 1) * thirdLength + Math.min(goal.thirdMinute, thirdLength);
+        if (Number.isInteger(goal.stoppageMinute) && goal.stoppageMinute > 0) {
+          return `${goal.third * thirdLength}+${goal.stoppageMinute}"`;
+        }
+
+        return `${regulationMinute}"`;
+      }
+
+      if (typeof goal.displayTime === "string" && goal.displayTime.length > 0) {
+        const stoppageMatch = goal.displayTime.match(/^(\d+)\+0?(\d+)$/);
+        if (stoppageMatch) {
+          return `${stoppageMatch[1]}+${Number.parseInt(stoppageMatch[2], 10)}"`;
+        }
+
+        const clockMatch = goal.displayTime.match(/^(\d+):\d{2}$/);
+        if (clockMatch) {
+          return `${Math.max(1, Number.parseInt(clockMatch[1], 10))}"`;
+        }
+
+        const minuteMatch = goal.displayTime.match(/^(\d+)'?$/);
+        if (minuteMatch) {
+          return `${Number.parseInt(minuteMatch[1], 10)}"`;
+        }
       }
 
       return "-";
@@ -2367,7 +2495,7 @@
             latest ? ' data-state="latest"' : ""
           }>
             <div data-ui="goal-event-main">
-              <strong>${escapeHtml(goal.displayTime)} · Third ${escapeHtml(String(goal.third))}</strong>
+              <strong>${escapeHtml(goalDisplayTime(goal))} · Third ${escapeHtml(String(goal.third))}</strong>
               <span>${escapeHtml(timelineGoalLabel(goal))}</span>
               <small>Assists: ${escapeHtml(assists)}</small>
               ${goal.ownGoal ? `<small>Own goal: conceding tally only</small>` : ""}
@@ -2724,7 +2852,7 @@
       }
 
       if (subtitle) {
-        subtitle.innerHTML = `Kickoff (UTC): <code>${escapeHtml(game.gameStartTs)}</code>`;
+        subtitle.innerHTML = `Kickoff: <code>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</code>`;
       }
 
       if (gameIdValue) {
@@ -2995,6 +3123,10 @@
 
       const mode = trigger.getAttribute("data-game-mode");
       manualGameModeSelected = true;
+      if (mode === "final") {
+        selectGameStateAction();
+        return;
+      }
       setGameMode(mode, { focusPanel: trigger.getAttribute("role") !== "tab" });
     });
 

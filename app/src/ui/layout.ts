@@ -719,7 +719,7 @@ function renderGameModeTab(input: {
   return `<button data-ui="game-mode-tab" type="button" role="tab" id="${tabId}" aria-controls="${panelId}" aria-selected="${
     input.active ? "true" : "false"
   }" data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab">
-    <span>${escapeHtml(input.label)}</span>
+    <span data-mode-label="${input.mode}">${escapeHtml(input.label)}</span>
     <small data-mode-meta="${input.mode}">${escapeHtml(input.meta)}</small>
   </button>`;
 }
