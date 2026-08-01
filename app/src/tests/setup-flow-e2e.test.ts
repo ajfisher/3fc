@@ -2204,11 +2204,16 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert.equal(playersMode.hidden, true);
   assert.match(gameStateTab.textContent ?? "", /Pregame/);
   assert.match(gameStateTab.textContent ?? "", /Start clock/);
+  assert.equal(gameStateTab.getAttribute("role"), null);
+  assert.equal(gameStateTab.getAttribute("aria-controls"), null);
+  assert.equal(gameStateTab.getAttribute("aria-pressed"), "false");
   assert.equal(gameStateTab.getAttribute("data-game-state"), "pregame");
 
   dispatchClick(gameStateTab);
   await flushAsync();
   assert.equal(runMode.hidden, false);
+  assert.equal(runTab.getAttribute("aria-pressed"), "true");
+  assert.equal(gameStateTab.getAttribute("aria-pressed"), "false");
   assert.equal(page.document.activeElement, startThirdButton);
 
   dispatchClick(playersTab);
@@ -2259,6 +2264,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert.match(gameStateTab.textContent ?? "", /Final/);
   assert.match(gameStateTab.textContent ?? "", /Finish game/);
   assert.equal(gameStateTab.getAttribute("data-game-state"), "ready");
+  assert.equal(gameStateTab.getAttribute("aria-pressed"), "true");
   assert.equal(finishGameButton.disabled, false);
 
   dispatchClick(gameStateTab);

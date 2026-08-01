@@ -206,6 +206,11 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-mode-run-tab"/);
   assert.match(html, /data-testid="game-mode-final-tab"/);
   assert.match(html, /data-mode-label="final"/);
+  assert.doesNotMatch(html, /role="tablist"/);
+  assert.doesNotMatch(html, /data-testid="game-mode-final-tab"[^>]*role="tab"/);
+  assert.doesNotMatch(html, /data-testid="game-mode-final-tab"[^>]*aria-controls=/);
+  assert.doesNotMatch(html, /id="game-mode-tab-final"[^>]*role="tab"/);
+  assert.doesNotMatch(html, /id="game-mode-tab-final"[^>]*aria-controls=/);
   assert.match(html, /data-testid="game-mode-status"/);
   assert.match(html, /data-testid="game-mode-structure"/);
   assert.match(html, /data-testid="game-mode-players" hidden/);

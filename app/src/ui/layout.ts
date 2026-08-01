@@ -716,7 +716,8 @@ function renderGameModeTab(input: {
 }): string {
   const tabId = `game-mode-tab-${input.mode}`;
   const panelId = `game-mode-${input.mode}`;
-  return `<button data-ui="game-mode-tab" type="button" role="tab" id="${tabId}" aria-controls="${panelId}" aria-selected="${
+  const controls = input.mode === "final" ? "" : ` aria-controls="${panelId}"`;
+  return `<button data-ui="game-mode-tab" type="button" id="${tabId}"${controls} aria-pressed="${
     input.active ? "true" : "false"
   }" data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab">
     <span data-mode-label="${input.mode}">${escapeHtml(input.label)}</span>
@@ -970,7 +971,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <p data-ui="status-note" id="setup-status">Loading game data…</p>
         <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
         <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game workflow">
-          <div data-ui="game-mode-tabs" role="tablist" aria-label="Game workflow modes">
+          <div data-ui="game-mode-tabs" aria-label="Game workflow modes">
             ${renderGameModeTab({ mode: "structure", label: "Game", meta: "Setup", active: true })}
             ${renderGameModeTab({ mode: "players", label: "Players", meta: "Roster" })}
             ${renderGameModeTab({ mode: "run", label: "Run", meta: "Timer" })}
@@ -979,13 +980,13 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         </nav>
         <p data-ui="game-mode-status" id="game-mode-status" data-testid="game-mode-status">Game setup</p>
         <section data-ui="game-mode-panels" data-testid="game-grid">
-          <section data-ui="game-mode-panel" id="game-mode-structure" role="tabpanel" aria-labelledby="game-mode-tab-structure" data-game-mode="structure" data-testid="game-mode-structure">
+          <section data-ui="game-mode-panel" id="game-mode-structure" aria-labelledby="game-mode-tab-structure" data-game-mode="structure" data-testid="game-mode-structure">
             ${gameDetailsPanel}
           </section>
-          <section data-ui="game-mode-panel" id="game-mode-players" role="tabpanel" aria-labelledby="game-mode-tab-players" data-game-mode="players" data-testid="game-mode-players" hidden>
+          <section data-ui="game-mode-panel" id="game-mode-players" aria-labelledby="game-mode-tab-players" data-game-mode="players" data-testid="game-mode-players" hidden>
             ${rosterPanel}
           </section>
-          <section data-ui="game-mode-panel" id="game-mode-run" role="tabpanel" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
+          <section data-ui="game-mode-panel" id="game-mode-run" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
             <div data-ui="run-console" data-testid="run-console">
               ${scorePanel}
               ${livePanel}
@@ -993,7 +994,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               ${latestGoalsPanel}
             </div>
           </section>
-          <section data-ui="game-mode-panel" id="game-mode-final" role="tabpanel" aria-labelledby="game-mode-tab-final" data-game-mode="final" data-testid="game-mode-final" hidden>
+          <section data-ui="game-mode-panel" id="game-mode-final" aria-label="Finalisation" data-game-mode="final" data-testid="game-mode-final" hidden>
             ${finalPanel}
           </section>
         </section>

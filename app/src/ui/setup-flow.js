@@ -1443,7 +1443,7 @@
       run: "Run game",
       final: "Finalisation",
     };
-    const gameModeTabs = [...root.querySelectorAll('[role="tab"][data-game-mode]')];
+    const gameModeTabs = [...root.querySelectorAll('[data-ui="game-mode-tab"][data-game-mode]')];
     const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
     const gameModePanels = [...root.querySelectorAll('[data-ui="game-mode-panel"][data-game-mode]')];
     const gameModeStatus = document.getElementById("game-mode-status");
@@ -1522,7 +1522,7 @@
           continue;
         }
         const active = tab.getAttribute("data-game-mode") === mode;
-        tab.setAttribute("aria-selected", active ? "true" : "false");
+        tab.setAttribute("aria-pressed", active ? "true" : "false");
         tab.setAttribute("data-state", active ? "active" : "idle");
       }
 
@@ -3150,7 +3150,7 @@
         return;
       }
       manualGameModeSelected = true;
-      setGameMode(mode, { focusPanel: trigger.getAttribute("role") !== "tab" });
+      setGameMode(mode, { focusPanel: trigger.getAttribute("data-ui") !== "game-mode-tab" });
     });
 
     if (rosterControlsAvailable()) {
