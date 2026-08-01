@@ -1405,6 +1405,48 @@ test("repository rejects quick player creation if the game finalizes before the 
   assert.equal((await repository.getGame("game-1"))?.status, "finished");
 });
 
+test("repository quick player creation preserves existing player claims", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createPlayer({
+    playerId: "player-claimed",
+    nickname: "Claimed",
+    claimedByUserId: "delegate@example.com",
+  });
+
+  const linked = await repository.createAndLinkGamePlayer({
+    gameId: "game-1",
+    playerId: "player-claimed",
+    nickname: "Replacement",
+  });
+
+  assert.equal(linked.nickname, "Claimed");
+  assert.equal(linked.claimedByUserId, "delegate@example.com");
+  assert.deepEqual(await repository.listGamePlayers("game-1"), [
+    {
+      gameId: "game-1",
+      playerId: "player-claimed",
+      createdAt: "2026-02-22T00:00:02.000Z",
+      updatedAt: "2026-02-22T00:00:02.000Z",
+    },
+  ]);
+  assert.deepEqual(await repository.getPlayer("player-claimed"), {
+    playerId: "player-claimed",
+    nickname: "Claimed",
+    claimedByUserId: "delegate@example.com",
+    createdAt: "2026-02-22T00:00:01.000Z",
+    updatedAt: "2026-02-22T00:00:01.000Z",
+  });
+});
+
 test("repository gives legacy games default timer state without repairing join codes by default", async () => {
   const { repository, client } = createRepositoryHarness();
 

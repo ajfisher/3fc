@@ -2503,11 +2503,28 @@ export class ThreeFcRepository {
       changedMessage: `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
     });
     const now = this.clock.now();
-    const playerPayload = {
-      playerId: input.playerId,
-      nickname: input.nickname,
-      claimedByUserId: input.claimedByUserId ?? null,
-    };
+    const existingPlayerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
+      consistentRead: true,
+    });
+    const existingPlayer =
+      existingPlayerItem?.entityType === ENTITY_TYPE.player
+        ? withTimestamps(
+            existingPlayerItem.data as Omit<PlayerRecord, "createdAt" | "updatedAt">,
+            existingPlayerItem.createdAt,
+            existingPlayerItem.updatedAt,
+          )
+        : null;
+    const playerPayload = existingPlayer
+      ? {
+          playerId: existingPlayer.playerId,
+          nickname: existingPlayer.nickname,
+          claimedByUserId: existingPlayer.claimedByUserId,
+        }
+      : {
+          playerId: input.playerId,
+          nickname: input.nickname,
+          claimedByUserId: input.claimedByUserId ?? null,
+        };
     const existingGamePlayer = await this.getEntity(
       gamePk(input.gameId),
       gamePlayerSk(input.playerId),
@@ -2519,37 +2536,36 @@ export class ThreeFcRepository {
     };
 
     try {
+      const transactionItems: TransactWriteItem[] = [
+        this.buildGameConditionCheck(input.gameId, gameItem),
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              gamePk(input.gameId),
+              gamePlayerSk(input.playerId),
+              ENTITY_TYPE.gamePlayer,
+              linkPayload,
+              existingGamePlayer?.createdAt ?? now,
+              now,
+            ),
+          },
+        },
+      ];
+
+      if (!existingPlayer) {
+        transactionItems.splice(1, 0, {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, playerPayload, now),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          },
+        });
+      }
+
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
-            this.buildGameConditionCheck(input.gameId, gameItem),
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItemWithTimestamps(
-                  playerPk(input.playerId),
-                  profileSk(),
-                  ENTITY_TYPE.player,
-                  playerPayload,
-                  now,
-                  now,
-                ),
-              },
-            },
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItemWithTimestamps(
-                  gamePk(input.gameId),
-                  gamePlayerSk(input.playerId),
-                  ENTITY_TYPE.gamePlayer,
-                  linkPayload,
-                  existingGamePlayer?.createdAt ?? now,
-                  now,
-                ),
-              },
-            },
-          ],
+          TransactItems: transactionItems,
         }),
       );
     } catch (error) {
@@ -2563,7 +2579,11 @@ export class ThreeFcRepository {
       throw error;
     }
 
-    return withTimestamps(playerPayload, now, now);
+    return withTimestamps(
+      playerPayload,
+      existingPlayer?.createdAt ?? now,
+      existingPlayer?.updatedAt ?? now,
+    );
   }
 
   async listGamePlayers(gameId: string): Promise<GamePlayerRecord[]> {
