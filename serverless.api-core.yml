@@ -119,6 +119,12 @@ functions:
           method: OPTIONS
           path: /v1/leagues/{leagueId}
       - httpApi:
+          method: POST
+          path: /v1/leagues/{leagueId}/access
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/access
+      - httpApi:
           method: GET
           path: /v1/leagues/{leagueId}/seasons
       - httpApi:
@@ -247,6 +253,12 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/games/{gameId}/roster/{playerId}
+      - httpApi:
+          method: POST
+          path: /v1/players/{playerId}/claim
+      - httpApi:
+          method: OPTIONS
+          path: /v1/players/{playerId}/claim
       - httpApi:
           method: POST
           path: /v1/sessions/{sessionId}/games

@@ -42,6 +42,7 @@ import {
   joinCodePk,
   leaguePk,
   metadataSk,
+  playerClaimSk,
   playerPk,
   profileSk,
   rosterSk,
@@ -50,6 +51,7 @@ import {
   sessionPk,
   sessionSk,
   teamSk,
+  userPk,
 } from "./keys.js";
 import type {
   AssignRosterInput,
@@ -110,6 +112,7 @@ const ENTITY_TYPE = {
   gameJoinCode: "gameJoinCode",
   sessionGame: "sessionGame",
   player: "player",
+  playerClaim: "playerClaim",
   acl: "acl",
   roster: "roster",
   goal: "goal",
@@ -2368,6 +2371,22 @@ export class ThreeFcRepository {
                   ":expectedPlayerUpdatedAt": { S: playerItem.updatedAt },
                   ":expectedPlayerData": { S: playerItem.rawData },
                 },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  userPk(input.userId),
+                  playerClaimSk(input.playerId),
+                  ENTITY_TYPE.playerClaim,
+                  {
+                    userId: input.userId,
+                    playerId: input.playerId,
+                  },
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk)",
               },
             },
           ],

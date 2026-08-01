@@ -191,6 +191,36 @@ jobs:
 
           jq -e '.error == "unauthorized"' /tmp/qa-core.json >/dev/null
 
+          CLAIM_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/players/smoke-player/claim"
+          CLAIM_HTTP_CODE="$(curl -sS -o /tmp/qa-claim.json -w '%{http_code}' \
+            -X POST "$CLAIM_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://qa.3fc.football' \
+            -d '{}')"
+
+          if [ "$CLAIM_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${CLAIM_ENDPOINT} (HTTP ${CLAIM_HTTP_CODE})"
+            cat /tmp/qa-claim.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/qa-claim.json >/dev/null
+
+          ACCESS_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues/smoke-league/access"
+          ACCESS_HTTP_CODE="$(curl -sS -o /tmp/qa-access.json -w '%{http_code}' \
+            -X POST "$ACCESS_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://qa.3fc.football' \
+            -d '{"userId":"scorekeeper@3fc.football","role":"scorekeeper"}')"
+
+          if [ "$ACCESS_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${ACCESS_ENDPOINT} (HTTP ${ACCESS_HTTP_CODE})"
+            cat /tmp/qa-access.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/qa-access.json >/dev/null
+
           MAGIC_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/magic/start"
           MAGIC_HTTP_CODE="$(curl -sS -o /tmp/qa-magic.json -w '%{http_code}' \
             -X POST "$MAGIC_ENDPOINT" \
@@ -207,6 +237,10 @@ jobs:
           {
             echo "SMOKE_CORE_ENDPOINT=${CORE_ENDPOINT}"
             echo "SMOKE_CORE_HTTP_CODE=${CORE_HTTP_CODE}"
+            echo "SMOKE_CLAIM_ENDPOINT=${CLAIM_ENDPOINT}"
+            echo "SMOKE_CLAIM_HTTP_CODE=${CLAIM_HTTP_CODE}"
+            echo "SMOKE_ACCESS_ENDPOINT=${ACCESS_ENDPOINT}"
+            echo "SMOKE_ACCESS_HTTP_CODE=${ACCESS_HTTP_CODE}"
             echo "SMOKE_MAGIC_ENDPOINT=${MAGIC_ENDPOINT}"
             echo "SMOKE_MAGIC_HTTP_CODE=${MAGIC_HTTP_CODE}"
           } >> "$GITHUB_ENV"
@@ -228,6 +262,10 @@ jobs:
             echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
             echo "- Core smoke endpoint: ${SMOKE_CORE_ENDPOINT}"
             echo "- Core smoke status: HTTP ${SMOKE_CORE_HTTP_CODE}"
+            echo "- Claim route smoke endpoint: ${SMOKE_CLAIM_ENDPOINT}"
+            echo "- Claim route smoke status: HTTP ${SMOKE_CLAIM_HTTP_CODE}"
+            echo "- Access route smoke endpoint: ${SMOKE_ACCESS_ENDPOINT}"
+            echo "- Access route smoke status: HTTP ${SMOKE_ACCESS_HTTP_CODE}"
             echo "- Magic-link smoke endpoint: ${SMOKE_MAGIC_ENDPOINT}"
             echo "- Magic-link smoke status: HTTP ${SMOKE_MAGIC_HTTP_CODE}"
           } >> "$GITHUB_STEP_SUMMARY"

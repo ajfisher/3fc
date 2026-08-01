@@ -556,7 +556,7 @@ test("repository supports round-trip create/read for core entities", async () =>
 });
 
 test("repository claims players idempotently for one user and rejects another user", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   await repository.createPlayer({
     playerId: "player-claim",
@@ -568,6 +568,12 @@ test("repository claims players idempotently for one user and rejects another us
     userId: "delegate@example.com",
   });
   assert.equal(claimed?.claimedByUserId, "delegate@example.com");
+  const claimItem = client.readItem("USER#delegate@example.com", "PLAYER#player-claim");
+  assert.equal(claimItem?.entityType?.S, "playerClaim");
+  assert.equal(claimItem?.data?.S, JSON.stringify({
+    userId: "delegate@example.com",
+    playerId: "player-claim",
+  }));
 
   const replayed = await repository.claimPlayer({
     playerId: "player-claim",

@@ -4517,8 +4517,100 @@ test("join page claims a joined player after returning from sign-in", async () =
 
   await flushAsync();
 
+  assert.equal(apiState.players.get("player-returned")?.claimedByUserId, null);
+  assert.equal(joinPage.document.getElementById("join-claim-status")?.textContent, "Signed in as delegate@3fc.football. Claim this player for scorer access.");
+  const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
+  assert(claimButton instanceof joinPage.window.HTMLButtonElement);
+  assert.equal(claimButton.hidden, false);
+  assert.equal(claimButton.disabled, false);
+
+  dispatchClick(claimButton);
+  await flushAsync();
+
   assert.equal(apiState.players.get("player-returned")?.claimedByUserId, "delegate@3fc.football");
   assert.equal(joinPage.document.getElementById("join-claim-status")?.textContent, "Player claimed. The organiser can now make this account a scorer.");
+});
+
+test("join page keeps successful join state when signed-in claim fails", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-player",
+    email: "delegate@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-player";
+  apiState.games.set("game-join-claim-fail", {
+    gameId: "game-join-claim-fail",
+    joinCode: "JOIN0003",
+    leagueId: "autumn-league",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const failingClaimFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (method === "POST" && target.pathname.startsWith("/v1/players/") && target.pathname.endsWith("/claim")) {
+      return createJsonResponse(503, {
+        error: "temporary_failure",
+        message: "Claim service unavailable.",
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const joinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", ""),
+    url: "http://localhost:3000/join?code=join0003",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: failingClaimFetch,
+  });
+
+  const nicknameInput = joinPage.document.getElementById("join-player-nickname");
+  const form = joinPage.document.getElementById("join-game-form");
+  const joinButton = joinPage.document.querySelector('[data-testid="join-game"]');
+  assert(nicknameInput instanceof joinPage.window.HTMLInputElement);
+  assert(form instanceof joinPage.window.HTMLFormElement);
+  assert(joinButton instanceof joinPage.window.HTMLButtonElement);
+
+  nicknameInput.value = "Ez";
+  nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
+  dispatchSubmit(form);
+  await flushAsync();
+
+  const player = [...apiState.players.values()][0];
+  assert(player);
+  assert.equal(player.nickname, "Ez");
+  assert.equal(player.claimedByUserId, null);
+  assert.equal(apiState.players.size, 1);
+  assert.equal(apiState.gamePlayers.has(`game-join-claim-fail:${player.playerId}`), true);
+  assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
+  assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Ez");
+  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "Joined game. Player claim failed.");
+  assert.equal(joinPage.document.getElementById("setup-error")?.textContent, "Claim service unavailable.");
+  assert.equal(nicknameInput.disabled, true);
+  assert.equal(joinButton.disabled, true);
+
+  const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
+  assert(claimButton instanceof joinPage.window.HTMLButtonElement);
+  assert.equal(claimButton.hidden, false);
+  assert.equal(claimButton.disabled, false);
 });
 
 test("join page preserves distinct retry keys for similar public nicknames", async () => {

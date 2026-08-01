@@ -4,6 +4,7 @@ export const ENTITY_PK_PREFIX = {
   game: "GAME#",
   session: "SESSION#",
   player: "PLAYER#",
+  user: "USER#",
   joinCode: "JOIN_CODE#",
   idempotency: "IDEMPOTENCY#",
 } as const;
@@ -38,6 +39,14 @@ export function gamePk(gameId: string): string {
 
 export function playerPk(playerId: string): string {
   return `${ENTITY_PK_PREFIX.player}${playerId}`;
+}
+
+export function userPk(userId: string): string {
+  return `${ENTITY_PK_PREFIX.user}${userId}`;
+}
+
+export function playerClaimSk(playerId: string): string {
+  return `PLAYER#${playerId}`;
 }
 
 export function joinCodePk(joinCode: string): string {

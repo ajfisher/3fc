@@ -3804,7 +3804,7 @@
     }
 
     if (claimPlayerId) {
-      void refreshClaimActions(claimPlayerId, { autoClaim: true }).catch((error) => {
+      void refreshClaimActions(claimPlayerId).catch((error) => {
         const message = error instanceof Error ? error.message : "Could not claim player.";
         showError(message);
         setStatus("Player claim failed.", "error");
@@ -3871,7 +3871,6 @@
         if (resultElement) {
           resultElement.hidden = false;
         }
-        await refreshClaimActions(claimPlayerId, { autoClaim: true });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not join game.";
         showError(message);
@@ -3879,6 +3878,19 @@
         nicknameInput.disabled = false;
         if (joinButton instanceof HTMLButtonElement) {
           joinButton.disabled = false;
+        }
+        return;
+      }
+
+      try {
+        await refreshClaimActions(claimPlayerId, { autoClaim: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not claim player.";
+        showError(message);
+        setStatus("Joined game. Player claim failed.", "error");
+        if (claimButton instanceof HTMLButtonElement) {
+          claimButton.disabled = false;
+          claimButton.hidden = false;
         }
       }
     });
