@@ -3154,7 +3154,7 @@ test("game page reconciles current goals after stale correction replay", async (
   assert.match(timeline.textContent ?? "", /Cy for Blue/);
 });
 
-test("game page keeps current goals when correction replay refresh fails", async () => {
+test("game page invalidates current goals when correction replay refresh fails", async () => {
   const apiState = createMockApiState();
   const thirds = createDefaultThirdTimerSegments();
   thirds[0] = {
@@ -3243,10 +3243,12 @@ test("game page keeps current goals when correction replay refresh fails", async
 
   const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
   const timeline = page.document.getElementById("goal-timeline");
   const status = page.document.getElementById("setup-status");
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
   assert(timeline instanceof page.window.HTMLElement);
   assert(status instanceof page.window.HTMLElement);
   assert.match(timeline.textContent ?? "", /Cy for Blue/);
@@ -3258,7 +3260,10 @@ test("game page keeps current goals when correction replay refresh fails", async
   await flushAsync();
 
   assert.match(status.textContent ?? "", /Goal save failed/);
-  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+  assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
+  assert.doesNotMatch(timeline.textContent ?? "", /Cy for Blue/);
+  assert.equal(saveGoalButton.disabled, true);
+  assert.equal(undoLastGoalButton.disabled, true);
 });
 
 test("game page renders malformed result data without crashing", async () => {

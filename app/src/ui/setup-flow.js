@@ -2225,8 +2225,24 @@
       saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
       cancelGoalEditButton.hidden = editingGoalId === null;
       cancelGoalEditButton.disabled = editingGoalId === null;
-      undoLastGoalButton.disabled = goalTimeline.length === 0 || (gameFinished && !finishedCorrectionsAllowed);
+      undoLastGoalButton.disabled =
+        !goalTimelineLoaded || goalTimeline.length === 0 || (gameFinished && !finishedCorrectionsAllowed);
       undoLastGoalButton.textContent = "Undo last";
+
+      if (!goalTimelineLoaded) {
+        goalScoringTeamInput.disabled = true;
+        goalConcedingTeamInput.disabled = true;
+        goalOwnGoalInput.disabled = true;
+        goalScorerInput.disabled = true;
+        saveGoalButton.disabled = true;
+        for (const input of goalAssistsElement.querySelectorAll("input")) {
+          if (input instanceof HTMLInputElement) {
+            input.disabled = true;
+          }
+        }
+        goalFormNote.textContent = "Goal timeline unavailable. Reload before scoring or correcting goals.";
+        return;
+      }
 
       if (gameFinished && !finishedCorrectionsAllowed) {
         goalScoringTeamInput.disabled = true;
@@ -2844,6 +2860,7 @@
           method: "GET",
         });
       } catch (error) {
+        goalTimelineLoaded = false;
         const message = error instanceof Error ? error.message : "Could not load goal timeline.";
         showError(message);
         setStatus("Could not load goal timeline.", "error");
