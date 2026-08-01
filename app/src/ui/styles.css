@@ -474,6 +474,48 @@ body {
   gap: 0.75rem;
 }
 
+[data-ui="run-console"] {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+[data-ui="run-scoring-panel"],
+[data-ui="run-timer-panel"] {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+  padding: 0.75rem;
+  box-shadow: 0 10px 24px rgba(33, 57, 53, 0.08);
+}
+
+[data-ui="section-heading"] {
+  display: grid;
+  gap: 0.15rem;
+
+  h2 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.15rem;
+  }
+
+  p {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 0.82rem;
+  }
+}
+
+[data-ui="run-score-strip"] {
+  border: 1px solid #c9ded7;
+  border-radius: 8px;
+  background: #f7fcfa;
+  padding: 0.45rem;
+}
+
 [data-ui="live-scoreboard"] {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -531,6 +573,86 @@ body {
     border-radius: 999px;
     background: var(--team-color);
     box-shadow: inset 0 0 0 1px rgba(29, 42, 47, 0.18);
+  }
+}
+
+[data-ui="run-primary-scoring"] {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  border: 1px solid #b8d4ca;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.7rem;
+
+  > header {
+    display: grid;
+    gap: 0.1rem;
+
+    h3 {
+      margin: 0;
+      font-size: 1rem;
+      color: #234b45;
+    }
+  }
+}
+
+[data-ui="run-goal-form"] {
+  display: grid;
+  gap: 0.6rem;
+}
+
+[data-ui="run-secondary-scoring"],
+[data-ui="run-latest-goals"],
+[data-ui="run-third-history"],
+[data-ui="final-team-log"],
+[data-ui="final-full-log"] {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+
+  summary {
+    cursor: pointer;
+    color: #294f49;
+    font-weight: 850;
+    font-size: 0.86rem;
+  }
+}
+
+[data-ui="run-secondary-scoring"] {
+  border: 1px solid #d4e4df;
+  border-radius: 8px;
+  padding: 0.55rem;
+  background: #fbfdfc;
+}
+
+[data-ui="run-latest-goals"],
+[data-ui="run-third-history"] {
+  border: 1px solid #d3e5df;
+  border-radius: 8px;
+  background: #fbfdfc;
+  padding: 0.6rem;
+}
+
+[data-ui="run-timer-bar"] {
+  display: grid;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+[data-ui="button-row"][data-priority="scoring"] {
+  [data-ui="button"][data-variant="primary"] {
+    flex: 1 1 100%;
+    min-height: 3rem;
+    font-size: 1rem;
+  }
+}
+
+[data-ui="button-row"][data-density="compact"] {
+  gap: 0.4rem;
+
+  [data-ui="button"] {
+    padding: 0.48rem 0.78rem;
   }
 }
 
@@ -641,6 +763,107 @@ body {
   }
 }
 
+[data-ui="final-team-log"] {
+  border-top: 1px solid #d9e8e3;
+  padding-top: 0.45rem;
+}
+
+[data-ui="final-goal-list"] {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-ui="final-goal-item"] {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
+  padding: 0.42rem;
+  border: 1px solid #d7e7e2;
+  border-radius: 8px;
+  background: #ffffff;
+
+  [data-ui="goal-time"] {
+    border-radius: 999px;
+    background: #edf6f2;
+    color: #24564e;
+    padding: 0.1rem 0.34rem;
+    text-align: center;
+    font-weight: 850;
+    font-size: 0.76rem;
+  }
+
+  div {
+    display: grid;
+    gap: 0.12rem;
+    min-width: 0;
+  }
+
+  strong,
+  small {
+    overflow-wrap: anywhere;
+  }
+
+  small {
+    color: var(--ink-soft);
+    font-size: 0.76rem;
+  }
+}
+
+[data-ui="final-aggregate-stats"] {
+  display: grid;
+  gap: 0.55rem;
+}
+
+[data-ui="final-stat-card"] {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid #c9ded7;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0.6rem;
+
+  h4 {
+    margin: 0;
+    color: #294f49;
+    font-size: 0.9rem;
+  }
+}
+
+[data-ui="final-stat-list"] {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.45rem;
+    align-items: baseline;
+  }
+
+  span {
+    overflow-wrap: anywhere;
+  }
+
+  strong {
+    min-width: 1.7rem;
+    text-align: right;
+  }
+}
+
+[data-ui="final-full-log"] {
+  border: 1px solid #d3e5df;
+  border-radius: 8px;
+  background: #fbfdfc;
+  padding: 0.6rem;
+}
+
 [data-ui="rank-chip"] {
   border-radius: 999px;
   padding: 0.08rem 0.34rem;
@@ -654,8 +877,8 @@ body {
   display: grid;
   gap: 0.2rem;
   border: 1px solid #c6ddd5;
-  border-radius: 10px;
-  padding: 0.75rem;
+  border-radius: 8px;
+  padding: 0.6rem;
   background: #f7fcfa;
 
   span {
@@ -666,7 +889,7 @@ body {
 
   strong {
     font-family: var(--font-display);
-    font-size: 2.4rem;
+    font-size: 2rem;
     line-height: 1;
   }
 }
@@ -1301,9 +1524,31 @@ code {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  [data-ui="game-mode-panel"][data-mode-layout="run"] {
-    grid-template-columns: minmax(17rem, 0.8fr) minmax(0, 1.2fr);
+  [data-ui="run-console"] {
+    grid-template-columns: minmax(0, 1.2fr) minmax(17rem, 0.8fr);
     align-items: start;
+  }
+
+  [data-ui="run-scoring-panel"] {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  [data-ui="run-timer-panel"] {
+    grid-column: 2;
+  }
+
+  [data-ui="run-timer-bar"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-ui="run-goal-form"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  [data-ui="run-goal-form"] [data-ui="field"]:nth-of-type(3),
+  [data-ui="run-secondary-scoring"] {
+    grid-column: 1 / -1;
   }
 
   [data-ui="context-grid"] {
@@ -1316,6 +1561,10 @@ code {
 
   [data-ui="result-team-list"] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  [data-ui="final-aggregate-stats"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   [data-ui="roster-workspace"] {

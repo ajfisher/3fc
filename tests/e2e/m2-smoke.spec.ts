@@ -1060,6 +1060,10 @@ test.describe("M2 local-stack smoke", () => {
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="blue"]')).toContainText(/Scored\s*0/);
+      await expect(page.getByTestId("final-team-log-red")).toContainText(ariNickname);
+      await expect(page.getByTestId("final-scorer-stats").locator("li").filter({ hasText: ariNickname })).toContainText("1");
+      await expect(page.getByTestId("final-assist-stats").locator("li").filter({ hasText: beaNickname })).toContainText("1");
+      await expect(page.getByTestId("final-full-goal-log")).toContainText(ariNickname);
       await expect(page.locator("#game-edit-status")).toHaveValue("finished");
       await expect(page.getByTestId("finish-game")).toBeDisabled();
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");

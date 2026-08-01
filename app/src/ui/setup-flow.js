@@ -1427,6 +1427,7 @@
     let goalTimeline = [];
     let editingGoalId = null;
     let currentLeagueRole = null;
+    let manualGameModeSelected = false;
     let pendingCreateGoalIdempotency = null;
     const pendingGoalMutationIdempotency = new Map();
     const gameModes = ["structure", "players", "run", "final"];
@@ -1559,6 +1560,24 @@
       }
 
       return "structure";
+    }
+
+    function gameModeAfterGameSave() {
+      if (!currentGame) {
+        return "structure";
+      }
+
+      if (isGameFinished()) {
+        return "final";
+      }
+
+      const timer = buildTimerState(currentGame);
+      if (timer.status === "complete") {
+        return "final";
+      }
+
+      const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
+      return hasStarted ? "run" : "players";
     }
 
     function syncGameModeState() {
@@ -1913,8 +1932,9 @@
         </header>
         <div data-ui="result-team-list" data-testid="game-result-teams">
           ${teams
-            .map(
-              (team) => `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}" data-outcome="${escapeHtml(
+            .map((team) => {
+              const teamGoals = goalsForFinalTeam(team.teamId);
+              return `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}" data-outcome="${escapeHtml(
                 team.outcome,
               )}"${teamSwatchStyle(team)}>
                 <header>
@@ -1926,10 +1946,18 @@
                   <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
                   <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
                 </dl>
-              </article>`,
-            )
+                <details data-ui="final-team-log" data-testid="final-team-log-${escapeHtml(team.teamId)}">
+                  <summary>Scoring log</summary>
+                  <ol data-ui="final-goal-list">
+                    ${renderFinalGoalItems(teamGoals, "No goals recorded for this team.")}
+                  </ol>
+                </details>
+              </article>`;
+            })
             .join("")}
         </div>
+        ${renderFinalAggregateStats()}
+        ${renderFinalFullGoalLog()}
       </section>`;
       syncGameModeState();
     }
@@ -2159,6 +2187,161 @@
       return `${scorer} for ${teamName(goal.scoringTeamId)}`;
     }
 
+    function goalDisplayTime(goal) {
+      if (typeof goal.displayTime === "string" && goal.displayTime.length > 0) {
+        return goal.displayTime;
+      }
+
+      if (Number.isInteger(goal.gameMinute) && goal.gameMinute > 0) {
+        return `${goal.gameMinute}'`;
+      }
+
+      return "-";
+    }
+
+    function goalAssistLabel(goal) {
+      const assistPlayerIds = Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : [];
+      if (assistPlayerIds.length === 0) {
+        return "No assists";
+      }
+
+      return `Assisted by ${assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")}`;
+    }
+
+    function finalTeamGoalLabel(goal) {
+      const scorer = playerNickname(goal.scorerPlayerId);
+      if (goal.ownGoal) {
+        return `${scorer} own goal`;
+      }
+
+      return scorer;
+    }
+
+    function finalTeamGoalDetail(goal) {
+      if (goal.ownGoal) {
+        return "Conceded-only own goal";
+      }
+
+      return goalAssistLabel(goal);
+    }
+
+    function goalsForFinalTeam(teamId) {
+      return goalTimeline.filter(
+        (goal) =>
+          (!goal.ownGoal && goal.scoringTeamId === teamId) ||
+          (goal.ownGoal && goal.concedingTeamId === teamId),
+      );
+    }
+
+    function renderFinalGoalItems(goals, emptyText) {
+      if (goals.length === 0) {
+        return `<li data-ui="empty-note">${escapeHtml(emptyText)}</li>`;
+      }
+
+      return goals
+        .map(
+          (goal) => `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}">
+            <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
+            <div>
+              <strong>${escapeHtml(finalTeamGoalLabel(goal))}</strong>
+              <small>${escapeHtml(finalTeamGoalDetail(goal))}</small>
+            </div>
+          </li>`,
+        )
+        .join("");
+    }
+
+    function incrementPlayerStat(stats, playerId) {
+      if (typeof playerId !== "string" || playerId.length === 0) {
+        return;
+      }
+
+      const existing = stats.get(playerId) ?? 0;
+      stats.set(playerId, existing + 1);
+    }
+
+    function sortedPlayerStats(stats) {
+      return [...stats.entries()]
+        .map(([playerId, count]) => ({
+          playerId,
+          count,
+          name: playerNickname(playerId),
+        }))
+        .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+    }
+
+    function renderPlayerStatList(entries, emptyText) {
+      if (entries.length === 0) {
+        return `<p data-ui="empty-note">${escapeHtml(emptyText)}</p>`;
+      }
+
+      return `<ol data-ui="final-stat-list">
+        ${entries
+          .map(
+            (entry) => `<li>
+              <span>${escapeHtml(entry.name)}</span>
+              <strong>${escapeHtml(String(entry.count))}</strong>
+            </li>`,
+          )
+          .join("")}
+      </ol>`;
+    }
+
+    function finalAggregateStats() {
+      const scorers = new Map();
+      const assists = new Map();
+      const ownGoals = new Map();
+
+      for (const goal of goalTimeline) {
+        if (goal.ownGoal) {
+          incrementPlayerStat(ownGoals, goal.scorerPlayerId);
+        } else {
+          incrementPlayerStat(scorers, goal.scorerPlayerId);
+        }
+
+        for (const assistPlayerId of Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : []) {
+          incrementPlayerStat(assists, assistPlayerId);
+        }
+      }
+
+      return {
+        scorers: sortedPlayerStats(scorers),
+        assists: sortedPlayerStats(assists),
+        ownGoals: sortedPlayerStats(ownGoals),
+      };
+    }
+
+    function renderFinalAggregateStats() {
+      const stats = finalAggregateStats();
+      const ownGoalStats = stats.ownGoals.length > 0
+        ? `<section data-ui="final-stat-card" data-testid="final-own-goal-stats">
+          <h4>Own goals</h4>
+          ${renderPlayerStatList(stats.ownGoals, "No own goals.")}
+        </section>`
+        : "";
+
+      return `<section data-ui="final-aggregate-stats" data-testid="final-aggregate-stats" aria-label="Player statistics">
+        <section data-ui="final-stat-card" data-testid="final-scorer-stats">
+          <h4>Top scorers</h4>
+          ${renderPlayerStatList(stats.scorers, "No scorers recorded.")}
+        </section>
+        <section data-ui="final-stat-card" data-testid="final-assist-stats">
+          <h4>Assists</h4>
+          ${renderPlayerStatList(stats.assists, "No assists recorded.")}
+        </section>
+        ${ownGoalStats}
+      </section>`;
+    }
+
+    function renderFinalFullGoalLog() {
+      return `<details data-ui="final-full-log" data-testid="final-full-goal-log">
+        <summary>Full match log</summary>
+        <ol data-ui="final-goal-list">
+          ${renderFinalGoalItems(goalTimeline, "No goals recorded.")}
+        </ol>
+      </details>`;
+    }
+
     function renderGoalTimeline() {
       if (!(goalTimelineElement instanceof HTMLElement)) {
         return;
@@ -2211,6 +2394,7 @@
       renderLiveScoreboard();
       renderGoalControls(seed);
       renderGoalTimeline();
+      renderGameResult();
       syncGameModeState();
     }
 
@@ -2644,7 +2828,7 @@
         });
 
         await loadGame();
-        setGameMode("players", { focusPanel: true });
+        setGameMode(gameModeAfterGameSave(), { focusPanel: true });
         setStatus("Game updated.", "success");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not update game.";
@@ -2810,6 +2994,7 @@
       }
 
       const mode = trigger.getAttribute("data-game-mode");
+      manualGameModeSelected = true;
       setGameMode(mode, { focusPanel: trigger.getAttribute("role") !== "tab" });
     });
 
@@ -3145,7 +3330,9 @@
     }
     await loadRosterSetup({ updateStatus: false });
     const goalsLoaded = await loadGameGoals();
-    setGameMode(preferredInitialGameMode());
+    if (!manualGameModeSelected) {
+      setGameMode(preferredInitialGameMode());
+    }
     syncGameModeState();
 
     try {

@@ -783,36 +783,42 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </div>`,
     "panel-game-details",
   );
-  const timerPanel = renderPanel(
-    "Third timer",
-    "Start and finish thirds in order.",
-    `<div data-ui="timer-board" data-testid="third-timer">
-      <div data-ui="timer-display">
-        <span id="timer-third-label">Third 1</span>
-        <strong id="timer-display-value">00:00</strong>
-        <span id="timer-phase-label">Not started</span>
+  const timerPanel = `<section data-ui="run-timer-panel" data-testid="panel-game-timer" aria-labelledby="run-timer-heading">
+    <header data-ui="section-heading">
+      <h2 id="run-timer-heading">Clock</h2>
+      <p>Start or stop the current third.</p>
+    </header>
+    <div data-ui="timer-board" data-testid="third-timer">
+      <div data-ui="run-timer-bar" data-testid="run-timer-bar">
+        <div data-ui="timer-display">
+          <span id="timer-third-label">Third 1</span>
+          <strong id="timer-display-value">00:00</strong>
+          <span id="timer-phase-label">Not started</span>
+        </div>
+        <div data-ui="button-row" data-density="compact">
+          ${renderButton("Start Third 1", "primary", {
+            type: "button",
+            "data-action": "start-active-third",
+            "data-testid": "start-third",
+          })}
+          ${renderButton("Finish Third", "secondary", {
+            type: "button",
+            "data-action": "finish-active-third",
+            "data-testid": "finish-third",
+          })}
+        </div>
       </div>
-      <dl data-ui="id-preview" data-testid="timer-context-details">
-        <div><dt>Length</dt><dd id="timer-third-length">20 minutes</dd></div>
-        <div><dt>Status</dt><dd id="timer-status">Not started</dd></div>
-        <div><dt>Active third</dt><dd id="timer-active-third">-</dd></div>
-      </dl>
-      <ol data-ui="third-status-list" id="third-status-list" data-testid="third-status-list"></ol>
-    </div>`,
-    `<div data-ui="button-row">
-      ${renderButton("Start Third 1", "primary", {
-        type: "button",
-        "data-action": "start-active-third",
-        "data-testid": "start-third",
-      })}
-      ${renderButton("Finish Third", "secondary", {
-        type: "button",
-        "data-action": "finish-active-third",
-        "data-testid": "finish-third",
-      })}
-    </div>`,
-    "panel-game-timer",
-  );
+      <details data-ui="run-third-history" data-testid="run-third-history">
+        <summary>Third history</summary>
+        <dl data-ui="id-preview" data-testid="timer-context-details">
+          <div><dt>Length</dt><dd id="timer-third-length">20 minutes</dd></div>
+          <div><dt>Status</dt><dd id="timer-status">Not started</dd></div>
+          <div><dt>Active third</dt><dd id="timer-active-third">-</dd></div>
+        </dl>
+        <ol data-ui="third-status-list" id="third-status-list" data-testid="third-status-list"></ol>
+      </details>
+    </div>
+  </section>`;
   const rosterPanel = renderPanel(
     "Roster setup",
     "Create players and assign them to game teams.",
@@ -858,51 +864,64 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </div>`,
     "panel-game-roster",
   );
-  const livePanel = renderPanel(
-    "Live scoring",
-    "Score goals against the running third.",
-    `<div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
-    <div data-ui="field">
-      <label for="goal-scoring-team">Scoring team</label>
-      <select id="goal-scoring-team" data-ui="input" data-testid="goal-scoring-team"></select>
+  const livePanel = `<section data-ui="run-scoring-panel" data-testid="panel-game-live" aria-labelledby="run-scoring-heading">
+    <header data-ui="section-heading">
+      <h2 id="run-scoring-heading">Run game</h2>
+      <p>Record goals first; review corrections when needed.</p>
+    </header>
+    <div data-ui="run-score-strip" data-testid="run-score-strip">
+      <div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
     </div>
-    <div data-ui="field">
-      <label for="goal-conceding-team">Conceding team</label>
-      <select id="goal-conceding-team" data-ui="input" data-testid="goal-conceding-team"></select>
-    </div>
-    <label data-ui="check-row" for="goal-own-goal">
-      <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
-      <span>Own goal</span>
-    </label>
-    <div data-ui="field">
-      <label for="goal-scorer">Scorer</label>
-      <select id="goal-scorer" data-ui="input" data-testid="goal-scorer"></select>
-    </div>
-    <div data-ui="field">
-      <span data-ui="field-label">Assists</span>
-      <div id="goal-assists" data-ui="assist-list" data-testid="goal-assists"></div>
-    </div>
-    <p data-ui="field-hint" id="goal-form-note">Start a third and assign players before scoring.</p>`,
-    `<div data-ui="button-row">
-      ${renderButton("Add goal", "primary", {
-        type: "button",
-        "data-action": "save-goal",
-        "data-testid": "add-goal",
-      })}
-      ${renderButton("Cancel edit", "secondary", {
-        type: "button",
-        "data-action": "cancel-goal-edit",
-        "data-testid": "cancel-goal-edit",
-      })}
-      ${renderButton("Undo last", "danger", {
-        type: "button",
-        "data-action": "undo-last-goal",
-        "data-testid": "undo-last-goal",
-      })}
-    </div>
-    <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>`,
-    "panel-game-live",
-  );
+    <section data-ui="run-primary-scoring" data-testid="run-primary-scoring" aria-labelledby="run-goal-form-heading">
+      <header>
+        <h3 id="run-goal-form-heading">Record goal</h3>
+      </header>
+      <div data-ui="run-goal-form">
+        <div data-ui="field">
+          <label for="goal-scoring-team">Scoring team</label>
+          <select id="goal-scoring-team" data-ui="input" data-testid="goal-scoring-team"></select>
+        </div>
+        <div data-ui="field">
+          <label for="goal-conceding-team">Conceding team</label>
+          <select id="goal-conceding-team" data-ui="input" data-testid="goal-conceding-team"></select>
+        </div>
+        <div data-ui="field">
+          <label for="goal-scorer">Scorer</label>
+          <select id="goal-scorer" data-ui="input" data-testid="goal-scorer"></select>
+        </div>
+        <label data-ui="check-row" data-density="secondary" for="goal-own-goal">
+          <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
+          <span>Own goal</span>
+        </label>
+        <details data-ui="run-secondary-scoring" open>
+          <summary>Assists</summary>
+          <div id="goal-assists" data-ui="assist-list" data-testid="goal-assists"></div>
+        </details>
+      </div>
+      <p data-ui="field-hint" id="goal-form-note">Start a third and assign players before scoring.</p>
+      <div data-ui="button-row" data-priority="scoring">
+        ${renderButton("Add goal", "primary", {
+          type: "button",
+          "data-action": "save-goal",
+          "data-testid": "add-goal",
+        })}
+        ${renderButton("Cancel edit", "secondary", {
+          type: "button",
+          "data-action": "cancel-goal-edit",
+          "data-testid": "cancel-goal-edit",
+        })}
+        ${renderButton("Undo last", "danger", {
+          type: "button",
+          "data-action": "undo-last-goal",
+          "data-testid": "undo-last-goal",
+        })}
+      </div>
+    </section>
+    <details data-ui="run-latest-goals" data-testid="run-latest-goals" open>
+      <summary>Latest goals</summary>
+      <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>
+    </details>
+  </section>`;
   const finalPanel = renderPanel(
     "Finalisation",
     "Finish the match and review the summary.",
@@ -967,8 +986,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             ${rosterPanel}
           </section>
           <section data-ui="game-mode-panel" id="game-mode-run" role="tabpanel" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
-            ${timerPanel}
-            ${livePanel}
+            <div data-ui="run-console" data-testid="run-console">
+              ${livePanel}
+              ${timerPanel}
+            </div>
           </section>
           <section data-ui="game-mode-panel" id="game-mode-final" role="tabpanel" aria-labelledby="game-mode-tab-final" data-game-mode="final" data-testid="game-mode-final" hidden>
             ${finalPanel}

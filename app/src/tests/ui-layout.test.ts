@@ -210,6 +210,12 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-mode-players" hidden/);
   assert.match(html, /data-testid="game-mode-run" data-mode-layout="run" hidden/);
   assert.match(html, /data-testid="game-mode-final" hidden/);
+  assert.match(html, /data-testid="run-console"/);
+  assert.match(html, /data-testid="run-score-strip"/);
+  assert.match(html, /data-testid="run-primary-scoring"/);
+  assert.match(html, /data-testid="run-timer-bar"/);
+  assert.match(html, /data-testid="run-third-history"/);
+  assert.match(html, /data-testid="run-latest-goals"/);
   assert.match(html, /data-testid="panel-game-timer"/);
   assert.match(html, /data-testid="third-timer"/);
   assert.match(html, /data-testid="start-third"/);
@@ -234,6 +240,10 @@ test("game page renders editable game metadata view", () => {
   assert.ok(
     html.indexOf('data-testid="panel-game-roster"') < html.indexOf('data-testid="panel-game-live"'),
     "Roster setup should appear before live scoring in the game workflow.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-game-live"') < html.indexOf('data-testid="panel-game-timer"'),
+    "Run mode should prioritize live scoring before timer history.",
   );
   assert.match(html, /data-testid="panel-game-live"/);
   assert.match(html, /data-testid="live-scoreboard"/);

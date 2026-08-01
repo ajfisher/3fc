@@ -2075,6 +2075,54 @@ test("game page mode panels switch without resetting a goal draft", async () => 
   assert.equal(preservedAssist.checked, true);
 });
 
+test("game page preserves run mode after live game metadata save", async () => {
+  const apiState = createMockApiState();
+  const runningThirds = createDefaultThirdTimerSegments();
+  runningThirds[0] = {
+    ...runningThirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-mode-save-running",
+    status: "live",
+    thirds: runningThirds,
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-mode-save-running" }),
+    url: "http://localhost:3000/games/game-mode-save-running",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const structureMode = page.document.getElementById("game-mode-structure");
+  const runMode = page.document.getElementById("game-mode-run");
+  const structureTab = page.document.querySelector('[data-action="select-game-mode"][data-game-mode="structure"]');
+  const kickoffInput = page.document.getElementById("game-edit-kickoff");
+  const saveGameButton = page.document.querySelector('[data-action="save-game"]');
+
+  assert(structureMode instanceof page.window.HTMLElement);
+  assert(runMode instanceof page.window.HTMLElement);
+  assert(structureTab instanceof page.window.HTMLButtonElement);
+  assert(kickoffInput instanceof page.window.HTMLInputElement);
+  assert(saveGameButton instanceof page.window.HTMLButtonElement);
+  assert.equal(runMode.hidden, false);
+
+  dispatchClick(structureTab);
+  await flushAsync();
+  assert.equal(structureMode.hidden, false);
+  assert.equal(runMode.hidden, true);
+
+  kickoffInput.value = "2026-03-28T10:30";
+  kickoffInput.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  dispatchClick(saveGameButton);
+  await flushAsync();
+
+  assert.equal(apiState.games.get("game-mode-save-running")?.gameStartTs, new Date("2026-03-28T10:30").toISOString());
+  assert.equal(structureMode.hidden, true);
+  assert.equal(runMode.hidden, false);
+});
+
 test("game page mode panels advance from setup to run and finalisation", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, {
@@ -2186,6 +2234,112 @@ test("game page resumes completed live timers in finalisation mode", async () =>
   assert.equal(finalMode.hidden, false);
   assert.equal(finishGameButton.disabled, false);
   assert.match(finalReadiness.textContent ?? "", /Ready to finish/);
+});
+
+test("game page renders final team logs and aggregate player stats", async () => {
+  const apiState = createMockApiState();
+  const completeThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:0${third.third}:00.000Z`,
+    finishedAt: `2026-03-28T11:1${third.third}:00.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-final-stats",
+    status: "finished",
+    thirds: completeThirds,
+  });
+
+  const goals: MockGoalEvent[] = [
+    {
+      gameId: "game-final-stats",
+      eventId: "goal-1",
+      third: 1,
+      thirdMinute: 1,
+      gameMinute: 1,
+      elapsedSeconds: 30,
+      stoppageMinute: null,
+      displayTime: "1'",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-ari",
+      assistPlayerIds: ["player-bea"],
+      ownGoal: false,
+      createdAt: "2026-03-28T11:01:01.000Z",
+      updatedAt: "2026-03-28T11:01:01.000Z",
+    },
+    {
+      gameId: "game-final-stats",
+      eventId: "goal-2",
+      third: 1,
+      thirdMinute: 2,
+      gameMinute: 2,
+      elapsedSeconds: 90,
+      stoppageMinute: null,
+      displayTime: "2'",
+      scoringTeamId: "blue",
+      concedingTeamId: "yellow",
+      scorerPlayerId: "player-cy",
+      assistPlayerIds: [],
+      ownGoal: false,
+      createdAt: "2026-03-28T11:01:02.000Z",
+      updatedAt: "2026-03-28T11:01:02.000Z",
+    },
+    {
+      gameId: "game-final-stats",
+      eventId: "goal-3",
+      third: 2,
+      thirdMinute: 4,
+      gameMinute: 24,
+      elapsedSeconds: 240,
+      stoppageMinute: null,
+      displayTime: "4'",
+      scoringTeamId: null,
+      concedingTeamId: "red",
+      scorerPlayerId: "player-bea",
+      assistPlayerIds: [],
+      ownGoal: true,
+      createdAt: "2026-03-28T11:01:03.000Z",
+      updatedAt: "2026-03-28T11:01:03.000Z",
+    },
+  ];
+  for (const goal of goals) {
+    apiState.goalEvents.set(goal.eventId, goal);
+  }
+
+  const seededGame = apiState.games.get("game-final-stats");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-final-stats" }),
+    url: "http://localhost:3000/games/game-final-stats",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const redTeamLog = page.document.querySelector('[data-testid="final-team-log-red"]');
+  const scorerStats = page.document.querySelector('[data-testid="final-scorer-stats"]');
+  const assistStats = page.document.querySelector('[data-testid="final-assist-stats"]');
+  const ownGoalStats = page.document.querySelector('[data-testid="final-own-goal-stats"]');
+  const fullGoalLog = page.document.querySelector('[data-testid="final-full-goal-log"]');
+
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(redTeamLog instanceof page.window.HTMLElement);
+  assert(scorerStats instanceof page.window.HTMLElement);
+  assert(assistStats instanceof page.window.HTMLElement);
+  assert(ownGoalStats instanceof page.window.HTMLElement);
+  assert(fullGoalLog instanceof page.window.HTMLElement);
+  assert.equal(resultSummary.hidden, false);
+  assert.match(redTeamLog.textContent ?? "", /Ari/);
+  assert.match(redTeamLog.textContent ?? "", /Assisted by Bea/);
+  assert.match(redTeamLog.textContent ?? "", /Bea own goal/);
+  assert.match(redTeamLog.textContent ?? "", /Conceded-only own goal/);
+  assert.match(scorerStats.textContent ?? "", /Ari\s*1/);
+  assert.match(scorerStats.textContent ?? "", /Cy\s*1/);
+  assert.match(assistStats.textContent ?? "", /Bea\s*1/);
+  assert.match(ownGoalStats.textContent ?? "", /Bea\s*1/);
+  assert.equal(fullGoalLog.querySelectorAll('[data-ui="final-goal-item"]').length, 3);
 });
 
 test("game page remains usable when goal timeline load fails", async () => {
