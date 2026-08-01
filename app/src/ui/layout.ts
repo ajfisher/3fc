@@ -689,7 +689,18 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
             <dl data-ui="id-preview" data-testid="join-result" id="join-result" hidden>
               <div><dt>Player</dt><dd id="join-result-player"></dd></div>
               <div><dt>Game</dt><dd id="join-result-game"></dd></div>
-            </dl>`,
+            </dl>
+            <section data-ui="claim-panel" data-testid="join-claim-actions" id="join-claim-actions" hidden>
+              <p data-ui="field-hint" id="join-claim-status">Sign in to claim this player for scoring access.</p>
+              <div data-ui="button-row">
+                <a data-ui="button-secondary" id="join-signin-link" data-testid="join-signin-link" href="/sign-in">Sign in to claim</a>
+                ${renderButton("Claim player", "primary", {
+                  type: "button",
+                  "data-action": "claim-player",
+                  "data-testid": "claim-player",
+                })}
+              </div>
+            </section>`,
             "",
             "panel-join-player",
           )}

@@ -135,6 +135,14 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
     return true;
   }
 
+  if (method === "POST" && /^\/v1\/players\/[^/]+\/claim$/.test(route)) {
+    return true;
+  }
+
+  if (method === "POST" && /^\/v1\/leagues\/[^/]+\/access$/.test(route)) {
+    return true;
+  }
+
   if (method === "GET" && route === "/v1/auth/session") {
     return true;
   }

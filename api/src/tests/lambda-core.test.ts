@@ -27,6 +27,7 @@ import {
   GameTimerTransitionError,
   GoalCorrectionError,
   GoalCreationError,
+  PlayerClaimError,
 } from "../data/repository.js";
 
 interface MockSessionRecord {
@@ -347,6 +348,7 @@ function createHarness(config: HarnessConfig = {}) {
     consistentRead: boolean;
     repairLegacyJoinCode: boolean;
   }> = [];
+  const grantedLeagueAccess: MockLeagueAccessRecord[] = [];
   const listTeamsForSeasonCalls: Array<{ seasonId: string; consistentRead: boolean }> = [];
   const listTeamsForGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
@@ -403,6 +405,9 @@ function createHarness(config: HarnessConfig = {}) {
   );
   const gamePlayers = new Map<string, MockGamePlayerRecord>(
     Object.entries(config.gamePlayers ?? {}),
+  );
+  const leagueAccess = new Map<string, MockLeagueAccessRecord>(
+    Object.entries(config.leagueAccess ?? {}),
   );
   const goalEvents = new Map<string, MockGoalEventRecord>();
   const goalAuditEntries: Array<{
@@ -1326,6 +1331,32 @@ function createHarness(config: HarnessConfig = {}) {
       async getPlayer(playerId: string) {
         return players.get(playerId) ?? null;
       },
+      async claimPlayer(input) {
+        const player = players.get(input.playerId);
+        if (!player) {
+          return null;
+        }
+
+        if (player.claimedByUserId === input.userId) {
+          return player;
+        }
+
+        if (player.claimedByUserId !== null) {
+          throw new PlayerClaimError(
+            "player_already_claimed",
+            409,
+            `Player ${input.playerId} has already been claimed.`,
+          );
+        }
+
+        const updated = {
+          ...player,
+          claimedByUserId: input.userId,
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        };
+        players.set(input.playerId, updated);
+        return updated;
+      },
       async listPlayers(input = {}) {
         const search = input.search?.toLowerCase() ?? "";
         return [...players.values()]
@@ -1606,7 +1637,20 @@ function createHarness(config: HarnessConfig = {}) {
         };
       },
       async getLeagueAccess(leagueId: string, userId: string) {
-        return config.leagueAccess?.[`${leagueId}:${userId}`] ?? null;
+        return leagueAccess.get(`${leagueId}:${userId}`) ?? null;
+      },
+      async grantLeagueAccess(input) {
+        const record = {
+          leagueId: input.leagueId,
+          userId: input.userId,
+          role: input.role,
+          grantedByUserId: input.grantedByUserId,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        };
+        leagueAccess.set(`${input.leagueId}:${input.userId}`, record);
+        grantedLeagueAccess.push(record);
+        return record;
       },
       async getSeason(seasonId: string) {
         return seasons.get(seasonId) ?? null;
@@ -1663,12 +1707,15 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkStarts,
     magicLinkCompletes,
     magicLinkRateLimitChecks,
+    grantedLeagueAccess,
     getGameCalls,
     listTeamsForSeasonCalls,
     listTeamsForGameCalls,
     idempotencyRecords,
     goalAuditEntries,
     games,
+    players,
+    leagueAccess,
   };
 }
 
@@ -2294,6 +2341,217 @@ test("core lambda lets players join an active game by join code and appear in th
   assert.deepEqual(JSON.parse(playerPoolResponse.body), {
     players: [joinBody.player],
   });
+});
+
+test("core lambda lets joined players claim accounts and admins delegate scorer access", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-player": {
+        sessionId: "session-player",
+        email: "delegate@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        joinCode: "JNABCD23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "live",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    players: {
+      "player-joined": {
+        playerId: "player-joined",
+        nickname: "Delegate",
+        claimedByUserId: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    gamePlayers: {
+      "game-1:player-joined": {
+        gameId: "game-1",
+        playerId: "player-joined",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const claimResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/players/player-joined/claim",
+      headers: {
+        Cookie: "threefc_session=session-player",
+      },
+      body: {},
+    }),
+  );
+
+  assert.equal(claimResponse.statusCode, 200);
+  assert.equal(harness.players.get("player-joined")?.claimedByUserId, "delegate@example.com");
+  assert.deepEqual(JSON.parse(claimResponse.body), {
+    player: {
+      playerId: "player-joined",
+      nickname: "Delegate",
+      createdAt: "2026-02-23T00:00:00.000Z",
+      updatedAt: "2026-02-23T00:00:01.000Z",
+    },
+    claim: {
+      claimedByCurrentUser: true,
+    },
+  });
+
+  const adminPoolBeforeGrant = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+      },
+    }),
+  );
+
+  assert.equal(adminPoolBeforeGrant.statusCode, 200);
+  assert.deepEqual(JSON.parse(adminPoolBeforeGrant.body), {
+    players: [
+      {
+        playerId: "player-joined",
+        nickname: "Delegate",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:01.000Z",
+        access: {
+          userId: "delegate@example.com",
+          role: null,
+        },
+      },
+    ],
+  });
+
+  const grantResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/access",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+      },
+      body: {
+        userId: "delegate@example.com",
+        role: "scorekeeper",
+      },
+    }),
+  );
+
+  assert.equal(grantResponse.statusCode, 200);
+  assert.equal(harness.grantedLeagueAccess.length, 1);
+  assert.equal(harness.grantedLeagueAccess[0].role, "scorekeeper");
+
+  const delegatedPoolResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/games/game-1/players",
+      headers: {
+        Cookie: "threefc_session=session-player",
+      },
+    }),
+  );
+
+  assert.equal(delegatedPoolResponse.statusCode, 200);
+  assert.deepEqual(JSON.parse(delegatedPoolResponse.body), {
+    players: [
+      {
+        playerId: "player-joined",
+        nickname: "Delegate",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:01.000Z",
+      },
+    ],
+  });
+});
+
+test("core lambda rejects scorer access delegation from non-admins", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-scorekeeper": {
+        sessionId: "session-scorekeeper",
+        email: "scorekeeper@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:scorekeeper@example.com": {
+        leagueId: "league-1",
+        userId: "scorekeeper@example.com",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/access",
+      headers: {
+        Cookie: "threefc_session=session-scorekeeper",
+      },
+      body: {
+        userId: "delegate@example.com",
+        role: "scorekeeper",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(harness.grantedLeagueAccess.length, 0);
+  assert.equal(JSON.parse(response.body).code, "admin_required");
 });
 
 test("core lambda replays public join retries by idempotency key", async () => {

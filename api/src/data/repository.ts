@@ -53,6 +53,7 @@ import {
 } from "./keys.js";
 import type {
   AssignRosterInput,
+  ClaimPlayerInput,
   CreateAndLinkGamePlayerInput,
   CreateGameTeamInput,
   CreateGameInput,
@@ -218,6 +219,17 @@ export class GameJoinRegistrationError extends Error {
   }
 }
 
+export class PlayerClaimError extends Error {
+  constructor(
+    readonly code: "player_already_claimed" | "claim_state_changed",
+    readonly statusCode: 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PlayerClaimError";
+  }
+}
+
 type GoalRuleErrorKind = "creation" | "correction";
 
 function goalRuleError(
@@ -234,6 +246,12 @@ function goalRuleError(
 function requireNonEmpty(name: string, value: string): void {
   if (value.trim().length === 0) {
     throw new Error(`${name} must be a non-empty string.`);
+  }
+}
+
+function requireLeagueRole(role: string): asserts role is LeagueAclRecord["role"] {
+  if (role !== "admin" && role !== "scorekeeper" && role !== "viewer") {
+    throw new Error("role must be admin, scorekeeper, or viewer.");
   }
 }
 
@@ -2292,6 +2310,91 @@ export class ThreeFcRepository {
     return withTimestamps(item.data as Omit<PlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
   }
 
+  async claimPlayer(input: ClaimPlayerInput): Promise<PlayerRecord | null> {
+    requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("userId", input.userId);
+
+    const playerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
+      consistentRead: true,
+    });
+    if (!playerItem || playerItem.entityType !== ENTITY_TYPE.player) {
+      return null;
+    }
+
+    const player = withTimestamps(
+      playerItem.data as Omit<PlayerRecord, "createdAt" | "updatedAt">,
+      playerItem.createdAt,
+      playerItem.updatedAt,
+    );
+    if (player.claimedByUserId === input.userId) {
+      return player;
+    }
+    if (player.claimedByUserId !== null) {
+      throw new PlayerClaimError(
+        "player_already_claimed",
+        409,
+        `Player ${input.playerId} has already been claimed.`,
+      );
+    }
+
+    const now = this.clock.now();
+    const payload = {
+      playerId: player.playerId,
+      nickname: player.nickname,
+      claimedByUserId: input.userId,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  playerPk(input.playerId),
+                  profileSk(),
+                  ENTITY_TYPE.player,
+                  payload,
+                  player.createdAt,
+                  now,
+                ),
+                ConditionExpression: "#updatedAt = :expectedPlayerUpdatedAt AND #data = :expectedPlayerData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedPlayerUpdatedAt": { S: playerItem.updatedAt },
+                  ":expectedPlayerData": { S: playerItem.rawData },
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        const latest = await this.getPlayer(input.playerId);
+        if (latest?.claimedByUserId === input.userId) {
+          return latest;
+        }
+
+        throw new PlayerClaimError(
+          latest?.claimedByUserId ? "player_already_claimed" : "claim_state_changed",
+          409,
+          latest?.claimedByUserId
+            ? `Player ${input.playerId} has already been claimed.`
+            : `Player ${input.playerId} changed before it could be claimed. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+
+    return withTimestamps(payload, player.createdAt, now);
+  }
+
   async listPlayers(input: ListPlayersInput = {}): Promise<PlayerRecord[]> {
     const rawSearch = input.search?.trim().toLowerCase() ?? "";
     const limit = Math.max(1, Math.min(input.limit ?? 20, 50));
@@ -2462,6 +2565,7 @@ export class ThreeFcRepository {
   async grantLeagueAccess(input: GrantLeagueAccessInput): Promise<LeagueAclRecord> {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("userId", input.userId);
+    requireLeagueRole(input.role);
     requireNonEmpty("grantedByUserId", input.grantedByUserId);
 
     const now = this.clock.now();

@@ -601,6 +601,33 @@ body {
   }
 }
 
+[data-ui="claim-panel"],
+[data-ui="player-access"] {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  border-top: 1px solid #dce8e3;
+  padding-top: 0.55rem;
+}
+
+[data-ui="claim-panel"] {
+  margin-top: 0.7rem;
+}
+
+[data-ui="player-access"] {
+  small {
+    color: var(--ink-soft);
+    font-size: 0.76rem;
+    overflow-wrap: anywhere;
+  }
+}
+
+[data-ui="access-actions"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
 [data-ui="run-goal-form"] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

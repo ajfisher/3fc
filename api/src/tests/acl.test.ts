@@ -102,6 +102,13 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "undoLastGoal",
     gameId: "game-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/players/player-1/claim"), {
+    operation: "claimPlayer",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/leagues/league-1/access"), {
+    operation: "grantLeagueAccess",
+    leagueId: "league-1",
+  });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
 
@@ -116,6 +123,66 @@ test("createLeague mutation is allowed for authenticated users", async () => {
   assert.equal(result.allowed, true);
   assert.equal(result.operation, "createLeague");
   assert.equal(result.error, null);
+});
+
+test("claimPlayer mutation is allowed for authenticated users without league access", async () => {
+  const result = await authorizeProtectedMutation(
+    "POST",
+    "/v1/players/player-1/claim",
+    "participant@example.com",
+    new InMemoryAclLookup({}),
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.operation, "claimPlayer");
+  assert.equal(result.scope, null);
+  assert.equal(result.error, null);
+});
+
+test("grantLeagueAccess mutation requires league admin", async () => {
+  const adminResult = await authorizeProtectedMutation(
+    "POST",
+    "/v1/leagues/league-1/access",
+    "admin-user",
+    new InMemoryAclLookup({
+      leagueAccess: {
+        "league-1:admin-user": {
+          leagueId: "league-1",
+          userId: "admin-user",
+          role: "admin",
+          grantedByUserId: "owner",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(adminResult.allowed, true);
+  assert.equal(adminResult.operation, "grantLeagueAccess");
+  assert.deepEqual(adminResult.scope, { leagueId: "league-1" });
+
+  const scorekeeperResult = await authorizeProtectedMutation(
+    "POST",
+    "/v1/leagues/league-1/access",
+    "scorekeeper-user",
+    new InMemoryAclLookup({
+      leagueAccess: {
+        "league-1:scorekeeper-user": {
+          leagueId: "league-1",
+          userId: "scorekeeper-user",
+          role: "scorekeeper",
+          grantedByUserId: "owner",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(scorekeeperResult.allowed, false);
+  assert.equal(scorekeeperResult.statusCode, 403);
+  assert.equal(scorekeeperResult.error?.code, "admin_required");
 });
 
 test("league-scoped mutation rejects non-admin users", async () => {

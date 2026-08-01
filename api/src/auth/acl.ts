@@ -16,6 +16,8 @@ const ROUTES = {
   updateGoal: /^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/,
   deleteGoal: /^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/,
   undoLastGoal: /^\/v1\/games\/([^/]+)\/goals\/undo-last$/,
+  claimPlayer: /^\/v1\/players\/([^/]+)\/claim$/,
+  grantLeagueAccess: /^\/v1\/leagues\/([^/]+)\/access$/,
 } as const;
 
 export type ProtectedMutationOperation =
@@ -33,7 +35,9 @@ export type ProtectedMutationOperation =
   | "createGoal"
   | "updateGoal"
   | "deleteGoal"
-  | "undoLastGoal";
+  | "undoLastGoal"
+  | "claimPlayer"
+  | "grantLeagueAccess";
 
 export interface ProtectedMutationRoute {
   operation: ProtectedMutationOperation;
@@ -189,6 +193,21 @@ export function resolveProtectedMutationRoute(
     };
   }
 
+  const claimPlayerMatch = upperMethod === "POST" ? route.match(ROUTES.claimPlayer) : null;
+  if (claimPlayerMatch) {
+    return {
+      operation: "claimPlayer",
+    };
+  }
+
+  const grantLeagueAccessMatch = upperMethod === "POST" ? route.match(ROUTES.grantLeagueAccess) : null;
+  if (grantLeagueAccessMatch) {
+    return {
+      operation: "grantLeagueAccess",
+      leagueId: decodeRouteParam(grantLeagueAccessMatch[1]),
+    };
+  }
+
   return null;
 }
 
@@ -306,7 +325,34 @@ export async function authorizeProtectedMutation(
     };
   }
 
+  if (resolvedRoute.operation === "claimPlayer") {
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: null,
+      error: null,
+    };
+  }
+
   if (resolvedRoute.operation === "createSeason") {
+    const leagueId = resolvedRoute.leagueId as string;
+    const isAdmin = await verifyLeagueAdmin(userId, leagueId, aclLookup);
+
+    if (!isAdmin) {
+      return forbiddenAdminRequired(leagueId);
+    }
+
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: { leagueId },
+      error: null,
+    };
+  }
+
+  if (resolvedRoute.operation === "grantLeagueAccess") {
     const leagueId = resolvedRoute.leagueId as string;
     const isAdmin = await verifyLeagueAdmin(userId, leagueId, aclLookup);
 

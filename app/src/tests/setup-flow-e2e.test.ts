@@ -149,6 +149,7 @@ interface MockApiState {
   goalEvents: Map<string, MockGoalEvent>;
   goalSequence: number;
   lastPublicJoinRequest: { body: Record<string, unknown>; idempotencyKey: string | null } | null;
+  lastGrantAccessRequest: { leagueId: string; body: Record<string, unknown> } | null;
 }
 
 function readUiScript(fileName: string): string {
@@ -175,6 +176,7 @@ function createMockApiState(): MockApiState {
     goalEvents: new Map<string, MockGoalEvent>(),
     goalSequence: 0,
     lastPublicJoinRequest: null,
+    lastGrantAccessRequest: null,
   };
 }
 
@@ -309,6 +311,23 @@ function publicPlayer(player: MockPlayer): Omit<MockPlayer, "claimedByUserId"> {
     nickname: player.nickname,
     createdAt: player.createdAt,
     updatedAt: player.updatedAt,
+  };
+}
+
+function gamePlayerResponse(state: MockApiState, game: MockGame, player: MockPlayer): Record<string, unknown> {
+  const response = publicPlayer(player);
+  const league = state.leagues.get(game.leagueId);
+  const callerRole = league ? mockLeagueRoleForSession(state, league) : null;
+  if (callerRole !== "admin" || !player.claimedByUserId) {
+    return response;
+  }
+
+  return {
+    ...response,
+    access: {
+      userId: player.claimedByUserId,
+      role: state.leagueAccess.get(leagueAccessKey(game.leagueId, player.claimedByUserId)) ?? null,
+    },
   };
 }
 
@@ -725,6 +744,39 @@ function createMockFetch(state: MockApiState) {
       });
     }
 
+    const claimPlayerMatch = path.match(/^\/v1\/players\/([^/]+)\/claim$/);
+    if (method === "POST" && claimPlayerMatch) {
+      const playerId = decodeURIComponent(claimPlayerMatch[1]);
+      const player = state.players.get(playerId);
+      if (!player) {
+        return createJsonResponse(404, {
+          error: "not_found",
+          message: `Player ${playerId} was not found.`,
+        });
+      }
+
+      if (player.claimedByUserId && player.claimedByUserId !== state.session.email) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          code: "player_already_claimed",
+          message: `Player ${playerId} has already been claimed.`,
+        });
+      }
+
+      const updated = {
+        ...player,
+        claimedByUserId: state.session.email,
+        updatedAt: "2026-03-28T11:00:13.000Z",
+      };
+      state.players.set(playerId, updated);
+      return createJsonResponse(200, {
+        player: publicPlayer(updated),
+        claim: {
+          claimedByCurrentUser: true,
+        },
+      });
+    }
+
     if (method === "GET" && path === "/v1/leagues") {
       return createJsonResponse(200, {
         leagues: [...state.leagues.values()].sort((left, right) => left.name.localeCompare(right.name)),
@@ -769,6 +821,44 @@ function createMockFetch(state: MockApiState) {
         access: {
           role,
         },
+      });
+    }
+
+    const leagueAccessMatch = path.match(/^\/v1\/leagues\/([^/]+)\/access$/);
+    if (method === "POST" && leagueAccessMatch) {
+      const leagueId = decodeURIComponent(leagueAccessMatch[1]);
+      const league = state.leagues.get(leagueId);
+      if (!league) {
+        return createJsonResponse(404, { error: "not_found", message: "League not found." });
+      }
+
+      const callerRole = mockLeagueRoleForSession(state, league);
+      if (callerRole !== "admin") {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          code: "admin_required",
+          message: `Admin role is required for league ${leagueId}.`,
+        });
+      }
+
+      const userId = String(body.userId ?? "");
+      const role = body.role === "admin" ? "admin" : body.role === "scorekeeper" ? "scorekeeper" : null;
+      if (!userId || !role) {
+        return createJsonResponse(400, {
+          error: "bad_request",
+          message: "userId and role are required.",
+        });
+      }
+
+      state.lastGrantAccessRequest = { leagueId, body };
+      grantMockLeagueAccess(state, leagueId, userId, role);
+      return createJsonResponse(200, {
+        leagueId,
+        userId,
+        role,
+        grantedByUserId: state.session.email,
+        createdAt: "2026-03-28T11:00:14.000Z",
+        updatedAt: "2026-03-28T11:00:14.000Z",
       });
     }
 
@@ -1099,7 +1189,7 @@ function createMockFetch(state: MockApiState) {
       const players = [...state.players.values()]
         .filter((player) => linkedPlayerIds.has(player.playerId))
         .filter((player) => search.length === 0 || player.nickname.toLowerCase().includes(search))
-        .map((player) => publicPlayer(player));
+        .map((player) => gamePlayerResponse(state, game, player));
       return createJsonResponse(200, {
         players,
       });
@@ -2043,6 +2133,93 @@ test("game page quick-creates and assigns roster players", async () => {
   assert.equal(apiState.games.get("game-1")?.thirds[1].startedAt, "2026-03-28T11:00:10.000Z");
   assert.equal(saveGoalButton.disabled, false);
   assert.match(goalFormNote.textContent ?? "", /third 2/);
+});
+
+test("game page lets league admins promote claimed players to scorers", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-delegate-scorer",
+    role: "admin",
+    sessionEmail: "organizer@3fc.football",
+  });
+  apiState.players.set("player-delegate", {
+    playerId: "player-delegate",
+    nickname: "Delegate",
+    claimedByUserId: "delegate@3fc.football",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+  apiState.gamePlayers.set("game-delegate-scorer:player-delegate", {
+    gameId: "game-delegate-scorer",
+    playerId: "player-delegate",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-delegate-scorer" }),
+    url: "http://localhost:3000/games/game-delegate-scorer",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const playerPool = page.document.getElementById("player-pool");
+  const makeScorerButton = page.document.querySelector(
+    '[data-action="grant-player-access"][data-user-id="delegate@3fc.football"][data-role="scorekeeper"]',
+  );
+  assert(playerPool instanceof page.window.HTMLElement);
+  assert(makeScorerButton instanceof page.window.HTMLButtonElement);
+  assert.match(playerPool.textContent ?? "", /delegate@3fc\.football/);
+
+  dispatchClick(makeScorerButton);
+  await flushAsync();
+
+  assert.equal(
+    apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "delegate@3fc.football")),
+    "scorekeeper",
+  );
+  assert.deepEqual(apiState.lastGrantAccessRequest, {
+    leagueId: "three-sided-football-club",
+    body: {
+      userId: "delegate@3fc.football",
+      role: "scorekeeper",
+    },
+  });
+  assert.equal(page.document.getElementById("setup-status")?.textContent, "Player can now score this league's games.");
+});
+
+test("game page hides claimed-player emails and access controls from scorekeepers", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-delegate-hidden",
+    role: "scorekeeper",
+    sessionEmail: "scorekeeper@3fc.football",
+  });
+  apiState.players.set("player-delegate", {
+    playerId: "player-delegate",
+    nickname: "Delegate",
+    claimedByUserId: "delegate@3fc.football",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+  apiState.gamePlayers.set("game-delegate-hidden:player-delegate", {
+    gameId: "game-delegate-hidden",
+    playerId: "player-delegate",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-delegate-hidden" }),
+    url: "http://localhost:3000/games/game-delegate-hidden",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const playerPool = page.document.getElementById("player-pool");
+  assert(playerPool instanceof page.window.HTMLElement);
+  assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+  assert.doesNotMatch(playerPool.textContent ?? "", /delegate@3fc\.football/);
 });
 
 test("game page mode panels switch without resetting a goal draft", async () => {
@@ -4150,6 +4327,20 @@ test("join page registers a player without organizer authentication", async () =
   assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
   assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Cy");
   assert.equal(joinPage.document.getElementById("join-result-game")?.textContent, "game-join-1");
+  const claimActions = joinPage.document.getElementById("join-claim-actions");
+  const signInLink = joinPage.document.getElementById("join-signin-link");
+  const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
+  assert(claimActions instanceof joinPage.window.HTMLElement);
+  assert(signInLink instanceof joinPage.window.HTMLAnchorElement);
+  assert(claimButton instanceof joinPage.window.HTMLButtonElement);
+  assert.equal(claimActions.hidden, false);
+  assert.equal(claimButton.hidden, true);
+  const signInHref = signInLink.getAttribute("href") ?? "";
+  assert.match(signInHref, /^\/sign-in\?returnTo=/);
+  assert.equal(
+    new URL(signInHref, "http://localhost:3000").searchParams.get("returnTo"),
+    `/join/join0001?playerId=${player.playerId}`,
+  );
 
   const secondJoinPage = await bootPage({
     html: renderJoinPage("http://localhost:3001", "join0001"),
@@ -4172,6 +4363,87 @@ test("join page registers a player without organizer authentication", async () =
   assert.notEqual(secondJoinKey, firstJoinKey);
   assert.equal(apiState.players.size, 2);
   assert.equal(apiState.storage.has("threefc-idempotency:join-player:JOIN0001-Cy"), false);
+});
+
+test("join page lets a signed-in participant claim their joined player", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-player",
+    email: "delegate@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-player";
+  apiState.games.set("game-join-claim", {
+    gameId: "game-join-claim",
+    joinCode: "JOIN0002",
+    leagueId: "autumn-league",
+    seasonId: "autumn-cup",
+    sessionId: "20260328",
+    status: "scheduled",
+    gameStartTs: "2026-03-28T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+
+  const joinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "join0002"),
+    url: "http://localhost:3000/join/join0002",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const nicknameInput = joinPage.document.getElementById("join-player-nickname");
+  const form = joinPage.document.getElementById("join-game-form");
+  assert(nicknameInput instanceof joinPage.window.HTMLInputElement);
+  assert(form instanceof joinPage.window.HTMLFormElement);
+
+  nicknameInput.value = "Dee";
+  nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
+  dispatchSubmit(form);
+  await flushAsync();
+
+  const player = [...apiState.players.values()][0];
+  assert(player);
+  assert.equal(player.claimedByUserId, "delegate@3fc.football");
+  assert.equal(joinPage.document.getElementById("join-claim-status")?.textContent, "Player claimed. The organiser can now make this account a scorer.");
+  const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
+  assert(claimButton instanceof joinPage.window.HTMLButtonElement);
+  assert.equal(claimButton.disabled, true);
+});
+
+test("join page claims a joined player after returning from sign-in", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-player",
+    email: "delegate@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-player";
+  apiState.players.set("player-returned", {
+    playerId: "player-returned",
+    nickname: "Dee",
+    claimedByUserId: null,
+    createdAt: "2026-03-28T11:00:12.000Z",
+    updatedAt: "2026-03-28T11:00:12.000Z",
+  });
+
+  const joinPage = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "join0002"),
+    url: "http://localhost:3000/join/join0002?playerId=player-returned",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  await flushAsync();
+
+  assert.equal(apiState.players.get("player-returned")?.claimedByUserId, "delegate@3fc.football");
+  assert.equal(joinPage.document.getElementById("join-claim-status")?.textContent, "Player claimed. The organiser can now make this account a scorer.");
 });
 
 test("join page preserves distinct retry keys for similar public nicknames", async () => {

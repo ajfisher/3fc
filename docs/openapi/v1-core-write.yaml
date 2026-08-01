@@ -78,6 +78,38 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}/access:
+    post:
+      summary: Grant league scoring or co-organiser access
+      operationId: grantLeagueAccess
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantLeagueAccessRequest"
+      responses:
+        "200":
+          description: League access granted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeagueAccessGrant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/leagues/{leagueId}/seasons:
     post:
       summary: Create season
@@ -553,6 +585,38 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/players/{playerId}/claim:
+    post:
+      summary: Claim a joined player for the signed-in user
+      operationId: claimPlayer
+      parameters:
+        - name: playerId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimPlayerRequest"
+      responses:
+        "200":
+          description: Player claimed for the current signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimPlayerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/games/{gameId}/players:
     get:
       summary: List recent/searchable players for a game roster
@@ -876,6 +940,24 @@ components:
           type: string
           minLength: 1
           maxLength: 80
+    ClaimPlayerRequest:
+      type: object
+      additionalProperties: false
+    GrantLeagueAccessRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - userId
+        - role
+      properties:
+        userId:
+          type: string
+          minLength: 1
+        role:
+          type: string
+          enum:
+            - admin
+            - scorekeeper
     AssignRosterPlayerRequest:
       type: object
       additionalProperties: false
@@ -1349,6 +1431,69 @@ components:
         playerId:
           type: string
         nickname:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        access:
+          $ref: "#/components/schemas/PlayerAccess"
+    PlayerAccess:
+      type: object
+      description: Present only to league admins when the player has claimed a signed-in user account.
+      required:
+        - userId
+        - role
+      properties:
+        userId:
+          type: string
+        role:
+          type:
+            - string
+            - "null"
+          enum:
+            - admin
+            - scorekeeper
+            - viewer
+            - null
+    ClaimPlayerResponse:
+      type: object
+      required:
+        - player
+        - claim
+      properties:
+        player:
+          $ref: "#/components/schemas/Player"
+        claim:
+          type: object
+          required:
+            - claimedByCurrentUser
+          properties:
+            claimedByCurrentUser:
+              type: boolean
+    LeagueAccessGrant:
+      type: object
+      required:
+        - leagueId
+        - userId
+        - role
+        - grantedByUserId
+        - createdAt
+        - updatedAt
+      properties:
+        leagueId:
+          type: string
+        userId:
+          type: string
+        role:
+          type: string
+          enum:
+            - admin
+            - scorekeeper
+            - viewer
+        grantedByUserId:
           type: string
         createdAt:
           type: string

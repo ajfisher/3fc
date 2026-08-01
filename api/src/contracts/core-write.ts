@@ -4,6 +4,7 @@ import { MAX_ASSISTS, TEAM_IDS, THIRD_LENGTH_MINUTES } from "@3fc/contracts";
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
 const teamIdSchema = z.enum(TEAM_IDS);
+const delegatedLeagueRoleSchema = z.enum(["admin", "scorekeeper"]);
 const joinCodePathPattern = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
 export const PUBLIC_JOIN_NICKNAME_MAX_LENGTH = 80;
 const thirdLengthMinutesSchema = z.union([
@@ -72,6 +73,15 @@ export const joinGameRequestSchema = z
       PUBLIC_JOIN_NICKNAME_MAX_LENGTH,
       `must be ${PUBLIC_JOIN_NICKNAME_MAX_LENGTH} characters or fewer`,
     ),
+  })
+  .strict();
+
+export const claimPlayerRequestSchema = z.object({}).strict();
+
+export const grantLeagueAccessRequestSchema = z
+  .object({
+    userId: nonEmptyTrimmedString,
+    role: delegatedLeagueRoleSchema,
   })
   .strict();
 

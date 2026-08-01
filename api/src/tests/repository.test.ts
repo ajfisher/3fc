@@ -24,6 +24,7 @@ import {
   GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
+  PlayerClaimError,
   ThreeFcRepository,
 } from "../data/repository.js";
 
@@ -552,6 +553,38 @@ test("repository supports round-trip create/read for core entities", async () =>
   });
   assert.deepEqual(await repository.listGameRoster("game-1"), [reassignedRoster]);
   assert.equal(reassignedRoster.teamId, "blue");
+});
+
+test("repository claims players idempotently for one user and rejects another user", async () => {
+  const repository = createRepository();
+
+  await repository.createPlayer({
+    playerId: "player-claim",
+    nickname: "Claim Me",
+  });
+
+  const claimed = await repository.claimPlayer({
+    playerId: "player-claim",
+    userId: "delegate@example.com",
+  });
+  assert.equal(claimed?.claimedByUserId, "delegate@example.com");
+
+  const replayed = await repository.claimPlayer({
+    playerId: "player-claim",
+    userId: "delegate@example.com",
+  });
+  assert.deepEqual(replayed, claimed);
+
+  await assert.rejects(
+    repository.claimPlayer({
+      playerId: "player-claim",
+      userId: "other@example.com",
+    }),
+    (error: unknown) =>
+      error instanceof PlayerClaimError &&
+      error.code === "player_already_claimed" &&
+      error.statusCode === 409,
+  );
 });
 
 test("repository rejects creating games directly as finished", async () => {

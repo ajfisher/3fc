@@ -548,6 +548,15 @@
     return result.body;
   }
 
+  async function currentAuthenticatedSession() {
+    const result = await requestJson("/v1/auth/session", { method: "GET" });
+    if (!result.ok) {
+      return null;
+    }
+
+    return result.body?.session ?? null;
+  }
+
   function toIsoTimestamp(localDateTime) {
     const parsed = new Date(localDateTime);
     if (Number.isNaN(parsed.getTime())) {
@@ -2739,6 +2748,37 @@
         .join("");
     }
 
+    function playerAccessPanel(player) {
+      if (currentLeagueRole !== "admin") {
+        return "";
+      }
+
+      const access = player?.access;
+      if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
+        return `<div data-ui="player-access" data-testid="player-access">
+          <small>Not claimed</small>
+        </div>`;
+      }
+
+      const role = normalizeLeagueRole(access.role);
+      const roleLabel =
+        role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
+      const scorerDisabled = role === "scorekeeper" || role === "admin" ? " disabled" : "";
+      const adminDisabled = role === "admin" ? " disabled" : "";
+
+      return `<div data-ui="player-access" data-testid="player-access">
+        <small>${escapeHtml(roleLabel)} · ${escapeHtml(access.userId)}</small>
+        <div data-ui="access-actions">
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
+            access.userId,
+          )}" data-role="scorekeeper"${scorerDisabled}>Make scorer</button>
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
+            access.userId,
+          )}" data-role="admin"${adminDisabled}>Make co-organiser</button>
+        </div>
+      </div>`;
+    }
+
     function renderPlayerPool() {
       if (!(playerPoolElement instanceof HTMLElement)) {
         return;
@@ -2753,16 +2793,17 @@
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
           const assignedTeam = assignment ? teamById(assignment.teamId) : null;
-          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
-          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
-            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
-            <div data-ui="roster-player-main">
-              <strong>${escapeHtml(player.nickname)}</strong>
-              <span>${escapeHtml(statusText)}</span>
-            </div>
-            <div data-ui="row-action-buttons">
-              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
-            </div>
+	          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
+	          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
+	            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
+	            <div data-ui="roster-player-main">
+	              <strong>${escapeHtml(player.nickname)}</strong>
+	              <span>${escapeHtml(statusText)}</span>
+	              ${playerAccessPanel(player)}
+	            </div>
+	            <div data-ui="row-action-buttons">
+	              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
+	            </div>
           </article>`;
         })
         .join("");
@@ -2961,6 +3002,9 @@
         currentLeagueRole = null;
       }
 
+      if (rosterControlsAvailable()) {
+        renderRosterSetup();
+      }
       renderLiveScoring();
     }
 
@@ -3238,7 +3282,52 @@
           return;
         }
 
-        if (target.getAttribute("data-action") !== "assign-player") {
+        const action = target.getAttribute("data-action");
+        if (action === "grant-player-access") {
+          if (currentLeagueRole !== "admin") {
+            return;
+          }
+
+          const userId = target.getAttribute("data-user-id");
+          const role = target.getAttribute("data-role");
+          if (!currentLeagueId || !userId || (role !== "scorekeeper" && role !== "admin")) {
+            return;
+          }
+
+          target.disabled = true;
+          clearError();
+          setStatus("Updating scorer access…", "default");
+
+          try {
+            await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(currentLeagueId)}/access`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                userId,
+                role,
+              }),
+            });
+
+            await loadRosterSetup({ updateStatus: false });
+            setStatus(
+              role === "admin"
+                ? "Player can now co-organise and score."
+                : "Player can now score this league's games.",
+              "success",
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Could not update scorer access.";
+            showError(message);
+            setStatus("Scorer access update failed.", "error");
+          } finally {
+            target.disabled = false;
+          }
+          return;
+        }
+
+        if (action !== "assign-player") {
           return;
         }
 
@@ -3498,9 +3587,7 @@
 
     syncGameModeState();
     await loadGame();
-    if (isGameFinished()) {
-      await loadLeagueAccess();
-    }
+    await loadLeagueAccess();
     await loadRosterSetup({ updateStatus: false });
     const goalsLoaded = await loadGameGoals();
     if (!manualGameModeSelected) {
@@ -3517,7 +3604,7 @@
       if (gameLeagueLink instanceof HTMLAnchorElement) {
         gameLeagueLink.href = `/leagues/${encodeURIComponent(currentLeagueId)}`;
       }
-      if (isGameFinished() && currentLeagueId !== previousLeagueId) {
+      if (currentLeagueId !== previousLeagueId) {
         await loadLeagueAccess();
       }
     } catch {
@@ -3539,6 +3626,12 @@
     const resultElement = document.getElementById("join-result");
     const resultPlayer = document.getElementById("join-result-player");
     const resultGame = document.getElementById("join-result-game");
+    const claimActions = document.getElementById("join-claim-actions");
+    const claimStatus = document.getElementById("join-claim-status");
+    const signInLink = document.getElementById("join-signin-link");
+    const claimButton = root.querySelector('[data-action="claim-player"]');
+    const initialPlayerId = new URLSearchParams(window.location.search).get("playerId") ?? "";
+    let claimPlayerId = initialPlayerId.trim();
 
     if (joinCodeValue) {
       joinCodeValue.textContent = joinCode || "Missing";
@@ -3559,6 +3652,117 @@
       clearError();
       setFieldMessage("join-player-nickname");
     });
+
+    function signInHrefForClaim(playerId) {
+      const returnTo = `${window.location.pathname}?playerId=${encodeURIComponent(playerId)}`;
+      return `/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
+    }
+
+    function showClaimActions() {
+      if (claimActions instanceof HTMLElement) {
+        claimActions.hidden = false;
+      }
+    }
+
+    async function claimJoinedPlayer(playerId) {
+      if (!playerId) {
+        return;
+      }
+
+      showClaimActions();
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = "Claiming player for this account…";
+      }
+      if (claimButton instanceof HTMLButtonElement) {
+        claimButton.disabled = true;
+        claimButton.hidden = false;
+      }
+      if (signInLink instanceof HTMLAnchorElement) {
+        signInLink.hidden = true;
+      }
+
+      const result = await requestJsonOrThrow(`/v1/players/${encodeURIComponent(playerId)}/claim`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (resultPlayer) {
+        resultPlayer.textContent = result?.player?.nickname ?? resultPlayer.textContent;
+      }
+      if (resultElement) {
+        resultElement.hidden = false;
+      }
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = "Player claimed. The organiser can now make this account a scorer.";
+      }
+      setStatus("Player claimed.", "success");
+    }
+
+    async function refreshClaimActions(playerId, options = {}) {
+      if (!playerId) {
+        return;
+      }
+
+      showClaimActions();
+      const session = await currentAuthenticatedSession();
+      if (session) {
+        if (signInLink instanceof HTMLAnchorElement) {
+          signInLink.hidden = true;
+        }
+        if (claimButton instanceof HTMLButtonElement) {
+          claimButton.hidden = false;
+          claimButton.disabled = false;
+        }
+        if (claimStatus instanceof HTMLElement) {
+          claimStatus.textContent = `Signed in as ${session.email}. Claim this player for scorer access.`;
+        }
+        if (options.autoClaim === true) {
+          await claimJoinedPlayer(playerId);
+        }
+        return;
+      }
+
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = "Sign in to claim this player so the organiser can make you a scorer.";
+      }
+      if (signInLink instanceof HTMLAnchorElement) {
+        signInLink.hidden = false;
+        signInLink.href = signInHrefForClaim(playerId);
+      }
+      if (claimButton instanceof HTMLButtonElement) {
+        claimButton.hidden = true;
+        claimButton.disabled = true;
+      }
+    }
+
+    if (claimPlayerId) {
+      void refreshClaimActions(claimPlayerId, { autoClaim: true }).catch((error) => {
+        const message = error instanceof Error ? error.message : "Could not claim player.";
+        showError(message);
+        setStatus("Player claim failed.", "error");
+        if (claimButton instanceof HTMLButtonElement) {
+          claimButton.disabled = false;
+          claimButton.hidden = false;
+        }
+      });
+    }
+
+    if (claimButton instanceof HTMLButtonElement) {
+      claimButton.addEventListener("click", async () => {
+        clearError();
+        try {
+          await claimJoinedPlayer(claimPlayerId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not claim player.";
+          showError(message);
+          setStatus("Player claim failed.", "error");
+          claimButton.disabled = false;
+        }
+      });
+    }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -3590,6 +3794,7 @@
         });
 
         clearIdempotencyKeyForPublicJoin(joinCode, nickname);
+        claimPlayerId = result?.player?.playerId ?? "";
         setFieldMessage("join-player-nickname", "valid", "Joined.");
         setStatus("Joined game.", "success");
         if (resultPlayer) {
@@ -3601,6 +3806,7 @@
         if (resultElement) {
           resultElement.hidden = false;
         }
+        await refreshClaimActions(claimPlayerId, { autoClaim: true });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not join game.";
         showError(message);

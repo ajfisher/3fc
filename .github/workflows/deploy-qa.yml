@@ -114,6 +114,8 @@ jobs:
           ROOT_HTTP_CODE="$(curl -sS -o /tmp/qa-site-root.html -w '%{http_code}' "${SITE_URL}/")"
           SIGNIN_HTTP_CODE="$(curl -sS -o /tmp/qa-site-signin.html -w '%{http_code}' "${SITE_URL}/sign-in")"
           SETUP_HTTP_CODE="$(curl -sS -o /tmp/qa-site-setup.html -w '%{http_code}' "${SITE_URL}/setup")"
+          JOIN_HTTP_CODE="$(curl -sS -o /tmp/qa-site-join.html -w '%{http_code}' "${SITE_URL}/join")"
+          JOIN_DEEP_HTTP_CODE="$(curl -sS -o /tmp/qa-site-join-deep.html -w '%{http_code}' "${SITE_URL}/join/ABCDEFGH")"
 
           if [ "$ROOT_HTTP_CODE" != "200" ]; then
             echo "Smoke test failed for ${SITE_URL}/ (HTTP ${ROOT_HTTP_CODE})"
@@ -133,15 +135,31 @@ jobs:
             exit 1
           fi
 
+          if [ "$JOIN_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/join (HTTP ${JOIN_HTTP_CODE})"
+            cat /tmp/qa-site-join.html
+            exit 1
+          fi
+
+          if [ "$JOIN_DEEP_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/join/ABCDEFGH (HTTP ${JOIN_DEEP_HTTP_CODE})"
+            cat /tmp/qa-site-join-deep.html
+            exit 1
+          fi
+
           grep -q "Dashboard" /tmp/qa-site-root.html
           grep -q "Sign in before setup" /tmp/qa-site-signin.html
           grep -q "Dashboard" /tmp/qa-site-setup.html
+          grep -q "Join game" /tmp/qa-site-join.html
+          grep -q "Join game" /tmp/qa-site-join-deep.html
 
           {
             echo "SITE_URL=${SITE_URL}"
             echo "SITE_ROOT_HTTP_CODE=${ROOT_HTTP_CODE}"
             echo "SITE_SIGNIN_HTTP_CODE=${SIGNIN_HTTP_CODE}"
             echo "SITE_SETUP_HTTP_CODE=${SETUP_HTTP_CODE}"
+            echo "SITE_JOIN_HTTP_CODE=${JOIN_HTTP_CODE}"
+            echo "SITE_JOIN_DEEP_HTTP_CODE=${JOIN_DEEP_HTTP_CODE}"
           } >> "$GITHUB_ENV"
 
       - name: Smoke test deployed QA core endpoints
@@ -204,6 +222,8 @@ jobs:
             echo "- Site root status: HTTP ${SITE_ROOT_HTTP_CODE}"
             echo "- Site sign-in status: HTTP ${SITE_SIGNIN_HTTP_CODE}"
             echo "- Site setup status: HTTP ${SITE_SETUP_HTTP_CODE}"
+            echo "- Site join status: HTTP ${SITE_JOIN_HTTP_CODE}"
+            echo "- Site join deep-link status: HTTP ${SITE_JOIN_DEEP_HTTP_CODE}"
             echo "- Smoke endpoint: ${SMOKE_ENDPOINT}"
             echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
             echo "- Core smoke endpoint: ${SMOKE_CORE_ENDPOINT}"

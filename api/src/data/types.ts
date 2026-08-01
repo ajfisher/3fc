@@ -297,6 +297,11 @@ export interface JoinGameByCodeResult {
   link: GamePlayerRecord;
 }
 
+export interface ClaimPlayerInput {
+  playerId: string;
+  userId: string;
+}
+
 export interface GrantLeagueAccessInput {
   leagueId: string;
   userId: string;

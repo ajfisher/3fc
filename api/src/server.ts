@@ -50,6 +50,7 @@ import {
   resolveSessionCookieSecureFlag,
 } from "./auth/session.js";
 import {
+  claimPlayerRequestSchema,
   createGameRequestSchema,
   createGoalRequestSchema,
   createLeagueRequestSchema,
@@ -57,6 +58,7 @@ import {
   createSessionRequestSchema,
   assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
+  grantLeagueAccessRequestSchema,
   idempotencyKeyHeaderSchema,
   isJoinCodePathParamValid,
   joinGameRequestSchema,
@@ -74,6 +76,7 @@ import {
   GameTimerTransitionError,
   GoalCorrectionError,
   GoalCreationError,
+  PlayerClaimError,
   ThreeFcRepository,
 } from "./data/repository.js";
 import type { GameRecord } from "./data/types.js";
@@ -674,6 +677,32 @@ function toPublicPlayer(player: {
     nickname: player.nickname,
     createdAt: player.createdAt,
     updatedAt: player.updatedAt,
+  };
+}
+
+async function toGamePlayerForLeagueRole(input: {
+  player: {
+    playerId: string;
+    nickname: string;
+    claimedByUserId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  leagueId: string;
+  callerRole: "admin" | "scorekeeper" | "viewer" | null;
+}) {
+  const publicPlayer = toPublicPlayer(input.player);
+  if (input.callerRole !== "admin" || !input.player.claimedByUserId) {
+    return publicPlayer;
+  }
+
+  const access = await repository.getLeagueAccess(input.leagueId, input.player.claimedByUserId);
+  return {
+    ...publicPlayer,
+    access: {
+      userId: input.player.claimedByUserId,
+      role: access?.role ?? null,
+    },
   };
 }
 
@@ -2546,6 +2575,49 @@ async function start(): Promise<void> {
         return;
       }
 
+      const grantLeagueAccessMatch = route.match(/^\/v1\/leagues\/([^/]+)\/access$/);
+      if (method === "POST" && grantLeagueAccessMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(grantLeagueAccessMatch[1]);
+        const league = await repository.getLeague(leagueId);
+        if (!league) {
+          status = notFound(request, response, `League ${leagueId} was not found.`);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = grantLeagueAccessRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        const accessGrant = await repository.grantLeagueAccess({
+          leagueId,
+          userId: parsedBody.data.userId,
+          role: parsedBody.data.role,
+          grantedByUserId: authGate.session.email,
+        });
+        status = 200;
+        sendJsonWithCors(request, response, status, accessGrant);
+        return;
+      }
+
       const createSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
       if (method === "POST" && createSeasonMatch) {
         if (!authGate.session) {
@@ -3526,6 +3598,67 @@ async function start(): Promise<void> {
         return;
       }
 
+      const claimPlayerMatch = route.match(/^\/v1\/players\/([^/]+)\/claim$/);
+      if (method === "POST" && claimPlayerMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = claimPlayerRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        const playerId = decodeURIComponent(claimPlayerMatch[1]);
+        let player;
+        try {
+          player = await repository.claimPlayer({
+            playerId,
+            userId: authGate.session.email,
+          });
+        } catch (error) {
+          if (error instanceof PlayerClaimError) {
+            status = 409;
+            sendJsonWithCors(request, response, status, {
+              error: "conflict",
+              code: error.code,
+              message: error.message,
+            });
+            return;
+          }
+
+          throw error;
+        }
+
+        if (!player) {
+          status = notFound(request, response, `Player ${playerId} was not found.`);
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          player: toPublicPlayer(player),
+          claim: {
+            claimedByCurrentUser: true,
+          },
+        });
+        return;
+      }
+
       const listGamePlayersMatch = route.match(/^\/v1\/games\/([^/]+)\/players$/);
       if (method === "GET" && listGamePlayersMatch) {
         if (!authGate.session) {
@@ -3544,12 +3677,8 @@ async function start(): Promise<void> {
           return;
         }
 
-        const canManageRoster = await ensureLeagueRole(
-          game.leagueId,
-          authGate.session.email,
-          new Set(["admin", "scorekeeper"]),
-        );
-        if (!canManageRoster) {
+        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        if (!access.allowed || (access.role !== "admin" && access.role !== "scorekeeper")) {
           status = forbidden(
             request,
             response,
@@ -3561,7 +3690,7 @@ async function start(): Promise<void> {
 
         const search = requestUrl.searchParams.get("search")?.trim().toLowerCase() ?? "";
         const playerLinks = await repository.listGamePlayers(gameId);
-        const players = (
+        const playerEntries = (
           await Promise.all(
             playerLinks.map(async (link) => ({
               link,
@@ -3581,8 +3710,16 @@ async function start(): Promise<void> {
 
             return left.player.nickname.localeCompare(right.player.nickname);
           })
-          .slice(0, 20)
-          .map((entry) => toPublicPlayer(entry.player));
+          .slice(0, 20);
+        const players = await Promise.all(
+          playerEntries.map((entry) =>
+            toGamePlayerForLeagueRole({
+              player: entry.player,
+              leagueId: game.leagueId,
+              callerRole: access.role,
+            }),
+          ),
+        );
         status = 200;
         sendJsonWithCors(request, response, status, {
           players,

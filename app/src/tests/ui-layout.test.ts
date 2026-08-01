@@ -281,4 +281,7 @@ test("join page renders player registration shell", () => {
   assert.match(html, /id="join-player-nickname"/);
   assert.match(html, /data-testid="join-game"/);
   assert.match(html, /data-testid="join-result"/);
+  assert.match(html, /data-testid="join-claim-actions"/);
+  assert.match(html, /data-testid="join-signin-link"/);
+  assert.match(html, /data-testid="claim-player"/);
 });
