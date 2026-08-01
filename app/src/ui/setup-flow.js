@@ -3007,7 +3007,7 @@
       }
       if (gameJoinLink instanceof HTMLAnchorElement) {
         if (typeof game.joinCode === "string" && game.joinCode.length > 0) {
-          const joinPath = `/join/${encodeURIComponent(game.joinCode)}`;
+          const joinPath = `/join?code=${encodeURIComponent(game.joinCode)}`;
           const joinUrl = new URL(joinPath, window.location.origin).toString();
           gameJoinLink.href = joinUrl;
           gameJoinLink.textContent = joinUrl;
@@ -3675,7 +3675,9 @@
   }
 
   async function initJoinPage() {
-    const routeJoinCode = resolveRouteEntityId("data-join-code", "join") ?? "";
+    const searchParams = new URLSearchParams(window.location.search);
+    const queryJoinCode = searchParams.get("code") ?? "";
+    const routeJoinCode = queryJoinCode || resolveRouteEntityId("data-join-code", "join") || "";
     const joinCode = routeJoinCode.trim().toUpperCase();
     const joinCodeValue = document.getElementById("join-code-value");
     const form = document.getElementById("join-game-form");
@@ -3688,7 +3690,7 @@
     const claimStatus = document.getElementById("join-claim-status");
     const signInLink = document.getElementById("join-signin-link");
     const claimButton = root.querySelector('[data-action="claim-player"]');
-    const initialPlayerId = new URLSearchParams(window.location.search).get("playerId") ?? "";
+    const initialPlayerId = searchParams.get("playerId") ?? "";
     let claimPlayerId = initialPlayerId.trim();
 
     if (joinCodeValue) {
@@ -3712,7 +3714,12 @@
     });
 
     function signInHrefForClaim(playerId) {
-      const returnTo = `${window.location.pathname}?playerId=${encodeURIComponent(playerId)}`;
+      const returnParams = new URLSearchParams(window.location.search);
+      returnParams.set("playerId", playerId);
+      if (!returnParams.has("code") && window.location.pathname === "/join" && joinCode) {
+        returnParams.set("code", joinCode);
+      }
+      const returnTo = `${window.location.pathname}?${returnParams.toString()}`;
       return `/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
     }
 

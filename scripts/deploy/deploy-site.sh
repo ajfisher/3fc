@@ -85,6 +85,30 @@ aws s3 cp "${STATIC_SITE_OUTPUT_DIR}/" "s3://${SITE_BUCKET_NAME}/" \
   --cache-control "no-cache, no-store, must-revalidate" \
   --content-type "text/html; charset=utf-8"
 
+upload_html_alias() {
+  local source_path="$1"
+  local object_key="$2"
+
+  if [[ ! -f "$source_path" ]]; then
+    return
+  fi
+
+  echo "[deploy] Uploading HTML alias /${object_key}"
+  aws s3 cp "$source_path" "s3://${SITE_BUCKET_NAME}/${object_key}" \
+    --cache-control "no-cache, no-store, must-revalidate" \
+    --content-type "text/html; charset=utf-8"
+}
+
+echo "[deploy] Uploading extensionless route aliases"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/setup/index.html" "setup"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/sign-in/index.html" "sign-in"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/auth/callback/index.html" "auth/callback"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/leagues/index.html" "leagues"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/seasons/index.html" "seasons"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/games/index.html" "games"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/join/index.html" "join"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/ui/components/index.html" "ui/components"
+
 echo "[deploy] Creating CloudFront invalidation for ${SITE_DISTRIBUTION_ID}"
 INVALIDATION_ID="$(
   aws cloudfront create-invalidation \

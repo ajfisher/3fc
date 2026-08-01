@@ -3888,11 +3888,11 @@ test("setup smoke completes live game through finish", async () => {
   assert(resultSummary instanceof gamePage.window.HTMLElement);
   assert.equal(finishGameButton.disabled, true);
   assert.equal(joinCodeValue.textContent, "SMOKE123");
-  assert.equal(joinLink.getAttribute("href"), "http://localhost:3000/join/SMOKE123");
-  assert.equal(joinLink.textContent, "http://localhost:3000/join/SMOKE123");
+  assert.equal(joinLink.getAttribute("href"), "http://localhost:3000/join?code=SMOKE123");
+  assert.equal(joinLink.textContent, "http://localhost:3000/join?code=SMOKE123");
   const joinQrSvg = joinQr.querySelector("svg");
   assert(joinQrSvg instanceof gamePage.window.SVGElement);
-  assert.equal(joinQrSvg.getAttribute("aria-label"), "Join QR code for http://localhost:3000/join/SMOKE123");
+  assert.equal(joinQrSvg.getAttribute("aria-label"), "Join QR code for http://localhost:3000/join?code=SMOKE123");
   assert.match(joinQrSvg.innerHTML, /<path/);
   assert.equal(resultSummary.hidden, true);
 
@@ -4371,8 +4371,8 @@ test("join page registers a player without organizer authentication", async () =
   });
 
   const joinPage = await bootPage({
-    html: renderJoinPage("http://localhost:3001", "join0001"),
-    url: "http://localhost:3000/join/join0001",
+    html: renderJoinPage("http://localhost:3001", ""),
+    url: "http://localhost:3000/join?code=join0001",
     scriptFile: "setup-flow.js",
     apiState,
   });
@@ -4414,12 +4414,12 @@ test("join page registers a player without organizer authentication", async () =
   assert.match(signInHref, /^\/sign-in\?returnTo=/);
   assert.equal(
     new URL(signInHref, "http://localhost:3000").searchParams.get("returnTo"),
-    `/join/join0001?playerId=${player.playerId}`,
+    `/join?code=join0001&playerId=${player.playerId}`,
   );
 
   const secondJoinPage = await bootPage({
-    html: renderJoinPage("http://localhost:3001", "join0001"),
-    url: "http://localhost:3000/join/join0001",
+    html: renderJoinPage("http://localhost:3001", ""),
+    url: "http://localhost:3000/join?code=join0001",
     scriptFile: "setup-flow.js",
     apiState,
   });
@@ -4509,8 +4509,8 @@ test("join page claims a joined player after returning from sign-in", async () =
   });
 
   const joinPage = await bootPage({
-    html: renderJoinPage("http://localhost:3001", "join0002"),
-    url: "http://localhost:3000/join/join0002?playerId=player-returned",
+    html: renderJoinPage("http://localhost:3001", ""),
+    url: "http://localhost:3000/join?code=join0002&playerId=player-returned",
     scriptFile: "setup-flow.js",
     apiState,
   });
