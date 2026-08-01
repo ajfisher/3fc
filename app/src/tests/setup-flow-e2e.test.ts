@@ -1416,6 +1416,7 @@ async function bootPage(input: {
   scriptFile: string;
   apiState: MockApiState;
   fetch?: ReturnType<typeof createMockFetch>;
+  flushOnBoot?: boolean;
 }) {
   const dom = new JSDOM(input.html, {
     url: input.url,
@@ -1469,7 +1470,9 @@ async function bootPage(input: {
   });
 
   window.eval(readUiScript(input.scriptFile));
-  await flushAsync();
+  if (input.flushOnBoot !== false) {
+    await flushAsync();
+  }
 
   return {
     dom,
@@ -2274,6 +2277,72 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert.match(resultSummary.textContent ?? "", /Draw/);
 });
 
+test("game page retries early game-state tab selection after initial game loading", async () => {
+  const apiState = createMockApiState();
+  const runningThirds = createDefaultThirdTimerSegments();
+  runningThirds[0] = {
+    ...runningThirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-state-loading",
+    status: "live",
+    thirds: runningThirds,
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  let resolveGameResponse: (response: Response) => void = () => undefined;
+  const delayedGameResponse = new Promise<Response>((resolve) => {
+    resolveGameResponse = resolve;
+  });
+  let delayInitialGameRequest = true;
+  const delayedGameFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (delayInitialGameRequest && method === "GET" && target.pathname === "/v1/games/game-state-loading") {
+      delayInitialGameRequest = false;
+      return delayedGameResponse;
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-state-loading" }),
+    url: "http://localhost:3000/games/game-state-loading",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: delayedGameFetch,
+    flushOnBoot: false,
+  });
+
+  const structureMode = page.document.getElementById("game-mode-structure");
+  const runMode = page.document.getElementById("game-mode-run");
+  const gameStateTab = page.document.querySelector('[data-testid="game-mode-final-tab"]');
+
+  assert(structureMode instanceof page.window.HTMLElement);
+  assert(runMode instanceof page.window.HTMLElement);
+  assert(gameStateTab instanceof page.window.HTMLButtonElement);
+
+  dispatchClick(gameStateTab);
+  await flushAsync();
+  assert.equal(structureMode.hidden, false);
+  assert.equal(runMode.hidden, true);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "loading");
+
+  const game = apiState.games.get("game-state-loading");
+  assert(game);
+  resolveGameResponse(createJsonResponse(200, game));
+  await flushAsync();
+
+  assert.equal(structureMode.hidden, true);
+  assert.equal(runMode.hidden, false);
+  assert.equal(gameStateTab.getAttribute("data-game-state"), "running");
+});
+
 test("game page resumes completed live timers in finalisation mode", async () => {
   const apiState = createMockApiState();
   const completeThirds = createDefaultThirdTimerSegments().map((third) => ({
@@ -2424,35 +2493,37 @@ test("game page renders final team logs and aggregate player stats", async () =>
 
 test("game page remains usable when goal timeline load fails", async () => {
   const apiState = createMockApiState();
-  apiState.session = {
-    sessionId: "session-1",
-    email: "scorekeeper@3fc.football",
-    createdAt: "2026-03-28T11:00:00.000Z",
-    expiresAt: "2026-03-29T11:00:00.000Z",
-  };
-  apiState.cookieJar = "threefc_session=session-1";
-  apiState.seasons.set("autumn-cup", {
-    leagueId: "three-sided-football-club",
-    seasonId: "autumn-cup",
-    name: "Autumn Cup",
-    slug: "autumn-cup",
-    startsOn: null,
-    endsOn: null,
-    createdAt: "2026-03-28T11:00:02.000Z",
-    updatedAt: "2026-03-28T11:00:02.000Z",
-  });
-  apiState.games.set("game-goals-fail", {
+  const completeThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:0${third.third}:00.000Z`,
+    finishedAt: `2026-03-28T11:1${third.third}:00.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
     gameId: "game-goals-fail",
-    leagueId: "three-sided-football-club",
-    seasonId: "autumn-cup",
-    sessionId: "20260328",
-    status: "scheduled",
-    gameStartTs: "2026-03-28T10:00:00.000Z",
-    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
-    thirds: createDefaultThirdTimerSegments(),
-    createdAt: "2026-03-28T11:00:03.000Z",
-    updatedAt: "2026-03-28T11:00:03.000Z",
+    status: "finished",
+    thirds: completeThirds,
+    role: "admin",
   });
+  apiState.goalEvents.set("goal-unavailable-1", {
+    gameId: "game-goals-fail",
+    eventId: "goal-unavailable-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: ["player-bea"],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:00.000Z",
+    updatedAt: "2026-03-28T11:01:00.000Z",
+  });
+  const seededGame = apiState.games.get("game-goals-fail");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
 
   const defaultFetch = createMockFetch(apiState);
   const failingGoalFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
@@ -2483,18 +2554,27 @@ test("game page remains usable when goal timeline load fails", async () => {
   const error = page.document.getElementById("setup-error");
   const rosterTeams = page.document.getElementById("roster-teams");
   const timeline = page.document.getElementById("goal-timeline");
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const goalSummaryUnavailable = page.document.querySelector('[data-testid="final-goal-summary-unavailable"]');
   const quickCreateButton = page.document.querySelector('[data-action="quick-create-player"]');
 
   assert(status instanceof page.window.HTMLElement);
   assert(error instanceof page.window.HTMLElement);
   assert(rosterTeams instanceof page.window.HTMLElement);
   assert(timeline instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(goalSummaryUnavailable instanceof page.window.HTMLElement);
   assert(quickCreateButton instanceof page.window.HTMLButtonElement);
   assert.equal(status.textContent, "Could not load goal timeline.");
   assert.equal(error.hidden, false);
   assert.equal(error.textContent, "Goal feed unavailable.");
   assert.match(rosterTeams.textContent ?? "", /Red/);
-  assert.match(timeline.textContent ?? "", /No goals yet/);
+  assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
+  assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", /Red win/);
+  assert.match(resultSummary.textContent ?? "", /Goal summaries unavailable/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /No goals recorded|No scorers recorded/);
+  assert.equal(page.document.querySelector('[data-testid="final-full-goal-log"]'), null);
   assert.equal(quickCreateButton.disabled, false);
 });
 

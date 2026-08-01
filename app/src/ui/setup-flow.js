@@ -1430,6 +1430,7 @@
     let rosterSearchTimer = 0;
     let scoreboardTeams = [];
     let goalTimeline = [];
+    let goalTimelineLoaded = false;
     let editingGoalId = null;
     let currentLeagueRole = null;
     let manualGameModeSelected = false;
@@ -1720,18 +1721,19 @@
       const timer = currentGame ? buildTimerState(currentGame) : null;
       if (!timer) {
         setGameMode("structure", { focusPanel: true });
-        return;
+        return false;
       }
 
       if (isGameFinished() || timer.status === "complete") {
         setGameMode("final");
         focusElementAction(finishGameButton);
-        return;
+        return true;
       }
 
       setGameMode("run");
       const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
       focusElementAction(activeSegment ? finishThirdButton : startThirdButton);
+      return true;
     }
 
     function syncStatusOptions(hasStarted) {
@@ -2024,6 +2026,7 @@
       const resultOutcome = result.outcome === "win" ? "win" : "draw";
       const computedAt = typeof result.computedAt === "string" ? formatLocalTimestamp(result.computedAt) : "";
 
+      const goalLogsLoaded = goalTimelineLoaded;
       gameResultSummaryElement.hidden = false;
       gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
         <header>
@@ -2047,18 +2050,19 @@
                   <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
                   <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
                 </dl>
-                <details data-ui="final-team-log" data-testid="final-team-log-${escapeHtml(team.teamId)}">
-                  <summary>Scoring log</summary>
-                  <ol data-ui="final-goal-list">
-                    ${renderFinalGoalItems(teamGoals, "No goals recorded for this team.")}
-                  </ol>
-                </details>
+                ${goalLogsLoaded
+                  ? `<details data-ui="final-team-log" data-testid="final-team-log-${escapeHtml(team.teamId)}">
+                    <summary>Scoring log</summary>
+                    <ol data-ui="final-goal-list">
+                      ${renderFinalGoalItems(teamGoals, "No goals recorded for this team.")}
+                    </ol>
+                  </details>`
+                  : `<p data-ui="empty-note" data-testid="final-team-log-unavailable-${escapeHtml(team.teamId)}">Goal log unavailable.</p>`}
               </article>`;
             })
             .join("")}
         </div>
-        ${renderFinalAggregateStats()}
-        ${renderFinalFullGoalLog()}
+        ${goalLogsLoaded ? `${renderFinalAggregateStats()}${renderFinalFullGoalLog()}` : renderFinalGoalSummariesUnavailable()}
       </section>`;
       syncGameModeState();
     }
@@ -2466,6 +2470,13 @@
       </section>`;
     }
 
+    function renderFinalGoalSummariesUnavailable() {
+      return `<section data-ui="final-goal-unavailable" data-testid="final-goal-summary-unavailable" aria-label="Goal summaries unavailable">
+        <h4>Goal summaries unavailable</h4>
+        <p data-ui="empty-note">Team result totals are shown, but scorer, assist, and full goal logs could not be loaded.</p>
+      </section>`;
+    }
+
     function renderFinalFullGoalLog() {
       return `<details data-ui="final-full-log" data-testid="final-full-goal-log">
         <summary>Full match log</summary>
@@ -2477,6 +2488,11 @@
 
     function renderGoalTimeline() {
       if (!(goalTimelineElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (!goalTimelineLoaded) {
+        goalTimelineElement.innerHTML = `<li data-ui="empty-note">Goal timeline unavailable.</li>`;
         return;
       }
 
@@ -2537,14 +2553,15 @@
       }
 
       if (Array.isArray(result?.timeline)) {
+        goalTimelineLoaded = true;
         goalTimeline = sortGoalTimeline(result.timeline);
-      } else if (result?.goal) {
+      } else if (goalTimelineLoaded && result?.goal) {
         const nextGoal = result.goal;
         goalTimeline = sortGoalTimeline([
           ...goalTimeline.filter((goal) => goal.eventId !== nextGoal.eventId),
           nextGoal,
         ]);
-      } else if (fallback.deletedEventId) {
+      } else if (goalTimelineLoaded && fallback.deletedEventId) {
         goalTimeline = goalTimeline.filter((goal) => goal.eventId !== fallback.deletedEventId);
       }
 
@@ -2834,6 +2851,7 @@
         return false;
       }
 
+      goalTimelineLoaded = true;
       if (Array.isArray(payload?.scoreboard?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
       }
@@ -3127,11 +3145,11 @@
       }
 
       const mode = trigger.getAttribute("data-game-mode");
-      manualGameModeSelected = true;
       if (mode === "final") {
-        selectGameStateAction();
+        manualGameModeSelected = selectGameStateAction();
         return;
       }
+      manualGameModeSelected = true;
       setGameMode(mode, { focusPanel: trigger.getAttribute("role") !== "tab" });
     });
 
@@ -3461,6 +3479,7 @@
       });
     }
 
+    syncGameModeState();
     await loadGame();
     if (isGameFinished()) {
       await loadLeagueAccess();
