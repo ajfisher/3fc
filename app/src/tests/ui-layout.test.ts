@@ -244,7 +244,11 @@ test("game page renders editable game metadata view", () => {
   );
   assert.ok(
     html.indexOf('data-testid="panel-game-live"') < html.indexOf('data-testid="panel-game-timer"'),
-    "Run mode should prioritize live scoring before timer history.",
+    "Run mode should prioritize live scoring before timer controls.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-game-timer"') < html.indexOf('data-testid="run-latest-goals"'),
+    "Timer controls should appear before the growing latest-goals history.",
   );
   assert.match(html, /data-testid="panel-game-live"/);
   assert.match(html, /data-testid="live-scoreboard"/);

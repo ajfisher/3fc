@@ -1572,13 +1572,20 @@ code {
     align-items: start;
   }
 
+  [data-ui="run-score-strip"] {
+    grid-column: 1 / -1;
+  }
+
   [data-ui="run-scoring-panel"] {
     grid-column: 1;
-    grid-row: 1 / span 2;
   }
 
   [data-ui="run-timer-panel"] {
     grid-column: 2;
+  }
+
+  [data-ui="run-latest-goals"] {
+    grid-column: 1;
   }
 
   [data-ui="run-timer-bar"] {

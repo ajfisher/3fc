@@ -864,14 +864,14 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </div>`,
     "panel-game-roster",
   );
+  const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip">
+    <div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
+  </div>`;
   const livePanel = `<section data-ui="run-scoring-panel" data-testid="panel-game-live" aria-labelledby="run-scoring-heading">
     <header data-ui="section-heading">
       <h2 id="run-scoring-heading">Run game</h2>
       <p>Record goals first; review corrections when needed.</p>
     </header>
-    <div data-ui="run-score-strip" data-testid="run-score-strip">
-      <div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
-    </div>
     <section data-ui="run-primary-scoring" data-testid="run-primary-scoring" aria-labelledby="run-goal-form-heading">
       <header>
         <h3 id="run-goal-form-heading">Record goal</h3>
@@ -917,11 +917,11 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         })}
       </div>
     </section>
-    <details data-ui="run-latest-goals" data-testid="run-latest-goals" open>
+  </section>`;
+  const latestGoalsPanel = `<details data-ui="run-latest-goals" data-testid="run-latest-goals" open>
       <summary>Latest goals</summary>
       <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>
-    </details>
-  </section>`;
+    </details>`;
   const finalPanel = renderPanel(
     "Finalisation",
     "Finish the match and review the summary.",
@@ -987,8 +987,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           </section>
           <section data-ui="game-mode-panel" id="game-mode-run" role="tabpanel" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
             <div data-ui="run-console" data-testid="run-console">
+              ${scorePanel}
               ${livePanel}
               ${timerPanel}
+              ${latestGoalsPanel}
             </div>
           </section>
           <section data-ui="game-mode-panel" id="game-mode-final" role="tabpanel" aria-labelledby="game-mode-tab-final" data-game-mode="final" data-testid="game-mode-final" hidden>

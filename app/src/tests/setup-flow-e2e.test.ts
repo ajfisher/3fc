@@ -2419,6 +2419,7 @@ test("game page renders final team logs and aggregate player stats", async () =>
   assert.match(ownGoalStats.textContent ?? "", /Bea\s*1/);
   assert.equal(fullGoalLog.querySelectorAll('[data-ui="final-goal-item"]').length, 3);
   assert.match(fullGoalLog.textContent ?? "", /43"/);
+  assert.match(fullGoalLog.textContent ?? "", /Third 2/);
 });
 
 test("game page remains usable when goal timeline load fails", async () => {

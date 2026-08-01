@@ -2361,21 +2361,26 @@
       );
     }
 
-    function renderFinalGoalItems(goals, emptyText) {
+    function renderFinalGoalItems(goals, emptyText, options = {}) {
       if (goals.length === 0) {
         return `<li data-ui="empty-note">${escapeHtml(emptyText)}</li>`;
       }
 
       return goals
-        .map(
-          (goal) => `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}">
+        .map((goal) => {
+          const detail = finalTeamGoalDetail(goal);
+          const rowDetail =
+            options.includeThird === true && Number.isInteger(goal.third)
+              ? `Third ${goal.third} · ${detail}`
+              : detail;
+          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}">
             <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
             <div>
               <strong>${escapeHtml(finalTeamGoalLabel(goal))}</strong>
-              <small>${escapeHtml(finalTeamGoalDetail(goal))}</small>
+              <small>${escapeHtml(rowDetail)}</small>
             </div>
-          </li>`,
-        )
+          </li>`;
+        })
         .join("");
     }
 
@@ -2465,7 +2470,7 @@
       return `<details data-ui="final-full-log" data-testid="final-full-goal-log">
         <summary>Full match log</summary>
         <ol data-ui="final-goal-list">
-          ${renderFinalGoalItems(goalTimeline, "No goals recorded.")}
+          ${renderFinalGoalItems(goalTimeline, "No goals recorded.", { includeThird: true })}
         </ol>
       </details>`;
     }
