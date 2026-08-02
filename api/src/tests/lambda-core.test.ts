@@ -27,6 +27,7 @@ import {
   GameTimerTransitionError,
   GoalCorrectionError,
   GoalCreationError,
+  LeagueInviteError,
   PlayerClaimError,
 } from "../data/repository.js";
 
@@ -43,6 +44,19 @@ interface MockLeagueAccessRecord {
   userId: string;
   role: "admin" | "scorekeeper" | "viewer";
   grantedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockLeagueInviteRecord {
+  leagueId: string;
+  inviteCode: string;
+  kind: "share" | "email";
+  role: "admin";
+  email: string | null;
+  createdByUserId: string;
+  acceptedByUserId: string | null;
+  acceptedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -220,6 +234,7 @@ interface StoredIdempotencyRecord {
 interface HarnessConfig {
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
+  leagueInvites?: Record<string, MockLeagueInviteRecord>;
   leagues?: Record<string, MockLeagueRecord>;
   seasons?: Record<string, MockSeasonRecord>;
   seasonSessions?: Record<string, MockSessionEntity>;
@@ -245,6 +260,8 @@ interface HarnessConfig {
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
+  magicLinkStartDelayMs?: number;
+  magicLinkStartError?: Error;
   beforeIdempotencyRecordRead?: (input: {
     scope: string;
     key: string;
@@ -300,6 +317,18 @@ function buildTestIdempotencyRequestHash(scope: string, payload: unknown): strin
     .digest("hex");
 }
 
+function buildTestOrganiserInviteCode(scope: string, idempotencyKey: string): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const digest = createHash("sha256")
+    .update(`organiser-invite:${scope}:${idempotencyKey}`)
+    .digest();
+  let inviteCode = "";
+  for (let index = 0; index < 8; index += 1) {
+    inviteCode += alphabet[digest[index] % alphabet.length];
+  }
+  return inviteCode;
+}
+
 function completedThirdTimerSegments(): ThirdTimerSegment[] {
   return createDefaultThirdTimerSegments().map((third) => ({
     ...third,
@@ -347,7 +376,10 @@ function createHarness(config: HarnessConfig = {}) {
   const deletedGames: string[] = [];
   const assignedRosterPlayers: Array<{ gameId: string; teamId: TeamId; playerId: string }> = [];
   const linkedGamePlayers: Array<{ gameId: string; playerId: string }> = [];
-  const magicLinkStarts: string[] = [];
+  const magicLinkStarts: Array<{
+    email: string;
+    options?: { returnTo?: string | null; subject?: string; introLines?: string[] };
+  }> = [];
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
   const getGameCalls: Array<{
@@ -407,6 +439,15 @@ function createHarness(config: HarnessConfig = {}) {
     ]),
   );
   const players = new Map<string, MockPlayerRecord>(Object.entries(config.players ?? {}));
+  const leagueInvites = new Map<string, MockLeagueInviteRecord>(
+    Object.entries(config.leagueInvites ?? {}),
+  );
+  const leagueShareInviteCodes = new Map<string, string>();
+  for (const invite of leagueInvites.values()) {
+    if (invite.kind === "share") {
+      leagueShareInviteCodes.set(invite.leagueId, invite.inviteCode);
+    }
+  }
   const rosterAssignments = new Map<string, MockRosterAssignmentRecord>(
     Object.entries(config.rosterAssignments ?? {}),
   );
@@ -717,12 +758,19 @@ function createHarness(config: HarnessConfig = {}) {
     sessionCookieName: "threefc_session",
     sessionCookieSecure: false,
     corsAllowedOrigins: ["https://qa.3fc.football"],
+    appBaseUrl: "https://qa.3fc.football",
     magicLinkService: {
       async getSession(sessionId: string) {
         return config.sessions?.[sessionId] ?? null;
       },
-      async start(email: string) {
-        magicLinkStarts.push(email);
+      async start(email: string, options) {
+        magicLinkStarts.push({ email, options });
+        if (config.magicLinkStartDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, config.magicLinkStartDelayMs));
+        }
+        if (config.magicLinkStartError) {
+          throw config.magicLinkStartError;
+        }
         return {
           email,
           expiresAt: "2026-02-24T00:00:00.000Z",
@@ -981,14 +1029,6 @@ function createHarness(config: HarnessConfig = {}) {
           ) ?? null;
         if (!game) {
           return null;
-        }
-
-        if (game.status === "finished") {
-          throw new GameJoinRegistrationError(
-            "game_finished",
-            409,
-            `Game ${game.gameId} is finished. Join registration is closed.`,
-          );
         }
 
         if (joinGameByCodeStateChangedOnce) {
@@ -1280,7 +1320,23 @@ function createHarness(config: HarnessConfig = {}) {
         return seasons.delete(seasonId);
       },
       async deleteLeague(leagueId: string) {
-        return leagues.delete(leagueId);
+        const deleted = leagues.delete(leagueId);
+        if (!deleted) {
+          return false;
+        }
+
+        for (const [accessKey, access] of leagueAccess) {
+          if (access.leagueId === leagueId) {
+            leagueAccess.delete(accessKey);
+          }
+        }
+        for (const [inviteCode, invite] of leagueInvites) {
+          if (invite.leagueId === leagueId) {
+            leagueInvites.delete(inviteCode);
+          }
+        }
+        leagueShareInviteCodes.delete(leagueId);
+        return true;
       },
       async createPlayer(input) {
         createdPlayers.push(input);
@@ -1665,6 +1721,102 @@ function createHarness(config: HarnessConfig = {}) {
         grantedLeagueAccess.push(record);
         return record;
       },
+      async createLeagueOrganiserInvite(input) {
+        const inviteCodes = ["ABCD2345", "EFGH2345", "JKLM2345", "NPQR2345"];
+        if (input.kind === "share") {
+          const existingShareCode = leagueShareInviteCodes.get(input.leagueId);
+          if (existingShareCode) {
+            const existingShareInvite = leagueInvites.get(existingShareCode);
+            if (existingShareInvite) {
+              return existingShareInvite;
+            }
+          }
+        }
+
+        const inviteCode = input.inviteCode ?? inviteCodes[leagueInvites.size] ?? "STUV2345";
+        const record = {
+          leagueId: input.leagueId,
+          inviteCode,
+          kind: input.kind ?? "email",
+          role: "admin" as const,
+          email: input.email?.trim().toLowerCase() ?? null,
+          createdByUserId: input.createdByUserId,
+          acceptedByUserId: null,
+          acceptedAt: null,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        };
+        leagueInvites.set(inviteCode, record);
+        if (record.kind === "share") {
+          leagueShareInviteCodes.set(record.leagueId, record.inviteCode);
+        }
+        return record;
+      },
+      async getLeagueOrganiserInvite(inviteCode: string) {
+        return leagueInvites.get(inviteCode.trim().toUpperCase()) ?? null;
+      },
+      async acceptLeagueOrganiserInvite(input) {
+        const invite = leagueInvites.get(input.inviteCode.trim().toUpperCase()) ?? null;
+        if (!invite) {
+          return null;
+        }
+
+        const normalizedEmail = input.email.trim().toLowerCase();
+        if (invite.email && invite.email !== normalizedEmail) {
+          throw new LeagueInviteError(
+            "invite_email_mismatch",
+            403,
+            "This organiser invite was issued for a different email address.",
+          );
+        }
+
+        if (
+          invite.kind !== "share" &&
+          invite.acceptedByUserId !== null &&
+          invite.acceptedByUserId !== input.userId
+        ) {
+          throw new LeagueInviteError(
+            "invite_already_accepted",
+            409,
+            "This organiser invite has already been accepted.",
+          );
+        }
+
+        const acceptedInvite = {
+          ...invite,
+          acceptedByUserId: invite.kind === "share" ? null : invite.acceptedByUserId ?? input.userId,
+          acceptedAt: invite.kind === "share" ? null : invite.acceptedAt ?? "2026-02-23T00:00:03.000Z",
+          updatedAt:
+            invite.kind === "share" || invite.acceptedByUserId
+              ? invite.updatedAt
+              : "2026-02-23T00:00:03.000Z",
+        };
+        leagueInvites.set(invite.inviteCode, acceptedInvite);
+
+        const key = `${invite.leagueId}:${input.userId}`;
+        const existing = leagueAccess.get(key);
+        if (existing && leagueRoleRank[existing.role] >= leagueRoleRank.admin) {
+          return {
+            invite: acceptedInvite,
+            access: existing,
+          };
+        }
+
+        const access = {
+          leagueId: invite.leagueId,
+          userId: input.userId,
+          role: "admin" as const,
+          grantedByUserId: invite.createdByUserId,
+          createdAt: existing?.createdAt ?? "2026-02-23T00:00:03.000Z",
+          updatedAt: "2026-02-23T00:00:03.000Z",
+        };
+        leagueAccess.set(key, access);
+        grantedLeagueAccess.push(access);
+        return {
+          invite: acceptedInvite,
+          access,
+        };
+      },
       async getSeason(seasonId: string) {
         return seasons.get(seasonId) ?? null;
       },
@@ -1695,6 +1847,46 @@ function createHarness(config: HarnessConfig = {}) {
           updatedAt: "2026-02-23T00:00:00.000Z",
         });
 
+        return true;
+      },
+      async completeIdempotencyRecord(input) {
+        const recordKey = `${input.scope}:${input.key}`;
+        const existing = idempotencyRecords.get(recordKey);
+        if (
+          !existing ||
+          existing.requestHash !== input.requestHash ||
+          existing.responseStatusCode !== input.expectedResponseStatusCode ||
+          existing.responseBody !== input.expectedResponseBody ||
+          (input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt)
+        ) {
+          return false;
+        }
+
+        idempotencyRecords.set(recordKey, {
+          scope: input.scope,
+          key: input.key,
+          requestHash: input.requestHash,
+          responseStatusCode: input.responseStatusCode,
+          responseBody: input.responseBody,
+          createdAt: existing.createdAt,
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        });
+        return true;
+      },
+      async deleteIdempotencyRecord(input) {
+        const recordKey = `${input.scope}:${input.key}`;
+        const existing = idempotencyRecords.get(recordKey);
+        if (
+          !existing ||
+          existing.requestHash !== input.requestHash ||
+          existing.responseStatusCode !== input.responseStatusCode ||
+          existing.responseBody !== input.responseBody ||
+          (input.updatedAt !== undefined && existing.updatedAt !== input.updatedAt)
+        ) {
+          return false;
+        }
+
+        idempotencyRecords.delete(recordKey);
         return true;
       },
     },
@@ -1729,11 +1921,15 @@ function createHarness(config: HarnessConfig = {}) {
     games,
     players,
     leagueAccess,
+    leagueInvites,
   };
 }
 
 function createGoalHarness(input: {
   email?: string;
+  subject?: string;
+  accessUserId?: string;
+  extraLeagueAccess?: Record<string, "admin" | "scorekeeper" | "viewer">;
   role?: "admin" | "scorekeeper" | "viewer";
   runningThird?: boolean;
   completedThirds?: boolean;
@@ -1750,6 +1946,8 @@ function createGoalHarness(input: {
   gameTeams?: Record<string, MockGameTeamInput>;
 } = {}) {
   const email = input.email ?? "scorekeeper@example.com";
+  const subject = input.subject;
+  const accessUserId = input.accessUserId ?? email;
   const role = input.role ?? "scorekeeper";
   const runningThird = input.runningThird ?? true;
   const completedThirds = input.completedThirds ?? false;
@@ -1766,6 +1964,7 @@ function createGoalHarness(input: {
       "session-1": {
         sessionId: "session-1",
         email,
+        ...(subject ? { subject } : {}),
         createdAt: "2026-02-23T00:00:00.000Z",
         expiresAt: "2026-02-24T00:00:00.000Z",
       },
@@ -1807,14 +2006,27 @@ function createGoalHarness(input: {
       },
     },
     leagueAccess: {
-      [`league-1:${email}`]: {
+      [`league-1:${accessUserId}`]: {
         leagueId: "league-1",
-        userId: email,
+        userId: accessUserId,
         role,
         grantedByUserId: "admin@example.com",
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:00.000Z",
       },
+      ...Object.fromEntries(
+        Object.entries(input.extraLeagueAccess ?? {}).map(([userId, accessRole]) => [
+          `league-1:${userId}`,
+          {
+            leagueId: "league-1",
+            userId,
+            role: accessRole,
+            grantedByUserId: "admin@example.com",
+            createdAt: "2026-02-23T00:00:00.000Z",
+            updatedAt: "2026-02-23T00:00:00.000Z",
+          },
+        ]),
+      ),
     },
     gameTeams: input.gameTeams ?? {
       "game-1:red": {
@@ -1960,7 +2172,8 @@ test("core lambda starts magic-link auth without requiring a session", async () 
 
   assert.equal(response.statusCode, 202);
   assert.equal(harness.magicLinkStarts.length, 1);
-  assert.equal(harness.magicLinkStarts[0], "player@example.com");
+  assert.equal(harness.magicLinkStarts[0]?.email, "player@example.com");
+  assert.deepEqual(harness.magicLinkStarts[0]?.options, undefined);
   assert.deepEqual(harness.magicLinkRateLimitChecks, [
     {
       email: "player@example.com",
@@ -2607,6 +2820,868 @@ test("core lambda rejects scorer access delegation from non-admins", async () =>
   assert.equal(JSON.parse(response.body).code, "admin_required");
 });
 
+test("core lambda creates league organiser invites and sends direct email links", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(harness.magicLinkRateLimitChecks, [
+    {
+      email: "coach@example.com",
+      clientIp: "203.0.113.20",
+    },
+  ]);
+  assert.equal(harness.magicLinkStarts.length, 1);
+  assert.equal(harness.magicLinkStarts[0]?.email, "coach@example.com");
+  assert.equal(harness.magicLinkStarts[0]?.options?.returnTo, "/invites?code=ABCD2345");
+  assert.equal(harness.magicLinkStarts[0]?.options?.subject, "You're invited to organise League One on 3FC");
+
+  assert.deepEqual(JSON.parse(response.body), {
+    invite: {
+      leagueId: "league-1",
+      inviteCode: "ABCD2345",
+      kind: "email",
+      role: "admin",
+      email: "coach@example.com",
+      createdByUserId: "admin-subject",
+      acceptedByUserId: null,
+      acceptedAt: null,
+      createdAt: "2026-02-23T00:00:02.000Z",
+      updatedAt: "2026-02-23T00:00:02.000Z",
+    },
+    inviteCode: "ABCD2345",
+    inviteLink: "https://qa.3fc.football/invites?code=ABCD2345",
+    emailDelivery: {
+      status: "sent",
+      email: "coach@example.com",
+      expiresAt: "2026-02-24T00:00:00.000Z",
+      messageId: "msg-1",
+    },
+  });
+});
+
+test("core lambda ensures reusable league organiser share invites", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const buildRequest = () =>
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: null,
+      },
+    });
+
+  const firstResponse = await harness.handler(buildRequest());
+  const secondResponse = await harness.handler(buildRequest());
+  const firstBody = JSON.parse(firstResponse.body);
+  const secondBody = JSON.parse(secondResponse.body);
+
+  assert.equal(firstResponse.statusCode, 201);
+  assert.equal(secondResponse.statusCode, 201);
+  assert.equal(firstBody.inviteCode, "ABCD2345");
+  assert.equal(secondBody.inviteCode, "ABCD2345");
+  assert.deepEqual(firstBody, secondBody);
+  assert.equal(firstBody.invite.kind, "share");
+  assert.equal(firstBody.invite.email, null);
+  assert.equal(firstBody.emailDelivery, null);
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkRateLimitChecks.length, 0);
+  assert.equal(harness.magicLinkStarts.length, 0);
+});
+
+test("core lambda reserves organiser invite idempotency before sending direct email", async () => {
+  const harness = createHarness({
+    magicLinkStartDelayMs: 35,
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const buildRequest = () =>
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "invite-email-key-1",
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    });
+
+  const [firstResponse, secondResponse] = await Promise.all([
+    harness.handler(buildRequest()),
+    harness.handler(buildRequest()),
+  ]);
+
+  assert.equal(firstResponse.statusCode, 201);
+  assert.equal(secondResponse.statusCode, 201);
+  assert.deepEqual(JSON.parse(secondResponse.body), JSON.parse(firstResponse.body));
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkRateLimitChecks.length, 1);
+  assert.equal(harness.magicLinkStarts.length, 1);
+  assert.equal(harness.idempotencyRecords.size, 1);
+  const record = [...harness.idempotencyRecords.values()][0];
+  assert.equal(record?.responseStatusCode, 201);
+});
+
+test("core lambda does not persist transient organiser invite idempotency failures", async () => {
+  let rateLimited = true;
+  const harness = createHarness({
+    rateLimitDecision: ({ email }) => {
+      if (rateLimited && email === "coach@example.com") {
+        return {
+          allowed: false,
+          dimension: "email",
+          retryAfterSeconds: 120,
+        };
+      }
+
+      return { allowed: true };
+    },
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const buildRequest = () =>
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "invite-email-retry-1",
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    });
+
+  const limitedResponse = await harness.handler(buildRequest());
+
+  assert.equal(limitedResponse.statusCode, 429);
+  assert.deepEqual(JSON.parse(limitedResponse.body), {
+    error: "rate_limited",
+    message: "Too many sign-in link requests. Try again later.",
+    retryAfterSeconds: 120,
+  });
+  assert.equal(harness.idempotencyRecords.size, 0);
+  assert.equal(harness.leagueInvites.size, 0);
+  assert.equal(harness.magicLinkStarts.length, 0);
+
+  rateLimited = false;
+  const retryResponse = await harness.handler(buildRequest());
+
+  assert.equal(retryResponse.statusCode, 201);
+  assert.equal(harness.idempotencyRecords.size, 1);
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkStarts.length, 1);
+});
+
+test("core lambda recovers stale share organiser invite idempotency reservations", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const requestHash = buildTestIdempotencyRequestHash(scope, { email: null });
+  harness.idempotencyRecords.set(`${scope}:stale-invite-code-1`, {
+    scope,
+    key: "stale-invite-code-1",
+    requestHash,
+    responseStatusCode: 202,
+    responseBody: JSON.stringify({
+      idempotencyState: "pending",
+      reservedAtEpochMs: Date.now() - 5 * 60 * 1000,
+    }),
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "stale-invite-code-1",
+      },
+      sourceIp: "203.0.113.20",
+      body: {},
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(harness.idempotencyRecords.size, 1);
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkStarts.length, 0);
+  const record = [...harness.idempotencyRecords.values()][0];
+  assert.equal(record?.responseStatusCode, 201);
+});
+
+test("core lambda recovers stale direct-email organiser invite reservations before delivery starts", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const requestHash = buildTestIdempotencyRequestHash(scope, { email: "coach@example.com" });
+  harness.idempotencyRecords.set(`${scope}:stale-invite-email-unstarted-1`, {
+    scope,
+    key: "stale-invite-email-unstarted-1",
+    requestHash,
+    responseStatusCode: 202,
+    responseBody: JSON.stringify({
+      idempotencyState: "pending",
+      reservationId: "reservation-unstarted-email",
+      reservedAtEpochMs: Date.now() - 5 * 60 * 1000,
+    }),
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "stale-invite-email-unstarted-1",
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  const body = JSON.parse(response.body);
+  assert.equal(body.emailDelivery.status, "sent");
+  assert.equal(body.emailDelivery.email, "coach@example.com");
+  assert.equal(body.emailDelivery.messageId, "msg-1");
+  assert.equal(harness.idempotencyRecords.size, 1);
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkRateLimitChecks.length, 1);
+  assert.equal(harness.magicLinkStarts.length, 1);
+  assert.equal(harness.magicLinkStarts[0]?.email, "coach@example.com");
+  assert.equal(harness.magicLinkStarts[0]?.options?.returnTo, `/invites?code=${body.inviteCode}`);
+  const record = [...harness.idempotencyRecords.values()][0];
+  assert.equal(record?.responseStatusCode, 201);
+});
+
+test("core lambda recovers stale direct-email organiser invite reservations after delivery starts", async () => {
+  const idempotencyKey = "stale-invite-email-started-1";
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const inviteCode = buildTestOrganiserInviteCode(scope, idempotencyKey);
+  const harness = createHarness({
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueInvites: {
+      [inviteCode]: {
+        leagueId: "league-1",
+        inviteCode,
+        kind: "email",
+        role: "admin",
+        email: "coach@example.com",
+        createdByUserId: "admin-subject",
+        acceptedByUserId: null,
+        acceptedAt: null,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      },
+    },
+  });
+
+  const requestHash = buildTestIdempotencyRequestHash(scope, { email: "coach@example.com" });
+  harness.idempotencyRecords.set(`${scope}:${idempotencyKey}`, {
+    scope,
+    key: idempotencyKey,
+    requestHash,
+    responseStatusCode: 202,
+    responseBody: JSON.stringify({
+      idempotencyState: "pending",
+      reservationId: "reservation-started-email",
+      reservedAtEpochMs: Date.now() - 5 * 60 * 1000,
+      externalSideEffect: "email_delivery_started",
+      externalSideEffectStartedAtEpochMs: Date.now() - 5 * 60 * 1000,
+    }),
+    createdAt: "2026-02-23T00:00:00.000Z",
+    updatedAt: "2026-02-23T00:00:00.000Z",
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": idempotencyKey,
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 202);
+  const body = JSON.parse(response.body);
+  assert.equal(body.inviteCode, inviteCode);
+  assert.equal(body.invite.kind, "email");
+  assert.equal(body.invite.email, "coach@example.com");
+  assert.equal(body.inviteLink, `https://qa.3fc.football/invites?code=${inviteCode}`);
+  assert.deepEqual(body.emailDelivery, {
+    status: "unknown",
+    email: "coach@example.com",
+    expiresAt: null,
+    messageId: null,
+    message: "Email delivery could not be confirmed. Share the invite link manually.",
+  });
+  assert.equal(harness.idempotencyRecords.size, 1);
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkRateLimitChecks.length, 0);
+  assert.equal(harness.magicLinkStarts.length, 0);
+  const record = [...harness.idempotencyRecords.values()][0];
+  assert.equal(record?.responseStatusCode, 202);
+  assert.deepEqual(JSON.parse(record?.responseBody ?? "{}"), body);
+
+  const replayedResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": idempotencyKey,
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    }),
+  );
+
+  assert.equal(replayedResponse.statusCode, 202);
+  assert.deepEqual(JSON.parse(replayedResponse.body), body);
+  assert.equal(harness.magicLinkRateLimitChecks.length, 0);
+  assert.equal(harness.magicLinkStarts.length, 0);
+});
+
+test("core lambda replays the original invite when email delivery is uncertain", async () => {
+  const harness = createHarness({
+    magicLinkStartError: new Error("SES response timed out"),
+    sessions: {
+      "session-admin": {
+        sessionId: "session-admin",
+        email: "admin@example.com",
+        subject: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin-subject": {
+        leagueId: "league-1",
+        userId: "admin-subject",
+        role: "admin",
+        grantedByUserId: "owner@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const buildRequest = () =>
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/organiser-invites",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+        Origin: "https://qa.3fc.football",
+        "Idempotency-Key": "uncertain-invite-email-1",
+      },
+      sourceIp: "203.0.113.20",
+      body: {
+        email: "Coach@Example.COM",
+      },
+    });
+
+  const firstResponse = await harness.handler(buildRequest());
+  const firstBody = JSON.parse(firstResponse.body);
+  const secondResponse = await harness.handler(buildRequest());
+
+  assert.equal(firstResponse.statusCode, 202);
+  assert.deepEqual(firstBody.emailDelivery, {
+    status: "unknown",
+    email: "coach@example.com",
+    expiresAt: null,
+    messageId: null,
+    message: "Email delivery could not be confirmed. Share the invite link manually.",
+  });
+  assert.equal(secondResponse.statusCode, 202);
+  assert.deepEqual(JSON.parse(secondResponse.body), firstBody);
+  assert.equal(harness.leagueInvites.size, 1);
+  assert.equal(harness.magicLinkStarts.length, 1);
+});
+
+test("core lambda accepts organiser invite codes and grants league admin access", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-invitee": {
+        sessionId: "session-invitee",
+        email: "coach@example.com",
+        subject: "coach-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueInvites: {
+      ABCD2345: {
+        leagueId: "league-1",
+        inviteCode: "ABCD2345",
+        kind: "email",
+        role: "admin",
+        email: "coach@example.com",
+        createdByUserId: "admin-subject",
+        acceptedByUserId: null,
+        acceptedAt: null,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/invites/abcd2345/accept",
+      headers: {
+        Cookie: "threefc_session=session-invitee",
+        Origin: "https://qa.3fc.football",
+      },
+      body: {},
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), {
+    invite: {
+      leagueId: "league-1",
+      inviteCode: "ABCD2345",
+      kind: "email",
+      role: "admin",
+      email: "coach@example.com",
+      createdByUserId: "admin-subject",
+      acceptedByUserId: "coach-subject",
+      acceptedAt: "2026-02-23T00:00:03.000Z",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      updatedAt: "2026-02-23T00:00:03.000Z",
+    },
+    access: {
+      leagueId: "league-1",
+      userId: "coach-subject",
+      role: "admin",
+      grantedByUserId: "admin-subject",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      updatedAt: "2026-02-23T00:00:03.000Z",
+    },
+    inviteLink: "https://qa.3fc.football/invites?code=ABCD2345",
+  });
+  assert.equal(harness.leagueAccess.get("league-1:coach-subject")?.role, "admin");
+
+  const leagueResponse = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/leagues/league-1",
+      headers: {
+        Cookie: "threefc_session=session-invitee",
+      },
+    }),
+  );
+
+  assert.equal(leagueResponse.statusCode, 200);
+  assert.equal(JSON.parse(leagueResponse.body).access.role, "admin");
+});
+
+test("core lambda accepts reusable organiser share invites for multiple users", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-invitee-one": {
+        sessionId: "session-invitee-one",
+        email: "coach-one@example.com",
+        subject: "coach-one-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+      "session-invitee-two": {
+        sessionId: "session-invitee-two",
+        email: "coach-two@example.com",
+        subject: "coach-two-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueInvites: {
+      ABCD2345: {
+        leagueId: "league-1",
+        inviteCode: "ABCD2345",
+        kind: "share",
+        role: "admin",
+        email: null,
+        createdByUserId: "admin-subject",
+        acceptedByUserId: null,
+        acceptedAt: null,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      },
+    },
+  });
+
+  const firstResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/invites/ABCD2345/accept",
+      headers: {
+        Cookie: "threefc_session=session-invitee-one",
+        Origin: "https://qa.3fc.football",
+      },
+      body: {},
+    }),
+  );
+  const secondResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/invites/ABCD2345/accept",
+      headers: {
+        Cookie: "threefc_session=session-invitee-two",
+        Origin: "https://qa.3fc.football",
+      },
+      body: {},
+    }),
+  );
+
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 200);
+  assert.equal(harness.leagueInvites.get("ABCD2345")?.acceptedByUserId, null);
+  assert.equal(harness.leagueInvites.get("ABCD2345")?.acceptedAt, null);
+  assert.equal(harness.leagueAccess.get("league-1:coach-one-subject")?.role, "admin");
+  assert.equal(harness.leagueAccess.get("league-1:coach-two-subject")?.role, "admin");
+  assert.equal(JSON.parse(firstResponse.body).invite.acceptedByUserId, null);
+  assert.equal(JSON.parse(secondResponse.body).invite.acceptedByUserId, null);
+});
+
+test("core lambda rejects direct email organiser invites for a different signed-in email", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-invitee": {
+        sessionId: "session-invitee",
+        email: "other@example.com",
+        subject: "other-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-1": {
+        leagueId: "league-1",
+        name: "League One",
+        slug: "league-one",
+        createdByUserId: "admin-subject",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueInvites: {
+      ABCD2345: {
+        leagueId: "league-1",
+        inviteCode: "ABCD2345",
+        kind: "email",
+        role: "admin",
+        email: "coach@example.com",
+        createdByUserId: "admin-subject",
+        acceptedByUserId: null,
+        acceptedAt: null,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/invites/ABCD2345/accept",
+      headers: {
+        Cookie: "threefc_session=session-invitee",
+        Origin: "https://qa.3fc.football",
+      },
+      body: {},
+    }),
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: "forbidden",
+    code: "invite_email_mismatch",
+    message: "This organiser invite was issued for a different email address.",
+  });
+  assert.equal(harness.leagueAccess.get("league-1:other-subject"), undefined);
+});
+
 test("core lambda replays public join retries by idempotency key", async () => {
   const harness = createHarness({
     games: {
@@ -2748,7 +3823,7 @@ test("core lambda retries retryable public join conflicts without persisting the
   assert.equal(harness.idempotencyRecords.size, 1);
 });
 
-test("core lambda does not persist closed-game public join conflicts", async () => {
+test("core lambda persists finished-game public join success for idempotent replay", async () => {
   const harness = createHarness({
     games: {
       "game-1": {
@@ -2766,6 +3841,7 @@ test("core lambda does not persist closed-game public join conflicts", async () 
     },
   });
 
+  let firstBody: unknown = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const response = await harness.handler(
       createEvent({
@@ -2781,17 +3857,20 @@ test("core lambda does not persist closed-game public join conflicts", async () 
       }),
     );
 
-    assert.equal(response.statusCode, 409);
-    assert.deepEqual(JSON.parse(response.body), {
-      error: "conflict",
-      code: "game_finished",
-      message: "Game game-1 is finished. Join registration is closed.",
-    });
+    assert.equal(response.statusCode, 201);
+    const body = JSON.parse(response.body);
+    if (attempt === 0) {
+      firstBody = body;
+      assert.equal(body.gameId, "game-1");
+      assert.equal(body.player.nickname, "Nia");
+    } else {
+      assert.deepEqual(body, firstBody);
+    }
   }
 
-  assert.equal(harness.createdPlayers.length, 0);
-  assert.equal(harness.linkedGamePlayers.length, 0);
-  assert.equal(harness.idempotencyRecords.size, 0);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
+  assert.equal(harness.idempotencyRecords.size, 1);
 });
 
 test("core lambda rejects oversized public join nicknames before persistence", async () => {
@@ -2941,7 +4020,7 @@ test("core lambda returns stable errors for invalid and missing join codes", asy
   assert.equal(harness.linkedGamePlayers.length, 0);
 });
 
-test("core lambda rejects join registration for finished games", async () => {
+test("core lambda allows join registration for finished games", async () => {
   const harness = createHarness({
     games: {
       "game-1": {
@@ -2971,14 +4050,19 @@ test("core lambda rejects join registration for finished games", async () => {
     }),
   );
 
-  assert.equal(response.statusCode, 409);
+  assert.equal(response.statusCode, 201);
+  assert.equal(harness.createdPlayers.length, 1);
+  assert.equal(harness.linkedGamePlayers.length, 1);
   assert.deepEqual(JSON.parse(response.body), {
-    error: "conflict",
-    code: "game_finished",
-    message: "Game game-1 is finished. Join registration is closed.",
+    gameId: "game-1",
+    joinCode: "FNSH2DAB",
+    player: {
+      playerId: harness.createdPlayers[0]?.playerId,
+      nickname: "Late",
+      createdAt: "2026-02-23T00:00:00.000Z",
+      updatedAt: "2026-02-23T00:00:00.000Z",
+    },
   });
-  assert.equal(harness.createdPlayers.length, 0);
-  assert.equal(harness.linkedGamePlayers.length, 0);
 });
 
 test("core lambda accepts session cookie from API Gateway cookies array", async () => {
@@ -4578,6 +5662,97 @@ test("core lambda allows admins to create corrective goals after finish", async 
   assert.equal(body.goal.thirdMinute, 20);
   assert.equal(body.goal.gameMinute, 60);
   assert.equal(body.goal.displayTime, "20:00");
+  assert.equal(harness.createdGoals.length, 1);
+  assert.equal(harness.createdGoals[0]?.allowFinished, true);
+});
+
+test("core lambda allows subject-keyed invited admins to create corrective goals after finish", async () => {
+  const harness = createGoalHarness({
+    email: "coach@example.com",
+    subject: "magic-link:coach-subject",
+    accessUserId: "magic-link:coach-subject",
+    role: "admin",
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-invited-create-correction-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "post-finish-invited-goal-correction-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(harness.createdGoals.length, 1);
+  assert.equal(harness.createdGoals[0]?.allowFinished, true);
+});
+
+test("core lambda allows post-finish corrections when any session identity is admin", async () => {
+  const harness = createGoalHarness({
+    email: "admin@example.com",
+    subject: "magic-link:lower-role-subject",
+    accessUserId: "magic-link:lower-role-subject",
+    role: "scorekeeper",
+    extraLeagueAccess: {
+      "admin@example.com": "admin",
+    },
+    runningThird: false,
+    completedThirds: true,
+  });
+  const finishResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/finish",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "finish-before-mixed-identity-correction-1",
+      },
+    }),
+  );
+  assert.equal(finishResponse.statusCode, 200);
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/games/game-1/goals",
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": "post-finish-mixed-identity-correction-1",
+      },
+      body: {
+        scoringTeamId: "red",
+        concedingTeamId: "blue",
+        scorerPlayerId: "player-red",
+        assistPlayerIds: [],
+        ownGoal: false,
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
   assert.equal(harness.createdGoals.length, 1);
   assert.equal(harness.createdGoals[0]?.allowFinished, true);
 });

@@ -42,6 +42,7 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(existsSync(resolve(outputDir, "seasons/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "games/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "join/index.html")), true);
+    assert.equal(existsSync(resolve(outputDir, "invites/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/styles.css")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/setup-flow.js")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/auth-flow.js")), true);
@@ -59,13 +60,19 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     const joinHtml = readFileSync(resolve(outputDir, "join/index.html"), "utf8");
     assert.match(joinHtml, /data-page="join"/);
     assert.match(joinHtml, /data-join-code=""/);
+
+    const inviteHtml = readFileSync(resolve(outputDir, "invites/index.html"), "utf8");
+    assert.match(inviteHtml, /data-page="invite"/);
+    assert.match(inviteHtml, /data-invite-code=""/);
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }
 });
 
-test("CloudFront router maps deployed join deep links to the exported shell", () => {
+test("CloudFront router maps deployed join deep links to exported shells", () => {
   assert.equal(runCloudFrontRouter("/join"), "/join/index.html");
   assert.equal(runCloudFrontRouter("/join/ABCD2345"), "/join/index.html");
+  assert.equal(runCloudFrontRouter("/invites"), "/invites/index.html");
+  assert.equal(runCloudFrontRouter("/invites/ABCD2345"), "/invites/index.html");
   assert.equal(runCloudFrontRouter("/ui/setup-flow.js"), "/ui/setup-flow.js");
 });

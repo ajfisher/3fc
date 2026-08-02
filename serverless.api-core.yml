@@ -22,6 +22,7 @@ provider:
   environment:
     DYNAMODB_TABLE: ${env:DYNAMODB_TABLE, '3fc-${sls:stage}-app'}
     APP_BASE_URL: ${self:custom.appBaseUrls.${sls:stage}, self:custom.appBaseUrls.default}
+    PUBLIC_APP_BASE_URL: ${self:custom.publicAppBaseUrls.${sls:stage}, self:custom.publicAppBaseUrls.default}
     SES_FROM_EMAIL: ${self:custom.sesFromEmail.${sls:stage}, self:custom.sesFromEmail.default}
     SESSION_COOKIE_NAME: threefc_session
     CORS_ALLOWED_ORIGINS: ${self:custom.corsAllowedOrigins.${sls:stage}, self:custom.corsAllowedOrigins.default}
@@ -39,16 +40,20 @@ provider:
 custom:
   appBaseUrls:
     qa: https://qa.3fc.football
-    prod: https://app.3fc.football
-    default: https://app.3fc.football
+    prod: https://3fc.football
+    default: https://3fc.football
+  publicAppBaseUrls:
+    qa: https://qa.3fc.football
+    prod: https://3fc.football
+    default: https://3fc.football
   sesFromEmail:
     qa: noreply@3fc.football
     prod: noreply@3fc.football
     default: noreply@3fc.football
   corsAllowedOrigins:
     qa: https://qa.3fc.football,https://app.3fc.football
-    prod: https://app.3fc.football,https://qa.3fc.football
-    default: https://app.3fc.football
+    prod: https://3fc.football,https://app.3fc.football,https://qa.3fc.football
+    default: https://3fc.football,https://app.3fc.football
   esbuild:
     bundle: true
     minify: false
@@ -124,6 +129,18 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/leagues/{leagueId}/access
+      - httpApi:
+          method: POST
+          path: /v1/leagues/{leagueId}/organiser-invites
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/organiser-invites
+      - httpApi:
+          method: POST
+          path: /v1/invites/{inviteCode}/accept
+      - httpApi:
+          method: OPTIONS
+          path: /v1/invites/{inviteCode}/accept
       - httpApi:
           method: GET
           path: /v1/leagues/{leagueId}/seasons

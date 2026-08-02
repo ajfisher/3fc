@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   renderComponentShowcasePage,
   renderGamePage,
+  renderInvitePage,
   renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
@@ -94,6 +95,7 @@ export function buildStaticSite(options: StaticSiteBuildOptions): string {
     { path: "/seasons", html: renderSeasonPage(options.apiBaseUrl, "") },
     { path: "/games", html: renderGamePage(options.apiBaseUrl, { gameId: "" }) },
     { path: "/join", html: renderJoinPage(options.apiBaseUrl, "") },
+    { path: "/invites", html: renderInvitePage(options.apiBaseUrl, "") },
   ];
 
   rmSync(outputDir, { recursive: true, force: true });

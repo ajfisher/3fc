@@ -215,6 +215,25 @@ test("magic start stores TTL token and sends callback link email", async () => {
   assert.equal(tokenItem.ttlEpoch?.N, tokenItem.expiresAtEpoch?.N);
 });
 
+test("magic start can send invite-specific copy with a safe return target", async () => {
+  const { service, sentMessages } = createHarness();
+
+  await service.start("coach@example.com", {
+    returnTo: "/invites?code=ABCD2345",
+    subject: "You're invited to organise League One on 3FC",
+    introLines: ["You have been invited to help organise League One on 3FC."],
+  });
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].to, "coach@example.com");
+  assert.equal(sentMessages[0].subject, "You're invited to organise League One on 3FC");
+  assert.match(sentMessages[0].body, /You have been invited to help organise League One on 3FC\./);
+  assert.match(
+    sentMessages[0].body,
+    /http:\/\/localhost:3000\/auth\/callback\?token=token-1\.secret-1&returnTo=%2Finvites%3Fcode%3DABCD2345/,
+  );
+});
+
 test("magic complete consumes token once and creates a session", async () => {
   const { client, service, sentMessages } = createHarness();
 

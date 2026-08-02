@@ -64,6 +64,12 @@ gameId.
 - Session→Game index: PK=SESSION#{sessionId} SK=GAME#{gameStartTs}#{gameId}
 - Player: PK=PLAYER#{playerId} SK=PROFILE
 - Player claim: PK=USER#{cognitoSub} SK=PLAYER#{playerId}
+- League organiser invite: PK=LEAGUE_INVITE#{inviteCode} SK=METADATA
+  (leagueId, kind=`share|email`, role=admin, optional email restriction,
+  acceptedByUserId).
+- League organiser share invite pointer: PK=LEAGUE#{leagueId}
+  SK=INVITE#ORGANISER_SHARE (active reusable organiser share invite code).
+  Deleting a league invalidates organiser invite records and removes this pointer.
 - Admin grants: PK=ACL#{scopeType}#{scopeId} SK=ADMIN#{cognitoSub}
 
 ### 5.2 GoalEvent fields
@@ -78,29 +84,55 @@ gameId.
 - Emails visible only to self + admins.
 - Admin permissions scoped per League/Season/Game via ACL items.
 - Social sign-in: Cognito Hosted UI (Google + Facebook).
-- Magic-link: custom flow using SES + Dynamo TTL + Cognito CUSTOM_AUTH (click
-  link → signed in).
+- Magic-link: custom flow using SES + Dynamo TTL + Cognito CUSTOM_AUTH (open
+  link, then explicitly complete sign-in in the browser).
 
 ## 7. API design
 
 - JSON over HTTP, /v1, Zod validation.
-- Idempotency-Key for write endpoints (goals, finish).
+- Idempotency-Key for retry-sensitive write endpoints, including setup creation,
+  organiser invites, public joins, goals, and finish.
+- League organiser invites have two modes on the same endpoints:
+  no-email creation ensures the league's reusable share invite (`kind=share`),
+  while direct-email creation creates a one-time, email-restricted invite
+  (`kind=email`). Accepting share invites grants league admin access without
+  consuming the invite; accepting email invites marks that invite consumed.
+- Direct-email organiser invite creation reserves the idempotency key before
+  creating the invite or sending email, so concurrent retries replay the same
+  completed response instead of delivering duplicate valid invites. Pending
+  reservations are recoverable after a bounded stale window, and uncertain email
+  delivery returns the original invite link with `emailDelivery.status=unknown`
+  rather than reopening the mutation.
 
-``` Public: GET /v1/public/leagues GET
-/v1/public/leagues/{leagueIdOrSlug}/seasons GET /v1/public/games/{gameId} GET
-/v1/public/games/{gameId}/timeline
+```
+Public:
+GET   /v1/public/leagues
+GET   /v1/public/leagues/{leagueIdOrSlug}/seasons
+GET   /v1/public/games/{gameId}
+GET   /v1/public/games/{gameId}/timeline
 
-Auth: POST /v1/auth/magic/start POST /v1/auth/magic/complete
+Auth:
+POST  /v1/auth/magic/start
+POST  /v1/auth/magic/complete
 
-Core (authed): POST  /v1/leagues POST  /v1/leagues/{leagueId}/seasons POST
-/v1/seasons/{seasonId}/sessions POST  /v1/sessions/{sessionId}/games PATCH
-/v1/games/{gameId} POST  /v1/games/{gameId}/roster POST
-/v1/games/{gameId}/thirds/{third}/start POST
-/v1/games/{gameId}/thirds/{third}/finish POST  /v1/games/{gameId}/goals PATCH
-/v1/games/{gameId}/goals/{eventId} DELETE /v1/games/{gameId}/goals/{eventId}
-POST  /v1/games/{gameId}/finish POST  /v1/join/{joinCode} POST  /v1/players
+Core (authed):
+POST  /v1/leagues
+POST  /v1/leagues/{leagueId}/seasons
+POST  /v1/seasons/{seasonId}/sessions
+POST  /v1/sessions/{sessionId}/games
+PATCH /v1/games/{gameId}
+POST  /v1/games/{gameId}/roster
+POST  /v1/games/{gameId}/thirds/{third}/start
+POST  /v1/games/{gameId}/thirds/{third}/finish
+POST  /v1/games/{gameId}/goals
+PATCH /v1/games/{gameId}/goals/{eventId}
+DELETE /v1/games/{gameId}/goals/{eventId}
+POST  /v1/games/{gameId}/finish
+POST  /v1/join/{joinCode}
+POST  /v1/players
 POST  /v1/players/{playerId}/claim
-
+POST  /v1/leagues/{leagueId}/organiser-invites
+POST  /v1/invites/{inviteCode}/accept
 ```
 
 ## 8. Timer + thirds
@@ -162,7 +194,8 @@ POST  /v1/players/{playerId}/claim
 - The `production` environment application will be deployed to via github
   workflows and will reside in AWS. It will be automatically deployed to when a
   branch is merged to the `main` branch and will be fully automated.
-- Production app host/domain: `https://app.3fc.football`.
+- Production app host/domain: `https://3fc.football`.
+- Production public share-link host/domain: `https://3fc.football`.
 - QA app host/domain: `https://qa.3fc.football`.
 - Production API host/domain: `https://api.3fc.football`.
 - QA API host/domain: `https://qa-api.3fc.football`.

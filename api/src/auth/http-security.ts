@@ -1,6 +1,7 @@
 const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "https://qa.3fc.football",
+  "https://3fc.football",
   "https://app.3fc.football",
 ] as const;
 

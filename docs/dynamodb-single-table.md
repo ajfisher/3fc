@@ -37,7 +37,19 @@ This document defines the baseline key structure and access patterns for the
 - Join code lookup:
   - `pk=JOIN_CODE#{joinCode}`
   - `sk=METADATA`
-  - maps an active QR/join code to its `gameId`
+  - maps a QR/join code to its `gameId`; finished games keep the lookup so late players can join and claim their profile
+- League organiser invite:
+  - `pk=LEAGUE_INVITE#{inviteCode}`
+  - `sk=METADATA`
+  - maps an organiser invite code to its league, `kind` (`share` or `email`), optional email restriction, creator, and acceptance state
+  - `kind=share` invites are reusable league share codes and are not consumed on accept
+  - `kind=email` invites are one-time, email-restricted, and are consumed on accept
+  - deleting a league invalidates organiser invite records for that league
+- League organiser share invite pointer:
+  - `pk=LEAGUE#{leagueId}`
+  - `sk=INVITE#ORGANISER_SHARE`
+  - points each league at its active reusable organiser share invite code
+  - deleted with the league so old share codes cannot target a replacement league id
 - Goal event timeline:
   - `pk=GAME#{gameId}`
   - `sk=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}`
@@ -95,6 +107,7 @@ without schema rewrites at this stage.
 - Create/list sessions for a season.
 - Create/read game metadata.
 - Resolve join code to game for player self-registration.
+- Create/accept reusable share organiser invites and one-time email organiser invites, then grant league admin ACL entries.
 - Finish game and store deterministic winner/draw result on game metadata.
 - Link/list games for a session (`SESSION#{sessionId}` query).
 - Create/read player profile.

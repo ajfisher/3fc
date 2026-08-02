@@ -41,8 +41,10 @@ import {
 } from "./auth/session.js";
 import {
   claimPlayerRequestSchema,
+  acceptLeagueOrganiserInviteRequestSchema,
   createGameRequestSchema,
   createGoalRequestSchema,
+  createLeagueOrganiserInviteRequestSchema,
   createLeagueRequestSchema,
   createSeasonRequestSchema,
   createSessionRequestSchema,
@@ -66,11 +68,20 @@ import {
   GameTimerTransitionError,
   GoalCorrectionError,
   GoalCreationError,
+  LeagueInviteCodeCollisionError,
+  LeagueInviteError,
   PlayerClaimError,
   ThreeFcRepository,
 } from "./data/repository.js";
-import type { CreateGoalResult, DeleteGoalResult, GameStatus, UpdateGoalResult } from "./data/types.js";
-import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
+import type {
+  AcceptLeagueOrganiserInviteResult,
+  CreateGoalResult,
+  DeleteGoalResult,
+  GameStatus,
+  LeagueInviteRecord,
+  UpdateGoalResult,
+} from "./data/types.js";
+import { logAuthRateLimit, logMagicLinkEvent, logRequest, logRequestError } from "./logging.js";
 
 const FINISHED_REPAIR_RETRY_DELAYS_MS = [25, 50, 100] as const;
 const FINISHED_REPAIR_MAX_ATTEMPTS = 3;
@@ -117,7 +128,10 @@ interface SessionLookup {
 }
 
 interface MagicLinkServiceContract extends SessionLookup {
-  start(email: string): Promise<{
+  start(
+    email: string,
+    options?: { returnTo?: string | null; subject?: string; introLines?: string[] },
+  ): Promise<{
     email: string;
     expiresAt: string;
     messageId: string | null;
@@ -501,6 +515,19 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
+  createLeagueOrganiserInvite(input: {
+    leagueId: string;
+    email?: string | null;
+    createdByUserId: string;
+    inviteCode?: string | null;
+    kind?: LeagueInviteRecord["kind"];
+  }): Promise<LeagueInviteRecord>;
+  getLeagueOrganiserInvite(inviteCode: string): Promise<LeagueInviteRecord | null>;
+  acceptLeagueOrganiserInvite(input: {
+    inviteCode: string;
+    userId: string;
+    email: string;
+  }): Promise<AcceptLeagueOrganiserInviteResult | null>;
   getSeason(
     seasonId: string,
   ): Promise<
@@ -550,6 +577,24 @@ interface RepositoryContract {
     responseStatusCode: number;
     responseBody: string;
   }): Promise<boolean>;
+  completeIdempotencyRecord(input: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    expectedResponseStatusCode: number;
+    expectedResponseBody: string;
+    expectedUpdatedAt?: string;
+  }): Promise<boolean>;
+  deleteIdempotencyRecord(input: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    updatedAt?: string;
+  }): Promise<boolean>;
 }
 
 type LeagueListRecord = Awaited<ReturnType<RepositoryContract["listLeaguesForUser"]>>[number];
@@ -577,6 +622,8 @@ interface CoreHandlerDependencies {
   sessionCookieName: string;
   sessionCookieSecure: boolean;
   corsAllowedOrigins: string[];
+  appBaseUrl: string;
+  publicAppBaseUrl?: string;
 }
 
 function getRequestDetails(event: ApiGatewayHttpEvent): RequestDetails {
@@ -1097,7 +1144,7 @@ function gameJoinCodeCollisionConflictResponse(
 async function buildFinishedGameMutationBlock(input: {
   repository: RepositoryContract;
   game: Pick<RepositoryGameRecord, "gameId" | "leagueId" | "status">;
-  sessionEmail: string;
+  sessionUserIds: string | readonly string[];
   origin: string | undefined;
   allowedOrigins: string[];
 }): Promise<ApiGatewayHttpResponse | null> {
@@ -1105,12 +1152,12 @@ async function buildFinishedGameMutationBlock(input: {
     return null;
   }
 
-  const access = await ensureLeagueAccess(
+  const isAdmin = await ensureLeagueAdmin(
     input.repository,
     input.game.leagueId,
-    input.sessionEmail,
+    input.sessionUserIds,
   );
-  if (access.role === "admin") {
+  if (isAdmin) {
     return null;
   }
 
@@ -1517,6 +1564,19 @@ function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
     .digest("hex");
 }
 
+function hashDiagnosticValue(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function hashMagicLinkTokenId(rawToken: string): string {
+  const tokenId = rawToken.trim().split(".")[0]?.trim() ?? "";
+  return hashDiagnosticValue(tokenId || "missing-token-id");
+}
+
+function hashEmailDiagnostic(email: string): string {
+  return hashDiagnosticValue(normalizeMagicLinkEmail(email));
+}
+
 function parseOptionalIdempotencyKey(value: string | undefined): string | null {
   if (!value) {
     return null;
@@ -1565,6 +1625,184 @@ function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): stri
 }
 
 const PUBLIC_JOIN_IDEMPOTENCY_SUBJECT = "public-join";
+const IDEMPOTENCY_PENDING_STATUS_CODE = 202;
+const IDEMPOTENCY_PENDING_STALE_AFTER_MS = 2 * 60 * 1000;
+const IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED = "email_delivery_started";
+const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const INVITE_CODE_LENGTH = 8;
+
+interface PendingIdempotencyBody {
+  idempotencyState?: unknown;
+  reservationId?: unknown;
+  reservedAtEpochMs?: unknown;
+  externalSideEffect?: unknown;
+  externalSideEffectStartedAtEpochMs?: unknown;
+}
+
+interface ReservedIdempotencyMutationContext {
+  markExternalSideEffectStarted: () => Promise<void>;
+}
+
+class ReservedIdempotencyReservationChangedError extends Error {
+  constructor() {
+    super("Idempotency reservation changed before external side effect could be marked.");
+  }
+}
+
+function parsePendingIdempotencyBody(responseBody: string): PendingIdempotencyBody | null {
+  try {
+    const parsed = JSON.parse(responseBody) as unknown;
+    return typeof parsed === "object" && parsed !== null ? parsed as PendingIdempotencyBody : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildPendingIdempotencyBody(input: {
+  reservationId?: string;
+  reservedAtEpochMs?: number;
+  externalSideEffect?: typeof IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED;
+  externalSideEffectStartedAtEpochMs?: number;
+} = {}): string {
+  const body: PendingIdempotencyBody = {
+    idempotencyState: "pending",
+    reservationId: input.reservationId ?? randomUUID(),
+    reservedAtEpochMs: input.reservedAtEpochMs ?? Date.now(),
+  };
+
+  if (input.externalSideEffect === IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED) {
+    body.externalSideEffect = IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED;
+    body.externalSideEffectStartedAtEpochMs =
+      input.externalSideEffectStartedAtEpochMs ?? Date.now();
+  }
+
+  return JSON.stringify(body);
+}
+
+function buildAppUrl(appBaseUrl: string, path: string): string {
+  const normalizedBase = appBaseUrl.endsWith("/") ? appBaseUrl.slice(0, -1) : appBaseUrl;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+function buildOrganiserInvitePath(inviteCode: string): string {
+  return `/invites?code=${encodeURIComponent(inviteCode)}`;
+}
+
+type OrganiserInviteEmailDeliveryResponse =
+  | { status: "sent"; email: string; expiresAt: string; messageId: string | null }
+  | { status: "unknown"; email: string; expiresAt: null; messageId: null; message: string };
+
+function buildOrganiserInviteResponse(
+  invite: LeagueInviteRecord,
+  appBaseUrl: string,
+  emailDelivery: OrganiserInviteEmailDeliveryResponse | null = null,
+): Record<string, unknown> {
+  const invitePath = buildOrganiserInvitePath(invite.inviteCode);
+  return {
+    invite,
+    inviteCode: invite.inviteCode,
+    inviteLink: buildAppUrl(appBaseUrl, invitePath),
+    emailDelivery,
+  };
+}
+
+function buildOrganiserInviteIdempotencyCode(input: {
+  sessionEmail: string;
+  method: string;
+  route: string;
+  idempotencyKey: string | undefined;
+}): string | null {
+  const parsedIdempotencyKey = input.idempotencyKey
+    ? idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey)
+    : null;
+
+  if (!parsedIdempotencyKey?.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const digest = createHash("sha256")
+    .update(`organiser-invite:${scope}:${parsedIdempotencyKey.data}`)
+    .digest();
+  let inviteCode = "";
+  for (let index = 0; index < INVITE_CODE_LENGTH; index += 1) {
+    inviteCode += INVITE_CODE_ALPHABET[digest[index] % INVITE_CODE_ALPHABET.length];
+  }
+  return inviteCode;
+}
+
+function isMatchingRecoveredOrganiserInvite(input: {
+  invite: LeagueInviteRecord;
+  leagueId: string;
+  email: string | null;
+  createdByUserId: string;
+  kind: LeagueInviteRecord["kind"];
+}): boolean {
+  return (
+    input.invite.leagueId === input.leagueId &&
+    input.invite.kind === input.kind &&
+    input.invite.role === "admin" &&
+    input.invite.email === input.email &&
+    input.invite.createdByUserId === input.createdByUserId
+  );
+}
+
+async function createOrRecoverLeagueOrganiserInvite(input: {
+  repository: RepositoryContract;
+  leagueId: string;
+  email: string | null;
+  createdByUserId: string;
+  inviteCode: string | null;
+  kind: LeagueInviteRecord["kind"];
+}): Promise<LeagueInviteRecord> {
+  try {
+    return await input.repository.createLeagueOrganiserInvite({
+      leagueId: input.leagueId,
+      email: input.email,
+      createdByUserId: input.createdByUserId,
+      inviteCode: input.inviteCode,
+      kind: input.kind,
+    });
+  } catch (error) {
+    if (!(error instanceof LeagueInviteCodeCollisionError) || !input.inviteCode) {
+      throw error;
+    }
+
+    const existingInvite = await input.repository.getLeagueOrganiserInvite(input.inviteCode);
+    if (
+      existingInvite &&
+      isMatchingRecoveredOrganiserInvite({
+        invite: existingInvite,
+        leagueId: input.leagueId,
+        email: input.email,
+        createdByUserId: input.createdByUserId,
+        kind: input.kind,
+      })
+    ) {
+      return existingInvite;
+    }
+
+    throw error;
+  }
+}
+
+function leagueInviteErrorResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  error: LeagueInviteError,
+): ApiGatewayHttpResponse {
+  const responseError = error.statusCode === 404 ? "not_found" : error.statusCode === 403 ? "forbidden" : "conflict";
+  return createJsonResponse(
+    error.statusCode,
+    {
+      error: responseError,
+      code: error.code,
+      message: error.message,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
 
 function buildGoalEventId(input: {
   idempotencyKey: string | undefined;
@@ -1640,6 +1878,95 @@ function idempotencyConflictResponse(
   );
 }
 
+function idempotencyInProgressResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "idempotency_in_progress",
+      message: "A request with this idempotency key is still in progress. Retry shortly.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function isPendingIdempotencyRecord(record: { responseStatusCode: number; responseBody: string }): boolean {
+  if (record.responseStatusCode !== IDEMPOTENCY_PENDING_STATUS_CODE) {
+    return false;
+  }
+
+  return parsePendingIdempotencyBody(record.responseBody)?.idempotencyState === "pending";
+}
+
+function pendingIdempotencyReservedAtEpochMs(record: {
+  responseBody: string;
+  createdAt?: string;
+}): number | null {
+  const parsed = parsePendingIdempotencyBody(record.responseBody);
+  if (
+    typeof parsed?.reservedAtEpochMs === "number" &&
+    Number.isFinite(parsed.reservedAtEpochMs)
+  ) {
+    return parsed.reservedAtEpochMs;
+  }
+
+  if (record.createdAt) {
+    const createdAtEpochMs = Date.parse(record.createdAt);
+    if (Number.isFinite(createdAtEpochMs)) {
+      return createdAtEpochMs;
+    }
+  }
+
+  return null;
+}
+
+function pendingIdempotencyBodyHasExternalSideEffectStarted(responseBody: string): boolean {
+  return parsePendingIdempotencyBody(responseBody)?.externalSideEffect ===
+    IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED;
+}
+
+function isStalePendingIdempotencyRecord(record: {
+  responseStatusCode: number;
+  responseBody: string;
+  createdAt?: string;
+}): boolean {
+  if (!isPendingIdempotencyRecord(record)) {
+    return false;
+  }
+
+  const reservedAtEpochMs = pendingIdempotencyReservedAtEpochMs(record);
+  return reservedAtEpochMs !== null && Date.now() - reservedAtEpochMs > IDEMPOTENCY_PENDING_STALE_AFTER_MS;
+}
+
+function isRecoverableStalePendingIdempotencyRecord(record: {
+  responseStatusCode: number;
+  responseBody: string;
+  createdAt?: string;
+}): boolean {
+  return (
+    isStalePendingIdempotencyRecord(record) &&
+    !pendingIdempotencyBodyHasExternalSideEffectStarted(record.responseBody)
+  );
+}
+
+function isRetryableReservedIdempotencyResponse(response: ApiGatewayHttpResponse): boolean {
+  return response.statusCode === 429 || response.statusCode >= 500;
+}
+
+function replayIdempotencyRecord(
+  record: { responseStatusCode: number; responseBody: string },
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    record.responseStatusCode,
+    parseStoredIdempotencyResponseBody(record.responseBody),
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
 async function executeIdempotentMutation(input: {
   repository: RepositoryContract;
   idempotencyKey: string | undefined;
@@ -1675,11 +2002,26 @@ async function executeIdempotentMutation(input: {
       return idempotencyConflictResponse(input.origin, input.allowedOrigins);
     }
 
-    return createJsonResponse(
-      existingRecord.responseStatusCode,
-      parseStoredIdempotencyResponseBody(existingRecord.responseBody),
-      buildCorsHeaders(input.origin, input.allowedOrigins),
-    );
+    if (isPendingIdempotencyRecord(existingRecord)) {
+      if (
+        isStalePendingIdempotencyRecord(existingRecord) &&
+        await input.repository.deleteIdempotencyRecord({
+          scope,
+          key: idempotencyKey,
+          requestHash,
+          responseStatusCode: existingRecord.responseStatusCode,
+          responseBody: existingRecord.responseBody,
+          updatedAt: existingRecord.updatedAt,
+        })
+      ) {
+        // Continue as a new mutation after clearing stale pending state.
+      } else {
+        const replay = await replayStoredIdempotencyMutation(input);
+        return replay ?? idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+      }
+    } else {
+      return replayIdempotencyRecord(existingRecord, input.origin, input.allowedOrigins);
+    }
   }
 
   const mutationResponse = await input.execute();
@@ -1708,11 +2050,225 @@ async function executeIdempotentMutation(input: {
     return idempotencyConflictResponse(input.origin, input.allowedOrigins);
   }
 
-  return createJsonResponse(
-    raceRecord.responseStatusCode,
-    parseStoredIdempotencyResponseBody(raceRecord.responseBody),
-    buildCorsHeaders(input.origin, input.allowedOrigins),
-  );
+  if (isPendingIdempotencyRecord(raceRecord)) {
+    if (
+      isStalePendingIdempotencyRecord(raceRecord) &&
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: raceRecord.responseStatusCode,
+        responseBody: raceRecord.responseBody,
+        updatedAt: raceRecord.updatedAt,
+      })
+    ) {
+      return mutationResponse;
+    }
+
+    const replay = await replayStoredIdempotencyMutation(input);
+    return replay ?? idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+  }
+
+  return replayIdempotencyRecord(raceRecord, input.origin, input.allowedOrigins);
+}
+
+async function executeReservedIdempotentMutation(input: {
+  repository: RepositoryContract;
+  idempotencyKey: string | undefined;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  origin: string | undefined;
+  allowedOrigins: string[];
+  execute: (context: ReservedIdempotencyMutationContext) => Promise<ApiGatewayHttpResponse>;
+  recoverStartedExternalSideEffect?: (record: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    updatedAt: string;
+  }) => Promise<ApiGatewayHttpResponse | null>;
+}): Promise<ApiGatewayHttpResponse> {
+  if (!input.idempotencyKey) {
+    return input.execute({
+      markExternalSideEffectStarted: async () => undefined,
+    });
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);
+  if (!parsedHeader.success) {
+    return badRequest(
+      input.origin,
+      input.allowedOrigins,
+      formatSchemaValidationError(parsedHeader.error),
+    );
+  }
+
+  const idempotencyKey = parsedHeader.data;
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  let reserved = false;
+  let reservedResponseBody: string | null = null;
+
+  for (let reserveAttempt = 0; reserveAttempt < 2; reserveAttempt += 1) {
+    const pendingResponseBody = buildPendingIdempotencyBody();
+    reserved = await input.repository.createIdempotencyRecord({
+      scope,
+      key: idempotencyKey,
+      requestHash,
+      responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+      responseBody: pendingResponseBody,
+    });
+
+    if (reserved) {
+      reservedResponseBody = pendingResponseBody;
+      break;
+    }
+
+    const existingRecord = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
+    if (!existingRecord) {
+      continue;
+    }
+
+    if (existingRecord.requestHash !== requestHash) {
+      return idempotencyConflictResponse(input.origin, input.allowedOrigins);
+    }
+
+    if (
+      isPendingIdempotencyRecord(existingRecord) &&
+      isRecoverableStalePendingIdempotencyRecord(existingRecord) &&
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: existingRecord.responseStatusCode,
+        responseBody: existingRecord.responseBody,
+        updatedAt: existingRecord.updatedAt,
+      })
+    ) {
+      continue;
+    }
+
+    if (isPendingIdempotencyRecord(existingRecord)) {
+      if (
+        input.recoverStartedExternalSideEffect &&
+        isStalePendingIdempotencyRecord(existingRecord) &&
+        pendingIdempotencyBodyHasExternalSideEffectStarted(existingRecord.responseBody)
+      ) {
+        const recovered = await input.recoverStartedExternalSideEffect(existingRecord);
+        if (recovered) {
+          const completed = await input.repository.completeIdempotencyRecord({
+            scope,
+            key: idempotencyKey,
+            requestHash,
+            responseStatusCode: recovered.statusCode,
+            responseBody: recovered.body,
+            expectedResponseStatusCode: existingRecord.responseStatusCode,
+            expectedResponseBody: existingRecord.responseBody,
+            expectedUpdatedAt: existingRecord.updatedAt,
+          });
+          if (completed) {
+            return recovered;
+          }
+
+          const replayAfterRecoveryRace = await replayStoredIdempotencyMutation(input);
+          return replayAfterRecoveryRace ?? idempotencyInProgressResponse(
+            input.origin,
+            input.allowedOrigins,
+          );
+        }
+      }
+
+      const replay = await replayStoredIdempotencyMutation(input);
+      if (replay) {
+        return replay;
+      }
+
+      return idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+    }
+
+    return replayIdempotencyRecord(existingRecord, input.origin, input.allowedOrigins);
+  }
+
+  if (!reserved) {
+    return idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+  }
+  if (!reservedResponseBody) {
+    return idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+  }
+  let ownedReservationBody = reservedResponseBody;
+
+  const markExternalSideEffectStarted = async (): Promise<void> => {
+    const parsed = parsePendingIdempotencyBody(ownedReservationBody);
+    const markedResponseBody = buildPendingIdempotencyBody({
+      reservationId: typeof parsed?.reservationId === "string" ? parsed.reservationId : undefined,
+      reservedAtEpochMs: typeof parsed?.reservedAtEpochMs === "number" ? parsed.reservedAtEpochMs : undefined,
+      externalSideEffect: IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED,
+    });
+    const marked = await input.repository.completeIdempotencyRecord({
+      scope,
+      key: idempotencyKey,
+      requestHash,
+      responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+      responseBody: markedResponseBody,
+      expectedResponseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+      expectedResponseBody: ownedReservationBody,
+    });
+    if (!marked) {
+      throw new ReservedIdempotencyReservationChangedError();
+    }
+    ownedReservationBody = markedResponseBody;
+  };
+
+  let mutationResponse: ApiGatewayHttpResponse;
+  try {
+    mutationResponse = await input.execute({
+      markExternalSideEffectStarted,
+    });
+  } catch (error) {
+    if (error instanceof ReservedIdempotencyReservationChangedError) {
+      const replay = await replayStoredIdempotencyMutation(input);
+      return replay ?? idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+    }
+
+    if (!pendingIdempotencyBodyHasExternalSideEffectStarted(ownedReservationBody)) {
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+        responseBody: ownedReservationBody,
+      });
+    }
+    throw error;
+  }
+
+  if (isRetryableReservedIdempotencyResponse(mutationResponse)) {
+    if (!pendingIdempotencyBodyHasExternalSideEffectStarted(ownedReservationBody)) {
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+        responseBody: ownedReservationBody,
+      });
+    }
+    return mutationResponse;
+  }
+
+  await input.repository.completeIdempotencyRecord({
+    scope,
+    key: idempotencyKey,
+    requestHash,
+    responseStatusCode: mutationResponse.statusCode,
+    responseBody: mutationResponse.body,
+    expectedResponseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+    expectedResponseBody: ownedReservationBody,
+  });
+
+  return mutationResponse;
 }
 
 async function waitForIdempotencyRecord(): Promise<void> {
@@ -1741,6 +2297,7 @@ async function replayStoredIdempotencyMutation(input: {
   const idempotencyKey = parsedHeader.data;
   const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
   const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  let sawPendingRecord = false;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const record = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
@@ -1749,11 +2306,15 @@ async function replayStoredIdempotencyMutation(input: {
         return idempotencyConflictResponse(input.origin, input.allowedOrigins);
       }
 
-      return createJsonResponse(
-        record.responseStatusCode,
-        parseStoredIdempotencyResponseBody(record.responseBody),
-        buildCorsHeaders(input.origin, input.allowedOrigins),
-      );
+      if (isPendingIdempotencyRecord(record)) {
+        sawPendingRecord = true;
+        if (attempt < 2) {
+          await waitForIdempotencyRecord();
+        }
+        continue;
+      }
+
+      return replayIdempotencyRecord(record, input.origin, input.allowedOrigins);
     }
 
     if (attempt < 2) {
@@ -1761,7 +2322,7 @@ async function replayStoredIdempotencyMutation(input: {
     }
   }
 
-  return null;
+  return sawPendingRecord ? idempotencyInProgressResponse(input.origin, input.allowedOrigins) : null;
 }
 
 function decodeRouteParam(value: string): string {
@@ -1772,7 +2333,8 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   const region = process.env.AWS_REGION ?? "ap-southeast-2";
   const tableName = process.env.DYNAMODB_TABLE ?? "threefc_local";
   const ddbEndpoint = process.env.DYNAMODB_ENDPOINT;
-  const appBaseUrl = process.env.APP_BASE_URL ?? "https://app.3fc.football";
+  const appBaseUrl = process.env.APP_BASE_URL ?? "https://3fc.football";
+  const publicAppBaseUrl = process.env.PUBLIC_APP_BASE_URL ?? appBaseUrl;
   const sessionCookieSecure = resolveSessionCookieSecureFlag(
     process.env.SESSION_COOKIE_SECURE,
     appBaseUrl,
@@ -1853,6 +2415,8 @@ function createDefaultDependencies(): CoreHandlerDependencies {
     sessionCookieName: process.env.SESSION_COOKIE_NAME ?? "threefc_session",
     sessionCookieSecure,
     corsAllowedOrigins: parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS),
+    appBaseUrl,
+    publicAppBaseUrl,
   };
 }
 
@@ -1900,6 +2464,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const email = normalizeMagicLinkEmail(rawBody.email);
         if (!isMagicLinkEmailLike(email)) {
           status = 400;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "start",
+            outcome: "failure",
+            reason: "invalid_email",
+            emailHash: hashEmailDiagnostic(email),
+          });
           return magicLinkErrorResponse(
             origin,
             dependencies.corsAllowedOrigins,
@@ -1921,6 +2495,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             dimension: rateLimitDecision.dimension,
             retryAfterSeconds: rateLimitDecision.retryAfterSeconds,
           });
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "start",
+            outcome: "blocked",
+            reason: "rate_limited",
+            emailHash: hashEmailDiagnostic(email),
+          });
           return rateLimited(
             origin,
             dependencies.corsAllowedOrigins,
@@ -1931,6 +2515,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         try {
           const startResult = await dependencies.magicLinkService.start(email);
           status = 202;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "start",
+            outcome: "success",
+            reason: "sent",
+            emailHash: hashEmailDiagnostic(email),
+            correlationId: startResult.messageId ?? undefined,
+          });
           return createJsonResponse(
             status,
             {
@@ -1944,6 +2539,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         } catch (error) {
           if (error instanceof MagicLinkAuthError) {
             status = error.statusCode;
+            logMagicLinkEvent({
+              requestId: details.requestId,
+              route,
+              method,
+              status,
+              action: "start",
+              outcome: "failure",
+              reason: error.code,
+              emailHash: hashEmailDiagnostic(email),
+            });
             return magicLinkErrorResponse(origin, dependencies.corsAllowedOrigins, error);
           }
 
@@ -1962,12 +2567,31 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
         if (typeof rawBody.token !== "string") {
           status = 400;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "complete",
+            outcome: "failure",
+            reason: "missing_token",
+          });
           return badRequest(origin, dependencies.corsAllowedOrigins, "Field `token` is required.");
         }
 
         try {
           const completed = await dependencies.magicLinkService.complete(rawBody.token);
           status = 200;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "complete",
+            outcome: "success",
+            reason: "authenticated",
+            tokenIdHash: hashMagicLinkTokenId(rawBody.token),
+          });
           return createJsonResponse(
             status,
             {
@@ -1992,6 +2616,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         } catch (error) {
           if (error instanceof MagicLinkAuthError) {
             status = error.statusCode;
+            logMagicLinkEvent({
+              requestId: details.requestId,
+              route,
+              method,
+              status,
+              action: "complete",
+              outcome: "failure",
+              reason: error.code,
+              tokenIdHash: hashMagicLinkTokenId(rawBody.token),
+            });
             return magicLinkErrorResponse(origin, dependencies.corsAllowedOrigins, error);
           }
 
@@ -2282,6 +2916,281 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        const createLeagueOrganiserInviteMatch = route.match(
+          /^\/v1\/leagues\/([^/]+)\/organiser-invites$/,
+        );
+        if (method === "POST" && createLeagueOrganiserInviteMatch) {
+          const leagueId = decodeRouteParam(createLeagueOrganiserInviteMatch[1]);
+          const league = await dependencies.repository.getLeague(leagueId);
+          if (!league) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `League ${leagueId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = createLeagueOrganiserInviteRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          const inviteEmail =
+            typeof parsedBody.data.email === "string" && parsedBody.data.email.trim().length > 0
+              ? normalizeMagicLinkEmail(parsedBody.data.email)
+              : null;
+          if (inviteEmail && !isMagicLinkEmailLike(inviteEmail)) {
+            status = 400;
+            return magicLinkErrorResponse(
+              origin,
+              dependencies.corsAllowedOrigins,
+              new MagicLinkAuthError("invalid_email", 400, "Email must be a valid email address."),
+            );
+          }
+
+          const createdByUserId = sessionSubject(session);
+          const inviteKind: LeagueInviteRecord["kind"] = inviteEmail ? "email" : "share";
+          const inviteCode = inviteEmail
+            ? buildOrganiserInviteIdempotencyCode({
+                sessionEmail: session.email,
+                method,
+                route,
+                idempotencyKey,
+              })
+            : null;
+          const recoverStartedExternalSideEffect = inviteEmail && inviteCode
+            ? async (): Promise<ApiGatewayHttpResponse | null> => {
+                const existingInvite = await dependencies.repository.getLeagueOrganiserInvite(inviteCode);
+                if (
+                  !existingInvite ||
+                  !isMatchingRecoveredOrganiserInvite({
+                    invite: existingInvite,
+                    leagueId,
+                    email: inviteEmail,
+                    createdByUserId,
+                    kind: inviteKind,
+                  })
+                ) {
+                  return null;
+                }
+
+                logMagicLinkEvent({
+                  requestId: details.requestId,
+                  route,
+                  method,
+                  status: 202,
+                  action: "organiser_invite_start",
+                  outcome: "unknown",
+                  reason: "stale_started_recovered",
+                  emailHash: hashEmailDiagnostic(inviteEmail),
+                });
+
+                return createJsonResponse(
+                  202,
+                  buildOrganiserInviteResponse(
+                    existingInvite,
+                    dependencies.publicAppBaseUrl ?? dependencies.appBaseUrl,
+                    {
+                      status: "unknown",
+                      email: inviteEmail,
+                      expiresAt: null,
+                      messageId: null,
+                      message: "Email delivery could not be confirmed. Share the invite link manually.",
+                    },
+                  ),
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              }
+            : undefined;
+
+          const inviteResponse = await executeReservedIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: { email: inviteEmail },
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            ...(recoverStartedExternalSideEffect ? { recoverStartedExternalSideEffect } : {}),
+            execute: async ({ markExternalSideEffectStarted }) => {
+              if (inviteEmail) {
+                const rateLimitDecision = await dependencies.magicLinkRateLimiter.consumeMagicLinkStart({
+                  email: inviteEmail,
+                  clientIp,
+                });
+                if (!rateLimitDecision.allowed) {
+                  logAuthRateLimit({
+                    requestId: details.requestId,
+                    route,
+                    method,
+                    status: 429,
+                    dimension: rateLimitDecision.dimension,
+                    retryAfterSeconds: rateLimitDecision.retryAfterSeconds,
+                  });
+                  return rateLimited(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    rateLimitDecision.retryAfterSeconds,
+                  );
+                }
+              }
+
+              let invite: LeagueInviteRecord;
+              try {
+                invite = await createOrRecoverLeagueOrganiserInvite({
+                  repository: dependencies.repository,
+                  leagueId,
+                  email: inviteEmail,
+                  createdByUserId,
+                  inviteCode,
+                  kind: inviteKind,
+                });
+              } catch (error) {
+                if (error instanceof LeagueInviteCodeCollisionError) {
+                  return createJsonResponse(
+                    409,
+                    {
+                      error: "conflict",
+                      code: "invite_code_collision",
+                      message: error.message,
+                    },
+                    buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                  );
+                }
+
+                throw error;
+              }
+              const invitePath = buildOrganiserInvitePath(invite.inviteCode);
+              let responseStatusCode = 201;
+              let emailDelivery: OrganiserInviteEmailDeliveryResponse | null = null;
+              if (inviteEmail) {
+                await markExternalSideEffectStarted();
+                try {
+                  const delivery = await dependencies.magicLinkService.start(inviteEmail, {
+                    returnTo: invitePath,
+                    subject: `You're invited to organise ${league.name} on 3FC`,
+                    introLines: [
+                      `You have been invited to help organise ${league.name} on 3FC.`,
+                    ],
+                  });
+                  emailDelivery = {
+                    status: "sent",
+                    email: delivery.email,
+                    expiresAt: delivery.expiresAt,
+                    messageId: delivery.messageId,
+                  };
+                  logMagicLinkEvent({
+                    requestId: details.requestId,
+                    route,
+                    method,
+                    status: responseStatusCode,
+                    action: "organiser_invite_start",
+                    outcome: "success",
+                    reason: "sent",
+                    emailHash: hashEmailDiagnostic(inviteEmail),
+                    correlationId: delivery.messageId ?? undefined,
+                  });
+                } catch {
+                  responseStatusCode = 202;
+                  emailDelivery = {
+                    status: "unknown",
+                    email: inviteEmail,
+                    expiresAt: null,
+                    messageId: null,
+                    message: "Email delivery could not be confirmed. Share the invite link manually.",
+                  };
+                  logMagicLinkEvent({
+                    requestId: details.requestId,
+                    route,
+                    method,
+                    status: responseStatusCode,
+                    action: "organiser_invite_start",
+                    outcome: "unknown",
+                    reason: "delivery_unconfirmed",
+                    emailHash: hashEmailDiagnostic(inviteEmail),
+                  });
+                }
+              }
+
+              return createJsonResponse(
+                responseStatusCode,
+                buildOrganiserInviteResponse(
+                  invite,
+                  dependencies.publicAppBaseUrl ?? dependencies.appBaseUrl,
+                  emailDelivery,
+                ),
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
+          });
+          status = inviteResponse.statusCode;
+          return inviteResponse;
+        }
+
+        const acceptLeagueOrganiserInviteMatch = route.match(/^\/v1\/invites\/([^/]+)\/accept$/);
+        if (method === "POST" && acceptLeagueOrganiserInviteMatch) {
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = acceptLeagueOrganiserInviteRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          try {
+            const result = await dependencies.repository.acceptLeagueOrganiserInvite({
+              inviteCode: decodeRouteParam(acceptLeagueOrganiserInviteMatch[1]),
+              userId: sessionSubject(session),
+              email: session.email,
+            });
+            if (!result) {
+              status = 404;
+              return notFound(origin, dependencies.corsAllowedOrigins, "Organiser invite was not found.");
+            }
+
+            status = 200;
+            return createJsonResponse(
+              status,
+              {
+                ...result,
+                inviteLink: buildAppUrl(
+                  dependencies.publicAppBaseUrl ?? dependencies.appBaseUrl,
+                  buildOrganiserInvitePath(result.invite.inviteCode),
+                ),
+              },
+              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            );
+          } catch (error) {
+            if (error instanceof LeagueInviteError) {
+              status = error.statusCode;
+              return leagueInviteErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+            }
+
+            throw error;
+          }
+        }
+
         const createSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
         if (method === "POST" && createSeasonMatch) {
           let rawBody: Record<string, unknown>;
@@ -2456,7 +3365,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2488,7 +3397,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2533,7 +3442,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2610,7 +3519,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const isAdmin = await ensureLeagueAdmin(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!isAdmin) {
             status = 403;
@@ -2820,7 +3729,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2864,7 +3773,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const finishedBlock = await buildFinishedGameMutationBlock({
             repository: dependencies.repository,
             game,
-            sessionEmail: session.email,
+            sessionUserIds: sessionUserIds(session),
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
           });
@@ -2920,7 +3829,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const finishedBlock = await buildFinishedGameMutationBlock({
             repository: dependencies.repository,
             game,
-            sessionEmail: session.email,
+            sessionUserIds: sessionUserIds(session),
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
           });
@@ -3201,7 +4110,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   const finishedBlock = await buildFinishedGameMutationBlock({
                     repository: dependencies.repository,
                     game: currentGame,
-                    sessionEmail: session.email,
+                    sessionUserIds: sessionUserIds(session),
                     origin,
                     allowedOrigins: dependencies.corsAllowedOrigins,
                   });
@@ -3323,7 +4232,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -3413,7 +4322,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -3518,7 +4427,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -3577,7 +4486,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -3898,7 +4807,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               const finishedBlock = await buildFinishedGameMutationBlock({
                 repository: dependencies.repository,
                 game: currentGame,
-                sessionEmail: session.email,
+                sessionUserIds: sessionUserIds(session),
                 origin,
                 allowedOrigins: dependencies.corsAllowedOrigins,
               });
@@ -3911,7 +4820,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 (await ensureLeagueAccess(
                   dependencies.repository,
                   currentGame.leagueId,
-                  session.email,
+                  sessionUserIds(session),
                 )).role === "admin";
               let player;
               try {
@@ -3928,7 +4837,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     const finishedBlockAfterRace = await buildFinishedGameMutationBlock({
                       repository: dependencies.repository,
                       game: latestGame,
-                      sessionEmail: session.email,
+                      sessionUserIds: sessionUserIds(session),
                       origin,
                       allowedOrigins: dependencies.corsAllowedOrigins,
                     });
@@ -3975,7 +4884,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -4009,7 +4918,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const finishedBlock = await buildFinishedGameMutationBlock({
             repository: dependencies.repository,
             game,
-            sessionEmail: session.email,
+            sessionUserIds: sessionUserIds(session),
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
           });
@@ -4064,7 +4973,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -4111,7 +5020,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const isAdmin = await ensureLeagueAdmin(
             dependencies.repository,
             existingGame.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!isAdmin) {
             status = 403;
@@ -4187,7 +5096,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const isAdmin = await ensureLeagueAdmin(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!isAdmin) {
             status = 403;

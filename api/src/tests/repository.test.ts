@@ -24,6 +24,7 @@ import {
   GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
+  LeagueInviteError,
   PlayerClaimError,
   ThreeFcRepository,
 } from "../data/repository.js";
@@ -144,7 +145,22 @@ class InMemoryDynamoClient {
 
       const pk = this.readString(key.pk, "pk");
       const sk = this.readString(key.sk, "sk");
-      this.items.delete(`${pk}|${sk}`);
+      const id = `${pk}|${sk}`;
+      if (
+        command.input.ConditionExpression &&
+        !this.conditionMatches(
+          command.input.ConditionExpression,
+          this.items.get(id),
+          command.input.ExpressionAttributeNames ?? {},
+          command.input.ExpressionAttributeValues ?? {},
+        )
+      ) {
+        const error = new Error("Conditional request failed.");
+        (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+        throw error;
+      }
+
+      this.items.delete(id);
       return {};
     }
 
@@ -302,6 +318,12 @@ class InMemoryDynamoClient {
       if (attributeNotExists) {
         const attributeName = this.resolveAttributeName(attributeNotExists[1], attributeNames);
         return !existing || existing[attributeName] === undefined;
+      }
+
+      const attributeExists = clause.match(/^attribute_exists\(([^)]+)\)$/);
+      if (attributeExists) {
+        const attributeName = this.resolveAttributeName(attributeExists[1], attributeNames);
+        return Boolean(existing && existing[attributeName] !== undefined);
       }
 
       const equality = clause.match(/^(.+?)\s*=\s*(.+)$/);
@@ -622,6 +644,185 @@ test("repository grants league access monotonically without downgrading admins",
 
   const storedAccess = await repository.getLeagueAccess("league-1", "delegate-subject");
   assert.equal(storedAccess?.role, "admin");
+});
+
+test("repository ensures reusable league organiser share invites", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-invite",
+    name: "League Invite",
+    createdByUserId: "owner-subject",
+  });
+
+  const invite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-invite",
+    createdByUserId: "owner-subject",
+    kind: "share",
+  });
+  const repeatedInvite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-invite",
+    createdByUserId: "owner-subject",
+    kind: "share",
+  });
+
+  assert.match(invite.inviteCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.equal(repeatedInvite.inviteCode, invite.inviteCode);
+  assert.equal(invite.kind, "share");
+  assert.equal(invite.role, "admin");
+  assert.equal(invite.email, null);
+  assert.equal(invite.acceptedByUserId, null);
+  assert.equal(client.readItem(`LEAGUE_INVITE#${invite.inviteCode}`, "METADATA")?.entityType?.S, "leagueInvite");
+  assert.equal(client.readItem("LEAGUE#league-invite", "INVITE#ORGANISER_SHARE")?.entityType?.S, "leagueInvitePointer");
+
+  const accepted = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode.toLowerCase(),
+    userId: "co-organiser-subject",
+    email: "Co@Example.COM",
+  });
+  assert(accepted);
+  assert.equal(accepted.invite.kind, "share");
+  assert.equal(accepted.invite.acceptedByUserId, null);
+  assert.equal(accepted.access.leagueId, "league-invite");
+  assert.equal(accepted.access.userId, "co-organiser-subject");
+  assert.equal(accepted.access.role, "admin");
+  assert.deepEqual(
+    await repository.getLeagueAccess("league-invite", "co-organiser-subject"),
+    accepted.access,
+  );
+
+  const replayed = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode,
+    userId: "co-organiser-subject",
+    email: "co@example.com",
+  });
+  assert.deepEqual(replayed, accepted);
+
+  const otherAccepted = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode,
+    userId: "other-subject",
+    email: "other@example.com",
+  });
+  assert(otherAccepted);
+  assert.equal(otherAccepted.invite.acceptedByUserId, null);
+  assert.equal(otherAccepted.access.userId, "other-subject");
+  assert.equal(otherAccepted.access.role, "admin");
+});
+
+test("repository restricts email organiser invites to the invited email", async () => {
+  const { repository } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-email-invite",
+    name: "League Email Invite",
+    createdByUserId: "owner-subject",
+  });
+
+  const invite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-email-invite",
+    email: "Coach@Example.COM",
+    createdByUserId: "owner-subject",
+    kind: "email",
+  });
+  assert.equal(invite.kind, "email");
+  assert.equal(invite.email, "coach@example.com");
+
+  await assert.rejects(
+    repository.acceptLeagueOrganiserInvite({
+      inviteCode: invite.inviteCode,
+      userId: "other-subject",
+      email: "other@example.com",
+    }),
+    (error: unknown) =>
+      error instanceof LeagueInviteError &&
+      error.code === "invite_email_mismatch" &&
+      error.statusCode === 403,
+  );
+  assert.equal(await repository.getLeagueAccess("league-email-invite", "other-subject"), null);
+
+  const accepted = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode,
+    userId: "coach-subject",
+    email: "coach@example.com",
+  });
+  assert(accepted);
+  assert.equal(accepted.invite.acceptedByUserId, "coach-subject");
+  assert.equal(accepted.access.role, "admin");
+
+  await assert.rejects(
+    repository.acceptLeagueOrganiserInvite({
+      inviteCode: invite.inviteCode,
+      userId: "other-coach-subject",
+      email: "coach@example.com",
+    }),
+    (error: unknown) =>
+      error instanceof LeagueInviteError &&
+      error.code === "invite_already_accepted" &&
+      error.statusCode === 409,
+  );
+});
+
+test("repository revokes organiser invites when deleting a league", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-delete-invites",
+    name: "Delete Invite League",
+    createdByUserId: "owner-subject",
+  });
+
+  const shareInvite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-delete-invites",
+    createdByUserId: "owner-subject",
+    kind: "share",
+  });
+  const emailInvite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-delete-invites",
+    email: "Coach@Example.COM",
+    createdByUserId: "owner-subject",
+    kind: "email",
+  });
+
+  assert.equal(
+    client.readItem("LEAGUE#league-delete-invites", "INVITE#ORGANISER_SHARE")?.entityType?.S,
+    "leagueInvitePointer",
+  );
+
+  assert.equal(await repository.deleteLeague("league-delete-invites"), true);
+  assert.equal(await repository.getLeagueOrganiserInvite(shareInvite.inviteCode), null);
+  assert.equal(await repository.getLeagueOrganiserInvite(emailInvite.inviteCode), null);
+  assert.equal(client.readItem("LEAGUE#league-delete-invites", "INVITE#ORGANISER_SHARE"), undefined);
+
+  await repository.createLeague({
+    leagueId: "league-delete-invites",
+    name: "Replacement League",
+    createdByUserId: "replacement-owner-subject",
+  });
+
+  assert.equal(
+    await repository.acceptLeagueOrganiserInvite({
+      inviteCode: shareInvite.inviteCode,
+      userId: "old-share-holder-subject",
+      email: "share@example.com",
+    }),
+    null,
+  );
+  assert.equal(
+    await repository.acceptLeagueOrganiserInvite({
+      inviteCode: emailInvite.inviteCode,
+      userId: "old-email-holder-subject",
+      email: "coach@example.com",
+    }),
+    null,
+  );
+  assert.equal(
+    await repository.getLeagueAccess("league-delete-invites", "old-share-holder-subject"),
+    null,
+  );
+  assert.equal(
+    await repository.getLeagueAccess("league-delete-invites", "old-email-holder-subject"),
+    null,
+  );
 });
 
 test("repository rejects creating games directly as finished", async () => {
@@ -1732,7 +1933,7 @@ test("repository leaves game and join-code lookup intact if delete sees a join-c
   );
 });
 
-test("repository rejects join registration for finished games without creating a player", async () => {
+test("repository allows join registration for finished games so players can claim profiles", async () => {
   const { repository, client } = createRepositoryHarness();
   const game = await repository.createGame({
     gameId: "game-finished-join",
@@ -1743,19 +1944,30 @@ test("repository rejects join registration for finished games without creating a
   });
   markStoredGameFinished(client, "game-finished-join");
 
-  await assert.rejects(
-    repository.joinGameByCode({
-      joinCode: game.joinCode,
+  const joinResult = await repository.joinGameByCode({
+    joinCode: game.joinCode,
+    playerId: "player-late",
+    nickname: "Late",
+  });
+
+  assert(joinResult);
+  assert.equal(joinResult.game.status, "finished");
+  assert.equal(joinResult.player.playerId, "player-late");
+  assert.equal(joinResult.player.claimedByUserId, null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), [
+    {
+      gameId: game.gameId,
       playerId: "player-late",
-      nickname: "Late",
-    }),
-    (error) =>
-      error instanceof GameJoinRegistrationError &&
-      error.code === "game_finished" &&
-      error.statusCode === 409,
-  );
-  assert.equal(await repository.getPlayer("player-late"), null);
-  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+      createdAt: joinResult.link.createdAt,
+      updatedAt: joinResult.link.updatedAt,
+    },
+  ]);
+
+  const claimed = await repository.claimPlayer({
+    playerId: "player-late",
+    userId: "late-subject",
+  });
+  assert.equal(claimed?.claimedByUserId, "late-subject");
 });
 
 test("repository rejects join registration if join code lookup changes before write", async () => {
@@ -2141,6 +2353,194 @@ test("repository supports idempotency record create/get semantics", async () => 
     client.getItemRequests.map((request) => request.consistentRead),
     [true],
   );
+});
+
+test("repository completes an existing idempotency reservation", async () => {
+  const { repository } = createRepositoryHarness();
+  const pendingBody = JSON.stringify({ idempotencyState: "pending" });
+
+  const reserved = await repository.createIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const completed = await repository.completeIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ inviteCode: "ABCD2345" }),
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: pendingBody,
+  });
+
+  const mismatched = await repository.completeIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "different-hash",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ inviteCode: "EFGH2345" }),
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: pendingBody,
+  });
+
+  const record = await repository.getIdempotencyRecord(
+    "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    "invite-email-1",
+  );
+
+  assert.equal(reserved, true);
+  assert.equal(completed, true);
+  assert.equal(mismatched, false);
+  assert.equal(record?.requestHash, "hash-1");
+  assert.equal(record?.responseStatusCode, 201);
+  assert.equal(record?.responseBody, JSON.stringify({ inviteCode: "ABCD2345" }));
+});
+
+test("repository deletes an existing idempotency reservation by matching request hash", async () => {
+  const { repository } = createRepositoryHarness();
+  const pendingBody = JSON.stringify({ idempotencyState: "pending" });
+
+  const reserved = await repository.createIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const mismatched = await repository.deleteIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "different-hash",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const deleted = await repository.deleteIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const missing = await repository.deleteIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const record = await repository.getIdempotencyRecord(
+    "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    "invite-email-1",
+  );
+
+  assert.equal(reserved, true);
+  assert.equal(mismatched, false);
+  assert.equal(deleted, true);
+  assert.equal(missing, false);
+  assert.equal(record, null);
+});
+
+test("repository does not delete an idempotency record that changed after it was read", async () => {
+  const { repository } = createRepositoryHarness();
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const pendingBody = JSON.stringify({ idempotencyState: "pending" });
+  const completedBody = JSON.stringify({ inviteCode: "ABCD2345" });
+
+  const reserved = await repository.createIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+  const pendingRecord = await repository.getIdempotencyRecord(scope, "invite-email-1");
+  const completed = await repository.completeIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: completedBody,
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: pendingBody,
+  });
+
+  const deleted = await repository.deleteIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+    updatedAt: pendingRecord?.updatedAt,
+  });
+  const record = await repository.getIdempotencyRecord(scope, "invite-email-1");
+
+  assert.equal(reserved, true);
+  assert(pendingRecord);
+  assert.equal(completed, true);
+  assert.equal(deleted, false);
+  assert.equal(record?.responseStatusCode, 201);
+  assert.equal(record?.responseBody, completedBody);
+});
+
+test("repository does not complete an idempotency reservation that changed after it was read", async () => {
+  const { repository } = createRepositoryHarness();
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const firstPendingBody = JSON.stringify({
+    idempotencyState: "pending",
+    reservationId: "reservation-a",
+  });
+  const replacementPendingBody = JSON.stringify({
+    idempotencyState: "pending",
+    reservationId: "reservation-b",
+  });
+
+  const firstReserved = await repository.createIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: firstPendingBody,
+  });
+  const firstDeleted = await repository.deleteIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: firstPendingBody,
+  });
+  const replacementReserved = await repository.createIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: replacementPendingBody,
+  });
+
+  const staleCompleted = await repository.completeIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ inviteCode: "ABCD2345" }),
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: firstPendingBody,
+  });
+  const record = await repository.getIdempotencyRecord(scope, "invite-email-1");
+
+  assert.equal(firstReserved, true);
+  assert.equal(firstDeleted, true);
+  assert.equal(replacementReserved, true);
+  assert.equal(staleCompleted, false);
+  assert.equal(record?.responseStatusCode, 202);
+  assert.equal(record?.responseBody, replacementPendingBody);
 });
 
 async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {

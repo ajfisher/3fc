@@ -39,6 +39,10 @@ function rewriteToShell(uri) {
     return "/join/index.html";
   }
 
+  if (uri === "/invites" || uri.indexOf("/invites/") === 0) {
+    return "/invites/index.html";
+  }
+
   return uri;
 }
 

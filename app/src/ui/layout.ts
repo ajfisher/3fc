@@ -271,6 +271,41 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
     "panel-league-seasons",
   );
 
+  const organiserInvitePanel = renderPanel(
+    "Invite organiser",
+    "Share a reusable league code or send a direct email invite.",
+    `<section data-ui="section-stack" aria-labelledby="organiser-share-invite-heading">
+      <h3 id="organiser-share-invite-heading">Share code/link</h3>
+      <p data-ui="status-note" id="organiser-share-invite-status">Loading share invite…</p>
+      <p data-ui="field-hint">Reusable league organiser code. Anyone signed in with this code or link can join as organiser.</p>
+      <dl data-ui="id-preview" data-testid="organiser-share-invite-result" id="organiser-share-invite-result">
+        <div><dt>Invite code</dt><dd id="organiser-share-invite-code">Loading…</dd></div>
+        <div><dt>Invite link</dt><dd><a id="organiser-share-invite-link">Loading…</a></dd></div>
+      </dl>
+    </section>
+    <section data-ui="section-stack" aria-labelledby="organiser-email-invite-heading">
+      <h3 id="organiser-email-invite-heading">Email invite</h3>
+      ${renderValidatedField({
+        id: "organiser-invite-email",
+        label: "Organiser email",
+        type: "email",
+        placeholder: "coach@example.com",
+        hint: "Sends a one-time invite restricted to this email.",
+      })}
+      <dl data-ui="id-preview" data-testid="organiser-email-invite-result" id="organiser-email-invite-result" hidden>
+        <div><dt>Invite code</dt><dd id="organiser-email-invite-code"></dd></div>
+        <div><dt>Invite link</dt><dd><a id="organiser-email-invite-link"></a></dd></div>
+        <div><dt>Email</dt><dd id="organiser-invite-email-status"></dd></div>
+      </dl>
+    </section>`,
+    `<div data-ui="button-row">${renderButton("Send email invite", "primary", {
+      type: "button",
+      "data-action": "create-organiser-invite",
+      "data-testid": "create-organiser-invite",
+    })}</div>`,
+    "panel-league-organiser-invite",
+  );
+
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -296,7 +331,73 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
         <section data-ui="panel-grid" data-testid="league-grid">
           ${createSeasonPanel}
+          ${organiserInvitePanel}
           ${seasonsPanel}
+        </section>
+      </section>
+    </main>
+    ${renderSetupScriptTag()}
+  </body>
+</html>`;
+}
+
+export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string {
+  const safeInviteCode = escapeHtml(inviteCode.trim().toUpperCase());
+  const inviteHeading = safeInviteCode.length > 0 ? safeInviteCode : "Organiser invite";
+  const hasCode = safeInviteCode.length > 0;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3FC Organiser Invite</title>
+    ${renderStylesheetLink()}
+  </head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell" data-testid="invite-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
+      <section data-ui="hero">
+        <span data-ui="hero-kicker">3FC Invite</span>
+        <h1>Organiser invite</h1>
+        <p data-ui="hero-copy">Code <code>${inviteHeading}</code></p>
+      </section>
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="invite" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-invite-code="${safeInviteCode}">
+        <p data-ui="status-note" id="setup-status">Checking sign-in state…</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="invite-grid">
+          ${renderPanel(
+            "Accept invite",
+            "Join the league setup team.",
+            `<form data-ui="auth-form" id="organiser-invite-code-form" ${hasCode ? "hidden" : ""} novalidate>
+              ${renderValidatedField({
+                id: "organiser-invite-code-input",
+                label: "Invite code",
+                placeholder: "ABCD2345",
+                required: true,
+              })}
+              <div data-ui="button-row">${renderButton("Continue", "primary", {
+                type: "submit",
+                "data-action": "continue-organiser-invite",
+                "data-testid": "continue-organiser-invite",
+              })}</div>
+            </form>
+            <section data-ui="claim-panel" id="organiser-invite-acceptance" data-testid="organiser-invite-acceptance" ${hasCode ? "" : "hidden"}>
+              <dl data-ui="id-preview">
+                <div><dt>Invite code</dt><dd id="organiser-invite-accept-code">${inviteHeading}</dd></div>
+                <div><dt>League</dt><dd id="organiser-invite-league">Pending</dd></div>
+              </dl>
+              <div data-ui="button-row">
+                ${renderButton("Accept invite", "primary", {
+                  type: "button",
+                  "data-action": "accept-organiser-invite",
+                  "data-testid": "accept-organiser-invite",
+                })}
+                <a data-ui="button-secondary" id="organiser-invite-league-link" data-testid="organiser-invite-league-link" href="/setup" hidden>Open league</a>
+              </div>
+            </section>`,
+            "",
+            "panel-organiser-invite",
+          )}
         </section>
       </section>
     </main>
@@ -630,11 +731,19 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
     <main data-ui="app-shell" data-testid="auth-callback-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
         <span data-ui="hero-kicker">3FC Auth</span>
-        <h1>Completing sign-in</h1>
-        <p data-ui="hero-copy">Please wait while we complete your sign-in and return you to setup.</p>
+        <h1>Complete sign-in</h1>
+        <p data-ui="hero-copy">Confirm this browser should finish sign-in and continue.</p>
       </section>
       <section data-ui="section-stack">
         <p data-ui="status-note" id="auth-callback-status">Verifying callback parameters…</p>
+        <div data-ui="button-row">
+          ${renderButton("Complete sign-in", "primary", {
+            type: "button",
+            "data-action": "complete-magic-link",
+            "data-testid": "complete-magic-link",
+            hidden: "hidden",
+          })}
+        </div>
         <p data-ui="status-note" data-state="error" id="auth-callback-error" hidden></p>
       </section>
     </main>

@@ -176,6 +176,23 @@
     return fallback;
   }
 
+  function isSafeReturnTo(value) {
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+      return false;
+    }
+
+    if (value.includes("\\")) {
+      return false;
+    }
+
+    try {
+      const target = new URL(value, window.location.origin);
+      return target.origin === window.location.origin && target.pathname.startsWith("/");
+    } catch {
+      return false;
+    }
+  }
+
   async function initSignInPage() {
     const form = document.getElementById("auth-magic-form");
     if (!(form instanceof HTMLFormElement)) {
@@ -322,6 +339,7 @@
 
     const statusElement = document.getElementById("auth-callback-status");
     const errorElement = document.getElementById("auth-callback-error");
+    const completeButton = document.querySelector('[data-action="complete-magic-link"]');
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
     const oauthError = params.get("error");
@@ -334,9 +352,22 @@
       }
 
       setStatus(statusElement, "Sign-in callback failed.", "error");
+      if (completeButton instanceof HTMLButtonElement) {
+        completeButton.disabled = false;
+      }
     }
 
-    const returnTo = consumeReturnTo("/setup");
+    function clearCallbackError() {
+      if (!errorElement) {
+        return;
+      }
+
+      errorElement.hidden = true;
+      errorElement.textContent = "";
+    }
+
+    const callbackReturnTo = params.get("returnTo");
+    const returnTo = isSafeReturnTo(callbackReturnTo) ? callbackReturnTo : consumeReturnTo("/setup");
 
     if (oauthError) {
       showCallbackError(`OAuth provider returned: ${oauthError}.`);
@@ -344,26 +375,38 @@
     }
 
     if (token) {
-      setStatus(statusElement, "Completing magic-link sign-in…", "default");
-      const result = await requestJson("/v1/auth/magic/complete", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ token }),
-      });
-
-      if (!result.ok) {
-        const message = result.body?.message || result.body?.error || "Magic-link completion failed.";
-        showCallbackError(message);
+      setStatus(statusElement, "Magic link ready. Complete sign-in to continue.", "default");
+      if (!(completeButton instanceof HTMLButtonElement)) {
+        showCallbackError("Sign-in confirmation control was not available.");
         return;
       }
 
-      setStatus(statusElement, "Sign-in complete. Redirecting…", "success");
-      setTimeout(() => {
-        navigateTo(returnTo, "replace");
-      }, 700);
+      completeButton.hidden = false;
+      completeButton.disabled = false;
+      completeButton.addEventListener("click", async () => {
+        clearCallbackError();
+        completeButton.disabled = true;
+        setStatus(statusElement, "Completing magic-link sign-in…", "default");
+        const result = await requestJson("/v1/auth/magic/complete", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ token }),
+        });
+
+        if (!result.ok) {
+          const message = result.body?.message || result.body?.error || "Magic-link completion failed.";
+          showCallbackError(message);
+          return;
+        }
+
+        setStatus(statusElement, "Sign-in complete. Redirecting…", "success");
+        setTimeout(() => {
+          navigateTo(returnTo, "replace");
+        }, 700);
+      });
       return;
     }
 

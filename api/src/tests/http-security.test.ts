@@ -15,6 +15,7 @@ test("parseAllowedOrigins falls back to defaults when env is empty", () => {
   assert.deepEqual(origins, [
     "http://localhost:3000",
     "https://qa.3fc.football",
+    "https://3fc.football",
     "https://app.3fc.football",
   ]);
 });

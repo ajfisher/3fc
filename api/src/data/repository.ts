@@ -40,6 +40,8 @@ import {
   goalSk,
   idempotencyPk,
   joinCodePk,
+  leagueInvitePk,
+  leagueOrganiserShareInviteSk,
   leaguePk,
   metadataSk,
   playerClaimSk,
@@ -61,8 +63,10 @@ import type {
   CreateGameInput,
   CreateGoalInput,
   CreateGoalResult,
+  CompleteIdempotencyRecordInput,
   CreateIdempotencyRecordInput,
   CreateLeagueInput,
+  CreateLeagueOrganiserInviteInput,
   CreatePlayerInput,
   CreateSeasonInput,
   CreateSessionGameInput,
@@ -70,6 +74,7 @@ import type {
   CreateTeamInput,
   DeleteGoalInput,
   DeleteGoalResult,
+  DeleteIdempotencyRecordInput,
   FinishGameInput,
   GameJoinCodeRecord,
   GameTeamRecord,
@@ -85,6 +90,7 @@ import type {
   JoinGameByCodeInput,
   JoinGameByCodeResult,
   LeagueAclRecord,
+  LeagueInviteRecord,
   LeagueRecord,
   ListPlayersInput,
   LinkGamePlayerInput,
@@ -95,6 +101,8 @@ import type {
   SessionRecord,
   TeamRecord,
   GrantLeagueAccessInput,
+  AcceptLeagueOrganiserInviteInput,
+  AcceptLeagueOrganiserInviteResult,
   ThirdTransitionInput,
   UndoLastGoalInput,
   UpdateGoalInput,
@@ -114,6 +122,8 @@ const ENTITY_TYPE = {
   player: "player",
   playerClaim: "playerClaim",
   acl: "acl",
+  leagueInvite: "leagueInvite",
+  leagueInvitePointer: "leagueInvitePointer",
   roster: "roster",
   goal: "goal",
   goalEventId: "goalEventId",
@@ -230,6 +240,28 @@ export class PlayerClaimError extends Error {
   ) {
     super(message);
     this.name = "PlayerClaimError";
+  }
+}
+
+export class LeagueInviteCodeCollisionError extends Error {
+  constructor(message = "League organiser invite code is already assigned.") {
+    super(message);
+    this.name = "LeagueInviteCodeCollisionError";
+  }
+}
+
+export class LeagueInviteError extends Error {
+  constructor(
+    readonly code:
+      | "invite_already_accepted"
+      | "invite_email_mismatch"
+      | "invite_scope_not_found"
+      | "invite_state_changed",
+    readonly statusCode: 403 | 404 | 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "LeagueInviteError";
   }
 }
 
@@ -483,6 +515,40 @@ function normalizeGameTeamPayload(data: unknown): Omit<GameTeamRecord, "createdA
     color: typeof raw.color === "string" ? raw.color : null,
     scored: normalizeNonNegativeInteger(raw.scored),
     conceded: normalizeNonNegativeInteger(raw.conceded),
+  };
+}
+
+function normalizeInviteEmail(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeLeagueInvitePayload(data: unknown): Omit<LeagueInviteRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>;
+  const acceptedByUserId =
+    typeof raw.acceptedByUserId === "string" && raw.acceptedByUserId.trim().length > 0
+      ? raw.acceptedByUserId
+      : null;
+  const kind = raw.kind === "share" || raw.kind === "email" ? raw.kind : "email";
+
+  return {
+    leagueId: raw.leagueId ?? "",
+    inviteCode: typeof raw.inviteCode === "string" ? normalizeJoinCode(raw.inviteCode) : "",
+    kind,
+    role: "admin",
+    email: normalizeInviteEmail(raw.email),
+    createdByUserId: raw.createdByUserId ?? "",
+    acceptedByUserId,
+    acceptedAt: isValidTimestamp(raw.acceptedAt) ? raw.acceptedAt : null,
+  };
+}
+
+function normalizeLeagueInvitePointerPayload(data: unknown): { leagueId: string; inviteCode: string } {
+  const raw = data as Partial<{ leagueId: string; inviteCode: string }>;
+
+  return {
+    leagueId: raw.leagueId ?? "",
+    inviteCode: typeof raw.inviteCode === "string" ? normalizeJoinCode(raw.inviteCode) : "",
   };
 }
 
@@ -1553,14 +1619,6 @@ export class ThreeFcRepository {
       return existingReplay;
     }
 
-    if (game.status === "finished") {
-      throw new GameJoinRegistrationError(
-        "game_finished",
-        409,
-        `Game ${game.gameId} is finished. Join registration is closed.`,
-      );
-    }
-
     const now = this.clock.now();
     const playerPayload = {
       playerId: input.playerId,
@@ -2296,9 +2354,16 @@ export class ThreeFcRepository {
       throw new Error("Cannot delete league with existing seasons.");
     }
 
-    const aclEntries = await this.listLeagueAccess(leagueId);
+    const [aclEntries, inviteEntries] = await Promise.all([
+      this.listLeagueAccess(leagueId),
+      this.listLeagueOrganiserInviteEntities(leagueId),
+    ]);
     await Promise.all(
-      aclEntries.map((entry) => this.deleteEntity(leaguePk(leagueId), aclSk(entry.userId))),
+      [
+        ...inviteEntries.map((entry) => this.deleteEntity(entry.pk, entry.sk)),
+        this.deleteEntity(leaguePk(leagueId), leagueOrganiserShareInviteSk()),
+        ...aclEntries.map((entry) => this.deleteEntity(leaguePk(leagueId), aclSk(entry.userId))),
+      ],
     );
     await this.deleteEntity(leaguePk(leagueId), metadataSk());
     return true;
@@ -2720,6 +2785,411 @@ export class ThreeFcRepository {
       item.createdAt,
       item.updatedAt,
     );
+  }
+
+  async createLeagueOrganiserInvite(
+    input: CreateLeagueOrganiserInviteInput,
+  ): Promise<LeagueInviteRecord> {
+    requireNonEmpty("leagueId", input.leagueId);
+    requireNonEmpty("createdByUserId", input.createdByUserId);
+
+    const email = normalizeInviteEmail(input.email);
+    const kind = input.kind ?? "email";
+    if (kind === "share") {
+      return this.ensureLeagueOrganiserShareInvite({
+        leagueId: input.leagueId,
+        createdByUserId: input.createdByUserId,
+      });
+    }
+
+    const customInviteCode = input.inviteCode ? normalizeCustomJoinCode(input.inviteCode) : null;
+
+    for (let attempt = 0; attempt < JOIN_CODE_GENERATION_ATTEMPTS; attempt += 1) {
+      const inviteCode = customInviteCode ?? generateJoinCode();
+      const now = this.clock.now();
+      const payload: Omit<LeagueInviteRecord, "createdAt" | "updatedAt"> = {
+        leagueId: input.leagueId,
+        inviteCode,
+        kind,
+        role: "admin",
+        email,
+        createdByUserId: input.createdByUserId,
+        acceptedByUserId: null,
+        acceptedAt: null,
+      };
+
+      try {
+        await this.client.send(
+          new PutItemCommand({
+            TableName: this.tableName,
+            Item: buildItem(leagueInvitePk(inviteCode), metadataSk(), ENTITY_TYPE.leagueInvite, payload, now),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          }),
+        );
+        return withTimestamps(payload, now, now);
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          if (customInviteCode) {
+            throw new LeagueInviteCodeCollisionError();
+          }
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw new LeagueInviteCodeCollisionError();
+  }
+
+  private async getExistingLeagueOrganiserShareInvite(
+    leagueId: string,
+  ): Promise<LeagueInviteRecord | null> {
+    const pointerItem = await this.getEntity(leaguePk(leagueId), leagueOrganiserShareInviteSk(), {
+      consistentRead: true,
+    });
+    if (!pointerItem || pointerItem.entityType !== ENTITY_TYPE.leagueInvitePointer) {
+      return null;
+    }
+
+    const pointer = normalizeLeagueInvitePointerPayload(pointerItem.data);
+    if (pointer.leagueId !== leagueId || pointer.inviteCode.length === 0) {
+      return null;
+    }
+
+    const invite = await this.getLeagueOrganiserInvite(pointer.inviteCode);
+    if (
+      invite &&
+      invite.kind === "share" &&
+      invite.leagueId === leagueId &&
+      invite.email === null
+    ) {
+      return invite;
+    }
+
+    return null;
+  }
+
+  private async ensureLeagueOrganiserShareInvite(input: {
+    leagueId: string;
+    createdByUserId: string;
+  }): Promise<LeagueInviteRecord> {
+    for (let attempt = 0; attempt < JOIN_CODE_GENERATION_ATTEMPTS; attempt += 1) {
+      const existingInvite = await this.getExistingLeagueOrganiserShareInvite(input.leagueId);
+      if (existingInvite) {
+        return existingInvite;
+      }
+
+      const inviteCode = generateJoinCode();
+      const now = this.clock.now();
+      const payload: Omit<LeagueInviteRecord, "createdAt" | "updatedAt"> = {
+        leagueId: input.leagueId,
+        inviteCode,
+        kind: "share",
+        role: "admin",
+        email: null,
+        createdByUserId: input.createdByUserId,
+        acceptedByUserId: null,
+        acceptedAt: null,
+      };
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(
+                    leagueInvitePk(inviteCode),
+                    metadataSk(),
+                    ENTITY_TYPE.leagueInvite,
+                    payload,
+                    now,
+                  ),
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                },
+              },
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(
+                    leaguePk(input.leagueId),
+                    leagueOrganiserShareInviteSk(),
+                    ENTITY_TYPE.leagueInvitePointer,
+                    { leagueId: input.leagueId, inviteCode },
+                    now,
+                  ),
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                },
+              },
+            ],
+          }),
+        );
+        return withTimestamps(payload, now, now);
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    const existingInvite = await this.getExistingLeagueOrganiserShareInvite(input.leagueId);
+    if (existingInvite) {
+      return existingInvite;
+    }
+
+    throw new LeagueInviteCodeCollisionError();
+  }
+
+  async getLeagueOrganiserInvite(inviteCode: string): Promise<LeagueInviteRecord | null> {
+    const normalizedInviteCode = normalizeJoinCode(inviteCode);
+    requireNonEmpty("inviteCode", normalizedInviteCode);
+
+    const item = await this.getEntity(leagueInvitePk(normalizedInviteCode), metadataSk(), {
+      consistentRead: true,
+    });
+    if (!item || item.entityType !== ENTITY_TYPE.leagueInvite) {
+      return null;
+    }
+
+    return withTimestamps(
+      normalizeLeagueInvitePayload(item.data),
+      item.createdAt,
+      item.updatedAt,
+    );
+  }
+
+  private async listLeagueOrganiserInviteEntities(
+    leagueId: string,
+  ): Promise<Array<StoredEntity<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>>> {
+    const scanResult = (await this.client.send(
+      new ScanCommand({
+        TableName: this.tableName,
+      }),
+    )) as ScanCommandOutput;
+
+    return (scanResult.Items ?? [])
+      .filter((item) => item.entityType?.S === ENTITY_TYPE.leagueInvite)
+      .map((item) => parseStoredEntity<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>(item))
+      .map((item) => ({
+        ...item,
+        data: normalizeLeagueInvitePayload(item.data),
+      }))
+      .filter((item) => item.data.leagueId === leagueId);
+  }
+
+  async acceptLeagueOrganiserInvite(
+    input: AcceptLeagueOrganiserInviteInput,
+  ): Promise<AcceptLeagueOrganiserInviteResult | null> {
+    const normalizedInviteCode = normalizeJoinCode(input.inviteCode);
+    const normalizedEmail = normalizeInviteEmail(input.email);
+    requireNonEmpty("inviteCode", normalizedInviteCode);
+    requireNonEmpty("userId", input.userId);
+    requireNonEmpty("email", normalizedEmail ?? "");
+
+    for (;;) {
+      const inviteItem = await this.getEntity(leagueInvitePk(normalizedInviteCode), metadataSk(), {
+        consistentRead: true,
+      });
+      if (!inviteItem || inviteItem.entityType !== ENTITY_TYPE.leagueInvite) {
+        return null;
+      }
+
+      const invite = withTimestamps(
+        normalizeLeagueInvitePayload(inviteItem.data),
+        inviteItem.createdAt,
+        inviteItem.updatedAt,
+      );
+      if (invite.email && invite.email !== normalizedEmail) {
+        throw new LeagueInviteError(
+          "invite_email_mismatch",
+          403,
+          "This organiser invite was issued for a different email address.",
+        );
+      }
+
+      const isShareInvite = invite.kind === "share";
+      if (!isShareInvite && invite.acceptedByUserId !== null && invite.acceptedByUserId !== input.userId) {
+        throw new LeagueInviteError(
+          "invite_already_accepted",
+          409,
+          "This organiser invite has already been accepted.",
+        );
+      }
+
+      const leagueItem = await this.getEntity(leaguePk(invite.leagueId), metadataSk(), {
+        consistentRead: true,
+      });
+      if (!leagueItem || leagueItem.entityType !== ENTITY_TYPE.league) {
+        throw new LeagueInviteError(
+          "invite_scope_not_found",
+          404,
+          `League ${invite.leagueId} was not found for this organiser invite.`,
+        );
+      }
+
+      const accessItem = await this.getEntity(leaguePk(invite.leagueId), aclSk(input.userId), {
+        consistentRead: true,
+      });
+      const existingAccess =
+        accessItem?.entityType === ENTITY_TYPE.acl
+          ? withTimestamps(
+              accessItem.data as Omit<LeagueAclRecord, "createdAt" | "updatedAt">,
+              accessItem.createdAt,
+              accessItem.updatedAt,
+            )
+          : null;
+      const nextRole = existingAccess ? higherLeagueRole(existingAccess.role, invite.role) : invite.role;
+      const needsInviteAcceptance = !isShareInvite && invite.acceptedByUserId === null;
+      const needsAccessWrite = !existingAccess || nextRole !== existingAccess.role;
+
+      if (!needsInviteAcceptance && !needsAccessWrite && existingAccess) {
+        return {
+          invite,
+          access: existingAccess,
+        };
+      }
+
+      const now = this.clock.now();
+      const acceptedInvitePayload: Omit<LeagueInviteRecord, "createdAt" | "updatedAt"> = {
+        leagueId: invite.leagueId,
+        inviteCode: invite.inviteCode,
+        kind: invite.kind,
+        role: invite.role,
+        email: invite.email,
+        createdByUserId: invite.createdByUserId,
+        acceptedByUserId: isShareInvite ? null : invite.acceptedByUserId ?? input.userId,
+        acceptedAt: isShareInvite ? null : invite.acceptedAt ?? now,
+      };
+      const accessPayload: Omit<LeagueAclRecord, "createdAt" | "updatedAt"> = {
+        leagueId: invite.leagueId,
+        userId: input.userId,
+        role: nextRole,
+        grantedByUserId: invite.createdByUserId,
+      };
+      const transactionItems: TransactWriteItem[] = [
+        {
+          ConditionCheck: {
+            TableName: this.tableName,
+            Key: {
+              pk: { S: leaguePk(invite.leagueId) },
+              sk: { S: metadataSk() },
+            },
+            ConditionExpression: "#updatedAt = :expectedLeagueUpdatedAt AND #data = :expectedLeagueData",
+            ExpressionAttributeNames: {
+              "#updatedAt": "updatedAt",
+              "#data": "data",
+            },
+            ExpressionAttributeValues: {
+              ":expectedLeagueUpdatedAt": { S: leagueItem.updatedAt },
+              ":expectedLeagueData": { S: leagueItem.rawData },
+            },
+          },
+        },
+        needsInviteAcceptance
+          ? {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  leagueInvitePk(invite.inviteCode),
+                  metadataSk(),
+                  ENTITY_TYPE.leagueInvite,
+                  acceptedInvitePayload,
+                  invite.createdAt,
+                  now,
+                ),
+                ConditionExpression: "#updatedAt = :expectedInviteUpdatedAt AND #data = :expectedInviteData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedInviteUpdatedAt": { S: inviteItem.updatedAt },
+                  ":expectedInviteData": { S: inviteItem.rawData },
+                },
+              },
+            }
+          : {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: leagueInvitePk(invite.inviteCode) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedInviteUpdatedAt AND #data = :expectedInviteData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedInviteUpdatedAt": { S: inviteItem.updatedAt },
+                  ":expectedInviteData": { S: inviteItem.rawData },
+                },
+              },
+            },
+      ];
+
+      if (needsAccessWrite) {
+        transactionItems.push({
+          Put: {
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              leaguePk(invite.leagueId),
+              aclSk(input.userId),
+              ENTITY_TYPE.acl,
+              accessPayload,
+              existingAccess?.createdAt ?? now,
+              now,
+            ),
+            ...(accessItem
+              ? {
+                  ConditionExpression: "#updatedAt = :expectedAccessUpdatedAt AND #data = :expectedAccessData",
+                  ExpressionAttributeNames: {
+                    "#updatedAt": "updatedAt",
+                    "#data": "data",
+                  },
+                  ExpressionAttributeValues: {
+                    ":expectedAccessUpdatedAt": { S: accessItem.updatedAt },
+                    ":expectedAccessData": { S: accessItem.rawData },
+                  },
+                }
+              : {
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                }),
+          },
+        });
+      }
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: transactionItems,
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          continue;
+        }
+
+        throw error;
+      }
+
+      return {
+        invite: withTimestamps(
+          acceptedInvitePayload,
+          invite.createdAt,
+          needsInviteAcceptance ? now : invite.updatedAt,
+        ),
+        access: withTimestamps(
+          accessPayload,
+          existingAccess?.createdAt ?? now,
+          needsAccessWrite ? now : existingAccess?.updatedAt ?? now,
+        ),
+      };
+    }
   }
 
   async assignRosterPlayer(input: AssignRosterInput): Promise<RosterAssignmentRecord> {
@@ -4325,6 +4795,157 @@ export class ThreeFcRepository {
             now,
           ),
           ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        }),
+      );
+      return true;
+    } catch (error) {
+      const awsError = error as { name?: string };
+      if (awsError.name === "ConditionalCheckFailedException") {
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  async completeIdempotencyRecord(input: CompleteIdempotencyRecordInput): Promise<boolean> {
+    requireNonEmpty("scope", input.scope);
+    requireNonEmpty("key", input.key);
+    requireNonEmpty("requestHash", input.requestHash);
+    requireNonEmpty("responseBody", input.responseBody);
+    requireNonEmpty("expectedResponseBody", input.expectedResponseBody);
+
+    if (
+      !Number.isInteger(input.responseStatusCode) ||
+      input.responseStatusCode < 100 ||
+      input.responseStatusCode > 599
+    ) {
+      throw new Error("responseStatusCode must be a valid HTTP status code.");
+    }
+    if (
+      !Number.isInteger(input.expectedResponseStatusCode) ||
+      input.expectedResponseStatusCode < 100 ||
+      input.expectedResponseStatusCode > 599
+    ) {
+      throw new Error("expectedResponseStatusCode must be a valid HTTP status code.");
+    }
+
+    const existing = await this.getIdempotencyRecord(input.scope, input.key);
+    if (
+      !existing ||
+      existing.requestHash !== input.requestHash ||
+      existing.responseStatusCode !== input.expectedResponseStatusCode ||
+      existing.responseBody !== input.expectedResponseBody ||
+      (input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt)
+    ) {
+      return false;
+    }
+
+    const now = this.clock.now();
+    const payload = {
+      scope: input.scope,
+      key: input.key,
+      requestHash: input.requestHash,
+      responseStatusCode: input.responseStatusCode,
+      responseBody: input.responseBody,
+    };
+    const expectedPayload = {
+      scope: input.scope,
+      key: input.key,
+      requestHash: input.requestHash,
+      responseStatusCode: input.expectedResponseStatusCode,
+      responseBody: input.expectedResponseBody,
+    };
+
+    try {
+      await this.client.send(
+        new PutItemCommand({
+          TableName: this.tableName,
+          Item: buildItemWithTimestamps(
+            idempotencyPk(input.scope, input.key),
+            metadataSk(),
+            ENTITY_TYPE.idempotency,
+            payload,
+            existing.createdAt,
+            now,
+          ),
+          ConditionExpression:
+            "attribute_exists(pk) AND attribute_exists(sk) AND #data = :expectedData" +
+            (input.expectedUpdatedAt === undefined ? "" : " AND #updatedAt = :expectedUpdatedAt"),
+          ExpressionAttributeNames: {
+            "#data": "data",
+            ...(input.expectedUpdatedAt === undefined ? {} : { "#updatedAt": "updatedAt" }),
+          },
+          ExpressionAttributeValues: {
+            ":expectedData": { S: JSON.stringify(expectedPayload) },
+            ...(input.expectedUpdatedAt === undefined
+              ? {}
+              : { ":expectedUpdatedAt": { S: input.expectedUpdatedAt } }),
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      const awsError = error as { name?: string };
+      if (awsError.name === "ConditionalCheckFailedException") {
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  async deleteIdempotencyRecord(input: DeleteIdempotencyRecordInput): Promise<boolean> {
+    requireNonEmpty("scope", input.scope);
+    requireNonEmpty("key", input.key);
+    requireNonEmpty("requestHash", input.requestHash);
+    requireNonEmpty("responseBody", input.responseBody);
+    if (
+      !Number.isInteger(input.responseStatusCode) ||
+      input.responseStatusCode < 100 ||
+      input.responseStatusCode > 599
+    ) {
+      throw new Error("responseStatusCode must be a valid HTTP status code.");
+    }
+
+    const existing = await this.getIdempotencyRecord(input.scope, input.key);
+    if (
+      !existing ||
+      existing.requestHash !== input.requestHash ||
+      existing.responseStatusCode !== input.responseStatusCode ||
+      existing.responseBody !== input.responseBody ||
+      (input.updatedAt !== undefined && existing.updatedAt !== input.updatedAt)
+    ) {
+      return false;
+    }
+
+    const expectedPayload = {
+      scope: input.scope,
+      key: input.key,
+      requestHash: input.requestHash,
+      responseStatusCode: input.responseStatusCode,
+      responseBody: input.responseBody,
+    };
+
+    try {
+      await this.client.send(
+        new DeleteItemCommand({
+          TableName: this.tableName,
+          Key: {
+            pk: { S: idempotencyPk(input.scope, input.key) },
+            sk: { S: metadataSk() },
+          },
+          ConditionExpression:
+            "attribute_exists(pk) AND attribute_exists(sk) AND #data = :data" +
+            (input.updatedAt === undefined ? "" : " AND #updatedAt = :updatedAt"),
+          ExpressionAttributeNames: {
+            "#data": "data",
+            ...(input.updatedAt === undefined ? {} : { "#updatedAt": "updatedAt" }),
+          },
+          ExpressionAttributeValues: {
+            ":data": { S: JSON.stringify(expectedPayload) },
+            ...(input.updatedAt === undefined ? {} : { ":updatedAt": { S: input.updatedAt } }),
+          },
         }),
       );
       return true;

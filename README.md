@@ -9,7 +9,7 @@ This repository contains the product, technical, infrastructure, and delivery as
 ## Domain
 
 - Primary domain: `https://3fc.football`
-- Production app domain: `https://app.3fc.football`
+- Production app domain: `https://3fc.football`
 - QA app domain: `https://qa.3fc.football`
 - Production API domain: `https://api.3fc.football`
 - QA API domain: `https://qa-api.3fc.football`

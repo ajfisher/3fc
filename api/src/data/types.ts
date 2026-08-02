@@ -115,6 +115,21 @@ export interface LeagueAclRecord {
   updatedAt: string;
 }
 
+export type LeagueInviteKind = "share" | "email";
+
+export interface LeagueInviteRecord {
+  leagueId: string;
+  inviteCode: string;
+  kind: LeagueInviteKind;
+  role: "admin";
+  email: string | null;
+  createdByUserId: string;
+  acceptedByUserId: string | null;
+  acceptedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RosterAssignmentRecord {
   gameId: string;
   teamId: TeamId;
@@ -309,6 +324,25 @@ export interface GrantLeagueAccessInput {
   grantedByUserId: string;
 }
 
+export interface CreateLeagueOrganiserInviteInput {
+  leagueId: string;
+  email?: string | null;
+  createdByUserId: string;
+  inviteCode?: string | null;
+  kind?: LeagueInviteKind;
+}
+
+export interface AcceptLeagueOrganiserInviteInput {
+  inviteCode: string;
+  userId: string;
+  email: string;
+}
+
+export interface AcceptLeagueOrganiserInviteResult {
+  invite: LeagueInviteRecord;
+  access: LeagueAclRecord;
+}
+
 export interface AssignRosterInput {
   gameId: string;
   teamId: TeamId;
@@ -404,4 +438,19 @@ export interface CreateIdempotencyRecordInput {
   requestHash: string;
   responseStatusCode: number;
   responseBody: string;
+}
+
+export interface CompleteIdempotencyRecordInput extends CreateIdempotencyRecordInput {
+  expectedResponseStatusCode: number;
+  expectedResponseBody: string;
+  expectedUpdatedAt?: string;
+}
+
+export interface DeleteIdempotencyRecordInput {
+  scope: string;
+  key: string;
+  requestHash: string;
+  responseStatusCode: number;
+  responseBody: string;
+  updatedAt?: string;
 }

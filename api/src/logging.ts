@@ -16,6 +16,15 @@ interface AuthRateLimitLogFields extends RequestLogFields {
   retryAfterSeconds: number;
 }
 
+interface MagicLinkEventLogFields extends RequestLogFields {
+  action: "start" | "complete" | "organiser_invite_start";
+  outcome: "success" | "failure" | "blocked" | "unknown";
+  reason: string;
+  emailHash?: string;
+  tokenIdHash?: string;
+  correlationId?: string;
+}
+
 function writeLog(level: LogLevel, payload: Record<string, unknown>): void {
   const entry = JSON.stringify({
     level,
@@ -49,6 +58,13 @@ export function logRequestError(fields: RequestErrorLogFields): void {
 export function logAuthRateLimit(fields: AuthRateLimitLogFields): void {
   writeLog("info", {
     message: "auth_rate_limited",
+    ...fields,
+  });
+}
+
+export function logMagicLinkEvent(fields: MagicLinkEventLogFields): void {
+  writeLog(fields.outcome === "failure" ? "error" : "info", {
+    message: "magic_link_event",
     ...fields,
   });
 }

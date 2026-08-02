@@ -512,6 +512,30 @@
     clearCachedIdempotencyKey("join-player", publicJoinIdempotencyStablePart(joinCode, nickname));
   }
 
+  function organiserInviteIdempotencyStablePart(leagueId, email) {
+    const normalizedEmail = email.trim().toLowerCase();
+    return `${leagueId.trim()}-${normalizedEmail || "link"}`;
+  }
+
+  function idempotencyKeyForOrganiserInvite(leagueId, email) {
+    return cachedIdempotencyKey(
+      "organiser-invite",
+      organiserInviteIdempotencyStablePart(leagueId, email),
+    );
+  }
+
+  function stableOrganiserShareInviteIdempotencyKey(leagueId) {
+    const safeLeagueId = leagueId.trim().replace(/[^A-Za-z0-9-]+/g, "-").replace(/-+/g, "-");
+    return `organiser-share-invite-${(safeLeagueId || "league").slice(0, 80)}`;
+  }
+
+  function clearIdempotencyKeyForOrganiserInvite(leagueId, email) {
+    clearCachedIdempotencyKey(
+      "organiser-invite",
+      organiserInviteIdempotencyStablePart(leagueId, email),
+    );
+  }
+
   async function requestJson(path, init = {}) {
     const response = await fetch(buildApiUrl(path), {
       credentials: "include",
@@ -944,6 +968,16 @@
     const seasonFriendlyUrlInput = document.getElementById("season-friendly-url");
     const seasonIdDisplay = document.getElementById("season-id-display");
     const createSeasonButton = root.querySelector('[data-action="create-season"]');
+    const organiserInviteEmailInput = document.getElementById("organiser-invite-email");
+    const createOrganiserInviteButton = root.querySelector('[data-action="create-organiser-invite"]');
+    const organiserShareInviteStatus = document.getElementById("organiser-share-invite-status");
+    const organiserShareInviteResult = document.getElementById("organiser-share-invite-result");
+    const organiserShareInviteCode = document.getElementById("organiser-share-invite-code");
+    const organiserShareInviteLink = document.getElementById("organiser-share-invite-link");
+    const organiserEmailInviteResult = document.getElementById("organiser-email-invite-result");
+    const organiserEmailInviteCode = document.getElementById("organiser-email-invite-code");
+    const organiserEmailInviteLink = document.getElementById("organiser-email-invite-link");
+    const organiserInviteEmailStatus = document.getElementById("organiser-invite-email-status");
 
     const seasonsBody = document.getElementById("league-seasons-body");
     const seasonsTableWrap = document.querySelector('[data-testid="league-seasons-table"]');
@@ -953,6 +987,8 @@
       !(seasonNameInput instanceof HTMLInputElement) ||
       !(seasonFriendlyUrlInput instanceof HTMLInputElement) ||
       !(createSeasonButton instanceof HTMLButtonElement) ||
+      !(organiserInviteEmailInput instanceof HTMLInputElement) ||
+      !(createOrganiserInviteButton instanceof HTMLButtonElement) ||
       !(seasonsBody instanceof HTMLElement)
     ) {
       return;
@@ -965,6 +1001,92 @@
     seasonFriendlyUrlInput.addEventListener("input", () => {
       setFieldMessage("season-friendly-url");
     });
+    organiserInviteEmailInput.addEventListener("input", () => {
+      setFieldMessage("organiser-invite-email");
+    });
+
+    function setLocalStatus(element, text, state = "default") {
+      if (!(element instanceof HTMLElement)) {
+        return;
+      }
+
+      element.textContent = text;
+      if (state === "default") {
+        element.removeAttribute("data-state");
+        return;
+      }
+
+      element.setAttribute("data-state", state);
+    }
+
+    function renderInviteCodeLink(resultElement, codeElement, linkElement, payload) {
+      const inviteCode = typeof payload?.inviteCode === "string"
+        ? payload.inviteCode
+        : typeof payload?.invite?.inviteCode === "string" ? payload.invite.inviteCode : "";
+      const inviteLink = typeof payload?.inviteLink === "string" ? payload.inviteLink : "";
+
+      if (resultElement instanceof HTMLElement) {
+        resultElement.hidden = false;
+      }
+      if (codeElement instanceof HTMLElement) {
+        codeElement.textContent = inviteCode || "Unavailable";
+      }
+      if (linkElement instanceof HTMLAnchorElement) {
+        if (inviteLink) {
+          linkElement.href = inviteLink;
+          linkElement.textContent = inviteLink;
+        } else {
+          linkElement.removeAttribute("href");
+          linkElement.textContent = "Unavailable";
+        }
+      }
+    }
+
+    async function ensureShareInvite() {
+      setLocalStatus(organiserShareInviteStatus, "Loading share invite…", "default");
+      if (organiserShareInviteCode instanceof HTMLElement) {
+        organiserShareInviteCode.textContent = "Loading…";
+      }
+      if (organiserShareInviteLink instanceof HTMLAnchorElement) {
+        organiserShareInviteLink.removeAttribute("href");
+        organiserShareInviteLink.textContent = "Loading…";
+      }
+
+      const idempotencyKey = stableOrganiserShareInviteIdempotencyKey(leagueId);
+
+      try {
+        const payload = await requestJsonOrThrow(
+          `/v1/leagues/${encodeURIComponent(leagueId)}/organiser-invites`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              email: null,
+            }),
+          },
+        );
+
+        renderInviteCodeLink(
+          organiserShareInviteResult,
+          organiserShareInviteCode,
+          organiserShareInviteLink,
+          payload,
+        );
+        setLocalStatus(organiserShareInviteStatus, "Share invite ready.", "success");
+      } catch {
+        if (organiserShareInviteCode instanceof HTMLElement) {
+          organiserShareInviteCode.textContent = "Unavailable";
+        }
+        if (organiserShareInviteLink instanceof HTMLAnchorElement) {
+          organiserShareInviteLink.removeAttribute("href");
+          organiserShareInviteLink.textContent = "Unavailable";
+        }
+        setLocalStatus(organiserShareInviteStatus, "Share invite unavailable. Reload to try again.", "error");
+      }
+    }
 
     async function loadLeague() {
       const league = await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}`, {
@@ -1069,6 +1191,74 @@
       }
     });
 
+    createOrganiserInviteButton.addEventListener("click", async () => {
+      clearError();
+
+      const rawEmail = organiserInviteEmailInput.value.trim();
+      if (!rawEmail) {
+        setFieldMessage("organiser-invite-email", "invalid", "Email is required.");
+        organiserInviteEmailInput.focus();
+        return;
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+        setFieldMessage("organiser-invite-email", "invalid", "Enter a valid email address.");
+        organiserInviteEmailInput.focus();
+        return;
+      }
+
+      setFieldMessage("organiser-invite-email");
+      createOrganiserInviteButton.disabled = true;
+      setStatus("Sending organiser invite…", "default");
+      const idempotencyKey = idempotencyKeyForOrganiserInvite(leagueId, rawEmail);
+
+      try {
+        const payload = await requestJsonOrThrow(
+          `/v1/leagues/${encodeURIComponent(leagueId)}/organiser-invites`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              email: rawEmail,
+            }),
+          },
+        );
+
+        renderInviteCodeLink(
+          organiserEmailInviteResult,
+          organiserEmailInviteCode,
+          organiserEmailInviteLink,
+          payload,
+        );
+        if (organiserInviteEmailStatus instanceof HTMLElement) {
+          if (payload.emailDelivery?.status === "sent") {
+            organiserInviteEmailStatus.textContent = `Sent to ${payload.emailDelivery.email}.`;
+          } else if (payload.emailDelivery?.status === "unknown") {
+            organiserInviteEmailStatus.textContent = "Delivery unconfirmed. Share the invite link manually.";
+          } else {
+            organiserInviteEmailStatus.textContent = "";
+          }
+        }
+
+        organiserInviteEmailInput.value = "";
+        clearIdempotencyKeyForOrganiserInvite(leagueId, rawEmail);
+        setStatus(
+          payload.emailDelivery?.status === "unknown"
+            ? "Organiser invite created; email delivery unconfirmed."
+            : "Organiser invite sent.",
+          "success",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not create organiser invite.";
+        showError(message);
+        setStatus("Organiser invite failed.", "error");
+      } finally {
+        createOrganiserInviteButton.disabled = false;
+      }
+    });
+
     seasonsBody.addEventListener("click", async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
@@ -1133,7 +1323,7 @@
     }
 
     await loadLeague();
-    await renderSeasons();
+    await Promise.all([renderSeasons(), ensureShareInvite()]);
     setStatus("League page ready.", "success");
   }
 
@@ -3898,6 +4088,135 @@
     setStatus("Join page ready.", "success");
   }
 
+  async function initInvitePage() {
+    const queryInviteCode = new URLSearchParams(window.location.search).get("code") ?? "";
+    const initialInviteCode =
+      resolveRouteEntityId("data-invite-code", "invites") || queryInviteCode;
+    const codeForm = document.getElementById("organiser-invite-code-form");
+    const codeInput = document.getElementById("organiser-invite-code-input");
+    const acceptance = document.getElementById("organiser-invite-acceptance");
+    const acceptCode = document.getElementById("organiser-invite-accept-code");
+    const acceptLeague = document.getElementById("organiser-invite-league");
+    const acceptButton = document.querySelector('[data-action="accept-organiser-invite"]');
+    const leagueLink = document.getElementById("organiser-invite-league-link");
+
+    function normalizeInviteCode(value) {
+      return value.trim().toUpperCase().replace(/\s+/g, "");
+    }
+
+    function isInviteCodeValid(value) {
+      return /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(value);
+    }
+
+    function showInviteAcceptance(inviteCode) {
+      if (codeForm instanceof HTMLFormElement) {
+        codeForm.hidden = true;
+      }
+      if (acceptance instanceof HTMLElement) {
+        acceptance.hidden = false;
+      }
+      if (acceptCode instanceof HTMLElement) {
+        acceptCode.textContent = inviteCode;
+      }
+    }
+
+    async function acceptInvite(inviteCode) {
+      if (!isInviteCodeValid(inviteCode)) {
+        setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
+        if (codeInput instanceof HTMLInputElement) {
+          codeInput.focus();
+        }
+        return;
+      }
+
+      showInviteAcceptance(inviteCode);
+      if (acceptButton instanceof HTMLButtonElement) {
+        acceptButton.disabled = true;
+      }
+      clearError();
+      setStatus("Accepting organiser invite…", "default");
+
+      try {
+        const payload = await requestJsonOrThrow(
+          `/v1/invites/${encodeURIComponent(inviteCode)}/accept`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({}),
+          },
+        );
+        const leagueId = payload.invite?.leagueId ?? payload.access?.leagueId ?? "";
+        if (acceptLeague instanceof HTMLElement) {
+          acceptLeague.textContent = leagueId || "Accepted";
+        }
+        if (leagueLink instanceof HTMLAnchorElement && leagueId) {
+          leagueLink.href = `/leagues/${encodeURIComponent(leagueId)}`;
+          leagueLink.hidden = false;
+        }
+        setStatus("Organiser invite accepted.", "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not accept organiser invite.";
+        showError(message);
+        setStatus("Organiser invite failed.", "error");
+        if (acceptButton instanceof HTMLButtonElement) {
+          acceptButton.disabled = false;
+        }
+      }
+    }
+
+    if (codeForm instanceof HTMLFormElement) {
+      codeForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!(codeInput instanceof HTMLInputElement)) {
+          return;
+        }
+
+        const inviteCode = normalizeInviteCode(codeInput.value);
+        if (!isInviteCodeValid(inviteCode)) {
+          setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
+          codeInput.focus();
+          return;
+        }
+
+        navigateTo(`/invites?code=${encodeURIComponent(inviteCode)}`);
+      });
+    }
+
+    if (codeInput instanceof HTMLInputElement) {
+      codeInput.addEventListener("input", () => {
+        setFieldMessage("organiser-invite-code-input");
+      });
+    }
+
+    if (acceptButton instanceof HTMLButtonElement) {
+      acceptButton.addEventListener("click", () => {
+        const inviteCode = normalizeInviteCode(
+          acceptCode instanceof HTMLElement ? acceptCode.textContent ?? "" : initialInviteCode ?? "",
+        );
+        void acceptInvite(inviteCode);
+      });
+    }
+
+    if (initialInviteCode) {
+      const normalizedInitialInviteCode = normalizeInviteCode(initialInviteCode);
+      if (isInviteCodeValid(normalizedInitialInviteCode)) {
+        showInviteAcceptance(normalizedInitialInviteCode);
+      } else {
+        setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
+        if (codeInput instanceof HTMLInputElement) {
+          codeInput.value = normalizedInitialInviteCode;
+          codeInput.focus();
+        }
+      }
+      setStatus("Invite page ready.", "success");
+      return;
+    }
+
+    setStatus("Invite page ready.", "success");
+  }
+
   async function initialize() {
     clearError();
 
@@ -3932,6 +4251,11 @@
 
       if (page === "league") {
         await initLeaguePage();
+        return;
+      }
+
+      if (page === "invite") {
+        await initInvitePage();
         return;
       }
 

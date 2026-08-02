@@ -169,7 +169,8 @@ test("magic-link callback page includes auth flow script and callback messaging"
   const html = renderMagicLinkCallbackPage("https://qa-api.3fc.football");
 
   assert.match(html, /data-testid="auth-callback-shell"/);
-  assert.match(html, /Completing sign-in/);
+  assert.match(html, /Complete sign-in/);
+  assert.match(html, /data-testid="complete-magic-link"/);
   assert.match(html, /id="auth-callback-status"/);
   assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
 });

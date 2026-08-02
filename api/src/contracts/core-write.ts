@@ -85,6 +85,14 @@ export const grantLeagueAccessRequestSchema = z
   })
   .strict();
 
+export const createLeagueOrganiserInviteRequestSchema = z
+  .object({
+    email: z.string().trim().nullable().optional(),
+  })
+  .strict();
+
+export const acceptLeagueOrganiserInviteRequestSchema = z.object({}).strict();
+
 export function normalizeJoinCodePathParam(joinCode: string): string {
   return joinCode.trim().toUpperCase();
 }
