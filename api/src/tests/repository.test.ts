@@ -593,6 +593,37 @@ test("repository claims players idempotently for one user and rejects another us
   );
 });
 
+test("repository grants league access monotonically without downgrading admins", async () => {
+  const { repository } = createRepositoryHarness();
+
+  const scorerGrant = await repository.grantLeagueAccess({
+    leagueId: "league-1",
+    userId: "delegate-subject",
+    role: "scorekeeper",
+    grantedByUserId: "admin-subject",
+  });
+  assert.equal(scorerGrant.role, "scorekeeper");
+
+  const adminGrant = await repository.grantLeagueAccess({
+    leagueId: "league-1",
+    userId: "delegate-subject",
+    role: "admin",
+    grantedByUserId: "admin-subject",
+  });
+  assert.equal(adminGrant.role, "admin");
+
+  const staleScorerGrant = await repository.grantLeagueAccess({
+    leagueId: "league-1",
+    userId: "delegate-subject",
+    role: "scorekeeper",
+    grantedByUserId: "admin-subject",
+  });
+  assert.equal(staleScorerGrant.role, "admin");
+
+  const storedAccess = await repository.getLeagueAccess("league-1", "delegate-subject");
+  assert.equal(storedAccess?.role, "admin");
+});
+
 test("repository rejects creating games directly as finished", async () => {
   const repository = createRepository();
 

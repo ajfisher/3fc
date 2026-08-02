@@ -258,6 +258,23 @@ function requireLeagueRole(role: string): asserts role is LeagueAclRecord["role"
   }
 }
 
+function leagueRoleRank(role: LeagueAclRecord["role"]): number {
+  if (role === "admin") {
+    return 3;
+  }
+  if (role === "scorekeeper") {
+    return 2;
+  }
+  return 1;
+}
+
+function higherLeagueRole(
+  left: LeagueAclRecord["role"],
+  right: LeagueAclRecord["role"],
+): LeagueAclRecord["role"] {
+  return leagueRoleRank(left) >= leagueRoleRank(right) ? left : right;
+}
+
 function requireThirdNumber(third: number): asserts third is ThirdNumber {
   if (!THIRD_NUMBERS.includes(third as ThirdNumber)) {
     throw new Error("third must be 1, 2, or 3.");
@@ -2607,16 +2624,71 @@ export class ThreeFcRepository {
     requireLeagueRole(input.role);
     requireNonEmpty("grantedByUserId", input.grantedByUserId);
 
-    const now = this.clock.now();
-    const payload = {
-      leagueId: input.leagueId,
-      userId: input.userId,
-      role: input.role,
-      grantedByUserId: input.grantedByUserId,
-    };
+    const pk = leaguePk(input.leagueId);
+    const sk = aclSk(input.userId);
 
-    await this.putEntity(leaguePk(input.leagueId), aclSk(input.userId), ENTITY_TYPE.acl, payload, now);
-    return withTimestamps(payload, now, now);
+    for (;;) {
+      const existingItem = await this.getEntity(pk, sk, { consistentRead: true });
+      const existing =
+        existingItem?.entityType === ENTITY_TYPE.acl
+          ? withTimestamps(
+              existingItem.data as Omit<LeagueAclRecord, "createdAt" | "updatedAt">,
+              existingItem.createdAt,
+              existingItem.updatedAt,
+            )
+          : null;
+
+      const role = existing ? higherLeagueRole(existing.role, input.role) : input.role;
+      if (existing && role === existing.role) {
+        return existing;
+      }
+
+      const now = this.clock.now();
+      const payload = {
+        leagueId: input.leagueId,
+        userId: input.userId,
+        role,
+        grantedByUserId: input.grantedByUserId,
+      };
+
+      try {
+        await this.client.send(
+          new PutItemCommand({
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              pk,
+              sk,
+              ENTITY_TYPE.acl,
+              payload,
+              existing?.createdAt ?? now,
+              now,
+            ),
+            ...(existingItem
+              ? {
+                  ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+                  ExpressionAttributeNames: {
+                    "#updatedAt": "updatedAt",
+                    "#data": "data",
+                  },
+                  ExpressionAttributeValues: {
+                    ":expectedUpdatedAt": { S: existingItem.updatedAt },
+                    ":expectedData": { S: existingItem.rawData },
+                  },
+                }
+              : {
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                }),
+          }),
+        );
+        return withTimestamps(payload, existing?.createdAt ?? now, now);
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
   }
 
   async listLeagueAccess(leagueId: string): Promise<LeagueAclRecord[]> {

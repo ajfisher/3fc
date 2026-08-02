@@ -55,6 +55,7 @@ export interface MagicLinkStartResult {
 export interface MagicLinkCompleteResult {
   sessionId: string;
   email: string;
+  subject: string;
   createdAt: string;
   expiresAt: string;
   maxAgeSeconds: number;
@@ -63,6 +64,7 @@ export interface MagicLinkCompleteResult {
 export interface AuthSessionRecord {
   sessionId: string;
   email: string;
+  subject?: string;
   createdAt: string;
   expiresAt: string;
 }
@@ -108,6 +110,12 @@ export function isMagicLinkEmailLike(value: string): boolean {
 
 function hashTokenSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
+}
+
+export function magicLinkSubjectForEmail(email: string): string {
+  const normalizedEmail = normalizeMagicLinkEmail(email);
+  const digest = createHash("sha256").update(normalizedEmail, "utf8").digest("base64url");
+  return `magic-link:${digest}`;
 }
 
 function tokenPk(tokenId: string): string {
@@ -298,6 +306,7 @@ export class MagicLinkService {
     }
 
     const email = readString(updatedToken.Attributes?.email, "email");
+    const subject = magicLinkSubjectForEmail(email);
     const sessionId = this.randomProvider.sessionId();
     const expiresAtEpoch = nowEpoch + this.options.sessionTtlSeconds;
     const expiresAtIso = new Date(expiresAtEpoch * 1000).toISOString();
@@ -311,6 +320,7 @@ export class MagicLinkService {
           sk: { S: METADATA_SK },
           entityType: { S: ENTITY_TYPE.session },
           email: { S: email },
+          subject: { S: subject },
           createdAt: { S: nowIso },
           updatedAt: { S: nowIso },
           expiresAtEpoch: { N: String(expiresAtEpoch) },
@@ -322,6 +332,7 @@ export class MagicLinkService {
     return {
       sessionId,
       email,
+      subject,
       createdAt: nowIso,
       expiresAt: expiresAtIso,
       maxAgeSeconds: this.options.sessionTtlSeconds,
@@ -360,9 +371,13 @@ export class MagicLinkService {
       return null;
     }
 
+    const email = readString(item.email, "email");
+    const subject = item.subject?.S ?? magicLinkSubjectForEmail(email);
+
     return {
       sessionId,
-      email: readString(item.email, "email"),
+      email,
+      subject,
       createdAt: readString(item.createdAt, "createdAt"),
       expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
     };

@@ -33,6 +33,7 @@ import {
 interface MockSessionRecord {
   sessionId: string;
   email: string;
+  subject?: string;
   createdAt: string;
   expiresAt: string;
 }
@@ -45,6 +46,12 @@ interface MockLeagueAccessRecord {
   createdAt: string;
   updatedAt: string;
 }
+
+const leagueRoleRank: Record<MockLeagueAccessRecord["role"], number> = {
+  viewer: 1,
+  scorekeeper: 2,
+  admin: 3,
+};
 
 interface MockSeasonRecord {
   leagueId: string;
@@ -1640,6 +1647,12 @@ function createHarness(config: HarnessConfig = {}) {
         return leagueAccess.get(`${leagueId}:${userId}`) ?? null;
       },
       async grantLeagueAccess(input) {
+        const key = `${input.leagueId}:${input.userId}`;
+        const existing = leagueAccess.get(key);
+        if (existing && leagueRoleRank[existing.role] >= leagueRoleRank[input.role]) {
+          return existing;
+        }
+
         const record = {
           leagueId: input.leagueId,
           userId: input.userId,
@@ -1648,7 +1661,7 @@ function createHarness(config: HarnessConfig = {}) {
           createdAt: "2026-02-23T00:00:02.000Z",
           updatedAt: "2026-02-23T00:00:02.000Z",
         };
-        leagueAccess.set(`${input.leagueId}:${input.userId}`, record);
+        leagueAccess.set(key, record);
         grantedLeagueAccess.push(record);
         return record;
       },
@@ -2349,6 +2362,7 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
       "session-player": {
         sessionId: "session-player",
         email: "delegate@example.com",
+        subject: "cognito-delegate-sub",
         createdAt: "2026-02-23T00:00:00.000Z",
         expiresAt: "2026-02-24T00:00:00.000Z",
       },
@@ -2423,7 +2437,7 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
   );
 
   assert.equal(claimResponse.statusCode, 200);
-  assert.equal(harness.players.get("player-joined")?.claimedByUserId, "delegate@example.com");
+  assert.equal(harness.players.get("player-joined")?.claimedByUserId, "cognito-delegate-sub");
   assert.deepEqual(JSON.parse(claimResponse.body), {
     player: {
       playerId: "player-joined",
@@ -2455,7 +2469,7 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:01.000Z",
         access: {
-          userId: "delegate@example.com",
+          userId: "cognito-delegate-sub",
           role: null,
         },
       },
@@ -2470,7 +2484,7 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
         Cookie: "threefc_session=session-admin",
       },
       body: {
-        userId: "delegate@example.com",
+        userId: "cognito-delegate-sub",
         role: "scorekeeper",
       },
     }),
@@ -2479,6 +2493,41 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
   assert.equal(grantResponse.statusCode, 200);
   assert.equal(harness.grantedLeagueAccess.length, 1);
   assert.equal(harness.grantedLeagueAccess[0].role, "scorekeeper");
+
+  const adminGrantResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/access",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+      },
+      body: {
+        userId: "cognito-delegate-sub",
+        role: "admin",
+      },
+    }),
+  );
+
+  assert.equal(adminGrantResponse.statusCode, 200);
+  assert.equal(JSON.parse(adminGrantResponse.body).role, "admin");
+
+  const staleScorerGrantResponse = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/access",
+      headers: {
+        Cookie: "threefc_session=session-admin",
+      },
+      body: {
+        userId: "cognito-delegate-sub",
+        role: "scorekeeper",
+      },
+    }),
+  );
+
+  assert.equal(staleScorerGrantResponse.statusCode, 200);
+  assert.equal(JSON.parse(staleScorerGrantResponse.body).role, "admin");
+  assert.equal(harness.grantedLeagueAccess.length, 2);
 
   const delegatedPoolResponse = await harness.handler(
     createEvent({
@@ -2498,6 +2547,10 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
         nickname: "Delegate",
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:01.000Z",
+        access: {
+          userId: "cognito-delegate-sub",
+          role: "admin",
+        },
       },
     ],
   });
@@ -2985,6 +3038,81 @@ test("core lambda creates league for authenticated users", async () => {
   assert.equal(response.statusCode, 201);
   assert.equal(harness.createdLeagues.length, 1);
   assert.equal(harness.createdLeagues[0].createdByUserId, "admin@example.com");
+});
+
+test("core lambda lists subject-keyed and legacy email-keyed league access", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "delegate@example.com",
+        subject: "cognito-delegate-sub",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    leagues: {
+      "league-subject": {
+        leagueId: "league-subject",
+        name: "Subject League",
+        slug: null,
+        createdByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "league-email": {
+        leagueId: "league-email",
+        name: "Email League",
+        slug: null,
+        createdByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-subject:cognito-delegate-sub": {
+        leagueId: "league-subject",
+        userId: "cognito-delegate-sub",
+        role: "scorekeeper",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "league-subject:delegate@example.com": {
+        leagueId: "league-subject",
+        userId: "delegate@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "league-email:delegate@example.com": {
+        leagueId: "league-email",
+        userId: "delegate@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/leagues",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as { leagues: Array<{ leagueId: string }> };
+  assert.deepEqual(
+    body.leagues.map((league) => league.leagueId).sort(),
+    ["league-email", "league-subject"],
+  );
 });
 
 test("core lambda includes caller league role on league reads", async () => {

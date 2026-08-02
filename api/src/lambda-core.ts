@@ -107,6 +107,7 @@ interface RequestDetails {
 type AuthSessionRecord = {
   sessionId: string;
   email: string;
+  subject?: string;
   createdAt: string;
   expiresAt: string;
 };
@@ -124,10 +125,24 @@ interface MagicLinkServiceContract extends SessionLookup {
   complete(token: string): Promise<{
     sessionId: string;
     email: string;
+    subject?: string;
     createdAt: string;
     expiresAt: string;
     maxAgeSeconds: number;
   }>;
+}
+
+function sessionSubject(session: AuthSessionRecord): string {
+  return session.subject ?? session.email;
+}
+
+function normalizeUserIds(userIds: string | readonly string[]): string[] {
+  const values = Array.isArray(userIds) ? userIds : [userIds];
+  return values.filter((value, index) => value.trim().length > 0 && values.indexOf(value) === index);
+}
+
+function sessionUserIds(session: AuthSessionRecord): string[] {
+  return normalizeUserIds([sessionSubject(session), session.email]);
 }
 
 interface RepositoryGameRecord {
@@ -537,6 +552,22 @@ interface RepositoryContract {
   }): Promise<boolean>;
 }
 
+type LeagueListRecord = Awaited<ReturnType<RepositoryContract["listLeaguesForUser"]>>[number];
+
+async function listLeaguesForSession(
+  repository: Pick<RepositoryContract, "listLeaguesForUser">,
+  session: AuthSessionRecord,
+): Promise<LeagueListRecord[]> {
+  const leaguesById = new Map<string, LeagueListRecord>();
+  for (const userId of sessionUserIds(session)) {
+    const leagues = await repository.listLeaguesForUser(userId);
+    for (const league of leagues) {
+      leaguesById.set(league.leagueId, league);
+    }
+  }
+  return [...leaguesById.values()];
+}
+
 interface CoreHandlerDependencies {
   repository: RepositoryContract;
   magicLinkService: MagicLinkServiceContract;
@@ -759,33 +790,45 @@ function conflict(
 async function ensureLeagueAccess(
   repository: RepositoryContract,
   leagueId: string,
-  userId: string,
+  userIds: string | readonly string[],
 ): Promise<{ allowed: boolean; role: "admin" | "scorekeeper" | "viewer" | null }> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  if (!access) {
-    return { allowed: false, role: null };
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repository.getLeagueAccess(leagueId, userId);
+    if (access) {
+      return { allowed: true, role: access.role };
+    }
   }
 
-  return { allowed: true, role: access.role };
+  return { allowed: false, role: null };
 }
 
 async function ensureLeagueAdmin(
   repository: RepositoryContract,
   leagueId: string,
-  userId: string,
+  userIds: string | readonly string[],
 ): Promise<boolean> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  return access?.role === "admin";
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repository.getLeagueAccess(leagueId, userId);
+    if (access?.role === "admin") {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function ensureLeagueRole(
   repository: RepositoryContract,
   leagueId: string,
-  userId: string,
+  userIds: string | readonly string[],
   allowedRoles: ReadonlySet<"admin" | "scorekeeper" | "viewer">,
 ): Promise<boolean> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  return access ? allowedRoles.has(access.role) : false;
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repository.getLeagueAccess(leagueId, userId);
+    if (access && allowedRoles.has(access.role)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function parseTeamId(value: string): TeamId | null {
@@ -2093,7 +2136,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const aclResult = await authorizeProtectedMutation(
           method,
           route,
-          session.email,
+          sessionUserIds(session),
           dependencies.repository,
         );
         if (!aclResult.allowed) {
@@ -2154,7 +2197,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         }
 
         if (method === "GET" && route === "/v1/leagues") {
-          const leagues = await dependencies.repository.listLeaguesForUser(session.email);
+          const leagues = await listLeaguesForSession(dependencies.repository, session);
           status = 200;
           return createJsonResponse(
             status,
@@ -2168,7 +2211,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const getLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
         if (method === "GET" && getLeagueMatch) {
           const leagueId = decodeRouteParam(getLeagueMatch[1]);
-          const access = await ensureLeagueAccess(dependencies.repository, leagueId, session.email);
+          const access = await ensureLeagueAccess(dependencies.repository, leagueId, sessionUserIds(session));
           if (!access.allowed) {
             status = 403;
             return forbidden(
@@ -2294,7 +2337,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const listSeasonsMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
         if (method === "GET" && listSeasonsMatch) {
           const leagueId = decodeRouteParam(listSeasonsMatch[1]);
-          const access = await ensureLeagueAccess(dependencies.repository, leagueId, session.email);
+          const access = await ensureLeagueAccess(dependencies.repository, leagueId, sessionUserIds(session));
           if (!access.allowed) {
             status = 403;
             return forbidden(
@@ -2319,7 +2362,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
         if (method === "DELETE" && deleteLeagueMatch) {
           const leagueId = decodeRouteParam(deleteLeagueMatch[1]);
-          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, session.email);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
           if (!isAdmin) {
             status = 403;
             return forbidden(
@@ -3705,7 +3748,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           try {
             player = await dependencies.repository.claimPlayer({
               playerId,
-              userId: session.email,
+              userId: sessionSubject(session),
             });
           } catch (error) {
             if (error instanceof PlayerClaimError) {
@@ -3751,7 +3794,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return notFound(origin, dependencies.corsAllowedOrigins, `Game ${gameId} was not found.`);
           }
 
-          const access = await ensureLeagueAccess(dependencies.repository, game.leagueId, session.email);
+          const access = await ensureLeagueAccess(dependencies.repository, game.leagueId, sessionUserIds(session));
           if (!access.allowed || (access.role !== "admin" && access.role !== "scorekeeper")) {
             status = 403;
             return forbidden(
@@ -3975,7 +4018,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             return finishedBlock;
           }
 
-          const isAdmin = await ensureLeagueAdmin(dependencies.repository, game.leagueId, session.email);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, game.leagueId, sessionUserIds(session));
           let rawBody: Record<string, unknown>;
           try {
             rawBody = parseJsonBody(event);

@@ -254,22 +254,37 @@ function missingScope(scopeType: "game" | "season" | "session", scopeId: string)
 }
 
 async function verifyLeagueAdmin(
-  userId: string,
+  userIds: string | readonly string[],
   leagueId: string,
   aclLookup: AclLookup,
 ): Promise<boolean> {
-  const access = await aclLookup.getLeagueAccess(leagueId, userId);
-  return access?.role === "admin";
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await aclLookup.getLeagueAccess(leagueId, userId);
+    if (access?.role === "admin") {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function verifyLeagueRole(
-  userId: string,
+  userIds: string | readonly string[],
   leagueId: string,
   aclLookup: AclLookup,
   allowedRoles: ReadonlySet<LeagueAclRecord["role"]>,
 ): Promise<boolean> {
-  const access = await aclLookup.getLeagueAccess(leagueId, userId);
-  return access ? allowedRoles.has(access.role) : false;
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await aclLookup.getLeagueAccess(leagueId, userId);
+    if (access && allowedRoles.has(access.role)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeUserIds(userIds: string | readonly string[]): string[] {
+  const values = Array.isArray(userIds) ? userIds : [userIds];
+  return values.filter((value, index) => value.trim().length > 0 && values.indexOf(value) === index);
 }
 
 async function resolveGameScope(
@@ -301,7 +316,7 @@ async function resolveGameScope(
 export async function authorizeProtectedMutation(
   method: string,
   route: string,
-  userId: string,
+  userId: string | readonly string[],
   aclLookup: AclLookup,
 ): Promise<AclAuthorizationResult> {
   const resolvedRoute = resolveProtectedMutationRoute(method, route);

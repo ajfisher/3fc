@@ -347,41 +347,87 @@ function conflict(request: IncomingMessage, response: ServerResponse, message: s
   return 409;
 }
 
+type UserIdCandidate = string | null | undefined;
+
 async function ensureLeagueAccess(
   leagueId: string,
-  userId: string,
+  userIds: UserIdCandidate | readonly UserIdCandidate[],
   repositoryClient: Pick<ThreeFcRepository, "getLeagueAccess"> = repository,
 ): Promise<{ allowed: boolean; role: "admin" | "scorekeeper" | "viewer" | null }> {
-  const access = await repositoryClient.getLeagueAccess(leagueId, userId);
-  if (!access) {
-    return {
-      allowed: false,
-      role: null,
-    };
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repositoryClient.getLeagueAccess(leagueId, userId);
+    if (access) {
+      return {
+        allowed: true,
+        role: access.role,
+      };
+    }
   }
 
   return {
-    allowed: true,
-    role: access.role,
+    allowed: false,
+    role: null,
   };
 }
 
 async function ensureLeagueAdmin(
   leagueId: string,
-  userId: string,
+  userIds: UserIdCandidate | readonly UserIdCandidate[],
   repositoryClient: Pick<ThreeFcRepository, "getLeagueAccess"> = repository,
 ): Promise<boolean> {
-  const access = await repositoryClient.getLeagueAccess(leagueId, userId);
-  return access?.role === "admin";
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repositoryClient.getLeagueAccess(leagueId, userId);
+    if (access?.role === "admin") {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function ensureLeagueRole(
   leagueId: string,
-  userId: string,
+  userIds: UserIdCandidate | readonly UserIdCandidate[],
   allowedRoles: ReadonlySet<"admin" | "scorekeeper" | "viewer">,
 ): Promise<boolean> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  return access ? allowedRoles.has(access.role) : false;
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repository.getLeagueAccess(leagueId, userId);
+    if (access && allowedRoles.has(access.role)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeUserIds(userIds: UserIdCandidate | readonly UserIdCandidate[]): string[] {
+  const values = Array.isArray(userIds) ? userIds : [userIds];
+  return values.filter(
+    (value, index): value is string =>
+      typeof value === "string" && value.trim().length > 0 && values.indexOf(value) === index,
+  );
+}
+
+function sessionUserIds(session: Pick<AuthSessionRecord, "email" | "subject">): string[] {
+  return normalizeUserIds([session.subject, session.email]);
+}
+
+function sessionSubject(session: Pick<AuthSessionRecord, "email" | "subject">): string {
+  return session.subject ?? session.email;
+}
+
+type LeagueListRecord = Awaited<ReturnType<ThreeFcRepository["listLeaguesForUser"]>>[number];
+
+async function listLeaguesForSession(
+  session: Pick<AuthSessionRecord, "email" | "subject">,
+  repositoryClient: Pick<ThreeFcRepository, "listLeaguesForUser"> = repository,
+): Promise<LeagueListRecord[]> {
+  const leaguesById = new Map<string, LeagueListRecord>();
+  for (const userId of sessionUserIds(session)) {
+    const leagues = await repositoryClient.listLeaguesForUser(userId);
+    for (const league of leagues) {
+      leaguesById.set(league.leagueId, league);
+    }
+  }
+  return [...leaguesById.values()];
 }
 
 function parseTeamId(value: string): TeamId | null {
@@ -1701,7 +1747,7 @@ async function enforceAclIfRequired(
     };
   }
 
-  const aclResult = await authorizeProtectedMutation(method, route, session.email, repository);
+  const aclResult = await authorizeProtectedMutation(method, route, sessionUserIds(session), repository);
   if (!aclResult.allowed) {
     sendJsonWithCors(request, response, aclResult.statusCode, aclResult.error);
     return {
@@ -2514,7 +2560,7 @@ async function start(): Promise<void> {
         method === "GET" &&
         route === "/v1/leagues"
       ) {
-        const leagues = await repository.listLeaguesForUser(authGate.session.email);
+        const leagues = await listLeaguesForSession(authGate.session);
         status = 200;
         sendJsonWithCors(request, response, status, {
           leagues,
@@ -2548,7 +2594,7 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(getLeagueMatch[1]);
-        const access = await ensureLeagueAccess(leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2652,7 +2698,7 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(listSeasonsMatch[1]);
-        const access = await ensureLeagueAccess(leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2683,7 +2729,7 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(deleteLeagueMatch[1]);
-        const isAdmin = await ensureLeagueAdmin(leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
         if (!isAdmin) {
           status = forbidden(
             request,
@@ -2754,7 +2800,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(season.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2788,7 +2834,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(season.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2835,7 +2881,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(season.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2907,7 +2953,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const isAdmin = await ensureLeagueAdmin(season.leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(season.leagueId, sessionUserIds(authGate.session));
         if (!isAdmin) {
           status = forbidden(
             request,
@@ -3520,7 +3566,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -3561,7 +3607,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -3628,7 +3674,7 @@ async function start(): Promise<void> {
         try {
           player = await repository.claimPlayer({
             playerId,
-            userId: authGate.session.email,
+            userId: sessionSubject(authGate.session),
           });
         } catch (error) {
           if (error instanceof PlayerClaimError) {
@@ -3677,7 +3723,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed || (access.role !== "admin" && access.role !== "scorekeeper")) {
           status = forbidden(
             request,
@@ -3858,7 +3904,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -3905,7 +3951,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const isAdmin = await ensureLeagueAdmin(game.leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(game.leagueId, sessionUserIds(authGate.session));
         let rawBody: Record<string, unknown>;
         try {
           rawBody = await parseJsonBody(request);
@@ -3993,7 +4039,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const isAdmin = await ensureLeagueAdmin(existingGame.leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(existingGame.leagueId, sessionUserIds(authGate.session));
         if (!isAdmin) {
           status = forbidden(
             request,

@@ -5,7 +5,10 @@ import { resolveSessionFromCookie, type SessionLookup } from "../auth/session-gu
 
 class InMemorySessionLookup implements SessionLookup {
   constructor(
-    private readonly sessions: Record<string, { sessionId: string; email: string; createdAt: string; expiresAt: string }>,
+    private readonly sessions: Record<
+      string,
+      { sessionId: string; email: string; subject: string; createdAt: string; expiresAt: string }
+    >,
   ) {}
 
   async getSession(sessionId: string) {
@@ -43,6 +46,7 @@ test("resolveSessionFromCookie returns session when cookie maps to active sessio
       "session-1": {
         sessionId: "session-1",
         email: "player@example.com",
+        subject: "subject-player",
         createdAt: "2026-02-22T00:00:00.000Z",
         expiresAt: "2026-02-23T00:00:00.000Z",
       },
@@ -53,4 +57,5 @@ test("resolveSessionFromCookie returns session when cookie maps to active sessio
   assert(result.session);
   assert.equal(result.session.sessionId, "session-1");
   assert.equal(result.session.email, "player@example.com");
+  assert.equal(result.session.subject, "subject-player");
 });
