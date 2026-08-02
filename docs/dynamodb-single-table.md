@@ -33,6 +33,11 @@ This document defines the baseline key structure and access patterns for the
 - Game metadata:
   - `pk=GAME#{gameId}`
   - `sk=METADATA`
+  - stores generated or custom `joinCode`, game status, timer segments, `finishedAt`, and final `result`
+- Join code lookup:
+  - `pk=JOIN_CODE#{joinCode}`
+  - `sk=METADATA`
+  - maps an active QR/join code to its `gameId`
 - Goal event timeline:
   - `pk=GAME#{gameId}`
   - `sk=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}`
@@ -63,6 +68,11 @@ This document defines the baseline key structure and access patterns for the
 
 `gameMinuteSortable` is zero-padded to preserve lexical ordering.
 
+Persisted join codes are bearer codes generated randomly at game creation unless
+an organizer supplies a validated custom code. Deterministic join-code fallback
+exists only to normalize legacy game records before repair replaces missing
+lookup ownership.
+
 ## Item Envelope
 
 Repository-managed records are written with:
@@ -84,6 +94,8 @@ without schema rewrites at this stage.
 - Create/list teams for a season.
 - Create/list sessions for a season.
 - Create/read game metadata.
+- Resolve join code to game for player self-registration.
+- Finish game and store deterministic winner/draw result on game metadata.
 - Link/list games for a session (`SESSION#{sessionId}` query).
 - Create/read player profile.
 - Grant/list league ACL entries.

@@ -7,6 +7,7 @@ import { buildSecurityHeaders } from "./security.js";
 import {
   renderComponentShowcasePage,
   renderGamePage,
+  renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -219,6 +220,18 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     if (method === "GET" && gamePageMatch) {
       const gameId = decodeURIComponent(gamePageMatch[1]);
       sendHtml(response, securityHeaders, 200, renderGamePage(apiBaseUrl, { gameId }));
+      return;
+    }
+
+    if (method === "GET" && route === "/join") {
+      sendHtml(response, securityHeaders, 200, renderJoinPage(apiBaseUrl, ""));
+      return;
+    }
+
+    const joinPageMatch = route.match(/^\/join\/([^/]+)$/);
+    if (method === "GET" && joinPageMatch) {
+      const joinCode = decodeURIComponent(joinPageMatch[1]);
+      sendHtml(response, securityHeaders, 200, renderJoinPage(apiBaseUrl, joinCode));
       return;
     }
 

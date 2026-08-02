@@ -15,6 +15,9 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
 jobs:
   deploy:
     name: deploy-qa
@@ -111,6 +114,8 @@ jobs:
           ROOT_HTTP_CODE="$(curl -sS -o /tmp/qa-site-root.html -w '%{http_code}' "${SITE_URL}/")"
           SIGNIN_HTTP_CODE="$(curl -sS -o /tmp/qa-site-signin.html -w '%{http_code}' "${SITE_URL}/sign-in")"
           SETUP_HTTP_CODE="$(curl -sS -o /tmp/qa-site-setup.html -w '%{http_code}' "${SITE_URL}/setup")"
+          JOIN_HTTP_CODE="$(curl -sS -o /tmp/qa-site-join.html -w '%{http_code}' "${SITE_URL}/join")"
+          JOIN_LINK_HTTP_CODE="$(curl -sS -o /tmp/qa-site-join-link.html -w '%{http_code}' "${SITE_URL}/join?code=ABCDEFGH")"
 
           if [ "$ROOT_HTTP_CODE" != "200" ]; then
             echo "Smoke test failed for ${SITE_URL}/ (HTTP ${ROOT_HTTP_CODE})"
@@ -130,15 +135,31 @@ jobs:
             exit 1
           fi
 
+          if [ "$JOIN_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/join (HTTP ${JOIN_HTTP_CODE})"
+            cat /tmp/qa-site-join.html
+            exit 1
+          fi
+
+          if [ "$JOIN_LINK_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/join?code=ABCDEFGH (HTTP ${JOIN_LINK_HTTP_CODE})"
+            cat /tmp/qa-site-join-link.html
+            exit 1
+          fi
+
           grep -q "Dashboard" /tmp/qa-site-root.html
           grep -q "Sign in before setup" /tmp/qa-site-signin.html
           grep -q "Dashboard" /tmp/qa-site-setup.html
+          grep -q "Join game" /tmp/qa-site-join.html
+          grep -q "Join game" /tmp/qa-site-join-link.html
 
           {
             echo "SITE_URL=${SITE_URL}"
             echo "SITE_ROOT_HTTP_CODE=${ROOT_HTTP_CODE}"
             echo "SITE_SIGNIN_HTTP_CODE=${SIGNIN_HTTP_CODE}"
             echo "SITE_SETUP_HTTP_CODE=${SETUP_HTTP_CODE}"
+            echo "SITE_JOIN_HTTP_CODE=${JOIN_HTTP_CODE}"
+            echo "SITE_JOIN_LINK_HTTP_CODE=${JOIN_LINK_HTTP_CODE}"
           } >> "$GITHUB_ENV"
 
       - name: Smoke test deployed QA core endpoints
@@ -170,6 +191,36 @@ jobs:
 
           jq -e '.error == "unauthorized"' /tmp/qa-core.json >/dev/null
 
+          CLAIM_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/players/smoke-player/claim"
+          CLAIM_HTTP_CODE="$(curl -sS -o /tmp/qa-claim.json -w '%{http_code}' \
+            -X POST "$CLAIM_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://qa.3fc.football' \
+            -d '{}')"
+
+          if [ "$CLAIM_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${CLAIM_ENDPOINT} (HTTP ${CLAIM_HTTP_CODE})"
+            cat /tmp/qa-claim.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/qa-claim.json >/dev/null
+
+          ACCESS_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues/smoke-league/access"
+          ACCESS_HTTP_CODE="$(curl -sS -o /tmp/qa-access.json -w '%{http_code}' \
+            -X POST "$ACCESS_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://qa.3fc.football' \
+            -d '{"userId":"scorekeeper@3fc.football","role":"scorekeeper"}')"
+
+          if [ "$ACCESS_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${ACCESS_ENDPOINT} (HTTP ${ACCESS_HTTP_CODE})"
+            cat /tmp/qa-access.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/qa-access.json >/dev/null
+
           MAGIC_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/magic/start"
           MAGIC_HTTP_CODE="$(curl -sS -o /tmp/qa-magic.json -w '%{http_code}' \
             -X POST "$MAGIC_ENDPOINT" \
@@ -186,6 +237,10 @@ jobs:
           {
             echo "SMOKE_CORE_ENDPOINT=${CORE_ENDPOINT}"
             echo "SMOKE_CORE_HTTP_CODE=${CORE_HTTP_CODE}"
+            echo "SMOKE_CLAIM_ENDPOINT=${CLAIM_ENDPOINT}"
+            echo "SMOKE_CLAIM_HTTP_CODE=${CLAIM_HTTP_CODE}"
+            echo "SMOKE_ACCESS_ENDPOINT=${ACCESS_ENDPOINT}"
+            echo "SMOKE_ACCESS_HTTP_CODE=${ACCESS_HTTP_CODE}"
             echo "SMOKE_MAGIC_ENDPOINT=${MAGIC_ENDPOINT}"
             echo "SMOKE_MAGIC_HTTP_CODE=${MAGIC_HTTP_CODE}"
           } >> "$GITHUB_ENV"
@@ -201,10 +256,16 @@ jobs:
             echo "- Site root status: HTTP ${SITE_ROOT_HTTP_CODE}"
             echo "- Site sign-in status: HTTP ${SITE_SIGNIN_HTTP_CODE}"
             echo "- Site setup status: HTTP ${SITE_SETUP_HTTP_CODE}"
+            echo "- Site join status: HTTP ${SITE_JOIN_HTTP_CODE}"
+            echo "- Site join link status: HTTP ${SITE_JOIN_LINK_HTTP_CODE}"
             echo "- Smoke endpoint: ${SMOKE_ENDPOINT}"
             echo "- Smoke status: HTTP ${SMOKE_HTTP_CODE}"
             echo "- Core smoke endpoint: ${SMOKE_CORE_ENDPOINT}"
             echo "- Core smoke status: HTTP ${SMOKE_CORE_HTTP_CODE}"
+            echo "- Claim route smoke endpoint: ${SMOKE_CLAIM_ENDPOINT}"
+            echo "- Claim route smoke status: HTTP ${SMOKE_CLAIM_HTTP_CODE}"
+            echo "- Access route smoke endpoint: ${SMOKE_ACCESS_ENDPOINT}"
+            echo "- Access route smoke status: HTTP ${SMOKE_ACCESS_HTTP_CODE}"
             echo "- Magic-link smoke endpoint: ${SMOKE_MAGIC_ENDPOINT}"
             echo "- Magic-link smoke status: HTTP ${SMOKE_MAGIC_HTTP_CODE}"
           } >> "$GITHUB_STEP_SUMMARY"

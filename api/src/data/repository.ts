@@ -9,8 +9,9 @@ import {
   type ScanCommandOutput,
   TransactWriteItemsCommand,
   type AttributeValue,
+  type TransactWriteItem,
 } from "@aws-sdk/client-dynamodb";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
@@ -19,6 +20,7 @@ import {
   THIRD_NUMBERS,
   validateAssistPlayerIds,
   TEAM_IDS,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdNumber,
@@ -37,8 +39,10 @@ import {
   goalStateSk,
   goalSk,
   idempotencyPk,
+  joinCodePk,
   leaguePk,
   metadataSk,
+  playerClaimSk,
   playerPk,
   profileSk,
   rosterSk,
@@ -47,9 +51,12 @@ import {
   sessionPk,
   sessionSk,
   teamSk,
+  userPk,
 } from "./keys.js";
 import type {
   AssignRosterInput,
+  ClaimPlayerInput,
+  CreateAndLinkGamePlayerInput,
   CreateGameTeamInput,
   CreateGameInput,
   CreateGoalInput,
@@ -63,6 +70,8 @@ import type {
   CreateTeamInput,
   DeleteGoalInput,
   DeleteGoalResult,
+  FinishGameInput,
+  GameJoinCodeRecord,
   GameTeamRecord,
   GamePlayerRecord,
   GameRecord,
@@ -73,6 +82,8 @@ import type {
   GoalEventRecord,
   GoalStateRecord,
   IdempotencyRecord,
+  JoinGameByCodeInput,
+  JoinGameByCodeResult,
   LeagueAclRecord,
   LeagueRecord,
   ListPlayersInput,
@@ -98,8 +109,10 @@ const ENTITY_TYPE = {
   game: "game",
   gameTeam: "gameTeam",
   gamePlayer: "gamePlayer",
+  gameJoinCode: "gameJoinCode",
   sessionGame: "sessionGame",
   player: "player",
+  playerClaim: "playerClaim",
   acl: "acl",
   roster: "roster",
   goal: "goal",
@@ -174,6 +187,52 @@ export class GoalCorrectionError extends Error {
   }
 }
 
+export class GameMutationStateError extends Error {
+  constructor(
+    readonly code: "game_finished" | "game_state_changed",
+    message: string,
+  ) {
+    super(message);
+    this.name = "GameMutationStateError";
+  }
+}
+
+export class GameJoinCodeCollisionError extends Error {
+  constructor(message = "Join code is already assigned to another game.") {
+    super(message);
+    this.name = "GameJoinCodeCollisionError";
+  }
+}
+
+export class GameAlreadyExistsError extends Error {
+  constructor(gameId: string) {
+    super(`Game ${gameId} already exists.`);
+    this.name = "GameAlreadyExistsError";
+  }
+}
+
+export class GameJoinRegistrationError extends Error {
+  constructor(
+    readonly code: "game_finished" | "join_state_changed",
+    readonly statusCode: 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GameJoinRegistrationError";
+  }
+}
+
+export class PlayerClaimError extends Error {
+  constructor(
+    readonly code: "player_already_claimed" | "claim_state_changed",
+    readonly statusCode: 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PlayerClaimError";
+  }
+}
+
 type GoalRuleErrorKind = "creation" | "correction";
 
 function goalRuleError(
@@ -191,6 +250,29 @@ function requireNonEmpty(name: string, value: string): void {
   if (value.trim().length === 0) {
     throw new Error(`${name} must be a non-empty string.`);
   }
+}
+
+function requireLeagueRole(role: string): asserts role is LeagueAclRecord["role"] {
+  if (role !== "admin" && role !== "scorekeeper" && role !== "viewer") {
+    throw new Error("role must be admin, scorekeeper, or viewer.");
+  }
+}
+
+function leagueRoleRank(role: LeagueAclRecord["role"]): number {
+  if (role === "admin") {
+    return 3;
+  }
+  if (role === "scorekeeper") {
+    return 2;
+  }
+  return 1;
+}
+
+function higherLeagueRole(
+  left: LeagueAclRecord["role"],
+  right: LeagueAclRecord["role"],
+): LeagueAclRecord["role"] {
+  return leagueRoleRank(left) >= leagueRoleRank(right) ? left : right;
 }
 
 function requireThirdNumber(third: number): asserts third is ThirdNumber {
@@ -259,11 +341,116 @@ function normalizeThirdTimerSegments(value: unknown): ThirdTimerSegment[] {
   });
 }
 
-function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "updatedAt"> {
-  const raw = data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+function isValidTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const JOIN_CODE_LENGTH = 8;
+const JOIN_CODE_GENERATION_ATTEMPTS = 8;
+const LEGACY_JOIN_CODE_REPAIR_ATTEMPTS = 16;
+const LEGACY_JOIN_CODE_REPAIR_RACE_RETRIES = 3;
+const JOIN_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+
+export function buildJoinCodeForGameId(gameId: string): string {
+  const digest = createHash("sha256").update(`3fc:join:${gameId}`).digest();
+  let joinCode = "";
+
+  for (let index = 0; index < JOIN_CODE_LENGTH; index += 1) {
+    joinCode += JOIN_CODE_ALPHABET[digest[index] % JOIN_CODE_ALPHABET.length];
+  }
+
+  return joinCode;
+}
+
+function generateJoinCode(): string {
+  const bytes = randomBytes(JOIN_CODE_LENGTH);
+  let joinCode = "";
+
+  for (const byte of bytes) {
+    joinCode += JOIN_CODE_ALPHABET[byte % JOIN_CODE_ALPHABET.length];
+  }
+
+  return joinCode;
+}
+
+function normalizeJoinCode(joinCode: string): string {
+  return joinCode.trim().toUpperCase();
+}
+
+function normalizeCustomJoinCode(joinCode: string): string {
+  const normalizedJoinCode = normalizeJoinCode(joinCode);
+  if (!JOIN_CODE_PATTERN.test(normalizedJoinCode)) {
+    throw new Error("joinCode must be 8 uppercase non-ambiguous letters or digits.");
+  }
+
+  return normalizedJoinCode;
+}
+
+function normalizeGameResultPayload(value: unknown): GameResult | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const raw = value as Partial<GameResult>;
+  if (!Array.isArray(raw.teams)) {
+    return null;
+  }
+
+  const winnerTeamId = raw.winnerTeamId ?? null;
+  if (winnerTeamId !== null && !isTeamId(winnerTeamId)) {
+    return null;
+  }
+  if (!isValidTimestamp(raw.computedAt)) {
+    return null;
+  }
+
+  const teams = raw.teams
+    .filter(
+      (team): team is GameResult["teams"][number] =>
+        typeof team === "object" &&
+        team !== null &&
+        isTeamId((team as { teamId?: unknown }).teamId),
+    )
+    .map((team) => ({
+      teamId: team.teamId,
+      name: typeof team.name === "string" ? team.name : "",
+      color: typeof team.color === "string" ? team.color : null,
+      scored: normalizeNonNegativeInteger(team.scored),
+      conceded: normalizeNonNegativeInteger(team.conceded),
+      rank: normalizePositiveInteger(team.rank),
+      outcome:
+        team.outcome === "win" || team.outcome === "draw" || team.outcome === "loss"
+          ? team.outcome
+          : "loss",
+    }));
+  const teamIds = new Set(teams.map((team) => team.teamId));
+  if (teams.length !== TEAM_IDS.length || TEAM_IDS.some((teamId) => !teamIds.has(teamId))) {
+    return null;
+  }
 
   return {
+    winnerTeamId,
+    outcome: winnerTeamId ? "win" : "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt: raw.computedAt,
+    teams,
+  };
+}
+
+function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "updatedAt"> {
+  const raw = data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+  const createRequestHash =
+    typeof raw.createRequestHash === "string" && raw.createRequestHash.trim().length > 0
+      ? raw.createRequestHash.trim()
+      : null;
+
+  const game = {
     gameId: raw.gameId ?? "",
+    joinCode:
+      typeof raw.joinCode === "string" && raw.joinCode.trim().length > 0
+        ? normalizeJoinCode(raw.joinCode)
+        : buildJoinCodeForGameId(raw.gameId ?? ""),
     leagueId: raw.leagueId ?? "",
     seasonId: raw.seasonId ?? "",
     sessionId: raw.sessionId ?? "",
@@ -271,7 +458,11 @@ function normalizeGamePayload(data: unknown): Omit<GameRecord, "createdAt" | "up
     gameStartTs: raw.gameStartTs ?? "",
     thirdLengthMinutes: normalizeThirdLengthMinutes(raw.thirdLengthMinutes),
     thirds: normalizeThirdTimerSegments(raw.thirds),
+    finishedAt: isValidTimestamp(raw.finishedAt) ? raw.finishedAt : null,
+    result: normalizeGameResultPayload(raw.result),
   };
+
+  return createRequestHash ? { ...game, createRequestHash } : game;
 }
 
 function normalizeNonNegativeInteger(value: unknown): number {
@@ -427,12 +618,95 @@ function isThirdStarted(game: Pick<GameRecord, "thirds">): boolean {
   return game.thirds.some((third) => third.startedAt !== null);
 }
 
+function areAllThirdsCompleted(game: Pick<GameRecord, "thirds">): boolean {
+  return game.thirds.length === 3 && game.thirds.every((third) => third.startedAt && third.finishedAt);
+}
+
 function compareTeamIds(left: TeamId, right: TeamId): number {
   return TEAM_IDS.indexOf(left) - TEAM_IDS.indexOf(right);
 }
 
 function sortGameTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
   return [...teams].sort((left, right) => compareTeamIds(left.teamId, right.teamId));
+}
+
+function compareGameResultTeams(
+  left: Pick<GameTeamRecord, "teamId" | "scored" | "conceded">,
+  right: Pick<GameTeamRecord, "teamId" | "scored" | "conceded">,
+): number {
+  const concededSort = left.conceded - right.conceded;
+  if (concededSort !== 0) {
+    return concededSort;
+  }
+
+  const scoredSort = right.scored - left.scored;
+  if (scoredSort !== 0) {
+    return scoredSort;
+  }
+
+  return compareTeamIds(left.teamId, right.teamId);
+}
+
+function sameGameResultPosition(
+  left: Pick<GameTeamRecord, "scored" | "conceded">,
+  right: Pick<GameTeamRecord, "scored" | "conceded">,
+): boolean {
+  return left.conceded === right.conceded && left.scored === right.scored;
+}
+
+function buildGameResult(teams: GameTeamRecord[], computedAt: string): GameResult {
+  const rankedTeams = [...teams].sort(compareGameResultTeams);
+  const topTeam = rankedTeams[0] ?? null;
+  const topTiedTeams = topTeam
+    ? rankedTeams.filter((team) => sameGameResultPosition(team, topTeam))
+    : [];
+  const winnerTeamId = topTiedTeams.length === 1 ? topTiedTeams[0].teamId : null;
+
+  let previousTeam: GameTeamRecord | null = null;
+  let previousRank = 0;
+  const resultTeams = rankedTeams.map((team, index) => {
+    const rank =
+      previousTeam && sameGameResultPosition(team, previousTeam)
+        ? previousRank
+        : index + 1;
+    previousTeam = team;
+    previousRank = rank;
+
+    const outcome: GameResult["teams"][number]["outcome"] = winnerTeamId
+      ? team.teamId === winnerTeamId
+        ? "win"
+        : "loss"
+      : topTeam && sameGameResultPosition(team, topTeam)
+        ? "draw"
+        : "loss";
+
+    return {
+      teamId: team.teamId,
+      name: team.name,
+      color: team.color,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank,
+      outcome,
+    };
+  });
+
+  return {
+    winnerTeamId,
+    outcome: winnerTeamId ? "win" : "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt,
+    teams: resultTeams,
+  };
+}
+
+function isCompleteGameResult(result: GameResult | null): result is GameResult {
+  const resultTeams = result?.teams ?? [];
+  const resultTeamIds = new Set(resultTeams.map((team) => team.teamId));
+  return (
+    resultTeams.length === TEAM_IDS.length &&
+    TEAM_IDS.every((teamId) => resultTeamIds.has(teamId))
+  );
 }
 
 function compareGoalEvents(
@@ -505,12 +779,37 @@ function isConditionalWriteFailure(error: unknown): boolean {
     return false;
   }
 
-  const cancellationReasons = awsError.CancellationReasons ?? awsError.cancellationReasons ?? [];
-  return cancellationReasons.some(
-    (reason) =>
-      reason.Code === "ConditionalCheckFailed" ||
-      reason.Code === "ConditionalCheckFailedException",
-  );
+  const reasons = transactionCancellationReasons(error);
+  let hasConditionalFailure = false;
+  for (const reason of reasons) {
+    if (!reason.Code || reason.Code === "None") {
+      continue;
+    }
+    if (isConditionalCancellationCode(reason.Code)) {
+      hasConditionalFailure = true;
+      continue;
+    }
+    return false;
+  }
+
+  return hasConditionalFailure;
+}
+
+function transactionCancellationReasons(error: unknown): Array<{ Code?: string }> {
+  const awsError = error as {
+    CancellationReasons?: Array<{ Code?: string }>;
+    cancellationReasons?: Array<{ Code?: string }>;
+  };
+  return awsError.CancellationReasons ?? awsError.cancellationReasons ?? [];
+}
+
+function isConditionalCancellationCode(code: string | undefined): boolean {
+  return code === "ConditionalCheckFailed" || code === "ConditionalCheckFailedException";
+}
+
+function transactionCancellationCode(error: unknown, index: number): string | null {
+  const reason = transactionCancellationReasons(error)[index];
+  return typeof reason?.Code === "string" ? reason.Code : null;
 }
 
 function readString(value: AttributeValue | undefined, field: string): string {
@@ -720,6 +1019,17 @@ export class ThreeFcRepository {
     requireNonEmpty("name", input.name);
 
     const now = this.clock.now();
+    const existing = await this.getEntity(seasonPk(input.seasonId), teamSk(input.teamId), {
+      consistentRead: input.createOnly,
+    });
+    const existingTeam = existing?.entityType === ENTITY_TYPE.team ? existing : null;
+    const existingPayload = existingTeam
+      ? (existingTeam.data as Omit<TeamRecord, "createdAt" | "updatedAt">)
+      : null;
+    if (input.createOnly && existingTeam && existingPayload) {
+      return withTimestamps(existingPayload, existingTeam.createdAt, existingTeam.updatedAt);
+    }
+
     const payload = {
       seasonId: input.seasonId,
       teamId: input.teamId,
@@ -727,13 +1037,57 @@ export class ThreeFcRepository {
       color: input.color ?? null,
     };
 
+    if (input.createOnly) {
+      try {
+        await this.client.send(
+          new PutItemCommand({
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              seasonPk(input.seasonId),
+              teamSk(input.teamId),
+              ENTITY_TYPE.team,
+              payload,
+              now,
+              now,
+            ),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          const concurrent = await this.getEntity(seasonPk(input.seasonId), teamSk(input.teamId), {
+            consistentRead: true,
+          });
+          if (concurrent?.entityType === ENTITY_TYPE.team) {
+            return withTimestamps(
+              concurrent.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
+              concurrent.createdAt,
+              concurrent.updatedAt,
+            );
+          }
+
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
+          );
+        }
+
+        throw error;
+      }
+
+      return withTimestamps(payload, now, now);
+    }
+
     await this.putEntity(seasonPk(input.seasonId), teamSk(input.teamId), ENTITY_TYPE.team, payload, now);
     return withTimestamps(payload, now, now);
   }
 
-  async listTeamsForSeason(seasonId: string): Promise<TeamRecord[]> {
+  async listTeamsForSeason(
+    seasonId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<TeamRecord[]> {
     requireNonEmpty("seasonId", seasonId);
-    const items = await this.queryByPrefix(seasonPk(seasonId), "TEAM#");
+    const items = await this.queryByPrefix(seasonPk(seasonId), "TEAM#", options);
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.team)
@@ -750,9 +1104,22 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("name", input.name);
 
+    const { item: gameItem, game } = await this.readGameForMutation({
+      gameId: input.gameId,
+      allowFinished: input.allowFinished,
+      finishedMessage: `Game ${input.gameId} is finished. Team overrides are locked after finish.`,
+      changedMessage: `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+    });
     const now = this.clock.now();
-    const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId));
-    const existingPayload = existing ? normalizeGameTeamPayload(existing.data) : null;
+    const existing = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId), {
+      consistentRead: input.createOnly,
+    });
+    const existingTeam = existing?.entityType === ENTITY_TYPE.gameTeam ? existing : null;
+    const existingPayload = existingTeam ? normalizeGameTeamPayload(existingTeam.data) : null;
+    if (input.createOnly && existingTeam && existingPayload) {
+      return withTimestamps(existingPayload, existingTeam.createdAt, existingTeam.updatedAt);
+    }
+
     const payload = {
       gameId: input.gameId,
       teamId: input.teamId,
@@ -762,20 +1129,163 @@ export class ThreeFcRepository {
       conceded: existingPayload?.conceded ?? 0,
     };
 
-    await this.putEntityWithTimestamps(
-      gamePk(input.gameId),
-      teamSk(input.teamId),
-      ENTITY_TYPE.gameTeam,
-      payload,
-      existing?.createdAt ?? now,
-      now,
-    );
-    return withTimestamps(payload, existing?.createdAt ?? now, now);
+    if (game.status === "finished") {
+      const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
+        consistentRead: true,
+      });
+      const originalTeamState = teamStatesById.get(input.teamId);
+      if (!originalTeamState && !input.createOnly) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+        );
+      }
+
+      const nextTeams = sortGameTeams(
+        originalTeamState
+          ? teams.map((team) =>
+              team.teamId === input.teamId
+                ? {
+                    ...team,
+                    name: payload.name,
+                    color: payload.color,
+                    updatedAt: now,
+                  }
+                : team,
+            )
+          : [
+              ...teams,
+              {
+                ...payload,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+      );
+      const hasAllResultTeams = TEAM_IDS.every((teamId) =>
+        nextTeams.some((team) => team.teamId === teamId),
+      );
+      const updatedGame = {
+        ...game,
+        finishedAt: hasAllResultTeams ? game.finishedAt ?? now : game.finishedAt,
+        result: hasAllResultTeams ? buildGameResult(nextTeams, now) : null,
+      };
+      const existingTeamPutItems = this.buildTeamPutTransactionItems(
+        nextTeams.filter((team) => teamStatesById.has(team.teamId)),
+        teamStatesById,
+        now,
+      );
+      const missingTeamPutItems = originalTeamState
+        ? []
+        : [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  teamSk(input.teamId),
+                  ENTITY_TYPE.gameTeam,
+                  payload,
+                  now,
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+          ];
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              this.buildGamePutTransactionItem({
+                game: updatedGame,
+                stored: gameItem,
+                now,
+              }),
+              ...existingTeamPutItems,
+              ...missingTeamPutItems,
+            ],
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+          );
+        }
+
+        throw error;
+      }
+
+      const updatedTeam = nextTeams.find((team) => team.teamId === input.teamId);
+      if (!updatedTeam) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+        );
+      }
+
+      return updatedTeam;
+    }
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGameConditionCheck(input.gameId, gameItem),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  teamSk(input.teamId),
+                  ENTITY_TYPE.gameTeam,
+                  payload,
+                  existingTeam?.createdAt ?? now,
+                  now,
+                ),
+                ...(input.createOnly
+                  ? { ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" }
+                  : {}),
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        if (input.createOnly) {
+          const concurrent = await this.getEntity(gamePk(input.gameId), teamSk(input.teamId), {
+            consistentRead: true,
+          });
+          if (concurrent?.entityType === ENTITY_TYPE.gameTeam) {
+            return withTimestamps(
+              normalizeGameTeamPayload(concurrent.data),
+              concurrent.createdAt,
+              concurrent.updatedAt,
+            );
+          }
+        }
+
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the team override could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+    return withTimestamps(payload, existingTeam?.createdAt ?? now, now);
   }
 
-  async listTeamsForGame(gameId: string): Promise<GameTeamRecord[]> {
+  async listTeamsForGame(
+    gameId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<GameTeamRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "TEAM#");
+    const items = await this.queryByPrefix(gamePk(gameId), "TEAM#", options);
 
     const teams = items
       .filter((item) => item.entityType === ENTITY_TYPE.gameTeam)
@@ -850,31 +1360,350 @@ export class ThreeFcRepository {
     requireNonEmpty("sessionId", input.sessionId);
     requireNonEmpty("gameStartTs", input.gameStartTs);
 
-    const now = this.clock.now();
-    const payload = {
-      gameId: input.gameId,
-      leagueId: input.leagueId,
-      seasonId: input.seasonId,
-      sessionId: input.sessionId,
-      status: input.status ?? "scheduled",
-      gameStartTs: input.gameStartTs,
-      thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
-      thirds: createDefaultThirdTimerSegments(),
-    };
+    if (input.status === "finished") {
+      throw new GameTimerTransitionError(
+        "invalid_status_transition",
+        "Games cannot be created directly as finished. Finish a completed live game instead.",
+      );
+    }
 
-    await this.putEntity(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now);
-    return withTimestamps(payload, now, now);
+    const now = this.clock.now();
+    const customJoinCode = input.joinCode?.trim()
+      ? normalizeCustomJoinCode(input.joinCode)
+      : null;
+
+    for (let attempt = 0; attempt < (customJoinCode ? 1 : JOIN_CODE_GENERATION_ATTEMPTS); attempt += 1) {
+      const joinCode = customJoinCode ?? generateJoinCode();
+      const createRequestHash = input.createRequestHash?.trim() || null;
+      const payload = {
+        gameId: input.gameId,
+        joinCode,
+        ...(createRequestHash ? { createRequestHash } : {}),
+        leagueId: input.leagueId,
+        seasonId: input.seasonId,
+        sessionId: input.sessionId,
+        status: input.status ?? "scheduled",
+        gameStartTs: input.gameStartTs,
+        thirdLengthMinutes: input.thirdLengthMinutes ?? DEFAULT_THIRD_LENGTH_MINUTES,
+        thirds: createDefaultThirdTimerSegments(),
+        finishedAt: null,
+        result: null,
+      };
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now),
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                },
+              },
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(
+                    joinCodePk(joinCode),
+                    metadataSk(),
+                    ENTITY_TYPE.gameJoinCode,
+                    {
+                      joinCode,
+                      gameId: input.gameId,
+                    },
+                    now,
+                  ),
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                },
+              },
+            ],
+          }),
+        );
+        return withTimestamps(payload, now, now);
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          const gameCancellationCode = transactionCancellationCode(error, 0);
+          const joinCodeCancellationCode = transactionCancellationCode(error, 1);
+          if (isConditionalCancellationCode(gameCancellationCode ?? undefined)) {
+            throw new GameAlreadyExistsError(input.gameId);
+          }
+          if (isConditionalCancellationCode(joinCodeCancellationCode ?? undefined)) {
+            if (customJoinCode) {
+              throw new GameJoinCodeCollisionError();
+            }
+            continue;
+          }
+
+          const [existingGameItem, existingJoinCodeItem] = await Promise.all([
+            this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
+            this.getEntity(joinCodePk(joinCode), metadataSk(), { consistentRead: true }),
+          ]);
+          if (existingGameItem?.entityType === ENTITY_TYPE.game) {
+            throw new GameAlreadyExistsError(input.gameId);
+          }
+          if (existingJoinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+            if (customJoinCode) {
+              throw new GameJoinCodeCollisionError();
+            }
+            continue;
+          }
+        }
+
+        throw error;
+      }
+    }
+
+    throw new GameJoinCodeCollisionError();
   }
 
-  async getGame(gameId: string): Promise<GameRecord | null> {
+  async getGame(
+    gameId: string,
+    options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {},
+  ): Promise<GameRecord | null> {
     requireNonEmpty("gameId", gameId);
-    const item = await this.getEntity(gamePk(gameId), metadataSk());
+    const item = await this.getEntity(gamePk(gameId), metadataSk(), options);
 
     if (!item || item.entityType !== ENTITY_TYPE.game) {
       return null;
     }
 
-    return withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
+    const game = withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
+    if (options.repairLegacyJoinCode) {
+      return this.repairLegacyGameJoinCode(item);
+    }
+
+    return game;
+  }
+
+  async getGameByJoinCode(joinCode: string): Promise<GameRecord | null> {
+    const normalizedJoinCode = normalizeJoinCode(joinCode);
+    requireNonEmpty("joinCode", normalizedJoinCode);
+
+    const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk(), {
+      consistentRead: true,
+    });
+    if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+      const joinCodeRecord = withTimestamps(
+        joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
+        joinCodeItem.createdAt,
+        joinCodeItem.updatedAt,
+      );
+      const gameItem = await this.getEntity(gamePk(joinCodeRecord.gameId), metadataSk(), {
+        consistentRead: true,
+      });
+      if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+        return null;
+      }
+
+      const game = withTimestamps(
+        normalizeGamePayload(gameItem.data),
+        gameItem.createdAt,
+        gameItem.updatedAt,
+      );
+
+      if (game && normalizeJoinCode(game.joinCode) === normalizedJoinCode) {
+        return game;
+      }
+    }
+
+    return null;
+  }
+
+  async joinGameByCode(input: JoinGameByCodeInput): Promise<JoinGameByCodeResult | null> {
+    const normalizedJoinCode = normalizeJoinCode(input.joinCode);
+    requireNonEmpty("joinCode", normalizedJoinCode);
+    requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("nickname", input.nickname);
+
+    const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk(), {
+      consistentRead: true,
+    });
+    if (!joinCodeItem || joinCodeItem.entityType !== ENTITY_TYPE.gameJoinCode) {
+      return null;
+    }
+
+    const joinCodeRecord = withTimestamps(
+      joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
+      joinCodeItem.createdAt,
+      joinCodeItem.updatedAt,
+    );
+    const gameItem = await this.getEntity(gamePk(joinCodeRecord.gameId), metadataSk(), {
+      consistentRead: true,
+    });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const game = withTimestamps(
+      normalizeGamePayload(gameItem.data),
+      gameItem.createdAt,
+      gameItem.updatedAt,
+    );
+    if (normalizeJoinCode(game.joinCode) !== normalizedJoinCode) {
+      return null;
+    }
+
+    const existingReplay = await this.readExistingJoinRegistration({
+      game,
+      playerId: input.playerId,
+      nickname: input.nickname,
+    });
+    if (existingReplay) {
+      return existingReplay;
+    }
+
+    if (game.status === "finished") {
+      throw new GameJoinRegistrationError(
+        "game_finished",
+        409,
+        `Game ${game.gameId} is finished. Join registration is closed.`,
+      );
+    }
+
+    const now = this.clock.now();
+    const playerPayload = {
+      playerId: input.playerId,
+      nickname: input.nickname,
+      claimedByUserId: null,
+    };
+    const linkPayload = {
+      gameId: game.gameId,
+      playerId: input.playerId,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: joinCodePk(normalizedJoinCode) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedJoinCodeUpdatedAt": { S: joinCodeItem.updatedAt },
+                  ":expectedJoinCodeData": { S: joinCodeItem.rawData },
+                },
+              },
+            },
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: {
+                  pk: { S: gamePk(game.gameId) },
+                  sk: { S: metadataSk() },
+                },
+                ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedGameUpdatedAt": { S: game.updatedAt },
+                  ":expectedGameData": { S: gameItem.rawData },
+                },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, playerPayload, now),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  gamePk(game.gameId),
+                  gamePlayerSk(input.playerId),
+                  ENTITY_TYPE.gamePlayer,
+                  linkPayload,
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        const replayedJoin = await this.readExistingJoinRegistration({
+          game,
+          playerId: input.playerId,
+          nickname: input.nickname,
+        });
+        if (replayedJoin) {
+          return replayedJoin;
+        }
+
+        throw new GameJoinRegistrationError(
+          "join_state_changed",
+          409,
+          "Game join state changed while registering this player. Reload and try again.",
+        );
+      }
+
+      throw error;
+    }
+
+    return {
+      game,
+      player: withTimestamps(playerPayload, now, now),
+      link: withTimestamps(linkPayload, now, now),
+    };
+  }
+
+  private async readExistingJoinRegistration(input: {
+    game: GameRecord;
+    playerId: string;
+    nickname: string;
+  }): Promise<JoinGameByCodeResult | null> {
+    const [playerItem, linkItem] = await Promise.all([
+      this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
+      this.getEntity(gamePk(input.game.gameId), gamePlayerSk(input.playerId), {
+        consistentRead: true,
+      }),
+    ]);
+    if (playerItem?.entityType !== ENTITY_TYPE.player || linkItem?.entityType !== ENTITY_TYPE.gamePlayer) {
+      return null;
+    }
+
+    const player = withTimestamps(
+      playerItem.data as Omit<PlayerRecord, "createdAt" | "updatedAt">,
+      playerItem.createdAt,
+      playerItem.updatedAt,
+    );
+    const link = withTimestamps(
+      linkItem.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">,
+      linkItem.createdAt,
+      linkItem.updatedAt,
+    );
+
+    if (
+      player.playerId !== input.playerId ||
+      player.nickname !== input.nickname ||
+      player.claimedByUserId !== null ||
+      link.gameId !== input.game.gameId ||
+      link.playerId !== input.playerId
+    ) {
+      return null;
+    }
+
+    return {
+      game: input.game,
+      player,
+      link,
+    };
   }
 
   async createSessionGame(input: CreateSessionGameInput): Promise<SessionGameRecord> {
@@ -961,7 +1790,7 @@ export class ThreeFcRepository {
       throw new Error("At least one game field must be updated.");
     }
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -970,6 +1799,24 @@ export class ThreeFcRepository {
     const nextGameStartTs = input.gameStartTs ?? existing.gameStartTs;
     const nextStatus = input.status ?? existing.status;
     const nextThirdLengthMinutes = input.thirdLengthMinutes ?? existing.thirdLengthMinutes;
+
+    if (input.status === "finished" && existing.status !== "finished") {
+      throw new GameTimerTransitionError(
+        "use_finish_endpoint",
+        "Use POST /v1/games/{gameId}/finish to finish a game.",
+      );
+    }
+
+    if (
+      existing.status === "finished" &&
+      input.status !== undefined &&
+      input.status !== "finished"
+    ) {
+      throw new GameTimerTransitionError(
+        "game_finished",
+        "Finished games cannot be moved back to scheduled or live.",
+      );
+    }
 
     if (
       input.thirdLengthMinutes !== undefined &&
@@ -1061,7 +1908,7 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireThirdNumber(input.third);
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -1138,7 +1985,7 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireThirdNumber(input.third);
 
-    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
     }
@@ -1201,21 +2048,213 @@ export class ThreeFcRepository {
     return withTimestamps(updatedPayload, gameItem.createdAt, now);
   }
 
+  async finishGame(input: FinishGameInput): Promise<GameRecord | null> {
+    requireNonEmpty("gameId", input.gameId);
+
+    const gameItem = await this.readMutableGameEntity(input.gameId);
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const existing = normalizeGamePayload(gameItem.data);
+    if (existing.status === "finished" && existing.finishedAt && isCompleteGameResult(existing.result)) {
+      return withTimestamps(existing, gameItem.createdAt, gameItem.updatedAt);
+    }
+
+    if (existing.status === "finished") {
+      const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
+        consistentRead: true,
+      });
+      const missingTeams = TEAM_IDS.filter((teamId) => !teamStatesById.has(teamId));
+      if (missingTeams.length > 0) {
+        throw new GameTimerTransitionError(
+          "teams_not_ready",
+          "All three game teams must exist before finishing the game.",
+        );
+      }
+
+      const now = this.clock.now();
+      const repairedGame = {
+        ...existing,
+        finishedAt: existing.finishedAt ?? now,
+        result: isCompleteGameResult(existing.result) ? existing.result : buildGameResult(teams, now),
+      };
+
+      const repairApplied = await this.putEntityWithTimestampsIfUnchanged(
+        gamePk(existing.gameId),
+        metadataSk(),
+        ENTITY_TYPE.game,
+        repairedGame,
+        gameItem.createdAt,
+        now,
+        {
+          updatedAt: gameItem.updatedAt,
+          rawData: gameItem.rawData,
+        },
+      );
+      if (!repairApplied) {
+        throw new GameTimerTransitionError(
+          "game_state_changed",
+          "Game changed while finishing. Reload the game and try again.",
+        );
+      }
+
+      return withTimestamps(repairedGame, gameItem.createdAt, now);
+    }
+
+    const runningThird = existing.thirds.find((third) => third.startedAt && !third.finishedAt);
+    if (runningThird) {
+      throw new GameTimerTransitionError(
+        "third_running",
+        `Third ${runningThird.third} must be finished before the game can be finished.`,
+      );
+    }
+
+    if (!areAllThirdsCompleted(existing)) {
+      throw new GameTimerTransitionError(
+        "thirds_incomplete",
+        "All three thirds must be started and finished before the game can be finished.",
+      );
+    }
+
+    const { teams, teamStatesById } = await this.readGoalTeamStates(input.gameId, {
+      consistentRead: true,
+    });
+    const missingTeams = TEAM_IDS.filter((teamId) => !teamStatesById.has(teamId));
+    if (missingTeams.length > 0) {
+      throw new GameTimerTransitionError(
+        "teams_not_ready",
+        "All three game teams must exist before finishing the game.",
+      );
+    }
+
+    const now = this.clock.now();
+    const result = buildGameResult(teams, now);
+    const updatedPayload = {
+      ...existing,
+      status: "finished" as const,
+      finishedAt: existing.finishedAt ?? now,
+      result,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGamePutTransactionItem({
+              game: updatedPayload,
+              stored: gameItem,
+              now,
+            }),
+            ...this.buildTeamConditionChecks(teams, teamStatesById),
+          ],
+        }),
+      );
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) {
+        throw error;
+      }
+
+      throw new GameTimerTransitionError(
+        "game_state_changed",
+        "Game or scoreboard state changed while finishing this game. Reload and try again.",
+      );
+    }
+
+    return withTimestamps(updatedPayload, gameItem.createdAt, now);
+  }
+
   async deleteGame(gameId: string): Promise<boolean> {
     requireNonEmpty("gameId", gameId);
 
-    const gameItem = await this.getEntity(gamePk(gameId), metadataSk());
+    const gameItem = await this.readMutableGameEntity(gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return false;
     }
 
     const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished") {
+      return false;
+    }
 
-    await this.deleteEntity(gamePk(gameId), metadataSk());
-    await this.deleteEntity(
-      gameSessionIndexPk(game.sessionId),
-      gameSessionIndexSk(game.gameStartTs, game.gameId),
-    );
+    const joinCodeItem = await this.getEntity(joinCodePk(game.joinCode), metadataSk(), {
+      consistentRead: true,
+    });
+    const joinCodeRecord =
+      joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode
+        ? withTimestamps(
+            joinCodeItem.data as Omit<GameJoinCodeRecord, "createdAt" | "updatedAt">,
+            joinCodeItem.createdAt,
+            joinCodeItem.updatedAt,
+          )
+        : null;
+    const deletesJoinCodeLookup =
+      joinCodeItem !== null &&
+      joinCodeRecord?.gameId === gameId &&
+      normalizeJoinCode(joinCodeRecord.joinCode) === normalizeJoinCode(game.joinCode);
+    const transactionItems: TransactWriteItem[] = [
+      {
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gamePk(gameId) },
+            sk: { S: metadataSk() },
+          },
+          ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedGameUpdatedAt": { S: gameItem.updatedAt },
+            ":expectedGameData": { S: gameItem.rawData },
+          },
+        },
+      },
+      {
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gameSessionIndexPk(game.sessionId) },
+            sk: { S: gameSessionIndexSk(game.gameStartTs, game.gameId) },
+          },
+        },
+      },
+    ];
+    if (deletesJoinCodeLookup && joinCodeItem) {
+      transactionItems.push({
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: joinCodePk(game.joinCode) },
+            sk: { S: metadataSk() },
+          },
+          ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedJoinCodeUpdatedAt": { S: joinCodeItem.updatedAt },
+            ":expectedJoinCodeData": { S: joinCodeItem.rawData },
+          },
+        },
+      });
+    }
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: transactionItems,
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        return false;
+      }
+
+      throw error;
+    }
 
     const remainingGames = await this.listGamesForSession(game.sessionId);
     if (remainingGames.length === 0) {
@@ -1291,6 +2330,107 @@ export class ThreeFcRepository {
     return withTimestamps(item.data as Omit<PlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
   }
 
+  async claimPlayer(input: ClaimPlayerInput): Promise<PlayerRecord | null> {
+    requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("userId", input.userId);
+
+    const playerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
+      consistentRead: true,
+    });
+    if (!playerItem || playerItem.entityType !== ENTITY_TYPE.player) {
+      return null;
+    }
+
+    const player = withTimestamps(
+      playerItem.data as Omit<PlayerRecord, "createdAt" | "updatedAt">,
+      playerItem.createdAt,
+      playerItem.updatedAt,
+    );
+    if (player.claimedByUserId === input.userId) {
+      return player;
+    }
+    if (player.claimedByUserId !== null) {
+      throw new PlayerClaimError(
+        "player_already_claimed",
+        409,
+        `Player ${input.playerId} has already been claimed.`,
+      );
+    }
+
+    const now = this.clock.now();
+    const payload = {
+      playerId: player.playerId,
+      nickname: player.nickname,
+      claimedByUserId: input.userId,
+    };
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  playerPk(input.playerId),
+                  profileSk(),
+                  ENTITY_TYPE.player,
+                  payload,
+                  player.createdAt,
+                  now,
+                ),
+                ConditionExpression: "#updatedAt = :expectedPlayerUpdatedAt AND #data = :expectedPlayerData",
+                ExpressionAttributeNames: {
+                  "#updatedAt": "updatedAt",
+                  "#data": "data",
+                },
+                ExpressionAttributeValues: {
+                  ":expectedPlayerUpdatedAt": { S: playerItem.updatedAt },
+                  ":expectedPlayerData": { S: playerItem.rawData },
+                },
+              },
+            },
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  userPk(input.userId),
+                  playerClaimSk(input.playerId),
+                  ENTITY_TYPE.playerClaim,
+                  {
+                    userId: input.userId,
+                    playerId: input.playerId,
+                  },
+                  now,
+                ),
+                ConditionExpression: "attribute_not_exists(pk)",
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        const latest = await this.getPlayer(input.playerId);
+        if (latest?.claimedByUserId === input.userId) {
+          return latest;
+        }
+
+        throw new PlayerClaimError(
+          latest?.claimedByUserId ? "player_already_claimed" : "claim_state_changed",
+          409,
+          latest?.claimedByUserId
+            ? `Player ${input.playerId} has already been claimed.`
+            : `Player ${input.playerId} changed before it could be claimed. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+
+    return withTimestamps(payload, player.createdAt, now);
+  }
+
   async listPlayers(input: ListPlayersInput = {}): Promise<PlayerRecord[]> {
     const rawSearch = input.search?.trim().toLowerCase() ?? "";
     const limit = Math.max(1, Math.min(input.limit ?? 20, 50));
@@ -1320,6 +2460,12 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("playerId", input.playerId);
 
+    const { item: gameItem } = await this.readGameForMutation({
+      gameId: input.gameId,
+      allowFinished: input.allowFinished,
+      finishedMessage: `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      changedMessage: `Game ${input.gameId} changed before the player link could be saved. Reload and try again.`,
+    });
     const now = this.clock.now();
     const existing = await this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId));
     const payload = {
@@ -1327,16 +2473,134 @@ export class ThreeFcRepository {
       playerId: input.playerId,
     };
 
-    await this.putEntityWithTimestamps(
-      gamePk(input.gameId),
-      gamePlayerSk(input.playerId),
-      ENTITY_TYPE.gamePlayer,
-      payload,
-      existing?.createdAt ?? now,
-      now,
-    );
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildGameConditionCheck(input.gameId, gameItem),
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItemWithTimestamps(
+                  gamePk(input.gameId),
+                  gamePlayerSk(input.playerId),
+                  ENTITY_TYPE.gamePlayer,
+                  payload,
+                  existing?.createdAt ?? now,
+                  now,
+                ),
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the player link could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
 
     return withTimestamps(payload, existing?.createdAt ?? now, now);
+  }
+
+  async createAndLinkGamePlayer(input: CreateAndLinkGamePlayerInput): Promise<PlayerRecord> {
+    requireNonEmpty("gameId", input.gameId);
+    requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("nickname", input.nickname);
+
+    const { item: gameItem } = await this.readGameForMutation({
+      gameId: input.gameId,
+      allowFinished: input.allowFinished,
+      finishedMessage: `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      changedMessage: `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
+    });
+    const now = this.clock.now();
+    const existingPlayerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
+      consistentRead: true,
+    });
+    const existingPlayer =
+      existingPlayerItem?.entityType === ENTITY_TYPE.player
+        ? withTimestamps(
+            existingPlayerItem.data as Omit<PlayerRecord, "createdAt" | "updatedAt">,
+            existingPlayerItem.createdAt,
+            existingPlayerItem.updatedAt,
+          )
+        : null;
+    const playerPayload = existingPlayer
+      ? {
+          playerId: existingPlayer.playerId,
+          nickname: existingPlayer.nickname,
+          claimedByUserId: existingPlayer.claimedByUserId,
+        }
+      : {
+          playerId: input.playerId,
+          nickname: input.nickname,
+          claimedByUserId: input.claimedByUserId ?? null,
+        };
+    const existingGamePlayer = await this.getEntity(
+      gamePk(input.gameId),
+      gamePlayerSk(input.playerId),
+      { consistentRead: true },
+    );
+    const linkPayload = {
+      gameId: input.gameId,
+      playerId: input.playerId,
+    };
+
+    try {
+      const transactionItems: TransactWriteItem[] = [
+        this.buildGameConditionCheck(input.gameId, gameItem),
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              gamePk(input.gameId),
+              gamePlayerSk(input.playerId),
+              ENTITY_TYPE.gamePlayer,
+              linkPayload,
+              existingGamePlayer?.createdAt ?? now,
+              now,
+            ),
+          },
+        },
+      ];
+
+      if (!existingPlayer) {
+        transactionItems.splice(1, 0, {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, playerPayload, now),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          },
+        });
+      }
+
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: transactionItems,
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+
+    return withTimestamps(
+      playerPayload,
+      existingPlayer?.createdAt ?? now,
+      existingPlayer?.updatedAt ?? now,
+    );
   }
 
   async listGamePlayers(gameId: string): Promise<GamePlayerRecord[]> {
@@ -1357,18 +2621,74 @@ export class ThreeFcRepository {
   async grantLeagueAccess(input: GrantLeagueAccessInput): Promise<LeagueAclRecord> {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("userId", input.userId);
+    requireLeagueRole(input.role);
     requireNonEmpty("grantedByUserId", input.grantedByUserId);
 
-    const now = this.clock.now();
-    const payload = {
-      leagueId: input.leagueId,
-      userId: input.userId,
-      role: input.role,
-      grantedByUserId: input.grantedByUserId,
-    };
+    const pk = leaguePk(input.leagueId);
+    const sk = aclSk(input.userId);
 
-    await this.putEntity(leaguePk(input.leagueId), aclSk(input.userId), ENTITY_TYPE.acl, payload, now);
-    return withTimestamps(payload, now, now);
+    for (;;) {
+      const existingItem = await this.getEntity(pk, sk, { consistentRead: true });
+      const existing =
+        existingItem?.entityType === ENTITY_TYPE.acl
+          ? withTimestamps(
+              existingItem.data as Omit<LeagueAclRecord, "createdAt" | "updatedAt">,
+              existingItem.createdAt,
+              existingItem.updatedAt,
+            )
+          : null;
+
+      const role = existing ? higherLeagueRole(existing.role, input.role) : input.role;
+      if (existing && role === existing.role) {
+        return existing;
+      }
+
+      const now = this.clock.now();
+      const payload = {
+        leagueId: input.leagueId,
+        userId: input.userId,
+        role,
+        grantedByUserId: input.grantedByUserId,
+      };
+
+      try {
+        await this.client.send(
+          new PutItemCommand({
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              pk,
+              sk,
+              ENTITY_TYPE.acl,
+              payload,
+              existing?.createdAt ?? now,
+              now,
+            ),
+            ...(existingItem
+              ? {
+                  ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+                  ExpressionAttributeNames: {
+                    "#updatedAt": "updatedAt",
+                    "#data": "data",
+                  },
+                  ExpressionAttributeValues: {
+                    ":expectedUpdatedAt": { S: existingItem.updatedAt },
+                    ":expectedData": { S: existingItem.rawData },
+                  },
+                }
+              : {
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                }),
+          }),
+        );
+        return withTimestamps(payload, existing?.createdAt ?? now, now);
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
   }
 
   async listLeagueAccess(leagueId: string): Promise<LeagueAclRecord[]> {
@@ -1406,6 +2726,22 @@ export class ThreeFcRepository {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("playerId", input.playerId);
 
+    const gameItem = await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      throw new GameMutationStateError(
+        "game_state_changed",
+        `Game ${input.gameId} changed before the roster assignment could be saved. Reload and try again.`,
+      );
+    }
+
+    const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GameMutationStateError(
+        "game_finished",
+        `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      );
+    }
+
     const existingAssignments = await this.listGameRoster(input.gameId);
     const currentAssignmentsForPlayer = existingAssignments.filter(
       (assignment) => assignment.playerId === input.playerId,
@@ -1423,23 +2759,70 @@ export class ThreeFcRepository {
       teamId: input.teamId,
       playerId: input.playerId,
     };
-
-    await Promise.all(
-      currentAssignmentsForPlayer.map((assignment) =>
-        this.deleteEntity(gamePk(input.gameId), rosterSk(assignment.teamId, assignment.playerId)),
-      ),
+    const existingGamePlayer = await this.getEntity(
+      gamePk(input.gameId),
+      gamePlayerSk(input.playerId),
+      { consistentRead: true },
     );
-    await this.linkGamePlayer({
+    const linkPayload = {
       gameId: input.gameId,
       playerId: input.playerId,
-    });
-    await this.putEntity(
-      gamePk(input.gameId),
-      rosterSk(input.teamId, input.playerId),
-      ENTITY_TYPE.roster,
-      payload,
-      now,
-    );
+    };
+    const transactionItems: TransactWriteItem[] = [
+      this.buildGameConditionCheck(input.gameId, gameItem),
+      ...currentAssignmentsForPlayer.map((assignment) => ({
+        Delete: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gamePk(input.gameId) },
+            sk: { S: rosterSk(assignment.teamId, assignment.playerId) },
+          },
+        },
+      })),
+      {
+        Put: {
+          TableName: this.tableName,
+          Item: buildItemWithTimestamps(
+            gamePk(input.gameId),
+            gamePlayerSk(input.playerId),
+            ENTITY_TYPE.gamePlayer,
+            linkPayload,
+            existingGamePlayer?.createdAt ?? now,
+            now,
+          ),
+        },
+      },
+      {
+        Put: {
+          TableName: this.tableName,
+          Item: buildItem(
+            gamePk(input.gameId),
+            rosterSk(input.teamId, input.playerId),
+            ENTITY_TYPE.roster,
+            payload,
+            now,
+          ),
+        },
+      },
+    ];
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: transactionItems,
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the roster assignment could be saved. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
+
     return withTimestamps(payload, now, now);
   }
 
@@ -1495,6 +2878,7 @@ export class ThreeFcRepository {
     teams: GameTeamRecord[],
     roster: RosterAssignmentRecord[],
     errorKind: GoalRuleErrorKind,
+    previousGoal?: GoalEventRecord,
   ): void {
     requireGoalTeamId(input.concedingTeamId, "concedingTeamId", errorKind);
     if (input.scoringTeamId !== null) {
@@ -1562,7 +2946,14 @@ export class ThreeFcRepository {
 
     const rosterByPlayerId = new Map(roster.map((assignment) => [assignment.playerId, assignment]));
     const scorerRoster = rosterByPlayerId.get(input.scorerPlayerId);
-    if (!scorerRoster) {
+    const preservesOriginalScorerContext =
+      errorKind === "correction" &&
+      previousGoal !== undefined &&
+      input.scorerPlayerId === previousGoal.scorerPlayerId &&
+      input.ownGoal === previousGoal.ownGoal &&
+      input.scoringTeamId === previousGoal.scoringTeamId &&
+      input.concedingTeamId === previousGoal.concedingTeamId;
+    if (!scorerRoster && !preservesOriginalScorerContext) {
       throw goalRuleError(
         errorKind,
         "scorer_not_rostered",
@@ -1571,7 +2962,12 @@ export class ThreeFcRepository {
       );
     }
 
-    if (!input.ownGoal && scorerRoster.teamId !== input.scoringTeamId) {
+    if (
+      scorerRoster &&
+      !preservesOriginalScorerContext &&
+      !input.ownGoal &&
+      scorerRoster.teamId !== input.scoringTeamId
+    ) {
       throw goalRuleError(
         errorKind,
         "scorer_not_on_scoring_team",
@@ -1580,7 +2976,12 @@ export class ThreeFcRepository {
       );
     }
 
-    if (input.ownGoal && scorerRoster.teamId !== input.concedingTeamId) {
+    if (
+      scorerRoster &&
+      !preservesOriginalScorerContext &&
+      input.ownGoal &&
+      scorerRoster.teamId !== input.concedingTeamId
+    ) {
       throw goalRuleError(
         errorKind,
         "scorer_not_on_conceding_team",
@@ -1752,6 +3153,128 @@ export class ThreeFcRepository {
         },
       },
     };
+  }
+
+  private buildGamePutTransactionItem(input: {
+    game: Omit<GameRecord, "createdAt" | "updatedAt">;
+    stored: StoredEntity<unknown>;
+    now: string;
+  }) {
+    return {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItemWithTimestamps(
+          gamePk(input.game.gameId),
+          metadataSk(),
+          ENTITY_TYPE.game,
+          input.game,
+          input.stored.createdAt,
+          input.now,
+        ),
+        ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedGameUpdatedAt": { S: input.stored.updatedAt },
+          ":expectedGameData": { S: input.stored.rawData },
+        },
+      },
+    };
+  }
+
+  private buildGameConditionCheck(gameId: string, stored: StoredEntity<unknown>) {
+    return {
+      ConditionCheck: {
+        TableName: this.tableName,
+        Key: {
+          pk: { S: gamePk(gameId) },
+          sk: { S: metadataSk() },
+        },
+        ConditionExpression: "#updatedAt = :expectedGameUpdatedAt AND #data = :expectedGameData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedGameUpdatedAt": { S: stored.updatedAt },
+          ":expectedGameData": { S: stored.rawData },
+        },
+      },
+    };
+  }
+
+  private async readGameForMutation(input: {
+    gameId: string;
+    allowFinished?: boolean;
+    finishedMessage: string;
+    changedMessage: string;
+  }): Promise<{ item: StoredEntity<unknown>; game: Omit<GameRecord, "createdAt" | "updatedAt"> }> {
+    const gameItem = await this.readMutableGameEntity(input.gameId);
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      throw new GameMutationStateError("game_state_changed", input.changedMessage);
+    }
+
+    const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GameMutationStateError("game_finished", input.finishedMessage);
+    }
+
+    return { item: gameItem, game };
+  }
+
+  private async readMutableGameEntity(gameId: string): Promise<StoredEntity<unknown> | null> {
+    const gameItem = await this.getEntity(gamePk(gameId), metadataSk(), { consistentRead: true });
+    if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
+      return null;
+    }
+
+    const originalGame = normalizeGamePayload(gameItem.data);
+    const repairedGame = await this.repairLegacyGameJoinCode(gameItem);
+    if (
+      repairedGame.updatedAt === gameItem.updatedAt &&
+      normalizeJoinCode(repairedGame.joinCode) === normalizeJoinCode(originalGame.joinCode)
+    ) {
+      return gameItem;
+    }
+
+    const repairedItem = await this.getEntity(gamePk(gameId), metadataSk(), { consistentRead: true });
+    return repairedItem?.entityType === ENTITY_TYPE.game ? repairedItem : null;
+  }
+
+  private buildTeamConditionChecks(
+    teams: GameTeamRecord[],
+    originalTeamStatesById: Map<TeamId, { record: GameTeamRecord; rawData: string }>,
+  ) {
+    return teams.map((team) => {
+      const original = originalTeamStatesById.get(team.teamId);
+      if (!original) {
+        throw new GameTimerTransitionError(
+          "teams_not_ready",
+          "All three game teams must exist before finishing the game.",
+        );
+      }
+
+      return {
+        ConditionCheck: {
+          TableName: this.tableName,
+          Key: {
+            pk: { S: gamePk(team.gameId) },
+            sk: { S: teamSk(team.teamId) },
+          },
+          ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedUpdatedAt": { S: original.record.updatedAt },
+            ":expectedData": { S: original.rawData },
+          },
+        },
+      };
+    });
   }
 
   private buildGoalAuditRecord(input: {
@@ -1998,12 +3521,28 @@ export class ThreeFcRepository {
     }
 
     const game = normalizeGamePayload(gameItem.data);
+    const allowFinished = game.status === "finished" && input.allowFinished === true;
+    if (game.status === "finished" && !allowFinished) {
+      throw new GoalCreationError(
+        "game_finished",
+        409,
+        "Cannot create a goal after the game is finished.",
+      );
+    }
+
     const activeThird = game.thirds.find((third) => third.startedAt && !third.finishedAt);
-    if (!activeThird?.startedAt) {
+    const sortedThirds = [...game.thirds].sort((left, right) => left.third - right.third);
+    const finishedCorrectionThird = allowFinished
+      ? sortedThirds.filter((third) => third.finishedAt).at(-1) ?? sortedThirds.at(-1)
+      : null;
+    const goalThird = activeThird ?? finishedCorrectionThird;
+    if (!goalThird || (!activeThird?.startedAt && !allowFinished)) {
       throw new GoalCreationError(
         "no_active_third",
         409,
-        "A goal can only be created while a third is running.",
+        allowFinished
+          ? "A finished-game correction needs at least one configured third."
+          : "A goal can only be created while a third is running.",
       );
     }
 
@@ -2079,22 +3618,25 @@ export class ThreeFcRepository {
     }
 
     const now = this.clock.now();
-    const startedAtMs = Date.parse(activeThird.startedAt);
+    const startedAtMs = activeThird?.startedAt ? Date.parse(activeThird.startedAt) : NaN;
     const nowMs = Date.parse(now);
-    const elapsedSeconds =
-      Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
+    const elapsedSeconds = allowFinished
+      ? game.thirdLengthMinutes * 60
+      : Number.isFinite(startedAtMs) && Number.isFinite(nowMs)
         ? Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
         : 0;
     const display = formatThirdDisplayTime(elapsedSeconds, game.thirdLengthMinutes);
-    const thirdMinute = Math.min(
-      game.thirdLengthMinutes,
-      Math.floor(display.elapsedSeconds / 60) + 1,
-    );
-    const gameMinute = (activeThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
+    const thirdMinute = allowFinished
+      ? game.thirdLengthMinutes
+      : Math.min(
+          game.thirdLengthMinutes,
+          Math.floor(display.elapsedSeconds / 60) + 1,
+        );
+    const gameMinute = (goalThird.third - 1) * game.thirdLengthMinutes + thirdMinute;
     const payload = {
       gameId: input.gameId,
       eventId: input.eventId,
-      third: activeThird.third,
+      third: goalThird.third,
       thirdMinute,
       gameMinute,
       elapsedSeconds: display.elapsedSeconds,
@@ -2129,7 +3671,7 @@ export class ThreeFcRepository {
       const original = teamsById.get(team.teamId);
       return original ? team.scored !== original.scored || team.conceded !== original.conceded : false;
     });
-    const goalSortKey = goalSk(activeThird.third, gameMinute, display.elapsedSeconds, input.eventId);
+    const goalSortKey = goalSk(goalThird.third, gameMinute, display.elapsedSeconds, input.eventId);
     const goalEventIdKey = goalEventIdSk(input.eventId);
     const goal = withTimestamps(payload, now, now);
     const existingGoalState = await this.getGoalState(input.gameId, { consistentRead: true });
@@ -2142,11 +3684,28 @@ export class ThreeFcRepository {
       after: goal,
       now,
     });
+    const updatedFinishedGame =
+      game.status === "finished"
+        ? {
+            ...game,
+            finishedAt: game.finishedAt ?? now,
+            result: buildGameResult(nextTeams, now),
+          }
+        : null;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...(updatedFinishedGame
+              ? [
+                  this.buildGamePutTransactionItem({
+                    game: updatedFinishedGame,
+                    stored: gameItem,
+                    now,
+                  }),
+                ]
+              : [this.buildGameConditionCheck(input.gameId, gameItem)]),
             ...changedTeams.map((team) => {
               const original = teamStatesById.get(team.teamId);
               if (!original) {
@@ -2245,7 +3804,7 @@ export class ThreeFcRepository {
       throw new GoalCreationError(
         "scoreboard_state_changed",
         409,
-        "Scoreboard changed while creating this goal, or goal state changed. Reload the game and try again.",
+        "Scoreboard changed while creating this goal, or game/goal state changed. Reload the game and try again.",
       );
     }
 
@@ -2315,13 +3874,17 @@ export class ThreeFcRepository {
       return replayed;
     }
 
-    const gameItem = await this.getEntity(
-      gamePk(input.gameId),
-      metadataSk(),
-      { consistentRead: true },
-    );
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
+    }
+    const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GoalCorrectionError(
+        "game_finished",
+        409,
+        `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      );
     }
 
     const existing = await this.findGoalByEventId(
@@ -2348,7 +3911,7 @@ export class ThreeFcRepository {
       { consistentRead: true },
     );
     const roster = await this.listGameRoster(input.gameId);
-    this.validateGoalRules(goal, teams, roster, "correction");
+    this.validateGoalRules(goal, teams, roster, "correction", previousGoal);
 
     const now = this.clock.now();
     const updatedGoal = {
@@ -2383,12 +3946,29 @@ export class ThreeFcRepository {
       timeline: nextTimeline,
       audit,
     };
+    const updatedFinishedGame =
+      game.status === "finished"
+        ? {
+            ...game,
+            finishedAt: game.finishedAt ?? now,
+            result: buildGameResult(nextTeams, now),
+          }
+        : null;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            ...(updatedFinishedGame
+              ? [
+                  this.buildGamePutTransactionItem({
+                    game: updatedFinishedGame,
+                    stored: gameItem,
+                    now,
+                  }),
+                ]
+              : [this.buildGameConditionCheck(input.gameId, gameItem)]),
             {
               Put: {
                 TableName: this.tableName,
@@ -2477,13 +4057,17 @@ export class ThreeFcRepository {
       return replayed;
     }
 
-    const gameItem = await this.getEntity(
-      gamePk(input.gameId),
-      metadataSk(),
-      { consistentRead: true },
-    );
+    const gameItem = await this.readMutableGameEntity(input.gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return null;
+    }
+    const game = normalizeGamePayload(gameItem.data);
+    if (game.status === "finished" && input.allowFinished !== true) {
+      throw new GoalCorrectionError(
+        "game_finished",
+        409,
+        `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
+      );
     }
 
     const existing = await this.findGoalByEventId(
@@ -2560,12 +4144,29 @@ export class ThreeFcRepository {
       timeline: nextTimeline,
       audit,
     };
+    const updatedFinishedGame =
+      game.status === "finished"
+        ? {
+            ...game,
+            finishedAt: game.finishedAt ?? now,
+            result: buildGameResult(nextTeams, now),
+          }
+        : null;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
+            ...(updatedFinishedGame
+              ? [
+                  this.buildGamePutTransactionItem({
+                    game: updatedFinishedGame,
+                    stored: gameItem,
+                    now,
+                  }),
+                ]
+              : [this.buildGameConditionCheck(input.gameId, gameItem)]),
             {
               Delete: {
                 TableName: this.tableName,
@@ -2665,6 +4266,7 @@ export class ThreeFcRepository {
       actorUserId: input.actorUserId,
       operationId: input.operationId,
       operationRequestHash: input.operationRequestHash,
+      allowFinished: input.allowFinished,
       action: "goal_undo_last",
       expectedLatestEventId: input.expectedEventId,
     });
@@ -2673,7 +4275,9 @@ export class ThreeFcRepository {
   async getIdempotencyRecord(scope: string, key: string): Promise<IdempotencyRecord | null> {
     requireNonEmpty("scope", scope);
     requireNonEmpty("key", key);
-    const item = await this.getEntity(idempotencyPk(scope, key), metadataSk());
+    const item = await this.getEntity(idempotencyPk(scope, key), metadataSk(), {
+      consistentRead: true,
+    });
 
     if (!item || item.entityType !== ENTITY_TYPE.idempotency) {
       return null;
@@ -2758,6 +4362,193 @@ export class ThreeFcRepository {
         Item: buildItemWithTimestamps(pk, sk, entityType, payload, createdAt, updatedAt),
       }),
     );
+  }
+
+  private async repairLegacyGameJoinCode(stored: StoredEntity<unknown>): Promise<GameRecord> {
+    let currentStored = stored;
+
+    for (let raceAttempt = 0; raceAttempt < LEGACY_JOIN_CODE_REPAIR_RACE_RETRIES; raceAttempt += 1) {
+      const rawGame = currentStored.data as Partial<Omit<GameRecord, "createdAt" | "updatedAt">>;
+      const currentGame = normalizeGamePayload(currentStored.data);
+      const storedJoinCode =
+        typeof rawGame.joinCode === "string" && rawGame.joinCode.trim().length > 0
+          ? normalizeJoinCode(rawGame.joinCode)
+          : null;
+      if (storedJoinCode && JOIN_CODE_PATTERN.test(storedJoinCode)) {
+        const joinCodeItem = await this.getEntity(joinCodePk(storedJoinCode), metadataSk(), {
+          consistentRead: true,
+        });
+        if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+          const joinCodeRecord = joinCodeItem.data as Partial<GameJoinCodeRecord>;
+          const lookupHasSameGame = joinCodeRecord.gameId === currentGame.gameId;
+          const lookupHasSameCode =
+            typeof joinCodeRecord.joinCode === "string" &&
+            normalizeJoinCode(joinCodeRecord.joinCode) === storedJoinCode;
+          if (lookupHasSameGame && lookupHasSameCode) {
+            return withTimestamps(
+              { ...currentGame, joinCode: storedJoinCode },
+              currentStored.createdAt,
+              currentStored.updatedAt,
+            );
+          }
+          if (lookupHasSameGame) {
+            const repairedGame = await this.writeLegacyGameJoinCodeRepair({
+              stored: currentStored,
+              game: currentGame,
+              joinCode: storedJoinCode,
+              joinCodeItem,
+            });
+            if (repairedGame) {
+              return repairedGame;
+            }
+
+            break;
+          }
+        } else if (!joinCodeItem) {
+          const repairedGame = await this.writeLegacyGameJoinCodeRepair({
+            stored: currentStored,
+            game: currentGame,
+            joinCode: storedJoinCode,
+            joinCodeItem: null,
+          });
+          if (repairedGame) {
+            return repairedGame;
+          }
+
+          break;
+        }
+      }
+
+      const seenCandidates = new Set<string>();
+      for (
+        let candidateAttempt = 0;
+        candidateAttempt < LEGACY_JOIN_CODE_REPAIR_ATTEMPTS;
+        candidateAttempt += 1
+      ) {
+        const joinCode = generateJoinCode();
+        if (seenCandidates.has(joinCode)) {
+          continue;
+        }
+        seenCandidates.add(joinCode);
+
+        const joinCodeItem = await this.getEntity(joinCodePk(joinCode), metadataSk(), {
+          consistentRead: true,
+        });
+        if (joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode) {
+          const joinCodeRecord = joinCodeItem.data as Partial<GameJoinCodeRecord>;
+          if (joinCodeRecord.gameId !== currentGame.gameId) {
+            continue;
+          }
+        } else if (joinCodeItem) {
+          continue;
+        }
+
+        const repairedGame = await this.writeLegacyGameJoinCodeRepair({
+          stored: currentStored,
+          game: currentGame,
+          joinCode,
+          joinCodeItem: joinCodeItem?.entityType === ENTITY_TYPE.gameJoinCode ? joinCodeItem : null,
+        });
+        if (repairedGame) {
+          return repairedGame;
+        }
+
+        break;
+      }
+
+      const latest = await this.getEntity(gamePk(currentGame.gameId), metadataSk(), {
+        consistentRead: true,
+      });
+      if (!latest || latest.entityType !== ENTITY_TYPE.game) {
+        return withTimestamps(currentGame, currentStored.createdAt, currentStored.updatedAt);
+      }
+      currentStored = latest;
+    }
+
+    throw new GameJoinCodeCollisionError(
+      "Could not repair legacy game join code without a collision.",
+    );
+  }
+
+  private async writeLegacyGameJoinCodeRepair(input: {
+    stored: StoredEntity<unknown>;
+    game: Omit<GameRecord, "createdAt" | "updatedAt">;
+    joinCode: string;
+    joinCodeItem: StoredEntity<unknown> | null;
+  }): Promise<GameRecord | null> {
+    const now = this.clock.now();
+    const repairedGame = {
+      ...input.game,
+      joinCode: input.joinCode,
+    };
+    const transactionItems: TransactWriteItem[] = [
+      this.buildGamePutTransactionItem({
+        game: repairedGame,
+        stored: input.stored,
+        now,
+      }),
+    ];
+
+    if (input.joinCodeItem) {
+      transactionItems.push({
+        Put: {
+          TableName: this.tableName,
+          Item: buildItemWithTimestamps(
+            joinCodePk(input.joinCode),
+            metadataSk(),
+            ENTITY_TYPE.gameJoinCode,
+            {
+              joinCode: input.joinCode,
+              gameId: input.game.gameId,
+            },
+            input.joinCodeItem.createdAt,
+            now,
+          ),
+          ConditionExpression: "#updatedAt = :expectedJoinCodeUpdatedAt AND #data = :expectedJoinCodeData",
+          ExpressionAttributeNames: {
+            "#updatedAt": "updatedAt",
+            "#data": "data",
+          },
+          ExpressionAttributeValues: {
+            ":expectedJoinCodeUpdatedAt": { S: input.joinCodeItem.updatedAt },
+            ":expectedJoinCodeData": { S: input.joinCodeItem.rawData },
+          },
+        },
+      });
+    } else {
+      transactionItems.push({
+        Put: {
+          TableName: this.tableName,
+          Item: buildItem(
+            joinCodePk(input.joinCode),
+            metadataSk(),
+            ENTITY_TYPE.gameJoinCode,
+            {
+              joinCode: input.joinCode,
+              gameId: input.game.gameId,
+            },
+            now,
+          ),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        },
+      });
+    }
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: transactionItems,
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        return null;
+      }
+
+      throw error;
+    }
+
+    return withTimestamps(repairedGame, input.stored.createdAt, now);
   }
 
   private async putEntityWithTimestampsIfUnchanged<T>(

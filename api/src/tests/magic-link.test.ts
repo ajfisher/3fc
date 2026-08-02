@@ -8,7 +8,11 @@ import {
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 
-import { MagicLinkAuthError, MagicLinkService } from "../auth/magic-link.js";
+import {
+  magicLinkSubjectForEmail,
+  MagicLinkAuthError,
+  MagicLinkService,
+} from "../auth/magic-link.js";
 
 type Item = Record<string, AttributeValue>;
 
@@ -220,6 +224,7 @@ test("magic complete consumes token once and creates a session", async () => {
   const firstCompletion = await service.complete(token);
   assert.equal(firstCompletion.sessionId, "session-1");
   assert.equal(firstCompletion.email, "player@example.com");
+  assert.equal(firstCompletion.subject, magicLinkSubjectForEmail("player@example.com"));
   assert.equal(firstCompletion.maxAgeSeconds, 3600);
 
   const tokenItem = client.getItem("AUTH_MAGIC#token-1", "METADATA");
@@ -229,10 +234,12 @@ test("magic complete consumes token once and creates a session", async () => {
   const sessionItem = client.getItem("AUTH_SESSION#session-1", "METADATA");
   assert(sessionItem);
   assert.equal(sessionItem.email?.S, "player@example.com");
+  assert.equal(sessionItem.subject?.S, magicLinkSubjectForEmail("player@example.com"));
 
   const persistedSession = await service.getSession("session-1");
   assert(persistedSession);
   assert.equal(persistedSession.email, "player@example.com");
+  assert.equal(persistedSession.subject, magicLinkSubjectForEmail("player@example.com"));
 
   await assert.rejects(
     service.complete(token),

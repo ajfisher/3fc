@@ -89,6 +89,18 @@ functions:
           method: OPTIONS
           path: /v1/auth/session
       - httpApi:
+          method: POST
+          path: /v1/join
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join
+      - httpApi:
+          method: POST
+          path: /v1/join/{joinCode}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join/{joinCode}
+      - httpApi:
           method: GET
           path: /v1/leagues
       - httpApi:
@@ -106,6 +118,12 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/leagues/{leagueId}
+      - httpApi:
+          method: POST
+          path: /v1/leagues/{leagueId}/access
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/access
       - httpApi:
           method: GET
           path: /v1/leagues/{leagueId}/seasons
@@ -174,6 +192,15 @@ functions:
           path: /v1/games/{gameId}/thirds/{third}/finish
       - httpApi:
           method: POST
+          path: /v1/games/{gameId}/finish
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/finish
+      - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/goals
+      - httpApi:
+          method: GET
           path: /v1/games/{gameId}/goals
       - httpApi:
           method: OPTIONS
@@ -226,6 +253,12 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/games/{gameId}/roster/{playerId}
+      - httpApi:
+          method: POST
+          path: /v1/players/{playerId}/claim
+      - httpApi:
+          method: OPTIONS
+          path: /v1/players/{playerId}/claim
       - httpApi:
           method: POST
           path: /v1/sessions/{sessionId}/games

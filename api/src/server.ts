@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:http";
-import { URL } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
+import { URL, pathToFileURL } from "node:url";
 
 import {
   CreateTableCommand,
@@ -15,6 +16,7 @@ import {
   isThirdLengthMinutes,
   isThirdNumber,
   TEAM_IDS,
+  type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
   type ThirdNumber,
@@ -48,6 +50,7 @@ import {
   resolveSessionCookieSecureFlag,
 } from "./auth/session.js";
 import {
+  claimPlayerRequestSchema,
   createGameRequestSchema,
   createGoalRequestSchema,
   createLeagueRequestSchema,
@@ -55,13 +58,28 @@ import {
   createSessionRequestSchema,
   assignRosterPlayerRequestSchema,
   formatSchemaValidationError,
+  grantLeagueAccessRequestSchema,
   idempotencyKeyHeaderSchema,
+  isJoinCodePathParamValid,
+  joinGameRequestSchema,
+  normalizeJoinCodePathParam,
   quickCreateGamePlayerRequestSchema,
   undoLastGoalRequestSchema,
   updateGoalRequestSchema,
   upsertTeamRequestSchema,
 } from "./contracts/core-write.js";
-import { GameTimerTransitionError, GoalCorrectionError, GoalCreationError, ThreeFcRepository } from "./data/repository.js";
+import {
+  GameAlreadyExistsError,
+  GameJoinCodeCollisionError,
+  GameJoinRegistrationError,
+  GameMutationStateError,
+  GameTimerTransitionError,
+  GoalCorrectionError,
+  GoalCreationError,
+  PlayerClaimError,
+  ThreeFcRepository,
+} from "./data/repository.js";
+import type { GameRecord } from "./data/types.js";
 import { buildHealthResponse } from "./index.js";
 import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
 
@@ -88,6 +106,8 @@ const SESSION_COOKIE_SECURE = resolveSessionCookieSecureFlag(
 );
 const CORS_ALLOWED_ORIGINS = parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS);
 const DEV_ITEM_SK = "METADATA";
+const FINISHED_REPAIR_RETRY_DELAYS_MS = [25, 50, 100] as const;
+const FINISHED_REPAIR_MAX_ATTEMPTS = 3;
 
 const ddbClient = new DynamoDBClient({
   region: REGION,
@@ -138,6 +158,45 @@ const magicLinkRateLimiter = new AuthRateLimiter(
   readMagicLinkRateLimitConfig(),
 );
 const repository = new ThreeFcRepository(ddbClient, TABLE_NAME);
+
+type LocalGetGameRouteRepository = Pick<ThreeFcRepository, "getGame" | "getLeagueAccess">;
+
+type LocalFinishGameRouteRepository = Pick<
+  ThreeFcRepository,
+  | "getGame"
+  | "finishGame"
+  | "getLeagueAccess"
+  | "getIdempotencyRecord"
+  | "createIdempotencyRecord"
+  | "listTeamsForSeason"
+  | "createTeam"
+  | "listTeamsForGame"
+  | "createGameTeamOverride"
+>;
+
+type LocalUpdateGameTeamRouteRepository = Pick<
+  ThreeFcRepository,
+  "getGame" | "listTeamsForSeason" | "createTeam" | "listTeamsForGame" | "createGameTeamOverride"
+>;
+
+type LocalDeleteGameRouteRepository = Pick<ThreeFcRepository, "getGame" | "getLeagueAccess" | "deleteGame">;
+
+type LocalIdempotencyRepository = Pick<
+  ThreeFcRepository,
+  "getIdempotencyRecord" | "createIdempotencyRecord"
+>;
+
+type LocalCreateGameRouteRepository = LocalIdempotencyRepository &
+  Pick<
+    ThreeFcRepository,
+    | "createGame"
+    | "getGame"
+    | "createSessionGame"
+    | "listTeamsForSeason"
+    | "createTeam"
+    | "listTeamsForGame"
+    | "createGameTeamOverride"
+  >;
 
 async function ensureTable(): Promise<void> {
   try {
@@ -288,36 +347,87 @@ function conflict(request: IncomingMessage, response: ServerResponse, message: s
   return 409;
 }
 
+type UserIdCandidate = string | null | undefined;
+
 async function ensureLeagueAccess(
   leagueId: string,
-  userId: string,
+  userIds: UserIdCandidate | readonly UserIdCandidate[],
+  repositoryClient: Pick<ThreeFcRepository, "getLeagueAccess"> = repository,
 ): Promise<{ allowed: boolean; role: "admin" | "scorekeeper" | "viewer" | null }> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  if (!access) {
-    return {
-      allowed: false,
-      role: null,
-    };
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repositoryClient.getLeagueAccess(leagueId, userId);
+    if (access) {
+      return {
+        allowed: true,
+        role: access.role,
+      };
+    }
   }
 
   return {
-    allowed: true,
-    role: access.role,
+    allowed: false,
+    role: null,
   };
 }
 
-async function ensureLeagueAdmin(leagueId: string, userId: string): Promise<boolean> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  return access?.role === "admin";
+async function ensureLeagueAdmin(
+  leagueId: string,
+  userIds: UserIdCandidate | readonly UserIdCandidate[],
+  repositoryClient: Pick<ThreeFcRepository, "getLeagueAccess"> = repository,
+): Promise<boolean> {
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repositoryClient.getLeagueAccess(leagueId, userId);
+    if (access?.role === "admin") {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function ensureLeagueRole(
   leagueId: string,
-  userId: string,
+  userIds: UserIdCandidate | readonly UserIdCandidate[],
   allowedRoles: ReadonlySet<"admin" | "scorekeeper" | "viewer">,
 ): Promise<boolean> {
-  const access = await repository.getLeagueAccess(leagueId, userId);
-  return access ? allowedRoles.has(access.role) : false;
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await repository.getLeagueAccess(leagueId, userId);
+    if (access && allowedRoles.has(access.role)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeUserIds(userIds: UserIdCandidate | readonly UserIdCandidate[]): string[] {
+  const values = Array.isArray(userIds) ? userIds : [userIds];
+  return values.filter(
+    (value, index): value is string =>
+      typeof value === "string" && value.trim().length > 0 && values.indexOf(value) === index,
+  );
+}
+
+function sessionUserIds(session: Pick<AuthSessionRecord, "email" | "subject">): string[] {
+  return normalizeUserIds([session.subject, session.email]);
+}
+
+function sessionSubject(session: Pick<AuthSessionRecord, "email" | "subject">): string {
+  return session.subject ?? session.email;
+}
+
+type LeagueListRecord = Awaited<ReturnType<ThreeFcRepository["listLeaguesForUser"]>>[number];
+
+async function listLeaguesForSession(
+  session: Pick<AuthSessionRecord, "email" | "subject">,
+  repositoryClient: Pick<ThreeFcRepository, "listLeaguesForUser"> = repository,
+): Promise<LeagueListRecord[]> {
+  const leaguesById = new Map<string, LeagueListRecord>();
+  for (const userId of sessionUserIds(session)) {
+    const leagues = await repositoryClient.listLeaguesForUser(userId);
+    for (const league of leagues) {
+      leaguesById.set(league.leagueId, league);
+    }
+  }
+  return [...leaguesById.values()];
 }
 
 function parseTeamId(value: string): TeamId | null {
@@ -334,6 +444,8 @@ function sortTeams<T extends { teamId: TeamId }>(teams: T[]): T[] {
 
 function buildGameResponse(game: {
   gameId: string;
+  joinCode: string;
+  createRequestHash?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -345,16 +457,44 @@ function buildGameResponse(game: {
     startedAt: string | null;
     finishedAt: string | null;
   }>;
+  finishedAt: string | null;
+  result: GameResult | null;
   createdAt: string;
   updatedAt: string;
 }) {
+  const { createRequestHash: _createRequestHash, ...publicGame } = game;
   return {
-    ...game,
+    ...publicGame,
     timer: buildGameTimerState({
       thirdLengthMinutes: game.thirdLengthMinutes,
       thirds: game.thirds,
     }),
   };
+}
+
+function existingGameMatchesCreateRequest(input: {
+  game: {
+    gameId: string;
+    leagueId: string;
+    seasonId: string;
+    sessionId: string;
+    createRequestHash?: string;
+  };
+  leagueId: string;
+  seasonId: string;
+  sessionId: string;
+  createRequestHash: string;
+  request: {
+    gameId: string;
+  };
+}): boolean {
+  return (
+    input.game.gameId === input.request.gameId &&
+    input.game.createRequestHash === input.createRequestHash &&
+    input.game.leagueId === input.leagueId &&
+    input.game.seasonId === input.seasonId &&
+    input.game.sessionId === input.sessionId
+  );
 }
 
 function parseThirdRouteParam(value: string): ThirdNumber | null {
@@ -405,6 +545,173 @@ function goalCorrectionError(
   return error.statusCode;
 }
 
+async function buildFinishedGameMutationBlock(
+  game: { gameId: string; leagueId: string; status: "scheduled" | "live" | "finished" },
+  sessionEmail: string,
+  repositoryClient: Pick<ThreeFcRepository, "getLeagueAccess"> = repository,
+): Promise<{ statusCode: 409; payload: { error: "conflict"; code: "game_finished"; message: string } } | null> {
+  if (game.status !== "finished") {
+    return null;
+  }
+
+  const access = await ensureLeagueAccess(game.leagueId, sessionEmail, repositoryClient);
+  if (access.role === "admin") {
+    return null;
+  }
+
+  return {
+    statusCode: 409,
+    payload: {
+      error: "conflict",
+      code: "game_finished",
+      message: `Game ${game.gameId} is finished. Admin role is required to mutate finished games.`,
+    },
+  };
+}
+
+function finishedGameTeamOverrideConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_finished",
+    message: `Game ${gameId} is finished. Team overrides are locked after finish.`,
+  });
+  return 409;
+}
+
+function finishedGameDeleteConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_finished",
+    message: `Game ${gameId} is finished. Finished games cannot be deleted.`,
+  });
+  return 409;
+}
+
+function joinCodeRequired(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 400, {
+    error: "bad_request",
+    code: "join_code_required",
+    message: "Join code is required.",
+  });
+  return 400;
+}
+
+function joinCodeInvalidFormat(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 400, {
+    error: "bad_request",
+    code: "join_code_invalid",
+    message: "Join code must be 8 uppercase non-ambiguous letters or digits.",
+  });
+  return 400;
+}
+
+function joinCodeMalformed(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 400, {
+    error: "bad_request",
+    code: "join_code_invalid",
+    message: "Join code must be URL encoded correctly.",
+  });
+  return 400;
+}
+
+function invalidJoinCode(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 404, {
+    error: "not_found",
+    code: "invalid_join_code",
+    message: "Join code was not found.",
+  });
+  return 404;
+}
+
+function finishedGameJoinConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  message: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_finished",
+    message,
+  });
+  return 409;
+}
+
+function joinStateChangedConflict(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "join_state_changed",
+    message: "Game join state changed while registering this player. Reload and try again.",
+  });
+  return 409;
+}
+
+function hasNonPersistedPublicJoinConflictCode(payload: unknown): boolean {
+  const code = typeof payload === "object" && payload !== null && "code" in payload
+    ? (payload as { code?: unknown }).code
+    : null;
+  return (
+    code === "join_state_changed" ||
+    code === "game_finished"
+  );
+}
+
+function shouldPersistPublicJoinMutation(mutation: JsonMutationResult): boolean {
+  if (mutation.statusCode === 404) {
+    return false;
+  }
+
+  if (mutation.statusCode === 409 && hasNonPersistedPublicJoinConflictCode(mutation.payload)) {
+    return false;
+  }
+
+  return true;
+}
+
+function gameAlreadyExistsConflict(
+  request: IncomingMessage,
+  response: ServerResponse,
+  gameId: string,
+): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "game_exists",
+    message: `Game ${gameId} already exists.`,
+  });
+  return 409;
+}
+
+function gameJoinCodeCollisionConflict(request: IncomingMessage, response: ServerResponse): number {
+  sendJsonWithCors(request, response, 409, {
+    error: "conflict",
+    code: "join_code_collision",
+    message: "Join code is already assigned to another game.",
+  });
+  return 409;
+}
+
+async function ensureFinishedGameMutationAllowed(
+  request: IncomingMessage,
+  response: ServerResponse,
+  game: { gameId: string; leagueId: string; status: "scheduled" | "live" | "finished" },
+  sessionEmail: string,
+): Promise<{ allowed: boolean; status: number }> {
+  const block = await buildFinishedGameMutationBlock(game, sessionEmail);
+  if (!block) {
+    return { allowed: true, status: 200 };
+  }
+
+  sendJsonWithCors(request, response, block.statusCode, block.payload);
+  return { allowed: false, status: block.statusCode };
+}
+
 function toPublicPlayer(player: {
   playerId: string;
   nickname: string;
@@ -416,6 +723,32 @@ function toPublicPlayer(player: {
     nickname: player.nickname,
     createdAt: player.createdAt,
     updatedAt: player.updatedAt,
+  };
+}
+
+async function toGamePlayerForLeagueRole(input: {
+  player: {
+    playerId: string;
+    nickname: string;
+    claimedByUserId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  leagueId: string;
+  callerRole: "admin" | "scorekeeper" | "viewer" | null;
+}) {
+  const publicPlayer = toPublicPlayer(input.player);
+  if (input.callerRole !== "admin" || !input.player.claimedByUserId) {
+    return publicPlayer;
+  }
+
+  const access = await repository.getLeagueAccess(input.leagueId, input.player.claimedByUserId);
+  return {
+    ...publicPlayer,
+    access: {
+      userId: input.player.claimedByUserId,
+      role: access?.role ?? null,
+    },
   };
 }
 
@@ -463,8 +796,13 @@ async function readSeasonTeams(season: {
   return buildReadOnlySeasonTeams(season, existingTeams);
 }
 
-async function ensureSeasonDefaultTeams(seasonId: string) {
-  const existingTeams = await repository.listTeamsForSeason(seasonId);
+async function ensureSeasonDefaultTeams(
+  seasonId: string,
+  repositoryClient: Pick<ThreeFcRepository, "listTeamsForSeason" | "createTeam"> = repository,
+) {
+  const existingTeams = await repositoryClient.listTeamsForSeason(seasonId, {
+    consistentRead: true,
+  });
   const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
 
   for (const defaultTeam of DEFAULT_TEAMS) {
@@ -472,11 +810,12 @@ async function ensureSeasonDefaultTeams(seasonId: string) {
       continue;
     }
 
-    const createdTeam = await repository.createTeam({
+    const createdTeam = await repositoryClient.createTeam({
       seasonId,
       teamId: defaultTeam.teamId,
       name: defaultTeam.name,
       color: defaultTeam.color,
+      createOnly: true,
     });
     teamsById.set(createdTeam.teamId, createdTeam);
   }
@@ -484,9 +823,18 @@ async function ensureSeasonDefaultTeams(seasonId: string) {
   return sortTeams([...teamsById.values()]);
 }
 
-async function ensureGameTeamsForGame(game: { gameId: string; seasonId: string }) {
-  const seasonTeams = await ensureSeasonDefaultTeams(game.seasonId);
-  const existingGameTeams = await repository.listTeamsForGame(game.gameId);
+async function ensureGameTeamsForGame(
+  game: { gameId: string; seasonId: string },
+  repositoryClient: Pick<
+    ThreeFcRepository,
+    "listTeamsForSeason" | "createTeam" | "listTeamsForGame" | "createGameTeamOverride"
+  > = repository,
+  options: { allowFinished?: boolean } = {},
+) {
+  const seasonTeams = await ensureSeasonDefaultTeams(game.seasonId, repositoryClient);
+  const existingGameTeams = await repositoryClient.listTeamsForGame(game.gameId, {
+    consistentRead: true,
+  });
   const gameTeamsById = new Map(existingGameTeams.map((team) => [team.teamId, team]));
 
   for (const seasonTeam of seasonTeams) {
@@ -494,16 +842,55 @@ async function ensureGameTeamsForGame(game: { gameId: string; seasonId: string }
       continue;
     }
 
-    const gameTeam = await repository.createGameTeamOverride({
+    const gameTeam = await repositoryClient.createGameTeamOverride({
       gameId: game.gameId,
       teamId: seasonTeam.teamId,
       name: seasonTeam.name,
       color: seasonTeam.color,
+      allowFinished: options.allowFinished,
+      createOnly: true,
     });
     gameTeamsById.set(gameTeam.teamId, gameTeam);
   }
 
   return sortTeams([...gameTeamsById.values()]);
+}
+
+function isCompleteFinishedGame(game: GameRecord | null): game is GameRecord {
+  const resultTeams = game?.result?.teams ?? [];
+  const resultTeamIds = new Set(resultTeams.map((team) => team.teamId));
+  return (
+    game?.status === "finished" &&
+    Boolean(game.finishedAt && game.result) &&
+    resultTeams.length === TEAM_IDS.length &&
+    TEAM_IDS.every((teamId) => resultTeamIds.has(teamId))
+  );
+}
+
+function isRetryableFinishedRepairConflict(error: unknown): boolean {
+  return (
+    error instanceof GameMutationStateError ||
+    (error instanceof GameTimerTransitionError && error.code === "game_state_changed")
+  );
+}
+
+async function waitForLocalFinishedRepairCompletion(input: {
+  repositoryClient: LocalFinishGameRouteRepository;
+  gameId: string;
+}): Promise<GameRecord | null> {
+  let latest: GameRecord | null = null;
+
+  for (const delayMs of FINISHED_REPAIR_RETRY_DELAYS_MS) {
+    await sleep(delayMs);
+    latest = await input.repositoryClient.getGame(input.gameId, {
+      consistentRead: true,
+    });
+    if (!latest || latest.status !== "finished" || isCompleteFinishedGame(latest)) {
+      return latest;
+    }
+  }
+
+  return latest;
 }
 
 async function readGameTeams(game: {
@@ -679,6 +1066,57 @@ function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
     .digest("hex");
 }
 
+function parseOptionalIdempotencyKey(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = idempotencyKeyHeaderSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function buildKeyedRecoveryRequestHash(input: {
+  scope: string;
+  idempotencyKey: string;
+  payload: unknown;
+}): string {
+  return buildIdempotencyRequestHash(input.scope, {
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
+}
+
+function buildCreateGameRecoveryRequestHash(input: {
+  request: IncomingMessage;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  payload: unknown;
+}): string | null {
+  const parsedIdempotencyKey = parseOptionalIdempotencyKey(
+    readHeaderValue(input.request, "idempotency-key") ?? undefined,
+  );
+  if (!parsedIdempotencyKey) {
+    return null;
+  }
+
+  return buildKeyedRecoveryRequestHash({
+    scope: buildIdempotencyScope(input.sessionEmail, input.method, input.route),
+    idempotencyKey: parsedIdempotencyKey,
+    payload: input.payload,
+  });
+}
+
+function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): string {
+  const fingerprint = createHash("sha256")
+    .update(`public-join:${joinCode}:${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `player-join-${fingerprint}`;
+}
+
+const PUBLIC_JOIN_IDEMPOTENCY_SUBJECT = "public-join";
+
 function buildGoalEventId(input: {
   request: IncomingMessage;
   sessionEmail: string;
@@ -746,6 +1184,88 @@ interface JsonMutationResult {
   payload: unknown;
 }
 
+async function recoverLocalFinishedGameForFinishRoute(input: {
+  repositoryClient: LocalFinishGameRouteRepository;
+  gameId: string;
+}): Promise<JsonMutationResult | null> {
+  const current = await input.repositoryClient.getGame(input.gameId, {
+    consistentRead: true,
+  });
+  if (!current || current.status !== "finished") {
+    return null;
+  }
+
+  if (isCompleteFinishedGame(current)) {
+    return {
+      statusCode: 200,
+      payload: buildGameResponse(current),
+    };
+  }
+
+  let repaired: GameRecord | null = current;
+  for (let attempt = 0; attempt < FINISHED_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await ensureGameTeamsForGame(current, input.repositoryClient, { allowFinished: true });
+      repaired = await input.repositoryClient.finishGame({ gameId: input.gameId });
+      if (isCompleteFinishedGame(repaired)) {
+        break;
+      }
+    } catch (error) {
+      if (!isRetryableFinishedRepairConflict(error)) {
+        throw error;
+      }
+
+      repaired = await waitForLocalFinishedRepairCompletion({
+        repositoryClient: input.repositoryClient,
+        gameId: input.gameId,
+      });
+      if (!repaired || repaired.status !== "finished" || isCompleteFinishedGame(repaired)) {
+        break;
+      }
+    }
+  }
+
+  if (!isCompleteFinishedGame(repaired)) {
+    return null;
+  }
+
+  return {
+    statusCode: 200,
+    payload: buildGameResponse(repaired),
+  };
+}
+
+async function readStoredIdempotentMutation(input: {
+  request: IncomingMessage;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  repositoryClient: LocalIdempotencyRepository;
+}): Promise<JsonMutationResult | null> {
+  const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
+  if (!idempotencyKeyRaw) {
+    return null;
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(idempotencyKeyRaw);
+  if (!parsedHeader.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  const existing = await input.repositoryClient.getIdempotencyRecord(scope, parsedHeader.data);
+  if (!existing || existing.requestHash !== requestHash) {
+    return null;
+  }
+
+  return {
+    statusCode: existing.responseStatusCode,
+    payload: parseStoredIdempotencyResponseBody(existing.responseBody),
+  };
+}
+
 async function executeIdempotentMutation(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -754,7 +1274,10 @@ async function executeIdempotentMutation(input: {
   route: string;
   requestPayload: unknown;
   execute: () => Promise<JsonMutationResult>;
+  repositoryClient?: LocalIdempotencyRepository;
+  shouldPersistResponse?: (response: JsonMutationResult) => boolean;
 }): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
   const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
 
   if (!idempotencyKeyRaw) {
@@ -776,7 +1299,7 @@ async function executeIdempotentMutation(input: {
   const key = parsedHeader.data;
   const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
 
-  const existing = await repository.getIdempotencyRecord(scope, key);
+  const existing = await repositoryClient.getIdempotencyRecord(scope, key);
   if (existing) {
     if (existing.requestHash !== requestHash) {
       return idempotencyConflict(input.request, input.response);
@@ -792,8 +1315,13 @@ async function executeIdempotentMutation(input: {
   }
 
   const mutation = await input.execute();
+  if (input.shouldPersistResponse && !input.shouldPersistResponse(mutation)) {
+    sendJsonWithCors(input.request, input.response, mutation.statusCode, mutation.payload);
+    return mutation.statusCode;
+  }
+
   const mutationBody = JSON.stringify(mutation.payload);
-  const created = await repository.createIdempotencyRecord({
+  const created = await repositoryClient.createIdempotencyRecord({
     scope,
     key,
     requestHash,
@@ -802,7 +1330,7 @@ async function executeIdempotentMutation(input: {
   });
 
   if (!created) {
-    const raceRecord = await repository.getIdempotencyRecord(scope, key);
+    const raceRecord = await repositoryClient.getIdempotencyRecord(scope, key);
     if (raceRecord) {
       if (raceRecord.requestHash !== requestHash) {
         return idempotencyConflict(input.request, input.response);
@@ -820,6 +1348,382 @@ async function executeIdempotentMutation(input: {
 
   sendJsonWithCors(input.request, input.response, mutation.statusCode, mutation.payload);
   return mutation.statusCode;
+}
+
+async function waitForIdempotencyRecord(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+async function replayStoredIdempotencyMutation(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  repositoryClient?: LocalIdempotencyRepository;
+}): Promise<number | null> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const idempotencyKeyRaw = readHeaderValue(input.request, "idempotency-key");
+  if (!idempotencyKeyRaw) {
+    return null;
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(idempotencyKeyRaw);
+  if (!parsedHeader.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const key = parsedHeader.data;
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const record = await repositoryClient.getIdempotencyRecord(scope, key);
+    if (record) {
+      if (record.requestHash !== requestHash) {
+        return idempotencyConflict(input.request, input.response);
+      }
+
+      sendJsonWithCors(
+        input.request,
+        input.response,
+        record.responseStatusCode,
+        parseStoredIdempotencyResponseBody(record.responseBody),
+      );
+      return record.responseStatusCode;
+    }
+
+    if (attempt < 2) {
+      await waitForIdempotencyRecord();
+    }
+  }
+
+  return null;
+}
+
+export async function handleLocalGetGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  gameId: string;
+  sessionEmail: string;
+  repositoryClient?: LocalGetGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const game = await repositoryClient.getGame(input.gameId);
+  if (!game) {
+    return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+  }
+
+  const access = await ensureLeagueAccess(game.leagueId, input.sessionEmail, repositoryClient);
+  if (!access.allowed) {
+    return forbidden(
+      input.request,
+      input.response,
+      "league_access_required",
+      `Access to league ${game.leagueId} is required.`,
+    );
+  }
+
+  const responseGame =
+    (await repositoryClient.getGame(input.gameId, {
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+    })) ?? game;
+
+  sendJsonWithCors(input.request, input.response, 200, buildGameResponse(responseGame));
+  return 200;
+}
+
+export async function handleLocalFinishGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  method: string;
+  route: string;
+  gameId: string;
+  sessionEmail: string;
+  repositoryClient?: LocalFinishGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+
+  try {
+    return await executeIdempotentMutation({
+      request: input.request,
+      response: input.response,
+      sessionEmail: input.sessionEmail,
+      method: input.method,
+      route: input.route,
+      requestPayload: {},
+      repositoryClient,
+      execute: async () => {
+        const currentGame = await repositoryClient.getGame(input.gameId);
+        if (!currentGame) {
+          return {
+            statusCode: 404,
+            payload: {
+              error: "not_found",
+              message: `Game ${input.gameId} was not found.`,
+            },
+          };
+        }
+
+        try {
+          await ensureGameTeamsForGame(currentGame, repositoryClient);
+        } catch (error) {
+          if (error instanceof GameMutationStateError) {
+            const recovered = await recoverLocalFinishedGameForFinishRoute({
+              repositoryClient,
+              gameId: input.gameId,
+            });
+            if (recovered) {
+              return recovered;
+            }
+
+            return {
+              statusCode: 409,
+              payload: {
+                error: "conflict",
+                code: error.code,
+                message: error.message,
+              },
+            };
+          }
+
+          throw error;
+        }
+        let result;
+        try {
+          result = await repositoryClient.finishGame({ gameId: input.gameId });
+        } catch (error) {
+          if (error instanceof GameTimerTransitionError) {
+            if (error.code === "game_state_changed") {
+              const replay = await readStoredIdempotentMutation({
+                request: input.request,
+                sessionEmail: input.sessionEmail,
+                method: input.method,
+                route: input.route,
+                requestPayload: {},
+                repositoryClient,
+              });
+              if (replay && replay.statusCode >= 200 && replay.statusCode < 300) {
+                return replay;
+              }
+
+              const recovered = await recoverLocalFinishedGameForFinishRoute({
+                repositoryClient,
+                gameId: input.gameId,
+              });
+              if (recovered) {
+                return recovered;
+              }
+
+              await waitForIdempotencyRecord();
+              const replayAfterWait = await readStoredIdempotentMutation({
+                request: input.request,
+                sessionEmail: input.sessionEmail,
+                method: input.method,
+                route: input.route,
+                requestPayload: {},
+                repositoryClient,
+              });
+              if (replayAfterWait) {
+                return replayAfterWait;
+              }
+
+              const recoveredAfterWait = await recoverLocalFinishedGameForFinishRoute({
+                repositoryClient,
+                gameId: input.gameId,
+              });
+              if (recoveredAfterWait) {
+                return recoveredAfterWait;
+              }
+
+              let retryFailure: unknown = null;
+              try {
+                result = await repositoryClient.finishGame({ gameId: input.gameId });
+              } catch (retryError) {
+                if (
+                  retryError instanceof GameTimerTransitionError &&
+                  retryError.code === "game_state_changed"
+                ) {
+                  const recoveredAfterRetry = await recoverLocalFinishedGameForFinishRoute({
+                    repositoryClient,
+                    gameId: input.gameId,
+                  });
+                  if (recoveredAfterRetry) {
+                    return recoveredAfterRetry;
+                  }
+                }
+                retryFailure = retryError;
+              }
+
+              if (retryFailure) {
+                throw retryFailure;
+              }
+
+              if (replay) {
+                return replay;
+              }
+            }
+
+            if (!result) {
+              return {
+                statusCode: 409,
+                payload: {
+                  error: "conflict",
+                  code: error.code,
+                  message: error.message,
+                },
+              };
+            }
+          }
+
+          if (!(error instanceof GameTimerTransitionError)) {
+            throw error;
+          }
+
+          if (!result) {
+            return {
+              statusCode: 409,
+              payload: {
+                error: "conflict",
+                code: error.code,
+                message: error.message,
+              },
+            };
+          }
+        }
+        if (!result) {
+          return {
+            statusCode: 404,
+            payload: {
+              error: "not_found",
+              message: `Game ${input.gameId} was not found.`,
+            },
+          };
+        }
+
+        return {
+          statusCode: 200,
+          payload: buildGameResponse(result),
+        };
+      },
+    });
+  } catch (error) {
+    if (error instanceof GameTimerTransitionError) {
+      return timerTransitionConflict(input.request, input.response, error);
+    }
+
+    throw error;
+  }
+}
+
+export async function handleLocalUpdateGameTeamRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  gameId: string;
+  teamId: TeamId;
+  repositoryClient?: LocalUpdateGameTeamRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const game = await repositoryClient.getGame(input.gameId);
+  if (!game) {
+    return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+  }
+
+  let rawBody: Record<string, unknown>;
+  try {
+    rawBody = await parseJsonBody(input.request);
+  } catch {
+    return badRequest(input.request, input.response, "Request body must be valid JSON.");
+  }
+
+  const parsedBody = upsertTeamRequestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return badRequest(input.request, input.response, formatSchemaValidationError(parsedBody.error));
+  }
+
+  let team;
+  try {
+    await ensureGameTeamsForGame(game, repositoryClient);
+    team = await repositoryClient.createGameTeamOverride({
+      gameId: input.gameId,
+      teamId: input.teamId,
+      name: parsedBody.data.name,
+      color: parsedBody.data.color ?? null,
+      allowFinished: game.status === "finished",
+    });
+  } catch (error) {
+    if (error instanceof GameMutationStateError) {
+      const currentGame = await repositoryClient.getGame(input.gameId);
+      if (
+        error.code === "game_finished" ||
+        (game.status !== "finished" && currentGame?.status === "finished")
+      ) {
+        return finishedGameTeamOverrideConflict(input.request, input.response, input.gameId);
+      }
+
+      sendJsonWithCors(input.request, input.response, 409, {
+        error: "conflict",
+        code: error.code,
+        message: error.message,
+      });
+      return 409;
+    }
+
+    throw error;
+  }
+  sendJsonWithCors(input.request, input.response, 200, team);
+  return 200;
+}
+
+export async function handleLocalDeleteGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  gameId: string;
+  sessionEmail: string;
+  repositoryClient?: LocalDeleteGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  const game = await repositoryClient.getGame(input.gameId);
+  if (!game) {
+    return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+  }
+
+  const isAdmin = await ensureLeagueAdmin(game.leagueId, input.sessionEmail, repositoryClient);
+  if (!isAdmin) {
+    return forbidden(
+      input.request,
+      input.response,
+      "admin_required",
+      `Admin role is required for league ${game.leagueId}.`,
+    );
+  }
+
+  if (game.status === "finished") {
+    return finishedGameDeleteConflict(input.request, input.response, input.gameId);
+  }
+
+  const deleted = await repositoryClient.deleteGame(input.gameId);
+  if (!deleted) {
+    const currentGame = await repositoryClient.getGame(input.gameId);
+    if (currentGame?.status === "finished") {
+      return finishedGameDeleteConflict(input.request, input.response, input.gameId);
+    }
+    if (!currentGame) {
+      return notFound(input.request, input.response, `Game ${input.gameId} was not found.`);
+    }
+
+    sendJsonWithCors(input.request, input.response, 409, {
+      error: "conflict",
+      code: "game_state_changed",
+      message: `Game ${input.gameId} changed before it could be deleted. Reload and try again.`,
+    });
+    return 409;
+  }
+
+  sendNoContentWithCors(input.request, input.response);
+  return 204;
 }
 
 interface AclGateResult {
@@ -843,7 +1747,7 @@ async function enforceAclIfRequired(
     };
   }
 
-  const aclResult = await authorizeProtectedMutation(method, route, session.email, repository);
+  const aclResult = await authorizeProtectedMutation(method, route, sessionUserIds(session), repository);
   if (!aclResult.allowed) {
     sendJsonWithCors(request, response, aclResult.statusCode, aclResult.error);
     return {
@@ -993,6 +1897,167 @@ async function handleCreateSession(
   });
 }
 
+async function createGameWithDerivedRecords(input: {
+  repositoryClient: LocalCreateGameRouteRepository;
+  scope: { leagueId: string; seasonId: string; sessionId: string };
+  allowExistingGameRecovery: boolean;
+  request: {
+    gameId: string;
+    gameStartTs: string;
+    status?: "scheduled" | "live" | "finished";
+    thirdLengthMinutes?: ThirdLengthMinutes;
+  };
+  createRequestHash: string | null;
+}) {
+  let game;
+  try {
+    game = await input.repositoryClient.createGame({
+      gameId: input.request.gameId,
+      createRequestHash: input.createRequestHash,
+      leagueId: input.scope.leagueId,
+      seasonId: input.scope.seasonId,
+      sessionId: input.scope.sessionId,
+      status: input.request.status,
+      gameStartTs: input.request.gameStartTs,
+      thirdLengthMinutes: input.request.thirdLengthMinutes,
+    });
+  } catch (error) {
+    if (!(error instanceof GameAlreadyExistsError)) {
+      throw error;
+    }
+    if (!input.allowExistingGameRecovery) {
+      throw error;
+    }
+    if (!input.createRequestHash) {
+      throw error;
+    }
+
+    const existingGame = await input.repositoryClient.getGame(input.request.gameId);
+    if (
+      !existingGame ||
+      !existingGameMatchesCreateRequest({
+        game: existingGame,
+        leagueId: input.scope.leagueId,
+        seasonId: input.scope.seasonId,
+        sessionId: input.scope.sessionId,
+        createRequestHash: input.createRequestHash,
+        request: input.request,
+      })
+    ) {
+      throw error;
+    }
+
+    game = existingGame;
+  }
+
+  await input.repositoryClient.createSessionGame({
+    sessionId: game.sessionId,
+    gameId: game.gameId,
+    gameStartTs: game.gameStartTs,
+    leagueId: game.leagueId,
+    seasonId: game.seasonId,
+  });
+  await ensureGameTeamsForGame(game, input.repositoryClient);
+
+  return game;
+}
+
+export async function handleLocalCreateGameRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  scope: { leagueId: string; seasonId: string; sessionId: string };
+  sessionEmail: string;
+  method: string;
+  route: string;
+  repositoryClient?: LocalCreateGameRouteRepository;
+}): Promise<number> {
+  const repositoryClient = input.repositoryClient ?? repository;
+  let rawBody: Record<string, unknown>;
+
+  try {
+    rawBody = await parseJsonBody(input.request);
+  } catch {
+    return badRequest(input.request, input.response, "Request body must be valid JSON.");
+  }
+
+  const parsedBody = createGameRequestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return badRequest(
+      input.request,
+      input.response,
+      formatSchemaValidationError(parsedBody.error),
+    );
+  }
+
+  try {
+    const createRequestHash = buildCreateGameRecoveryRequestHash({
+      request: input.request,
+      sessionEmail: input.sessionEmail,
+      method: input.method,
+      route: input.route,
+      payload: parsedBody.data,
+    });
+    return await executeIdempotentMutation({
+      request: input.request,
+      response: input.response,
+      sessionEmail: input.sessionEmail,
+      method: input.method,
+      route: input.route,
+      requestPayload: parsedBody.data,
+      repositoryClient,
+      execute: async () => {
+        const game = await createGameWithDerivedRecords({
+          repositoryClient,
+          scope: input.scope,
+          allowExistingGameRecovery: createRequestHash !== null,
+          request: parsedBody.data,
+          createRequestHash,
+        });
+
+        return {
+          statusCode: 201,
+          payload: buildGameResponse(game),
+        };
+      },
+    });
+  } catch (error) {
+    if (error instanceof GameAlreadyExistsError) {
+      const replayStatus = await replayStoredIdempotencyMutation({
+        request: input.request,
+        response: input.response,
+        sessionEmail: input.sessionEmail,
+        method: input.method,
+        route: input.route,
+        requestPayload: parsedBody.data,
+        repositoryClient,
+      });
+      if (replayStatus !== null) {
+        return replayStatus;
+      }
+
+      return gameAlreadyExistsConflict(input.request, input.response, parsedBody.data.gameId);
+    }
+    if (error instanceof GameJoinCodeCollisionError) {
+      const replayStatus = await replayStoredIdempotencyMutation({
+        request: input.request,
+        response: input.response,
+        sessionEmail: input.sessionEmail,
+        method: input.method,
+        route: input.route,
+        requestPayload: parsedBody.data,
+        repositoryClient,
+      });
+      if (replayStatus !== null) {
+        return replayStatus;
+      }
+
+      return gameJoinCodeCollisionConflict(input.request, input.response);
+    }
+
+    throw error;
+  }
+}
+
 async function handleCreateGame(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1001,51 +2066,13 @@ async function handleCreateGame(
   method: string,
   route: string,
 ): Promise<number> {
-  let rawBody: Record<string, unknown>;
-
-  try {
-    rawBody = await parseJsonBody(request);
-  } catch {
-    return badRequest(request, response, "Request body must be valid JSON.");
-  }
-
-  const parsedBody = createGameRequestSchema.safeParse(rawBody);
-  if (!parsedBody.success) {
-    return badRequest(request, response, formatSchemaValidationError(parsedBody.error));
-  }
-
-  return executeIdempotentMutation({
+  return handleLocalCreateGameRoute({
     request,
     response,
+    scope,
     sessionEmail,
     method,
     route,
-    requestPayload: parsedBody.data,
-    execute: async () => {
-      const game = await repository.createGame({
-        gameId: parsedBody.data.gameId,
-        leagueId: scope.leagueId,
-        seasonId: scope.seasonId,
-        sessionId: scope.sessionId,
-        status: parsedBody.data.status,
-        gameStartTs: parsedBody.data.gameStartTs,
-        thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
-      });
-
-      await repository.createSessionGame({
-        sessionId: scope.sessionId,
-        gameId: game.gameId,
-        gameStartTs: game.gameStartTs,
-        leagueId: game.leagueId,
-        seasonId: game.seasonId,
-      });
-      await ensureGameTeamsForGame(game);
-
-      return {
-        statusCode: 201,
-        payload: buildGameResponse(game),
-      };
-    },
   });
 }
 
@@ -1419,12 +2446,121 @@ async function start(): Promise<void> {
         return;
       }
 
+      const missingJoinCodeMatch = route.match(/^\/v1\/join\/?$/);
+      if (method === "POST" && missingJoinCodeMatch) {
+        status = joinCodeRequired(request, response);
+        return;
+      }
+
+      const joinGameMatch = route.match(/^\/v1\/join\/([^/]+)$/);
+      if (method === "POST" && joinGameMatch) {
+        let joinCode: string;
+        try {
+          joinCode = normalizeJoinCodePathParam(decodeURIComponent(joinGameMatch[1]));
+        } catch {
+          status = joinCodeMalformed(request, response);
+          return;
+        }
+        if (joinCode.length === 0) {
+          status = joinCodeRequired(request, response);
+          return;
+        }
+        if (!isJoinCodePathParamValid(joinCode)) {
+          status = joinCodeInvalidFormat(request, response);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = joinGameRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        const parsedIdempotencyKey = parseOptionalIdempotencyKey(
+          readHeaderValue(request, "idempotency-key") ?? undefined,
+        );
+        status = await executeIdempotentMutation({
+          request,
+          response,
+          sessionEmail: PUBLIC_JOIN_IDEMPOTENCY_SUBJECT,
+          method,
+          route: `/v1/join/${joinCode}`,
+          requestPayload: parsedBody.data,
+          shouldPersistResponse: shouldPersistPublicJoinMutation,
+          execute: async () => {
+            let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
+            try {
+              joinResult = await repository.joinGameByCode({
+                joinCode,
+                playerId: parsedIdempotencyKey
+                  ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
+                  : `player-${randomUUID()}`,
+                nickname: parsedBody.data.nickname,
+              });
+            } catch (error) {
+              if (error instanceof GameJoinRegistrationError) {
+                if (error.code === "game_finished") {
+                  return {
+                    statusCode: 409,
+                    payload: {
+                      error: "conflict",
+                      code: "game_finished",
+                      message: error.message,
+                    },
+                  };
+                }
+
+                return {
+                  statusCode: 409,
+                  payload: {
+                    error: "conflict",
+                    code: "join_state_changed",
+                    message: "Game join state changed while registering this player. Reload and try again.",
+                  },
+                };
+              }
+
+              throw error;
+            }
+
+            if (!joinResult) {
+              return {
+                statusCode: 404,
+                payload: {
+                  error: "not_found",
+                  code: "invalid_join_code",
+                  message: "Join code was not found.",
+                },
+              };
+            }
+
+            return {
+              statusCode: 201,
+              payload: {
+                gameId: joinResult.game.gameId,
+                joinCode: joinResult.game.joinCode,
+                player: toPublicPlayer(joinResult.player),
+              },
+            };
+          },
+        });
+        return;
+      }
+
       if (
         authGate.session &&
         method === "GET" &&
         route === "/v1/leagues"
       ) {
-        const leagues = await repository.listLeaguesForUser(authGate.session.email);
+        const leagues = await listLeaguesForSession(authGate.session);
         status = 200;
         sendJsonWithCors(request, response, status, {
           leagues,
@@ -1458,7 +2594,7 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(getLeagueMatch[1]);
-        const access = await ensureLeagueAccess(leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -1476,7 +2612,55 @@ async function start(): Promise<void> {
         }
 
         status = 200;
-        sendJsonWithCors(request, response, status, league);
+        sendJsonWithCors(request, response, status, {
+          ...league,
+          access: {
+            role: access.role,
+          },
+        });
+        return;
+      }
+
+      const grantLeagueAccessMatch = route.match(/^\/v1\/leagues\/([^/]+)\/access$/);
+      if (method === "POST" && grantLeagueAccessMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(grantLeagueAccessMatch[1]);
+        const league = await repository.getLeague(leagueId);
+        if (!league) {
+          status = notFound(request, response, `League ${leagueId} was not found.`);
+          return;
+        }
+
+        let rawBody: Record<string, unknown>;
+        try {
+          rawBody = await parseJsonBody(request);
+        } catch {
+          status = badRequest(request, response, "Request body must be valid JSON.");
+          return;
+        }
+
+        const parsedBody = grantLeagueAccessRequestSchema.safeParse(rawBody);
+        if (!parsedBody.success) {
+          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
+          return;
+        }
+
+        const accessGrant = await repository.grantLeagueAccess({
+          leagueId,
+          userId: parsedBody.data.userId,
+          role: parsedBody.data.role,
+          grantedByUserId: authGate.session.email,
+        });
+        status = 200;
+        sendJsonWithCors(request, response, status, accessGrant);
         return;
       }
 
@@ -1514,7 +2698,7 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(listSeasonsMatch[1]);
-        const access = await ensureLeagueAccess(leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -1545,7 +2729,7 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(deleteLeagueMatch[1]);
-        const isAdmin = await ensureLeagueAdmin(leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
         if (!isAdmin) {
           status = forbidden(
             request,
@@ -1616,7 +2800,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(season.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -1650,7 +2834,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(season.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -1662,9 +2846,19 @@ async function start(): Promise<void> {
         }
 
         const games = await repository.listGamesForSeason(seasonId);
+        const gamesWithUsableJoinCodes = await Promise.all(
+          games.map(async (game) => {
+            return (
+              (await repository.getGame(game.gameId, {
+                consistentRead: true,
+                repairLegacyJoinCode: true,
+              })) ?? game
+            );
+          }),
+        );
         status = 200;
         sendJsonWithCors(request, response, status, {
-          games: games.map((game) => buildGameResponse(game)),
+          games: gamesWithUsableJoinCodes.map((game) => buildGameResponse(game)),
         });
         return;
       }
@@ -1687,7 +2881,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(season.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(season.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -1759,7 +2953,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const isAdmin = await ensureLeagueAdmin(season.leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(season.leagueId, sessionUserIds(authGate.session));
         if (!isAdmin) {
           status = forbidden(
             request,
@@ -1824,26 +3018,12 @@ async function start(): Promise<void> {
           return;
         }
 
-        const gameId = decodeURIComponent(getGameMatch[1]);
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
-        if (!access.allowed) {
-          status = forbidden(
-            request,
-            response,
-            "league_access_required",
-            `Access to league ${game.leagueId} is required.`,
-          );
-          return;
-        }
-
-        status = 200;
-        sendJsonWithCors(request, response, status, buildGameResponse(game));
+        status = await handleLocalGetGameRoute({
+          request,
+          response,
+          gameId: decodeURIComponent(getGameMatch[1]),
+          sessionEmail: authGate.session.email,
+        });
         return;
       }
 
@@ -1909,6 +3089,31 @@ async function start(): Promise<void> {
         return;
       }
 
+      const finishGameMatch = route.match(/^\/v1\/games\/([^/]+)\/finish$/);
+      if (method === "POST" && finishGameMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(finishGameMatch[1]);
+        const sessionEmail = authGate.session.email;
+
+        status = await handleLocalFinishGameRoute({
+          request,
+          response,
+          method,
+          route,
+          gameId,
+          sessionEmail,
+        });
+        return;
+      }
+
       const createGoalMatch = route.match(/^\/v1\/games\/([^/]+)\/goals$/);
       if (method === "POST" && createGoalMatch) {
         if (!authGate.session) {
@@ -1962,7 +3167,18 @@ async function start(): Promise<void> {
                 };
               }
 
-              if (!currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
+              const allowFinished = currentGame.status === "finished";
+              if (currentGame.status === "finished") {
+                const finishedBlock = await buildFinishedGameMutationBlock(
+                  currentGame,
+                  sessionEmail,
+                );
+                if (finishedBlock) {
+                  return finishedBlock;
+                }
+              }
+
+              if (!allowFinished && !currentGame.thirds.some((third) => third.startedAt && !third.finishedAt)) {
                 throw new GoalCreationError(
                   "no_active_third",
                   409,
@@ -1970,7 +3186,7 @@ async function start(): Promise<void> {
                 );
               }
 
-              await ensureGameTeamsForGame(currentGame);
+              await ensureGameTeamsForGame(currentGame, repository, { allowFinished });
               const result = await repository.createGoal({
                 gameId,
                 eventId: buildGoalEventId({
@@ -1985,6 +3201,7 @@ async function start(): Promise<void> {
                 scorerPlayerId: parsedBody.data.scorerPlayerId,
                 assistPlayerIds: parsedBody.data.assistPlayerIds,
                 ownGoal: parsedBody.data.ownGoal,
+                allowFinished,
               });
 
               if (!result) {
@@ -2064,12 +3281,35 @@ async function start(): Promise<void> {
             route,
             requestPayload: parsedBody.data,
             execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
               const result = await repository.updateGoal({
                 gameId,
                 eventId,
                 actorUserId: sessionEmail,
                 operationId: correctionOperation?.operationId,
                 operationRequestHash: correctionOperation?.operationRequestHash,
+                allowFinished: currentGame.status === "finished",
                 ...parsedBody.data,
               });
 
@@ -2139,12 +3379,35 @@ async function start(): Promise<void> {
             route,
             requestPayload,
             execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
               const result = await repository.deleteGoal({
                 gameId,
                 eventId,
                 actorUserId: sessionEmail,
                 operationId: correctionOperation?.operationId,
                 operationRequestHash: correctionOperation?.operationRequestHash,
+                allowFinished: currentGame.status === "finished",
               });
 
               if (!result) {
@@ -2225,11 +3488,34 @@ async function start(): Promise<void> {
             route,
             requestPayload: parsedBody.data,
             execute: async () => {
+              const currentGame = await repository.getGame(gameId);
+              if (!currentGame) {
+                return {
+                  statusCode: 404,
+                  payload: {
+                    error: "not_found",
+                    message: `Game ${gameId} was not found.`,
+                  },
+                };
+              }
+
+              const finishedBlock = await buildFinishedGameMutationBlock(
+                currentGame,
+                sessionEmail,
+              );
+              if (finishedBlock) {
+                return {
+                  statusCode: finishedBlock.statusCode,
+                  payload: finishedBlock.payload,
+                };
+              }
+
               const result = await repository.undoLastGoal({
                 gameId,
                 actorUserId: sessionEmail,
                 operationId: correctionOperation?.operationId,
                 operationRequestHash: correctionOperation?.operationRequestHash,
+                allowFinished: currentGame.status === "finished",
                 expectedEventId: parsedBody.data.expectedEventId,
               });
 
@@ -2262,6 +3548,47 @@ async function start(): Promise<void> {
         return;
       }
 
+      const listGameGoalsMatch = route.match(/^\/v1\/games\/([^/]+)\/goals$/);
+      if (method === "GET" && listGameGoalsMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const gameId = decodeURIComponent(listGameGoalsMatch[1]);
+        const game = await repository.getGame(gameId);
+        if (!game) {
+          status = notFound(request, response, `Game ${gameId} was not found.`);
+          return;
+        }
+
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${game.leagueId} is required.`,
+          );
+          return;
+        }
+
+        const teams = await readGameTeams(game);
+        const timeline = await repository.listGoalEvents(gameId);
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          scoreboard: {
+            teams,
+          },
+          timeline,
+        });
+        return;
+      }
+
       const listGameTeamsMatch = route.match(/^\/v1\/games\/([^/]+)\/teams$/);
       if (method === "GET" && listGameTeamsMatch) {
         if (!authGate.session) {
@@ -2280,7 +3607,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2308,9 +3635,23 @@ async function start(): Promise<void> {
           return;
         }
 
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
+        status = await handleLocalUpdateGameTeamRoute({
+          request,
+          response,
+          gameId,
+          teamId,
+        });
+        return;
+      }
+
+      const claimPlayerMatch = route.match(/^\/v1\/players\/([^/]+)\/claim$/);
+      if (method === "POST" && claimPlayerMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
           return;
         }
 
@@ -2322,21 +3663,45 @@ async function start(): Promise<void> {
           return;
         }
 
-        const parsedBody = upsertTeamRequestSchema.safeParse(rawBody);
+        const parsedBody = claimPlayerRequestSchema.safeParse(rawBody);
         if (!parsedBody.success) {
           status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
           return;
         }
 
-        await ensureGameTeamsForGame(game);
-        const team = await repository.createGameTeamOverride({
-          gameId,
-          teamId,
-          name: parsedBody.data.name,
-          color: parsedBody.data.color ?? null,
-        });
+        const playerId = decodeURIComponent(claimPlayerMatch[1]);
+        let player;
+        try {
+          player = await repository.claimPlayer({
+            playerId,
+            userId: sessionSubject(authGate.session),
+          });
+        } catch (error) {
+          if (error instanceof PlayerClaimError) {
+            status = 409;
+            sendJsonWithCors(request, response, status, {
+              error: "conflict",
+              code: error.code,
+              message: error.message,
+            });
+            return;
+          }
+
+          throw error;
+        }
+
+        if (!player) {
+          status = notFound(request, response, `Player ${playerId} was not found.`);
+          return;
+        }
+
         status = 200;
-        sendJsonWithCors(request, response, status, team);
+        sendJsonWithCors(request, response, status, {
+          player: toPublicPlayer(player),
+          claim: {
+            claimedByCurrentUser: true,
+          },
+        });
         return;
       }
 
@@ -2358,12 +3723,8 @@ async function start(): Promise<void> {
           return;
         }
 
-        const canManageRoster = await ensureLeagueRole(
-          game.leagueId,
-          authGate.session.email,
-          new Set(["admin", "scorekeeper"]),
-        );
-        if (!canManageRoster) {
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
+        if (!access.allowed || (access.role !== "admin" && access.role !== "scorekeeper")) {
           status = forbidden(
             request,
             response,
@@ -2375,7 +3736,7 @@ async function start(): Promise<void> {
 
         const search = requestUrl.searchParams.get("search")?.trim().toLowerCase() ?? "";
         const playerLinks = await repository.listGamePlayers(gameId);
-        const players = (
+        const playerEntries = (
           await Promise.all(
             playerLinks.map(async (link) => ({
               link,
@@ -2395,8 +3756,16 @@ async function start(): Promise<void> {
 
             return left.player.nickname.localeCompare(right.player.nickname);
           })
-          .slice(0, 20)
-          .map((entry) => toPublicPlayer(entry.player));
+          .slice(0, 20);
+        const players = await Promise.all(
+          playerEntries.map((entry) =>
+            toGamePlayerForLeagueRole({
+              player: entry.player,
+              leagueId: game.leagueId,
+              callerRole: access.role,
+            }),
+          ),
+        );
         status = 200;
         sendJsonWithCors(request, response, status, {
           players,
@@ -2437,22 +3806,76 @@ async function start(): Promise<void> {
         }
 
         const playerId = parsedBody.data.playerId ?? `player-${randomUUID()}`;
+        const sessionEmail = authGate.session.email;
         status = await executeIdempotentMutation({
           request,
           response,
-          sessionEmail: authGate.session.email,
+          sessionEmail,
           method,
           route,
           requestPayload: parsedBody.data,
           execute: async () => {
-            const player = await repository.createPlayer({
-              playerId,
-              nickname: parsedBody.data.nickname,
-            });
-            await repository.linkGamePlayer({
-              gameId,
-              playerId: player.playerId,
-            });
+            const currentGame = await repository.getGame(gameId);
+            if (!currentGame) {
+              return {
+                statusCode: 404,
+                payload: {
+                  error: "not_found",
+                  message: `Game ${gameId} was not found.`,
+                },
+              };
+            }
+
+            const finishedBlock = await buildFinishedGameMutationBlock(
+              currentGame,
+              sessionEmail,
+            );
+            if (finishedBlock) {
+              return {
+                statusCode: finishedBlock.statusCode,
+                payload: finishedBlock.payload,
+              };
+            }
+
+            const allowFinished =
+              currentGame.status === "finished" &&
+              (await ensureLeagueAdmin(currentGame.leagueId, sessionEmail));
+            let player;
+            try {
+              player = await repository.createAndLinkGamePlayer({
+                gameId,
+                playerId,
+                nickname: parsedBody.data.nickname,
+                allowFinished,
+              });
+            } catch (error) {
+              if (error instanceof GameMutationStateError) {
+                const latestGame = await repository.getGame(gameId);
+                if (latestGame) {
+                  const finishedBlockAfterRace = await buildFinishedGameMutationBlock(
+                    latestGame,
+                    sessionEmail,
+                  );
+                  if (finishedBlockAfterRace) {
+                    return {
+                      statusCode: finishedBlockAfterRace.statusCode,
+                      payload: finishedBlockAfterRace.payload,
+                    };
+                  }
+                }
+
+                return {
+                  statusCode: 409,
+                  payload: {
+                    error: "conflict",
+                    code: error.code,
+                    message: error.message,
+                  },
+                };
+              }
+
+              throw error;
+            }
 
             return {
               statusCode: 201,
@@ -2481,7 +3904,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const access = await ensureLeagueAccess(game.leagueId, authGate.session.email);
+        const access = await ensureLeagueAccess(game.leagueId, sessionUserIds(authGate.session));
         if (!access.allowed) {
           status = forbidden(
             request,
@@ -2508,6 +3931,27 @@ async function start(): Promise<void> {
           return;
         }
 
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const finishedLock = await ensureFinishedGameMutationAllowed(
+          request,
+          response,
+          game,
+          authGate.session.email,
+        );
+        if (!finishedLock.allowed) {
+          status = finishedLock.status;
+          return;
+        }
+
+        const isAdmin = await ensureLeagueAdmin(game.leagueId, sessionUserIds(authGate.session));
         let rawBody: Record<string, unknown>;
         try {
           rawBody = await parseJsonBody(request);
@@ -2534,11 +3978,41 @@ async function start(): Promise<void> {
           return;
         }
 
-        const assignment = await repository.assignRosterPlayer({
-          gameId,
-          teamId: parsedBody.data.teamId,
-          playerId,
-        });
+        let assignment;
+        try {
+          assignment = await repository.assignRosterPlayer({
+            gameId,
+            teamId: parsedBody.data.teamId,
+            playerId,
+            allowFinished: isAdmin,
+          });
+        } catch (error) {
+          if (error instanceof GameMutationStateError) {
+            const currentGame = await repository.getGame(gameId);
+            if (currentGame) {
+              const finishedLock = await ensureFinishedGameMutationAllowed(
+                request,
+                response,
+                currentGame,
+                authGate.session.email,
+              );
+              if (!finishedLock.allowed) {
+                status = finishedLock.status;
+                return;
+              }
+            }
+
+            status = 409;
+            sendJsonWithCors(request, response, status, {
+              error: "conflict",
+              code: error.code,
+              message: error.message,
+            });
+            return;
+          }
+
+          throw error;
+        }
         status = 200;
         sendJsonWithCors(request, response, status, {
           ...assignment,
@@ -2565,7 +4039,7 @@ async function start(): Promise<void> {
           return;
         }
 
-        const isAdmin = await ensureLeagueAdmin(existingGame.leagueId, authGate.session.email);
+        const isAdmin = await ensureLeagueAdmin(existingGame.leagueId, sessionUserIds(authGate.session));
         if (!isAdmin) {
           status = forbidden(
             request,
@@ -2632,27 +4106,12 @@ async function start(): Promise<void> {
           return;
         }
 
-        const gameId = decodeURIComponent(deleteGameMatch[1]);
-        const game = await repository.getGame(gameId);
-        if (!game) {
-          status = notFound(request, response, `Game ${gameId} was not found.`);
-          return;
-        }
-
-        const isAdmin = await ensureLeagueAdmin(game.leagueId, authGate.session.email);
-        if (!isAdmin) {
-          status = forbidden(
-            request,
-            response,
-            "admin_required",
-            `Admin role is required for league ${game.leagueId}.`,
-          );
-          return;
-        }
-
-        await repository.deleteGame(gameId);
-        status = 204;
-        sendNoContentWithCors(request, response);
+        status = await handleLocalDeleteGameRoute({
+          request,
+          response,
+          gameId: decodeURIComponent(deleteGameMatch[1]),
+          sessionEmail: authGate.session.email,
+        });
         return;
       }
 
@@ -2712,14 +4171,20 @@ async function start(): Promise<void> {
   });
 }
 
-start().catch((error) => {
-  console.error(
-    JSON.stringify({
-      level: "error",
-      service: "api",
-      message: "Failed to start API local server",
-      error: error instanceof Error ? error.message : "Unknown error",
-    }),
-  );
-  process.exitCode = 1;
-});
+const invokedAsScript = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (invokedAsScript) {
+  start().catch((error) => {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        service: "api",
+        message: "Failed to start API local server",
+        error: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+    process.exitCode = 1;
+  });
+}

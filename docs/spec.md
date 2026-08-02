@@ -52,7 +52,7 @@ gameId.
 - Team: PK=SEASON#{seasonId}    SK=TEAM#{teamId}
 - Session/Day: PK=SEASON#{seasonId} SK=SESSION#{yyyymmdd}
 - Game (metadata): PK=GAME#{gameId} SK=METADATA (leagueId, seasonId, sessionId,
-  date, location, thirdLength, status).
+  date, location, thirdLength, status, finishedAt, result).
 - GoalEvent (timeline): PK=GAME#{gameId}
   SK=GOAL#{third}#{gameMinuteSortable}#{elapsedSecondsSortable}#{eventId}
 - GoalEvent id marker: PK=GAME#{gameId} SK=GOAL_EVENT#{eventId}
@@ -107,6 +107,8 @@ POST  /v1/players/{playerId}/claim
 
 - Thirds reset each period; timer runs into stoppage; explicit Finish Third.
 - Client timer drives UX; server validates state/bounds.
+- Finish Game computes and stores result on the game metadata record using:
+  fewest conceded, then most scored, otherwise draw.
 
 ## 9. Undo/delete + audit (minimal)
 

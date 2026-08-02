@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   renderComponentShowcasePage,
   renderGamePage,
+  renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -193,15 +194,95 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-shell"/);
   assert.match(html, /data-page="game"/);
   assert.match(html, /game-20260223-a1b2c3d4/);
+  assert.match(html, /data-testid="game-join-code-value"/);
+  assert.match(html, /data-testid="game-join-link"/);
+  assert.match(html, /data-testid="game-join-qr"/);
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="create-another-game"/);
+  assert.match(html, /data-testid="game-mode-nav"/);
+  assert.match(html, /data-testid="game-mode-structure-tab"/);
+  assert.match(html, /data-testid="game-mode-players-tab"/);
+  assert.match(html, /data-testid="game-mode-run-tab"/);
+  assert.match(html, /data-testid="game-mode-final-tab"/);
+  assert.match(html, /data-mode-label="final"/);
+  assert.doesNotMatch(html, /role="tablist"/);
+  assert.doesNotMatch(html, /data-testid="game-mode-final-tab"[^>]*role="tab"/);
+  assert.doesNotMatch(html, /data-testid="game-mode-final-tab"[^>]*aria-controls=/);
+  assert.doesNotMatch(html, /id="game-mode-tab-final"[^>]*role="tab"/);
+  assert.doesNotMatch(html, /id="game-mode-tab-final"[^>]*aria-controls=/);
+  assert.match(html, /data-testid="game-mode-status"/);
+  assert.match(html, /data-testid="game-mode-structure"/);
+  assert.match(html, /data-testid="game-mode-players" hidden/);
+  assert.match(html, /data-testid="game-mode-run" data-mode-layout="run" hidden/);
+  assert.match(html, /data-testid="game-mode-final" hidden/);
+  assert.match(html, /data-testid="run-console"/);
+  assert.match(html, /data-testid="run-score-strip"/);
+  assert.match(html, /data-testid="run-primary-scoring"/);
+  assert.match(html, /data-testid="run-timer-bar"/);
+  assert.match(html, /data-testid="run-third-history"/);
+  assert.match(html, /data-testid="run-latest-goals"/);
   assert.match(html, /data-testid="panel-game-timer"/);
   assert.match(html, /data-testid="third-timer"/);
+  assert.match(html, /data-testid="timer-display"/);
   assert.match(html, /data-testid="start-third"/);
   assert.match(html, /data-testid="finish-third"/);
+  assert.match(html, /data-testid="finish-game"/);
+  assert.match(html, /data-testid="game-result-summary"/);
+  assert.match(html, /data-testid="panel-game-final"/);
+  assert.match(html, /data-testid="finalisation-board"/);
   assert.match(html, /data-testid="game-edit-third-length"/);
+  assert.ok(
+    html.indexOf('data-testid="game-mode-structure"') < html.indexOf('data-testid="game-mode-players"'),
+    "Structure mode should appear before player setup.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="game-mode-players"') < html.indexOf('data-testid="game-mode-run"'),
+    "Player setup should appear before run mode.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="game-mode-run"') < html.indexOf('data-testid="game-mode-final"'),
+    "Run mode should appear before finalisation.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-game-roster"') < html.indexOf('data-testid="panel-game-live"'),
+    "Roster setup should appear before live scoring in the game workflow.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-game-live"') < html.indexOf('data-testid="panel-game-timer"'),
+    "Run mode should prioritize live scoring before timer controls.",
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-game-timer"') < html.indexOf('data-testid="run-latest-goals"'),
+    "Timer controls should appear before the growing latest-goals history.",
+  );
+  assert.match(html, /data-testid="panel-game-live"/);
+  assert.match(html, /data-testid="live-scoreboard"/);
+  assert.match(html, /data-testid="goal-scoring-team"/);
+  assert.match(html, /data-testid="goal-conceding-team"/);
+  assert.match(html, /data-testid="goal-own-goal"/);
+  assert.match(html, /data-testid="goal-scorer"/);
+  assert.match(html, /data-testid="goal-assists"/);
+  assert.match(html, /data-testid="add-goal"/);
+  assert.match(html, /data-testid="undo-last-goal"/);
+  assert.match(html, /data-testid="goal-timeline"/);
   assert.match(html, /data-testid="panel-game-roster"/);
   assert.match(html, /data-testid="quick-create-player"/);
   assert.match(html, /data-testid="roster-teams"/);
+});
+
+test("join page renders player registration shell", () => {
+  const html = renderJoinPage("https://qa-api.3fc.football", "join0001");
+
+  assert.match(html, /data-testid="join-shell"/);
+  assert.match(html, /data-page="join"/);
+  assert.match(html, /data-join-code="join0001"/);
+  assert.match(html, /data-testid="join-code-value"/);
+  assert.match(html, /JOIN GAME|Join game/);
+  assert.match(html, /id="join-player-nickname"/);
+  assert.match(html, /data-testid="join-game"/);
+  assert.match(html, /data-testid="join-result"/);
+  assert.match(html, /data-testid="join-claim-actions"/);
+  assert.match(html, /data-testid="join-signin-link"/);
+  assert.match(html, /data-testid="claim-player"/);
 });

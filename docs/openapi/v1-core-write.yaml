@@ -1,15 +1,56 @@
 openapi: 3.1.0
 info:
-  title: 3FC Core Write API
+  title: 3FC Core API
   version: 0.1.0
   description: |
-    Authenticated core write routes for league/season/session/game creation, M2 roster setup, third timer control, and goal scoring.
+    Core routes for public join-code registration plus authenticated league/season/session/game creation,
+    M2 roster setup, third timer control, goal scoring reads and writes, and game finish.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/join:
+    post:
+      summary: Reject join registration without a join code
+      operationId: rejectMissingJoinCode
+      responses:
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /v1/join/{joinCode}:
+    post:
+      summary: Register a nickname player into a game by join code
+      operationId: joinGameByCode
+      parameters:
+        - name: joinCode
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 8
+            pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinGameRequest"
+      responses:
+        "201":
+          description: Player registered for the game
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinGameResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/JoinGameConflict"
   /v1/leagues:
     post:
       summary: Create league
@@ -37,6 +78,38 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}/access:
+    post:
+      summary: Grant league scoring or co-organiser access
+      operationId: grantLeagueAccess
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantLeagueAccessRequest"
+      responses:
+        "200":
+          description: League access granted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeagueAccessGrant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/leagues/{leagueId}/seasons:
     post:
       summary: Create season
@@ -138,7 +211,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/IdempotencyConflict"
+          $ref: "#/components/responses/CreateGameConflict"
   /v1/games/{gameId}/thirds/{third}/start:
     post:
       summary: Start a game third timer
@@ -195,7 +268,57 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+  /v1/games/{gameId}/finish:
+    post:
+      summary: Finish a game and compute final result
+      operationId: finishGame
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Game finished with deterministic winner or draw result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/games/{gameId}/goals:
+    get:
+      summary: List game goal timeline and scoreboard
+      operationId: listGameGoals
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current scoreboard and goal timeline for the game
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameGoalsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       summary: Create a goal event and update game scoring tallies
       operationId: createGoal
@@ -462,6 +585,38 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/players/{playerId}/claim:
+    post:
+      summary: Claim a joined player for the signed-in user
+      operationId: claimPlayer
+      parameters:
+        - name: playerId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimPlayerRequest"
+      responses:
+        "200":
+          description: Player claimed for the current signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimPlayerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/games/{gameId}/players:
     get:
       summary: List recent/searchable players for a game roster
@@ -651,6 +806,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    CreateGameConflict:
+      description: Idempotency key was reused with a different request payload, or the game/join code already exists
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    JoinGameConflict:
+      description: Idempotency key was reused with a different request payload, join registration is closed, or the join state changed while registering
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     IdempotencyConflict:
       description: Idempotency key was reused with a different request payload
       content:
@@ -731,7 +898,6 @@ components:
           enum:
             - scheduled
             - live
-            - finished
         thirdLengthMinutes:
           type: integer
           enum:
@@ -764,6 +930,34 @@ components:
         nickname:
           type: string
           minLength: 1
+    JoinGameRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - nickname
+      properties:
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 80
+    ClaimPlayerRequest:
+      type: object
+      additionalProperties: false
+    GrantLeagueAccessRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - userId
+        - role
+      properties:
+        userId:
+          type: string
+          minLength: 1
+        role:
+          type: string
+          enum:
+            - admin
+            - scorekeeper
     AssignRosterPlayerRequest:
       type: object
       additionalProperties: false
@@ -880,6 +1074,16 @@ components:
         updatedAt:
           type: string
           format: date-time
+        access:
+          type: object
+          additionalProperties: false
+          properties:
+            role:
+              type: string
+              enum:
+                - admin
+                - scorekeeper
+                - viewer
     Season:
       type: object
       required:
@@ -941,6 +1145,7 @@ components:
       type: object
       required:
         - gameId
+        - joinCode
         - leagueId
         - seasonId
         - sessionId
@@ -948,11 +1153,15 @@ components:
         - gameStartTs
         - thirdLengthMinutes
         - thirds
+        - finishedAt
+        - result
         - timer
         - createdAt
         - updatedAt
       properties:
         gameId:
+          type: string
+        joinCode:
           type: string
         leagueId:
           type: string
@@ -980,6 +1189,15 @@ components:
           maxItems: 3
           items:
             $ref: "#/components/schemas/ThirdTimerSegment"
+        finishedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/GameResult"
+            - type: "null"
         timer:
           $ref: "#/components/schemas/GameTimerState"
         createdAt:
@@ -988,6 +1206,80 @@ components:
         updatedAt:
           type: string
           format: date-time
+    GameResult:
+      type: object
+      required:
+        - winnerTeamId
+        - outcome
+        - comparator
+        - computedAt
+        - teams
+      properties:
+        winnerTeamId:
+          type:
+            - string
+            - "null"
+          enum:
+            - red
+            - blue
+            - yellow
+            - null
+        outcome:
+          type: string
+          enum:
+            - win
+            - draw
+        comparator:
+          type: string
+          enum:
+            - fewest_conceded_then_most_scored
+        computedAt:
+          type: string
+          format: date-time
+        teams:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/GameResultTeam"
+    GameResultTeam:
+      type: object
+      required:
+        - teamId
+        - name
+        - color
+        - scored
+        - conceded
+        - rank
+        - outcome
+      properties:
+        teamId:
+          type: string
+          enum:
+            - red
+            - blue
+            - yellow
+        name:
+          type: string
+        color:
+          type:
+            - string
+            - "null"
+        scored:
+          type: integer
+          minimum: 0
+        conceded:
+          type: integer
+          minimum: 0
+        rank:
+          type: integer
+          minimum: 1
+        outcome:
+          type: string
+          enum:
+            - win
+            - draw
+            - loss
     ThirdTimerSegment:
       type: object
       required:
@@ -1146,6 +1438,82 @@ components:
         updatedAt:
           type: string
           format: date-time
+        access:
+          $ref: "#/components/schemas/PlayerAccess"
+    PlayerAccess:
+      type: object
+      description: Present only to league admins when the player has claimed a signed-in user account.
+      required:
+        - userId
+        - role
+      properties:
+        userId:
+          type: string
+        role:
+          type:
+            - string
+            - "null"
+          enum:
+            - admin
+            - scorekeeper
+            - viewer
+            - null
+    ClaimPlayerResponse:
+      type: object
+      required:
+        - player
+        - claim
+      properties:
+        player:
+          $ref: "#/components/schemas/Player"
+        claim:
+          type: object
+          required:
+            - claimedByCurrentUser
+          properties:
+            claimedByCurrentUser:
+              type: boolean
+    LeagueAccessGrant:
+      type: object
+      required:
+        - leagueId
+        - userId
+        - role
+        - grantedByUserId
+        - createdAt
+        - updatedAt
+      properties:
+        leagueId:
+          type: string
+        userId:
+          type: string
+        role:
+          type: string
+          enum:
+            - admin
+            - scorekeeper
+            - viewer
+        grantedByUserId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    JoinGameResponse:
+      type: object
+      required:
+        - gameId
+        - joinCode
+        - player
+      properties:
+        gameId:
+          type: string
+        joinCode:
+          type: string
+        player:
+          $ref: "#/components/schemas/Player"
     RosterAssignment:
       type: object
       required:
@@ -1379,6 +1747,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/GameTeam"
+    GameGoalsResponse:
+      type: object
+      required:
+        - scoreboard
+        - timeline
+      properties:
+        scoreboard:
+          $ref: "#/components/schemas/GameScoreboard"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoalEvent"
     CreateGoalResponse:
       type: object
       required:

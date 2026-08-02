@@ -45,6 +45,10 @@ services:
       DYNAMODB_TABLE: "threefc_local"
       FAKE_SES_URL: "http://fake-ses:4025/send-email"
       FAKE_SES_FROM: "dev@3fc.football"
+      MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: "50"
+      MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS: "300"
+      MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS: "200"
+      MAGIC_LINK_RATE_LIMIT_IP_WINDOW_SECONDS: "300"
     depends_on:
       - dynamodb
       - fake-ses

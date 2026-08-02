@@ -11,10 +11,13 @@ const ROUTES = {
   assignRosterPlayer: /^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/,
   startGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/,
   finishGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/,
+  finishGame: /^\/v1\/games\/([^/]+)\/finish$/,
   createGoal: /^\/v1\/games\/([^/]+)\/goals$/,
   updateGoal: /^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/,
   deleteGoal: /^\/v1\/games\/([^/]+)\/goals\/([^/]+)$/,
   undoLastGoal: /^\/v1\/games\/([^/]+)\/goals\/undo-last$/,
+  claimPlayer: /^\/v1\/players\/([^/]+)\/claim$/,
+  grantLeagueAccess: /^\/v1\/leagues\/([^/]+)\/access$/,
 } as const;
 
 export type ProtectedMutationOperation =
@@ -28,10 +31,13 @@ export type ProtectedMutationOperation =
   | "assignRosterPlayer"
   | "startGameThird"
   | "finishGameThird"
+  | "finishGame"
   | "createGoal"
   | "updateGoal"
   | "deleteGoal"
-  | "undoLastGoal";
+  | "undoLastGoal"
+  | "claimPlayer"
+  | "grantLeagueAccess";
 
 export interface ProtectedMutationRoute {
   operation: ProtectedMutationOperation;
@@ -147,6 +153,14 @@ export function resolveProtectedMutationRoute(
     };
   }
 
+  const finishGameMatch = upperMethod === "POST" ? route.match(ROUTES.finishGame) : null;
+  if (finishGameMatch) {
+    return {
+      operation: "finishGame",
+      gameId: decodeRouteParam(finishGameMatch[1]),
+    };
+  }
+
   const createGoalMatch = upperMethod === "POST" ? route.match(ROUTES.createGoal) : null;
   if (createGoalMatch) {
     return {
@@ -176,6 +190,21 @@ export function resolveProtectedMutationRoute(
     return {
       operation: "undoLastGoal",
       gameId: decodeRouteParam(undoLastGoalMatch[1]),
+    };
+  }
+
+  const claimPlayerMatch = upperMethod === "POST" ? route.match(ROUTES.claimPlayer) : null;
+  if (claimPlayerMatch) {
+    return {
+      operation: "claimPlayer",
+    };
+  }
+
+  const grantLeagueAccessMatch = upperMethod === "POST" ? route.match(ROUTES.grantLeagueAccess) : null;
+  if (grantLeagueAccessMatch) {
+    return {
+      operation: "grantLeagueAccess",
+      leagueId: decodeRouteParam(grantLeagueAccessMatch[1]),
     };
   }
 
@@ -225,22 +254,37 @@ function missingScope(scopeType: "game" | "season" | "session", scopeId: string)
 }
 
 async function verifyLeagueAdmin(
-  userId: string,
+  userIds: string | readonly string[],
   leagueId: string,
   aclLookup: AclLookup,
 ): Promise<boolean> {
-  const access = await aclLookup.getLeagueAccess(leagueId, userId);
-  return access?.role === "admin";
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await aclLookup.getLeagueAccess(leagueId, userId);
+    if (access?.role === "admin") {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function verifyLeagueRole(
-  userId: string,
+  userIds: string | readonly string[],
   leagueId: string,
   aclLookup: AclLookup,
   allowedRoles: ReadonlySet<LeagueAclRecord["role"]>,
 ): Promise<boolean> {
-  const access = await aclLookup.getLeagueAccess(leagueId, userId);
-  return access ? allowedRoles.has(access.role) : false;
+  for (const userId of normalizeUserIds(userIds)) {
+    const access = await aclLookup.getLeagueAccess(leagueId, userId);
+    if (access && allowedRoles.has(access.role)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeUserIds(userIds: string | readonly string[]): string[] {
+  const values = Array.isArray(userIds) ? userIds : [userIds];
+  return values.filter((value, index) => value.trim().length > 0 && values.indexOf(value) === index);
 }
 
 async function resolveGameScope(
@@ -272,7 +316,7 @@ async function resolveGameScope(
 export async function authorizeProtectedMutation(
   method: string,
   route: string,
-  userId: string,
+  userId: string | readonly string[],
   aclLookup: AclLookup,
 ): Promise<AclAuthorizationResult> {
   const resolvedRoute = resolveProtectedMutationRoute(method, route);
@@ -296,7 +340,34 @@ export async function authorizeProtectedMutation(
     };
   }
 
+  if (resolvedRoute.operation === "claimPlayer") {
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: null,
+      error: null,
+    };
+  }
+
   if (resolvedRoute.operation === "createSeason") {
+    const leagueId = resolvedRoute.leagueId as string;
+    const isAdmin = await verifyLeagueAdmin(userId, leagueId, aclLookup);
+
+    if (!isAdmin) {
+      return forbiddenAdminRequired(leagueId);
+    }
+
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: { leagueId },
+      error: null,
+    };
+  }
+
+  if (resolvedRoute.operation === "grantLeagueAccess") {
     const leagueId = resolvedRoute.leagueId as string;
     const isAdmin = await verifyLeagueAdmin(userId, leagueId, aclLookup);
 

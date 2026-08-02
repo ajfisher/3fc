@@ -4,6 +4,9 @@ import { MAX_ASSISTS, TEAM_IDS, THIRD_LENGTH_MINUTES } from "@3fc/contracts";
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
 const teamIdSchema = z.enum(TEAM_IDS);
+const delegatedLeagueRoleSchema = z.enum(["admin", "scorekeeper"]);
+const joinCodePathPattern = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+export const PUBLIC_JOIN_NICKNAME_MAX_LENGTH = 80;
 const thirdLengthMinutesSchema = z.union([
   z.literal(THIRD_LENGTH_MINUTES[0]),
   z.literal(THIRD_LENGTH_MINUTES[1]),
@@ -45,7 +48,7 @@ export const createGameRequestSchema = z
   .object({
     gameId: nonEmptyTrimmedString,
     gameStartTs: nonEmptyTrimmedString,
-    status: z.enum(["scheduled", "live", "finished"]).optional(),
+    status: z.enum(["scheduled", "live"]).optional(),
     thirdLengthMinutes: thirdLengthMinutesSchema.optional(),
   })
   .strict();
@@ -63,6 +66,32 @@ export const quickCreateGamePlayerRequestSchema = z
     nickname: nonEmptyTrimmedString,
   })
   .strict();
+
+export const joinGameRequestSchema = z
+  .object({
+    nickname: nonEmptyTrimmedString.max(
+      PUBLIC_JOIN_NICKNAME_MAX_LENGTH,
+      `must be ${PUBLIC_JOIN_NICKNAME_MAX_LENGTH} characters or fewer`,
+    ),
+  })
+  .strict();
+
+export const claimPlayerRequestSchema = z.object({}).strict();
+
+export const grantLeagueAccessRequestSchema = z
+  .object({
+    userId: nonEmptyTrimmedString,
+    role: delegatedLeagueRoleSchema,
+  })
+  .strict();
+
+export function normalizeJoinCodePathParam(joinCode: string): string {
+  return joinCode.trim().toUpperCase();
+}
+
+export function isJoinCodePathParamValid(joinCode: string): boolean {
+  return joinCodePathPattern.test(joinCode);
+}
 
 export const assignRosterPlayerRequestSchema = z
   .object({
@@ -190,6 +219,7 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 export type CreateGameRequest = z.infer<typeof createGameRequestSchema>;
 export type UpsertTeamRequest = z.infer<typeof upsertTeamRequestSchema>;
 export type QuickCreateGamePlayerRequest = z.infer<typeof quickCreateGamePlayerRequestSchema>;
+export type JoinGameRequest = z.infer<typeof joinGameRequestSchema>;
 export type AssignRosterPlayerRequest = z.infer<typeof assignRosterPlayerRequestSchema>;
 export type CreateGoalRequest = z.infer<typeof createGoalRequestSchema>;
 export type UpdateGoalRequest = z.infer<typeof updateGoalRequestSchema>;

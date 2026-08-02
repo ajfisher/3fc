@@ -1,4 +1,10 @@
-import type { TeamId, ThirdLengthMinutes, ThirdNumber, ThirdTimerSegment } from "@3fc/contracts";
+import type {
+  GameResult,
+  TeamId,
+  ThirdLengthMinutes,
+  ThirdNumber,
+  ThirdTimerSegment,
+} from "@3fc/contracts";
 
 export type GameStatus = "scheduled" | "live" | "finished";
 export type LeagueRole = "admin" | "scorekeeper" | "viewer";
@@ -53,6 +59,8 @@ export interface SessionRecord {
 
 export interface GameRecord {
   gameId: string;
+  joinCode: string;
+  createRequestHash?: string;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -60,6 +68,8 @@ export interface GameRecord {
   gameStartTs: string;
   thirdLengthMinutes: ThirdLengthMinutes;
   thirds: ThirdTimerSegment[];
+  finishedAt: string | null;
+  result: GameResult | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,6 +80,13 @@ export interface SessionGameRecord {
   gameStartTs: string;
   leagueId: string;
   seasonId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GameJoinCodeRecord {
+  joinCode: string;
+  gameId: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -208,6 +225,7 @@ export interface CreateTeamInput {
   teamId: TeamId;
   name: string;
   color?: string | null;
+  createOnly?: boolean;
 }
 
 export interface CreateGameTeamInput {
@@ -215,6 +233,8 @@ export interface CreateGameTeamInput {
   teamId: TeamId;
   name: string;
   color?: string | null;
+  allowFinished?: boolean;
+  createOnly?: boolean;
 }
 
 export interface CreateSessionInput {
@@ -225,6 +245,8 @@ export interface CreateSessionInput {
 
 export interface CreateGameInput {
   gameId: string;
+  joinCode?: string | null;
+  createRequestHash?: string | null;
   leagueId: string;
   seasonId: string;
   sessionId: string;
@@ -247,6 +269,11 @@ export interface CreatePlayerInput {
   claimedByUserId?: string | null;
 }
 
+export interface CreateAndLinkGamePlayerInput extends CreatePlayerInput {
+  gameId: string;
+  allowFinished?: boolean;
+}
+
 export interface ListPlayersInput {
   search?: string | null;
   limit?: number;
@@ -255,6 +282,24 @@ export interface ListPlayersInput {
 export interface LinkGamePlayerInput {
   gameId: string;
   playerId: string;
+  allowFinished?: boolean;
+}
+
+export interface JoinGameByCodeInput {
+  joinCode: string;
+  playerId: string;
+  nickname: string;
+}
+
+export interface JoinGameByCodeResult {
+  game: GameRecord;
+  player: PlayerRecord;
+  link: GamePlayerRecord;
+}
+
+export interface ClaimPlayerInput {
+  playerId: string;
+  userId: string;
 }
 
 export interface GrantLeagueAccessInput {
@@ -268,12 +313,14 @@ export interface AssignRosterInput {
   gameId: string;
   teamId: TeamId;
   playerId: string;
+  allowFinished?: boolean;
 }
 
 export interface CreateGoalInput {
   gameId: string;
   eventId: string;
   actorUserId: string;
+  allowFinished?: boolean;
   scoringTeamId: TeamId | null;
   concedingTeamId: TeamId;
   scorerPlayerId: string;
@@ -295,6 +342,7 @@ export interface UpdateGoalInput {
   actorUserId: string;
   operationId?: string | null;
   operationRequestHash?: string | null;
+  allowFinished?: boolean;
   scoringTeamId?: TeamId | null;
   concedingTeamId?: TeamId;
   scorerPlayerId?: string;
@@ -318,6 +366,7 @@ export interface DeleteGoalInput {
   actorUserId: string;
   operationId?: string | null;
   operationRequestHash?: string | null;
+  allowFinished?: boolean;
   action?: Extract<GoalAuditAction, "goal_deleted" | "goal_undo_last">;
   expectedLatestEventId?: string;
 }
@@ -336,7 +385,12 @@ export interface UndoLastGoalInput {
   actorUserId: string;
   operationId?: string | null;
   operationRequestHash?: string | null;
+  allowFinished?: boolean;
   expectedEventId: string;
+}
+
+export interface FinishGameInput {
+  gameId: string;
 }
 
 export interface ThirdTransitionInput {

@@ -35,6 +35,10 @@ function rewriteToShell(uri) {
     return "/games/index.html";
   }
 
+  if (uri === "/join" || uri.indexOf("/join/") === 0) {
+    return "/join/index.html";
+  }
+
   return uri;
 }
 

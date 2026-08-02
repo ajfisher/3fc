@@ -14,9 +14,19 @@ import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
   formatThirdDisplayTime,
+  type TeamId,
 } from "@3fc/contracts";
 
-import { ThreeFcRepository } from "../data/repository.js";
+import {
+  buildJoinCodeForGameId,
+  GameAlreadyExistsError,
+  GameJoinCodeCollisionError,
+  GameJoinRegistrationError,
+  GameMutationStateError,
+  GameTimerTransitionError,
+  PlayerClaimError,
+  ThreeFcRepository,
+} from "../data/repository.js";
 
 type Item = Record<string, AttributeValue>;
 
@@ -30,6 +40,7 @@ class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
   private readonly queries: ObservedQuery[] = [];
   private beforeNextPut: (() => void) | null = null;
+  readonly getItemRequests: Array<{ pk: string; sk: string; consistentRead: boolean }> = [];
 
   seedItem(item: Item): void {
     const pk = this.readString(item.pk, "pk");
@@ -92,6 +103,11 @@ class InMemoryDynamoClient {
 
       const pk = this.readString(key.pk, "pk");
       const sk = this.readString(key.sk, "sk");
+      this.getItemRequests.push({
+        pk,
+        sk,
+        consistentRead: command.input.ConsistentRead === true,
+      });
       const item = this.items.get(`${pk}|${sk}`);
       return { Item: item };
     }
@@ -136,8 +152,8 @@ class InMemoryDynamoClient {
       const writes = command.input.TransactItems ?? [];
 
       for (const write of writes) {
-        if (!write.Put && !write.Delete) {
-          throw new Error("Test client only supports Put and Delete transaction items.");
+        if (!write.Put && !write.Delete && !write.ConditionCheck) {
+          throw new Error("Test client only supports Put, Delete, and ConditionCheck transaction items.");
         }
       }
 
@@ -207,6 +223,29 @@ class InMemoryDynamoClient {
               this.items.get(id),
               write.Delete.ExpressionAttributeNames ?? {},
               write.Delete.ExpressionAttributeValues ?? {},
+            )
+          ) {
+            throwConditionalCancellation(write);
+          }
+        }
+
+        if (write.ConditionCheck) {
+          const key = write.ConditionCheck.Key;
+          if (!key) {
+            throw new Error("TransactWriteItemsCommand ConditionCheck is missing Key.");
+          }
+
+          const pk = this.readString(key.pk, "pk");
+          const sk = this.readString(key.sk, "sk");
+          const id = `${pk}|${sk}`;
+
+          if (
+            write.ConditionCheck.ConditionExpression &&
+            !this.conditionMatches(
+              write.ConditionCheck.ConditionExpression,
+              this.items.get(id),
+              write.ConditionCheck.ExpressionAttributeNames ?? {},
+              write.ConditionCheck.ExpressionAttributeValues ?? {},
             )
           ) {
             throwConditionalCancellation(write);
@@ -325,6 +364,85 @@ function createRepositoryHarness(): { repository: ThreeFcRepository; client: InM
   };
 }
 
+function markStoredGameFinished(client: InMemoryDynamoClient, gameId: string): void {
+  const item = client.readItem(`GAME#${gameId}`, "METADATA");
+  assert.ok(item);
+  const rawData = item.data?.S;
+  if (typeof rawData !== "string") {
+    throw new Error("Stored game metadata is missing JSON data.");
+  }
+  const data = JSON.parse(rawData) as Record<string, unknown>;
+  item.data = {
+    S: JSON.stringify({
+      ...data,
+      status: "finished",
+      finishedAt: "2026-02-23T00:00:59.000Z",
+    }),
+  };
+  item.updatedAt = { S: "2026-02-23T00:00:59.000Z" };
+  client.seedItem(item);
+}
+
+function seedStoredGameTeam(
+  client: InMemoryDynamoClient,
+  input: {
+    gameId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    scored: number;
+    conceded: number;
+    createdAt: string;
+    updatedAt: string;
+  },
+): void {
+  client.seedItem({
+    pk: { S: `GAME#${input.gameId}` },
+    sk: { S: `TEAM#${input.teamId}` },
+    entityType: { S: "gameTeam" },
+    createdAt: { S: input.createdAt },
+    updatedAt: { S: input.updatedAt },
+    data: {
+      S: JSON.stringify({
+        gameId: input.gameId,
+        teamId: input.teamId,
+        name: input.name,
+        color: input.color,
+        scored: input.scored,
+        conceded: input.conceded,
+      }),
+    },
+  });
+}
+
+function seedStoredSeasonTeam(
+  client: InMemoryDynamoClient,
+  input: {
+    seasonId: string;
+    teamId: TeamId;
+    name: string;
+    color: string | null;
+    createdAt: string;
+    updatedAt: string;
+  },
+): void {
+  client.seedItem({
+    pk: { S: `SEASON#${input.seasonId}` },
+    sk: { S: `TEAM#${input.teamId}` },
+    entityType: { S: "team" },
+    createdAt: { S: input.createdAt },
+    updatedAt: { S: input.updatedAt },
+    data: {
+      S: JSON.stringify({
+        seasonId: input.seasonId,
+        teamId: input.teamId,
+        name: input.name,
+        color: input.color,
+      }),
+    },
+  });
+}
+
 test("repository supports round-trip create/read for core entities", async () => {
   const repository = createRepository();
 
@@ -371,6 +489,9 @@ test("repository supports round-trip create/read for core entities", async () =>
     gameStartTs: "2026-02-22T10:00:00Z",
   });
   assert.deepEqual(await repository.getGame("game-1"), game);
+  assert.match(game.joinCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.deepEqual(await repository.getGameByJoinCode(game.joinCode), game);
+  assert.deepEqual(await repository.getGameByJoinCode(game.joinCode.toLowerCase()), game);
 
   const gameTeam = await repository.createGameTeamOverride({
     gameId: "game-1",
@@ -393,6 +514,16 @@ test("repository supports round-trip create/read for core entities", async () =>
   });
   assert.deepEqual(await repository.listGamePlayers("game-1"), [gamePlayer]);
 
+  const joinResult = await repository.joinGameByCode({
+    joinCode: game.joinCode.toLowerCase(),
+    playerId: "player-join",
+    nickname: "Nia",
+  });
+  assert.ok(joinResult);
+  assert.equal(joinResult.game.gameId, "game-1");
+  assert.deepEqual(await repository.getPlayer("player-join"), joinResult.player);
+  assert.deepEqual(await repository.listGamePlayers("game-1"), [gamePlayer, joinResult.link]);
+
   const accessGrant = await repository.grantLeagueAccess({
     leagueId: "league-1",
     userId: "user-scorekeeper",
@@ -413,7 +544,7 @@ test("repository supports round-trip create/read for core entities", async () =>
     playerId: "player-1",
   });
   assert.deepEqual(await repository.listGameRoster("game-1"), [rosterAssignment]);
-  assert.equal((await repository.listGamePlayers("game-1")).length, 1);
+  assert.equal((await repository.listGamePlayers("game-1")).length, 2);
 
   const reassignedRoster = await repository.assignRosterPlayer({
     gameId: "game-1",
@@ -422,6 +553,213 @@ test("repository supports round-trip create/read for core entities", async () =>
   });
   assert.deepEqual(await repository.listGameRoster("game-1"), [reassignedRoster]);
   assert.equal(reassignedRoster.teamId, "blue");
+});
+
+test("repository claims players idempotently for one user and rejects another user", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createPlayer({
+    playerId: "player-claim",
+    nickname: "Claim Me",
+  });
+
+  const claimed = await repository.claimPlayer({
+    playerId: "player-claim",
+    userId: "delegate@example.com",
+  });
+  assert.equal(claimed?.claimedByUserId, "delegate@example.com");
+  const claimItem = client.readItem("USER#delegate@example.com", "PLAYER#player-claim");
+  assert.equal(claimItem?.entityType?.S, "playerClaim");
+  assert.equal(claimItem?.data?.S, JSON.stringify({
+    userId: "delegate@example.com",
+    playerId: "player-claim",
+  }));
+
+  const replayed = await repository.claimPlayer({
+    playerId: "player-claim",
+    userId: "delegate@example.com",
+  });
+  assert.deepEqual(replayed, claimed);
+
+  await assert.rejects(
+    repository.claimPlayer({
+      playerId: "player-claim",
+      userId: "other@example.com",
+    }),
+    (error: unknown) =>
+      error instanceof PlayerClaimError &&
+      error.code === "player_already_claimed" &&
+      error.statusCode === 409,
+  );
+});
+
+test("repository grants league access monotonically without downgrading admins", async () => {
+  const { repository } = createRepositoryHarness();
+
+  const scorerGrant = await repository.grantLeagueAccess({
+    leagueId: "league-1",
+    userId: "delegate-subject",
+    role: "scorekeeper",
+    grantedByUserId: "admin-subject",
+  });
+  assert.equal(scorerGrant.role, "scorekeeper");
+
+  const adminGrant = await repository.grantLeagueAccess({
+    leagueId: "league-1",
+    userId: "delegate-subject",
+    role: "admin",
+    grantedByUserId: "admin-subject",
+  });
+  assert.equal(adminGrant.role, "admin");
+
+  const staleScorerGrant = await repository.grantLeagueAccess({
+    leagueId: "league-1",
+    userId: "delegate-subject",
+    role: "scorekeeper",
+    grantedByUserId: "admin-subject",
+  });
+  assert.equal(staleScorerGrant.role, "admin");
+
+  const storedAccess = await repository.getLeagueAccess("league-1", "delegate-subject");
+  assert.equal(storedAccess?.role, "admin");
+});
+
+test("repository rejects creating games directly as finished", async () => {
+  const repository = createRepository();
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-finished",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      status: "finished",
+      gameStartTs: "2026-02-22T10:00:00Z",
+    }),
+    (error: unknown) =>
+      error instanceof GameTimerTransitionError &&
+      error.code === "invalid_status_transition" &&
+      /cannot be created directly as finished/.test(error.message),
+  );
+});
+
+test("repository rejects duplicate join code lookup records", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-join-a",
+    joinCode: "SHARED23",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-join-b",
+      joinCode: "SHARED23",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T11:00:00Z",
+    }),
+    GameJoinCodeCollisionError,
+  );
+  assert.equal(await repository.getGame("game-join-b"), null);
+});
+
+test("repository rejects custom join codes that do not match the public contract", async () => {
+  const repository = createRepository();
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-invalid-join-code",
+      joinCode: "STRONG01",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T10:00:00Z",
+    }),
+    /joinCode must be 8 uppercase non-ambiguous letters or digits/,
+  );
+  assert.equal(await repository.getGame("game-invalid-join-code"), null);
+});
+
+test("repository distinguishes duplicate game IDs from join-code collisions", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-existing",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-existing",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T11:00:00Z",
+    }),
+    GameAlreadyExistsError,
+  );
+});
+
+test("repository rethrows non-conditional transaction cancellation when creating games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.runBeforeNextPut(() => {
+    const error = new Error("Create game transaction validation failed.");
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).name = "TransactionCanceledException";
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).CancellationReasons = [{ Code: "ValidationError" }];
+    throw error;
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-create-cancelled",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T11:00:00Z",
+    }),
+    /Create game transaction validation failed/,
+  );
+  assert.equal(await repository.getGame("game-create-cancelled"), null);
+});
+
+test("repository strongly reads game join-code lookups", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  const game = await repository.createGame({
+    gameId: "game-join-strong",
+    joinCode: "STRNG234",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  client.getItemRequests.length = 0;
+
+  assert.deepEqual(await repository.getGameByJoinCode("strng234"), game);
+  assert.deepEqual(
+    client.getItemRequests.map((request) => request.consistentRead),
+    [true, true],
+  );
 });
 
 test("repository query supports deterministic session->games ordering", async () => {
@@ -809,7 +1147,338 @@ test("repository supports update and delete of games", async () => {
   assert.deepEqual(await repository.listSessionsForSeason("season-1"), []);
 });
 
-test("repository gives legacy games default timer state", async () => {
+test("repository does not delete a game if it finishes before the delete transaction commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  assert.equal(await repository.deleteGame("game-1"), false);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository rejects roster assignment if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createPlayer({
+    playerId: "player-red",
+    nickname: "Red Player",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.assignRosterPlayer({
+      gameId: "game-1",
+      teamId: "red",
+      playerId: "player-red",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.deepEqual(await repository.listGameRoster("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository rejects team overrides if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.createGameTeamOverride({
+      gameId: "game-1",
+      teamId: "red",
+      name: "Renamed Red",
+      color: "#cc0000",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository create-only team overrides preserve existing score state", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  seedStoredGameTeam(client, {
+    gameId: "game-1",
+    teamId: "red",
+    name: "Live Red",
+    color: "#d83b36",
+    scored: 3,
+    conceded: 1,
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+
+  const preserved = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(preserved, {
+    gameId: "game-1",
+    teamId: "red",
+    name: "Live Red",
+    color: "#d83b36",
+    scored: 3,
+    conceded: 1,
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), [preserved]);
+});
+
+test("repository create-only season teams preserve existing configuration", async () => {
+  const { repository, client } = createRepositoryHarness();
+  seedStoredSeasonTeam(client, {
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Custom Red",
+    color: "#aa0000",
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+
+  const preserved = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(preserved, {
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Custom Red",
+    color: "#aa0000",
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:02:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForSeason("season-1"), [preserved]);
+});
+
+test("repository create-only season teams do not replace concurrent teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+  client.runBeforeNextPut(() => {
+    seedStoredSeasonTeam(client, {
+      seasonId: "season-1",
+      teamId: "red",
+      name: "Concurrent Red",
+      color: "#bb0000",
+      createdAt: "2026-02-22T10:01:00.000Z",
+      updatedAt: "2026-02-22T10:03:00.000Z",
+    });
+  });
+
+  const concurrent = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(concurrent, {
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Concurrent Red",
+    color: "#bb0000",
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:03:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForSeason("season-1"), [concurrent]);
+});
+
+test("repository create-only team overrides do not replace concurrent teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  client.runBeforeNextPut(() => {
+    seedStoredGameTeam(client, {
+      gameId: "game-1",
+      teamId: "red",
+      name: "Concurrent Red",
+      color: "#d83b36",
+      scored: 2,
+      conceded: 4,
+      createdAt: "2026-02-22T10:01:00.000Z",
+      updatedAt: "2026-02-22T10:03:00.000Z",
+    });
+  });
+
+  const concurrent = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+    createOnly: true,
+  });
+
+  assert.deepEqual(concurrent, {
+    gameId: "game-1",
+    teamId: "red",
+    name: "Concurrent Red",
+    color: "#d83b36",
+    scored: 2,
+    conceded: 4,
+    createdAt: "2026-02-22T10:01:00.000Z",
+    updatedAt: "2026-02-22T10:03:00.000Z",
+  });
+  assert.deepEqual(await repository.listTeamsForGame("game-1"), [concurrent]);
+});
+
+test("repository rejects game player links if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createPlayer({
+    playerId: "player-late",
+    nickname: "Late",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.linkGamePlayer({
+      gameId: "game-1",
+      playerId: "player-late",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.deepEqual(await repository.listGamePlayers("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository rejects quick player creation if the game finalizes before the write commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.createAndLinkGamePlayer({
+      gameId: "game-1",
+      playerId: "player-late",
+      nickname: "Late",
+    }),
+    (error) =>
+      error instanceof GameMutationStateError &&
+      error.code === "game_state_changed",
+  );
+  assert.equal(await repository.getPlayer("player-late"), null);
+  assert.deepEqual(await repository.listGamePlayers("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
+});
+
+test("repository quick player creation preserves existing player claims", async () => {
+  const repository = createRepository();
+
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createPlayer({
+    playerId: "player-claimed",
+    nickname: "Claimed",
+    claimedByUserId: "delegate@example.com",
+  });
+
+  const linked = await repository.createAndLinkGamePlayer({
+    gameId: "game-1",
+    playerId: "player-claimed",
+    nickname: "Replacement",
+  });
+
+  assert.equal(linked.nickname, "Claimed");
+  assert.equal(linked.claimedByUserId, "delegate@example.com");
+  assert.deepEqual(await repository.listGamePlayers("game-1"), [
+    {
+      gameId: "game-1",
+      playerId: "player-claimed",
+      createdAt: "2026-02-22T00:00:02.000Z",
+      updatedAt: "2026-02-22T00:00:02.000Z",
+    },
+  ]);
+  assert.deepEqual(await repository.getPlayer("player-claimed"), {
+    playerId: "player-claimed",
+    nickname: "Claimed",
+    claimedByUserId: "delegate@example.com",
+    createdAt: "2026-02-22T00:00:01.000Z",
+    updatedAt: "2026-02-22T00:00:01.000Z",
+  });
+});
+
+test("repository gives legacy games default timer state without repairing join codes by default", async () => {
   const { repository, client } = createRepositoryHarness();
 
   client.seedItem({
@@ -833,6 +1502,377 @@ test("repository gives legacy games default timer state", async () => {
   const game = await repository.getGame("game-legacy");
   assert.equal(game?.thirdLengthMinutes, DEFAULT_THIRD_LENGTH_MINUTES);
   assert.deepEqual(game?.thirds, createDefaultThirdTimerSegments());
+  assert.equal(game?.joinCode, buildJoinCodeForGameId("game-legacy"));
+  const lookupItem = client.readItem(`JOIN_CODE#${buildJoinCodeForGameId("game-legacy")}`, "METADATA");
+  assert.equal(lookupItem ?? null, null);
+});
+
+test("repository repairs legacy game join codes with a random usable lookup when requested", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const game = await repository.getGame("game-legacy", { repairLegacyJoinCode: true });
+  assert.ok(game);
+  assert.match(game.joinCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.notEqual(game.joinCode, buildJoinCodeForGameId("game-legacy"));
+  assert.deepEqual(await repository.getGameByJoinCode(game.joinCode), game);
+  const lookupItem = client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA");
+  assert.equal(lookupItem?.entityType?.S, "gameJoinCode");
+  assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
+    joinCode: game.joinCode,
+    gameId: "game-legacy",
+  });
+});
+
+test("repository repairs legacy game join-code collisions with a usable fallback", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
+  const currentGame = await repository.createGame({
+    gameId: "game-current",
+    joinCode: claimedJoinCode,
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-current",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T11:00:00.000Z",
+      }),
+    },
+  });
+
+  const repairedGame = await repository.getGame("game-legacy", { repairLegacyJoinCode: true });
+  assert.ok(repairedGame);
+  assert.notEqual(repairedGame.joinCode, claimedJoinCode);
+  assert.deepEqual(await repository.getGameByJoinCode(claimedJoinCode), currentGame);
+  assert.deepEqual(await repository.getGameByJoinCode(repairedGame.joinCode), repairedGame);
+
+  const storedGame = client.readItem("GAME#game-legacy", "METADATA");
+  assert.equal(JSON.parse(storedGame?.data?.S ?? "{}").joinCode, repairedGame.joinCode);
+  const repairedLookup = client.readItem(`JOIN_CODE#${repairedGame.joinCode}`, "METADATA");
+  assert.deepEqual(JSON.parse(repairedLookup?.data?.S ?? "{}"), {
+    joinCode: repairedGame.joinCode,
+    gameId: "game-legacy",
+  });
+});
+
+test("repository repairs missing legacy join codes before game metadata mutations", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const updatedGame = await repository.updateGame({
+    gameId: "game-legacy",
+    gameStartTs: "2026-02-22T10:15:00.000Z",
+  });
+  assert.ok(updatedGame);
+  assert.match(updatedGame.joinCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.notEqual(updatedGame.joinCode, buildJoinCodeForGameId("game-legacy"));
+
+  const storedGame = client.readItem("GAME#game-legacy", "METADATA");
+  assert.equal(JSON.parse(storedGame?.data?.S ?? "{}").joinCode, updatedGame.joinCode);
+  const lookupItem = client.readItem(`JOIN_CODE#${updatedGame.joinCode}`, "METADATA");
+  assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
+    joinCode: updatedGame.joinCode,
+    gameId: "game-legacy",
+  });
+  assert.deepEqual(await repository.getGameByJoinCode(updatedGame.joinCode), updatedGame);
+});
+
+test("repository repairs stored join codes that are missing lookup ownership", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        joinCode: "LEGACY23",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const repairedGame = await repository.getGame("game-legacy", { repairLegacyJoinCode: true });
+  assert.ok(repairedGame);
+  assert.equal(repairedGame.joinCode, "LEGACY23");
+  const lookupItem = client.readItem("JOIN_CODE#LEGACY23", "METADATA");
+  assert.deepEqual(JSON.parse(lookupItem?.data?.S ?? "{}"), {
+    joinCode: "LEGACY23",
+    gameId: "game-legacy",
+  });
+  assert.deepEqual(await repository.getGameByJoinCode("LEGACY23"), repairedGame);
+});
+
+test("repository does not delete another game's join-code lookup for legacy games", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
+  const currentGame = await repository.createGame({
+    gameId: "game-current",
+    joinCode: claimedJoinCode,
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-current",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-legacy",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T11:00:00.000Z",
+      }),
+    },
+  });
+
+  assert.equal(await repository.deleteGame("game-legacy"), true);
+  assert.equal(await repository.getGame("game-legacy"), null);
+  assert.deepEqual(await repository.getGameByJoinCode(claimedJoinCode), currentGame);
+});
+
+test("repository leaves game and join-code lookup intact if delete sees a join-code race", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-delete-race",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected join code lookup item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      gameId: string;
+      joinCode: string;
+    };
+    item.data.S = JSON.stringify({
+      ...data,
+      gameId: "game-other",
+    });
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+    client.seedItem(item);
+  });
+
+  assert.equal(await repository.deleteGame("game-delete-race"), false);
+  assert.deepEqual(await repository.getGame("game-delete-race"), game);
+  assert.equal(
+    JSON.parse(client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA")?.data?.S ?? "{}").gameId,
+    "game-other",
+  );
+});
+
+test("repository rejects join registration for finished games without creating a player", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-finished-join",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  markStoredGameFinished(client, "game-finished-join");
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-late",
+      nickname: "Late",
+    }),
+    (error) =>
+      error instanceof GameJoinRegistrationError &&
+      error.code === "game_finished" &&
+      error.statusCode === 409,
+  );
+  assert.equal(await repository.getPlayer("player-late"), null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+});
+
+test("repository rejects join registration if join code lookup changes before write", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-join-code-race",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem(`JOIN_CODE#${game.joinCode}`, "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected join code lookup item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      gameId: string;
+    };
+    data.gameId = "game-rotated-join-code";
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-racy-join",
+      nickname: "Racy Join",
+    }),
+    (error) =>
+      error instanceof GameJoinRegistrationError &&
+      error.code === "join_state_changed" &&
+      error.statusCode === 409,
+  );
+  assert.equal(await repository.getPlayer("player-racy-join"), null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+});
+
+test("repository replays existing public join registration after idempotency recording failures", async () => {
+  const repository = createRepository();
+  const game = await repository.createGame({
+    gameId: "game-join-replay",
+    joinCode: "REPLAY23",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    status: "live",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  const firstJoin = await repository.joinGameByCode({
+    joinCode: game.joinCode,
+    playerId: "player-join-replay",
+    nickname: "Nia",
+  });
+  assert.ok(firstJoin);
+
+  const replayedJoin = await repository.joinGameByCode({
+    joinCode: game.joinCode,
+    playerId: "player-join-replay",
+    nickname: "Nia",
+  });
+  assert.deepEqual(replayedJoin, firstJoin);
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-join-replay",
+      nickname: "Mia",
+    }),
+    (error) =>
+      error instanceof GameJoinRegistrationError &&
+      error.code === "join_state_changed",
+  );
+});
+
+test("repository rethrows non-conditional transaction cancellation when joining by code", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({
+    gameId: "game-join-cancelled",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+
+  client.runBeforeNextPut(() => {
+    const error = new Error("Join transaction validation failed.");
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).name = "TransactionCanceledException";
+    (
+      error as Error & {
+        name: string;
+        CancellationReasons: Array<{ Code: string }>;
+      }
+    ).CancellationReasons = [{ Code: "ValidationError" }];
+    throw error;
+  });
+
+  await assert.rejects(
+    repository.joinGameByCode({
+      joinCode: game.joinCode,
+      playerId: "player-join-cancelled",
+      nickname: "Join Cancelled",
+    }),
+    /Join transaction validation failed/,
+  );
+  assert.equal(await repository.getPlayer("player-join-cancelled"), null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
 });
 
 test("repository enforces third timer transitions in order", async () => {
@@ -962,7 +2002,7 @@ test("timer display formatting switches to stoppage after nominal length", () =>
 });
 
 test("repository locks third length after timer starts and rejects finished games", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   await repository.createGame({
     gameId: "game-1",
@@ -994,27 +2034,39 @@ test("repository locks third length after timer starts and rejects finished game
     /Third length cannot be changed after a third has started/,
   );
 
-  await repository.updateGame({
-    gameId: "game-1",
-    status: "finished",
-  });
   await assert.rejects(
-    repository.finishGameThird({ gameId: "game-1", third: 1 }),
+    repository.updateGame({
+      gameId: "game-1",
+      status: "finished",
+    }),
+    /Use POST \/v1\/games\/\{gameId\}\/finish/,
+  );
+
+  await repository.createGame({
+    gameId: "game-finished",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T11:00:00Z",
+  });
+  markStoredGameFinished(client, "game-finished");
+  await assert.rejects(
+    repository.finishGameThird({ gameId: "game-finished", third: 1 }),
     /Cannot finish a third after the game is finished/,
   );
 });
 
 test("repository rejects third length changes on finished games even before timer starts", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   await repository.createGame({
     gameId: "game-1",
     leagueId: "league-1",
     seasonId: "season-1",
     sessionId: "session-1",
-    status: "finished",
     gameStartTs: "2026-02-22T10:00:00Z",
   });
+  markStoredGameFinished(client, "game-1");
 
   await assert.rejects(
     repository.updateGame({
@@ -1056,7 +2108,7 @@ test("repository blocks deleting season or league while descendants exist", asyn
 });
 
 test("repository supports idempotency record create/get semantics", async () => {
-  const repository = createRepository();
+  const { repository, client } = createRepositoryHarness();
 
   const created = await repository.createIdempotencyRecord({
     scope: "admin@example.com:POST:/v1/leagues",
@@ -1074,6 +2126,7 @@ test("repository supports idempotency record create/get semantics", async () => 
     responseBody: JSON.stringify({ leagueId: "league-1" }),
   });
 
+  client.getItemRequests.length = 0;
   const record = await repository.getIdempotencyRecord(
     "admin@example.com:POST:/v1/leagues",
     "create-league-1",
@@ -1084,6 +2137,10 @@ test("repository supports idempotency record create/get semantics", async () => 
   assert.equal(record?.requestHash, "hash-1");
   assert.equal(record?.responseStatusCode, 201);
   assert.equal(record?.responseBody, JSON.stringify({ leagueId: "league-1" }));
+  assert.deepEqual(
+    client.getItemRequests.map((request) => request.consistentRead),
+    [true],
+  );
 });
 
 async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {
@@ -1122,6 +2179,678 @@ async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {
     });
   }
 }
+
+async function completeAllThirds(repository: ThreeFcRepository, input: { firstThirdStarted?: boolean } = {}): Promise<void> {
+  for (const third of [1, 2, 3] as const) {
+    if (!(input.firstThirdStarted && third === 1)) {
+      await repository.startGameThird({ gameId: "game-1", third });
+    }
+    await repository.finishGameThird({ gameId: "game-1", third });
+  }
+}
+
+test("repository finishes a game with deterministic clear-winner result", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finish-1",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finish-2",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finish-3",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-yellow",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await completeAllThirds(repository, { firstThirdStarted: true });
+
+  const finished = await repository.finishGame({ gameId: "game-1" });
+
+  assert.ok(finished);
+  assert.equal(finished.status, "finished");
+  assert.match(finished.finishedAt ?? "", /^2026-02-22T00:00:\d{2}\.000Z$/);
+  assert.equal(finished.result?.winnerTeamId, "yellow");
+  assert.equal(finished.result?.outcome, "win");
+  assert.equal(finished.result?.comparator, "fewest_conceded_then_most_scored");
+  assert.deepEqual(
+    finished.result?.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "yellow", scored: 2, conceded: 0, rank: 1, outcome: "win" },
+      { teamId: "red", scored: 1, conceded: 1, rank: 2, outcome: "loss" },
+      { teamId: "blue", scored: 0, conceded: 2, rank: 3, outcome: "loss" },
+    ],
+  );
+  assert.deepEqual(await repository.finishGame({ gameId: "game-1" }), finished);
+});
+
+test("repository finishes a game with full draw result", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await completeAllThirds(repository);
+
+  const finished = await repository.finishGame({ gameId: "game-1" });
+
+  assert.ok(finished);
+  assert.equal(finished.status, "finished");
+  assert.equal(finished.result?.winnerTeamId, null);
+  assert.equal(finished.result?.outcome, "draw");
+  assert.deepEqual(
+    finished.result?.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "red", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+      { teamId: "blue", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+      { teamId: "yellow", scored: 0, conceded: 0, rank: 1, outcome: "draw" },
+    ],
+  );
+});
+
+test("repository normalizes persisted game results to contract-safe values", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await repository.createGame({
+    gameId: "game-result-normalize",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00.000Z",
+  });
+
+  const item = client.readItem("GAME#game-result-normalize", "METADATA");
+  if (!item?.data?.S) {
+    throw new Error("Expected seeded game item.");
+  }
+
+  const data = JSON.parse(item.data.S) as {
+    status: "scheduled" | "live" | "finished";
+    finishedAt: string | null;
+    result: unknown;
+  };
+  data.status = "finished";
+  data.finishedAt = "not-a-date";
+  data.result = {
+    winnerTeamId: "red",
+    outcome: "draw",
+    comparator: "fewest_conceded_then_most_scored",
+    computedAt: "2026-02-22T00:01:39.000Z",
+    teams: [
+      {
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        scored: 1,
+        conceded: 0,
+        rank: 0,
+        outcome: "draw",
+      },
+      {
+        teamId: "blue",
+        name: "Blue",
+        color: "#2364d2",
+        scored: 0,
+        conceded: 1,
+        rank: 2,
+        outcome: "loss",
+      },
+      {
+        teamId: "yellow",
+        name: "Yellow",
+        color: "#e0a612",
+        scored: 0,
+        conceded: 0,
+        rank: 2,
+        outcome: "loss",
+      },
+    ],
+  };
+  const validResultPayload = data.result as Record<string, unknown>;
+  item.data.S = JSON.stringify(data);
+  item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+  client.seedItem(item);
+
+  const normalized = await repository.getGame("game-result-normalize");
+  assert.equal(normalized?.finishedAt, null);
+  assert.equal(normalized?.result?.outcome, "win");
+  assert.equal(normalized?.result?.teams[0]?.rank, 1);
+
+  data.result = {
+    ...validResultPayload,
+    teams: [
+      {
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        scored: 0,
+        conceded: 0,
+        rank: 1,
+        outcome: "draw",
+      },
+    ],
+  };
+  item.data.S = JSON.stringify(data);
+  client.seedItem(item);
+
+  const incompleteResult = await repository.getGame("game-result-normalize");
+  assert.equal(incompleteResult?.result, null);
+
+  data.result = {
+    ...validResultPayload,
+    computedAt: "not-a-date",
+  };
+  item.data.S = JSON.stringify(data);
+  client.seedItem(item);
+
+  const invalidResult = await repository.getGame("game-result-normalize");
+  assert.equal(invalidResult?.result, null);
+});
+
+test("repository rejects finish until all thirds are completed", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+
+  await assert.rejects(
+    repository.finishGame({ gameId: "game-1" }),
+    /All three thirds must be started and finished/,
+  );
+
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  await repository.finishGameThird({ gameId: "game-1", third: 1 });
+
+  await assert.rejects(
+    repository.finishGame({ gameId: "game-1" }),
+    /All three thirds must be started and finished/,
+  );
+});
+
+test("repository backfills legacy finished games without completed thirds", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  const item = client.readItem("GAME#game-1", "METADATA");
+  assert.ok(item);
+  const rawData = item.data?.S;
+  if (typeof rawData !== "string") {
+    throw new Error("Stored game metadata is missing JSON data.");
+  }
+  const data = JSON.parse(rawData) as Record<string, unknown>;
+  item.data = {
+    S: JSON.stringify({
+      ...data,
+      status: "finished",
+      finishedAt: null,
+      result: null,
+    }),
+  };
+  item.updatedAt = { S: "2026-02-23T00:00:59.000Z" };
+  client.seedItem(item);
+
+  const repaired = await repository.finishGame({ gameId: "game-1" });
+
+  assert.equal(repaired?.status, "finished");
+  assert.ok(repaired?.finishedAt);
+  assert.equal(repaired?.result?.outcome, "draw");
+  assert.equal(repaired?.result?.teams.length, 3);
+  const stored = await repository.getGame("game-1");
+  assert.equal(stored?.finishedAt, repaired?.finishedAt);
+  assert.deepEqual(stored?.result, repaired?.result);
+});
+
+test("repository rejects manual finished status changes through updateGame", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+
+  await assert.rejects(
+    repository.updateGame({ gameId: "game-1", status: "finished" }),
+    /Use POST \/v1\/games\/\{gameId\}\/finish/,
+  );
+
+  await completeAllThirds(repository);
+  const finished = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finished?.status, "finished");
+
+  await assert.rejects(
+    repository.updateGame({ gameId: "game-1", status: "live" }),
+    /Finished games cannot be moved back to scheduled or live/,
+  );
+});
+
+test("repository recomputes finished game result after team corrections", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-team-result-correction",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await completeAllThirds(repository, { firstThirdStarted: true });
+  const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeCorrection?.result?.teams[0]?.name, "Red");
+
+  const updatedTeam = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "red",
+    name: "Ruby",
+    color: "#aa0000",
+    allowFinished: true,
+  });
+
+  assert.equal(updatedTeam.name, "Ruby");
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
+  assert.equal(finishedAfterCorrection?.result?.teams[0]?.teamId, "red");
+  assert.equal(finishedAfterCorrection?.result?.teams[0]?.name, "Ruby");
+  assert.equal(finishedAfterCorrection?.result?.teams[0]?.color, "#aa0000");
+});
+
+test("repository create-only team overrides repair missing finished-game teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await completeAllThirds(repository);
+  const finishedBeforeRepair = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeRepair?.status, "finished");
+
+  await client.send(
+    new DeleteItemCommand({
+      TableName: "threefc_test",
+      Key: {
+        pk: { S: "GAME#game-1" },
+        sk: { S: "TEAM#yellow" },
+      },
+    }),
+  );
+
+  const repairedTeam = await repository.createGameTeamOverride({
+    gameId: "game-1",
+    teamId: "yellow",
+    name: "Yellow",
+    color: "#e0a612",
+    allowFinished: true,
+    createOnly: true,
+  });
+
+  assert.deepEqual(
+    {
+      teamId: repairedTeam.teamId,
+      name: repairedTeam.name,
+      color: repairedTeam.color,
+      scored: repairedTeam.scored,
+      conceded: repairedTeam.conceded,
+    },
+    {
+      teamId: "yellow",
+      name: "Yellow",
+      color: "#e0a612",
+      scored: 0,
+      conceded: 0,
+    },
+  );
+  const finishedAfterRepair = await repository.getGame("game-1");
+  assert.equal(finishedAfterRepair?.status, "finished");
+  assert.equal(
+    finishedAfterRepair?.result?.teams.some((team) => team.teamId === "yellow"),
+    true,
+  );
+  assert.deepEqual(
+    (await repository.listTeamsForGame("game-1")).map((team) => team.teamId),
+    ["red", "blue", "yellow"],
+  );
+});
+
+test("repository create-only team repair waits for all teams before completing finished results", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy-finished" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy-finished",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+        finishedAt: null,
+        result: null,
+      }),
+    },
+  });
+  client.seedItem({
+    pk: { S: "GAME#game-legacy-finished" },
+    sk: { S: "TEAM#red" },
+    entityType: { S: "gameTeam" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy-finished",
+        teamId: "red",
+        name: "Red",
+        color: "#d83b36",
+        scored: 0,
+        conceded: 0,
+      }),
+    },
+  });
+
+  await repository.createGameTeamOverride({
+    gameId: "game-legacy-finished",
+    teamId: "yellow",
+    name: "Yellow",
+    color: "#e0a612",
+    allowFinished: true,
+    createOnly: true,
+  });
+
+  const stillIncomplete = await repository.getGame("game-legacy-finished");
+  assert.equal(stillIncomplete?.status, "finished");
+  assert.equal(stillIncomplete?.finishedAt, null);
+  assert.equal(stillIncomplete?.result, null);
+
+  await repository.createGameTeamOverride({
+    gameId: "game-legacy-finished",
+    teamId: "blue",
+    name: "Blue",
+    color: "#2f6fed",
+    allowFinished: true,
+    createOnly: true,
+  });
+
+  const complete = await repository.getGame("game-legacy-finished");
+  assert.equal(complete?.status, "finished");
+  assert.ok(complete?.finishedAt);
+  assert.deepEqual(
+    complete.result?.teams.map((team) => team.teamId).sort(),
+    ["blue", "red", "yellow"],
+  );
+});
+
+test("repository recomputes partial finished results once all teams exist", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy-partial-result" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy-partial-result",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "finished",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+        finishedAt: "2026-02-22T11:00:00.000Z",
+        result: {
+          winnerTeamId: null,
+          outcome: "draw",
+          comparator: "fewest_conceded_then_most_scored",
+          computedAt: "2026-02-22T11:00:00.000Z",
+          teams: [
+            {
+              teamId: "red",
+              name: "Red",
+              color: "#d83b36",
+              scored: 0,
+              conceded: 0,
+              rank: 1,
+              outcome: "draw",
+            },
+          ],
+        },
+      }),
+    },
+  });
+
+  for (const team of [
+    { teamId: "red", name: "Red", color: "#d83b36" },
+    { teamId: "yellow", name: "Yellow", color: "#e0a612" },
+    { teamId: "blue", name: "Blue", color: "#2f6fed" },
+  ] as const) {
+    client.seedItem({
+      pk: { S: "GAME#game-legacy-partial-result" },
+      sk: { S: `TEAM#${team.teamId}` },
+      entityType: { S: "gameTeam" },
+      createdAt: { S: "2026-02-22T00:00:00.000Z" },
+      updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          gameId: "game-legacy-partial-result",
+          teamId: team.teamId,
+          name: team.name,
+          color: team.color,
+          scored: 0,
+          conceded: 0,
+        }),
+      },
+    });
+  }
+
+  const repaired = await repository.finishGame({ gameId: "game-legacy-partial-result" });
+
+  assert.deepEqual(
+    repaired?.result?.teams.map((team) => team.teamId).sort(),
+    ["blue", "red", "yellow"],
+  );
+});
+
+test("repository recomputes finished game result after goal corrections", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finished-correction",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await completeAllThirds(repository, { firstThirdStarted: true });
+  const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeCorrection?.result?.winnerTeamId, "red");
+
+  await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-finished-correction",
+    actorUserId: "admin@example.com",
+    allowFinished: true,
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-blue",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "blue");
+  assert.deepEqual(
+    finishedAfterCorrection?.result?.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+      rank: team.rank,
+      outcome: team.outcome,
+    })),
+    [
+      { teamId: "blue", scored: 1, conceded: 0, rank: 1, outcome: "win" },
+      { teamId: "yellow", scored: 0, conceded: 0, rank: 2, outcome: "loss" },
+      { teamId: "red", scored: 0, conceded: 1, rank: 3, outcome: "loss" },
+    ],
+  );
+});
+
+test("repository creates finished-game goal corrections and recomputes result", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await completeAllThirds(repository);
+  const finishedBeforeCorrection = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finishedBeforeCorrection?.status, "finished");
+  assert.equal(finishedBeforeCorrection?.result?.winnerTeamId, null);
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-created-after-finish",
+    actorUserId: "admin@example.com",
+    allowFinished: true,
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.third, 3);
+  assert.equal(result.goal.thirdMinute, 20);
+  assert.equal(result.goal.gameMinute, 60);
+  assert.equal(result.goal.displayTime, "20:00");
+  assert.deepEqual(
+    result.scoreboard.teams.map((team) => ({
+      teamId: team.teamId,
+      scored: team.scored,
+      conceded: team.conceded,
+    })),
+    [
+      { teamId: "red", scored: 1, conceded: 0 },
+      { teamId: "blue", scored: 0, conceded: 1 },
+      { teamId: "yellow", scored: 0, conceded: 0 },
+    ],
+  );
+
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
+});
+
+test("repository creates finished-game goal corrections for legacy games without completed thirds", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  markStoredGameFinished(client, "game-1");
+
+  const legacyFinished = await repository.getGame("game-1");
+  assert.equal(legacyFinished?.status, "finished");
+  assert.deepEqual(
+    legacyFinished?.thirds.map((third) => third.finishedAt),
+    [null, null, null],
+  );
+
+  const result = await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-created-after-legacy-finish",
+    actorUserId: "admin@example.com",
+    allowFinished: true,
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  assert.ok(result);
+  assert.equal(result.goal.third, 3);
+  assert.equal(result.goal.thirdMinute, DEFAULT_THIRD_LENGTH_MINUTES);
+  assert.equal(result.goal.gameMinute, DEFAULT_THIRD_LENGTH_MINUTES * 3);
+  assert.equal(result.goal.displayTime, `${DEFAULT_THIRD_LENGTH_MINUTES}:00`);
+  assert.equal(result.goal.elapsedSeconds, DEFAULT_THIRD_LENGTH_MINUTES * 60);
+
+  const finishedAfterCorrection = await repository.getGame("game-1");
+  assert.equal(finishedAfterCorrection?.status, "finished");
+  assert.equal(finishedAfterCorrection?.result?.winnerTeamId, "red");
+});
+
+test("repository requires finished-game authority for goal corrections", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-finished-authority",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await completeAllThirds(repository, { firstThirdStarted: true });
+  const finished = await repository.finishGame({ gameId: "game-1" });
+  assert.equal(finished?.status, "finished");
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-finished-authority",
+      actorUserId: "scorekeeper@example.com",
+      scoringTeamId: "blue",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-blue",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Admin role is required to mutate finished games/,
+  );
+
+  await assert.rejects(
+    repository.deleteGoal({
+      gameId: "game-1",
+      eventId: "goal-finished-authority",
+      actorUserId: "scorekeeper@example.com",
+    }),
+    /Admin role is required to mutate finished games/,
+  );
+
+  const [goal] = await repository.listGoalEvents("game-1");
+  assert.equal(goal?.scoringTeamId, "red");
+});
 
 test("repository creates standard goals with timer stamping, mixed-team assists, and persisted tallies", async () => {
   const { repository, client } = createRepositoryHarness();
@@ -1313,6 +3042,51 @@ test("repository updates goals, recomputes tallies, and records audit entries", 
   );
 });
 
+test("repository allows goal corrections to preserve the original scorer after reassignment", async () => {
+  const repository = createRepository();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-historical-scorer",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+  await repository.assignRosterPlayer({
+    gameId: "game-1",
+    teamId: "blue",
+    playerId: "player-red",
+  });
+
+  const preserved = await repository.updateGoal({
+    gameId: "game-1",
+    eventId: "goal-historical-scorer",
+    actorUserId: "admin@example.com",
+    assistPlayerIds: ["player-yellow"],
+  });
+  assert.equal(preserved?.goal.scorerPlayerId, "player-red");
+  assert.equal(preserved?.goal.scoringTeamId, "red");
+  assert.deepEqual(preserved?.goal.assistPlayerIds, ["player-yellow"]);
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-historical-scorer",
+      actorUserId: "admin@example.com",
+      concedingTeamId: "yellow",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Scorer must be rostered on the scoring team/,
+  );
+});
+
 test("repository normalizes malformed goal audit snapshots to documented response bounds", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -1432,6 +3206,72 @@ test("repository replays duplicate correction operation IDs without duplicate PA
     }),
     /different request payload/,
   );
+});
+
+test("repository rejects live goal updates when game metadata changes before write", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-live-race-update",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.updateGoal({
+      gameId: "game-1",
+      eventId: "goal-live-race-update",
+      actorUserId: "scorekeeper@example.com",
+      scoringTeamId: "blue",
+      concedingTeamId: "red",
+      scorerPlayerId: "player-blue",
+      assistPlayerIds: [],
+      ownGoal: false,
+    }),
+    /Goal or scoreboard state changed while updating this goal/,
+  );
+
+  const [goal] = await repository.listGoalEvents("game-1");
+  assert.equal(goal?.scoringTeamId, "red");
+});
+
+test("repository rejects live goal deletes when game metadata changes before write", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  await repository.createGoal({
+    gameId: "game-1",
+    eventId: "goal-live-race-delete",
+    actorUserId: "scorekeeper@example.com",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-red",
+    assistPlayerIds: [],
+    ownGoal: false,
+  });
+
+  client.runBeforeNextPut(() => markStoredGameFinished(client, "game-1"));
+
+  await assert.rejects(
+    repository.deleteGoal({
+      gameId: "game-1",
+      eventId: "goal-live-race-delete",
+      actorUserId: "scorekeeper@example.com",
+    }),
+    /Goal or scoreboard state changed while deleting this goal/,
+  );
+
+  assert.equal((await repository.listGoalEvents("game-1")).length, 1);
 });
 
 test("repository deletes goals and recomputes tallies from remaining timeline", async () => {
@@ -1708,6 +3548,54 @@ test("repository rejects stale scoreboard writes without creating the goal", asy
 
   assert.deepEqual(await repository.listGoalEvents("game-1"), []);
   assert.equal((await repository.listTeamsForGame("game-1")).find((team) => team.teamId === "blue")?.conceded, 7);
+});
+
+test("repository rejects goal creation if game finishes before the goal transaction commits", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem("GAME#game-1", "METADATA");
+    if (!item?.data?.S) {
+      throw new Error("Expected game metadata item.");
+    }
+
+    const data = JSON.parse(item.data.S) as {
+      status: string;
+      finishedAt?: string | null;
+      result?: unknown;
+    };
+    data.status = "finished";
+    data.finishedAt = "2026-02-22T00:01:39.000Z";
+    data.result = {
+      winnerTeamId: null,
+      outcome: "draw",
+      comparator: "fewest_conceded_then_most_scored",
+      computedAt: "2026-02-22T00:01:39.000Z",
+      teams: [],
+    };
+    item.data.S = JSON.stringify(data);
+    item.updatedAt = { S: "2026-02-22T00:01:39.000Z" };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.createGoal({
+      gameId: "game-1",
+      eventId: "goal-finish-race",
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "player-red",
+      assistPlayerIds: [],
+      ownGoal: false,
+      actorUserId: "scorekeeper@example.com",
+    }),
+    /game\/goal state changed/,
+  );
+
+  assert.deepEqual(await repository.listGoalEvents("game-1"), []);
+  assert.equal((await repository.getGame("game-1"))?.status, "finished");
 });
 
 test("repository rethrows non-conditional transaction cancellation when creating goals", async () => {

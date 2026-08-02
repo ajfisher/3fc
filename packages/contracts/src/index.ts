@@ -74,8 +74,34 @@ export interface GameScoreboard {
   teams: GameScoreboardTeam[];
 }
 
+export type GameResultOutcome = "win" | "draw";
+export type GameResultTeamOutcome = "win" | "draw" | "loss";
+
+export interface GameResultTeam {
+  teamId: TeamId;
+  name: string;
+  color: string | null;
+  scored: number;
+  conceded: number;
+  rank: number;
+  outcome: GameResultTeamOutcome;
+}
+
+export interface GameResult {
+  winnerTeamId: TeamId | null;
+  outcome: GameResultOutcome;
+  comparator: "fewest_conceded_then_most_scored";
+  computedAt: string;
+  teams: GameResultTeam[];
+}
+
 export interface CreateGoalResponse {
   goal: GoalEvent;
+  scoreboard: GameScoreboard;
+  timeline: GoalEvent[];
+}
+
+export interface GameGoalsResponse {
   scoreboard: GameScoreboard;
   timeline: GoalEvent[];
 }

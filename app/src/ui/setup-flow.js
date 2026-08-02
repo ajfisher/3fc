@@ -186,7 +186,330 @@
 
   function createIdempotencyKey(prefix, stablePart) {
     const safeStable = stablePart.replace(/[^a-zA-Z0-9-]+/g, "-").slice(0, 56);
-    return `${prefix}-${safeStable}-${Date.now().toString(36)}`;
+    const nonce =
+      window.crypto?.randomUUID?.().replace(/-/g, "").slice(0, 8) ??
+      Math.random().toString(36).slice(2, 10);
+    return `${prefix}-${safeStable}-${Date.now().toString(36)}-${nonce}`;
+  }
+
+  const JOIN_QR_VERSION = 5;
+  const JOIN_QR_SIZE = 21 + 4 * (JOIN_QR_VERSION - 1);
+  const JOIN_QR_DATA_CODEWORDS = 108;
+  const JOIN_QR_EC_CODEWORDS = 26;
+  const JOIN_QR_ALIGNMENT_CENTER = 30;
+  const JOIN_QR_MAX_BYTES = 106;
+
+  function utf8Bytes(value) {
+    try {
+      if (typeof TextEncoder === "function") {
+        return Array.from(new TextEncoder().encode(value));
+      }
+    } catch {
+      // Fall through to the percent-encoding path.
+    }
+
+    const encoded = encodeURIComponent(value);
+    const bytes = [];
+    for (let index = 0; index < encoded.length; index += 1) {
+      if (encoded[index] === "%") {
+        bytes.push(Number.parseInt(encoded.slice(index + 1, index + 3), 16));
+        index += 2;
+      } else {
+        bytes.push(encoded.charCodeAt(index));
+      }
+    }
+    return bytes;
+  }
+
+  function appendQrBits(bits, value, length) {
+    for (let index = length - 1; index >= 0; index -= 1) {
+      bits.push(((value >>> index) & 1) === 1);
+    }
+  }
+
+  function qrMultiply(left, right) {
+    let result = 0;
+    let a = left;
+    let b = right;
+
+    while (b > 0) {
+      if ((b & 1) !== 0) {
+        result ^= a;
+      }
+      a <<= 1;
+      if ((a & 0x100) !== 0) {
+        a ^= 0x11d;
+      }
+      b >>>= 1;
+    }
+
+    return result;
+  }
+
+  function qrReedSolomonDivisor(degree) {
+    const result = new Array(degree).fill(0);
+    result[degree - 1] = 1;
+    let root = 1;
+
+    for (let index = 0; index < degree; index += 1) {
+      for (let resultIndex = 0; resultIndex < result.length; resultIndex += 1) {
+        result[resultIndex] = qrMultiply(result[resultIndex], root);
+        if (resultIndex + 1 < result.length) {
+          result[resultIndex] ^= result[resultIndex + 1];
+        }
+      }
+      root = qrMultiply(root, 0x02);
+    }
+
+    return result;
+  }
+
+  function qrReedSolomonRemainder(data, divisor) {
+    const result = new Array(divisor.length).fill(0);
+
+    for (const byte of data) {
+      const factor = byte ^ result.shift();
+      result.push(0);
+      for (let index = 0; index < divisor.length; index += 1) {
+        result[index] ^= qrMultiply(divisor[index], factor);
+      }
+    }
+
+    return result;
+  }
+
+  function qrFormatBits(mask) {
+    const data = (1 << 3) | mask;
+    let remainder = data << 10;
+
+    for (let index = 14; index >= 10; index -= 1) {
+      if (((remainder >>> index) & 1) !== 0) {
+        remainder ^= 0x537 << (index - 10);
+      }
+    }
+
+    return ((data << 10) | (remainder & 0x3ff)) ^ 0x5412;
+  }
+
+  function qrDataCodewords(value) {
+    const bytes = utf8Bytes(value);
+    if (bytes.length > JOIN_QR_MAX_BYTES) {
+      return null;
+    }
+
+    const bits = [];
+    appendQrBits(bits, 0x4, 4);
+    appendQrBits(bits, bytes.length, 8);
+    for (const byte of bytes) {
+      appendQrBits(bits, byte, 8);
+    }
+
+    const capacity = JOIN_QR_DATA_CODEWORDS * 8;
+    const terminatorLength = Math.min(4, capacity - bits.length);
+    for (let index = 0; index < terminatorLength; index += 1) {
+      bits.push(false);
+    }
+    while (bits.length % 8 !== 0) {
+      bits.push(false);
+    }
+
+    const codewords = [];
+    for (let index = 0; index < bits.length; index += 8) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit += 1) {
+        byte = (byte << 1) | (bits[index + bit] ? 1 : 0);
+      }
+      codewords.push(byte);
+    }
+
+    const pads = [0xec, 0x11];
+    let padIndex = 0;
+    while (codewords.length < JOIN_QR_DATA_CODEWORDS) {
+      codewords.push(pads[padIndex % pads.length]);
+      padIndex += 1;
+    }
+
+    return codewords;
+  }
+
+  function createJoinQrSvg(value) {
+    const data = qrDataCodewords(value);
+    if (!data) {
+      return "";
+    }
+
+    const modules = Array.from({ length: JOIN_QR_SIZE }, () => new Array(JOIN_QR_SIZE).fill(false));
+    const reserved = Array.from({ length: JOIN_QR_SIZE }, () => new Array(JOIN_QR_SIZE).fill(false));
+
+    function setFunctionModule(x, y, isDark) {
+      if (x < 0 || y < 0 || x >= JOIN_QR_SIZE || y >= JOIN_QR_SIZE) {
+        return;
+      }
+      modules[y][x] = isDark;
+      reserved[y][x] = true;
+    }
+
+    function drawFinder(centerX, centerY) {
+      for (let dy = -4; dy <= 4; dy += 1) {
+        for (let dx = -4; dx <= 4; dx += 1) {
+          const distance = Math.max(Math.abs(dx), Math.abs(dy));
+          setFunctionModule(centerX + dx, centerY + dy, distance !== 2 && distance !== 4);
+        }
+      }
+    }
+
+    function drawAlignment(centerX, centerY) {
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          setFunctionModule(centerX + dx, centerY + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+        }
+      }
+    }
+
+    function drawFormat(mask) {
+      const bits = qrFormatBits(mask);
+      const bit = (index) => ((bits >>> index) & 1) !== 0;
+
+      for (let index = 0; index <= 5; index += 1) {
+        setFunctionModule(8, index, bit(index));
+      }
+      setFunctionModule(8, 7, bit(6));
+      setFunctionModule(8, 8, bit(7));
+      setFunctionModule(7, 8, bit(8));
+      for (let index = 9; index < 15; index += 1) {
+        setFunctionModule(14 - index, 8, bit(index));
+      }
+
+      for (let index = 0; index < 8; index += 1) {
+        setFunctionModule(JOIN_QR_SIZE - 1 - index, 8, bit(index));
+      }
+      for (let index = 8; index < 15; index += 1) {
+        setFunctionModule(8, JOIN_QR_SIZE - 15 + index, bit(index));
+      }
+    }
+
+    drawFinder(3, 3);
+    drawFinder(JOIN_QR_SIZE - 4, 3);
+    drawFinder(3, JOIN_QR_SIZE - 4);
+    drawAlignment(JOIN_QR_ALIGNMENT_CENTER, JOIN_QR_ALIGNMENT_CENTER);
+    for (let index = 0; index < JOIN_QR_SIZE; index += 1) {
+      if (!reserved[6][index]) {
+        setFunctionModule(index, 6, index % 2 === 0);
+      }
+      if (!reserved[index][6]) {
+        setFunctionModule(6, index, index % 2 === 0);
+      }
+    }
+    setFunctionModule(8, JOIN_QR_SIZE - 8, true);
+    drawFormat(0);
+
+    const divisor = qrReedSolomonDivisor(JOIN_QR_EC_CODEWORDS);
+    const codewords = [...data, ...qrReedSolomonRemainder(data, divisor)];
+    const dataBits = [];
+    for (const codeword of codewords) {
+      appendQrBits(dataBits, codeword, 8);
+    }
+
+    let bitIndex = 0;
+    let upward = true;
+    for (let right = JOIN_QR_SIZE - 1; right >= 1; right -= 2) {
+      if (right === 6) {
+        right -= 1;
+      }
+
+      for (let vertical = 0; vertical < JOIN_QR_SIZE; vertical += 1) {
+        const y = upward ? JOIN_QR_SIZE - 1 - vertical : vertical;
+        for (let dx = 0; dx < 2; dx += 1) {
+          const x = right - dx;
+          if (reserved[y][x]) {
+            continue;
+          }
+          let isDark = bitIndex < dataBits.length ? dataBits[bitIndex] : false;
+          bitIndex += 1;
+          if ((x + y) % 2 === 0) {
+            isDark = !isDark;
+          }
+          modules[y][x] = isDark;
+        }
+      }
+      upward = !upward;
+    }
+
+    const quiet = 4;
+    const viewBoxSize = JOIN_QR_SIZE + quiet * 2;
+    let path = "";
+    for (let y = 0; y < JOIN_QR_SIZE; y += 1) {
+      for (let x = 0; x < JOIN_QR_SIZE; x += 1) {
+        if (modules[y][x]) {
+          path += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+        }
+      }
+    }
+
+    const label = escapeHtml(`Join QR code for ${value}`);
+    return `<svg data-ui="join-qr-svg" viewBox="0 0 ${viewBoxSize} ${viewBoxSize}" role="img" aria-label="${label}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#111"/></svg>`;
+  }
+
+  function renderJoinQrCode(container, joinUrl) {
+    if (!(container instanceof HTMLElement)) {
+      return;
+    }
+
+    const svg = createJoinQrSvg(joinUrl);
+    container.innerHTML = svg || "QR unavailable";
+  }
+
+  function encodeStablePartForStorage(stablePart) {
+    try {
+      return encodeURIComponent(stablePart);
+    } catch {
+      let encoded = "";
+      for (let index = 0; index < stablePart.length; index += 1) {
+        encoded += stablePart.charCodeAt(index).toString(16).padStart(4, "0");
+      }
+      return `utf16-${encoded}`;
+    }
+  }
+
+  function idempotencyStorageKey(prefix, stablePart) {
+    return `threefc-idempotency:${prefix}:${encodeStablePartForStorage(stablePart)}`;
+  }
+
+  function cachedIdempotencyKey(prefix, stablePart) {
+    const storageKey = idempotencyStorageKey(prefix, stablePart);
+
+    try {
+      const existing = window.localStorage?.getItem(storageKey);
+      if (existing) {
+        return existing;
+      }
+
+      const next = createIdempotencyKey(prefix, stablePart);
+      window.localStorage?.setItem(storageKey, next);
+      return next;
+    } catch {
+      return createIdempotencyKey(prefix, stablePart);
+    }
+  }
+
+  function clearCachedIdempotencyKey(prefix, stablePart) {
+    try {
+      window.localStorage?.removeItem(idempotencyStorageKey(prefix, stablePart));
+    } catch {
+      // Ignore storage failures; the next uncached request still gets a fresh key.
+    }
+  }
+
+  function publicJoinIdempotencyStablePart(joinCode, nickname) {
+    return `${joinCode.trim().toUpperCase()}-${nickname.trim()}`;
+  }
+
+  function idempotencyKeyForPublicJoin(joinCode, nickname) {
+    return cachedIdempotencyKey("join-player", publicJoinIdempotencyStablePart(joinCode, nickname));
+  }
+
+  function clearIdempotencyKeyForPublicJoin(joinCode, nickname) {
+    clearCachedIdempotencyKey("join-player", publicJoinIdempotencyStablePart(joinCode, nickname));
   }
 
   async function requestJson(path, init = {}) {
@@ -225,6 +548,15 @@
     return result.body;
   }
 
+  async function currentAuthenticatedSession() {
+    const result = await requestJson("/v1/auth/session", { method: "GET" });
+    if (!result.ok) {
+      return null;
+    }
+
+    return result.body?.session ?? null;
+  }
+
   function toIsoTimestamp(localDateTime) {
     const parsed = new Date(localDateTime);
     if (Number.isNaN(parsed.getTime())) {
@@ -242,6 +574,11 @@
 
     const offsetAdjusted = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000);
     return offsetAdjusted.toISOString().slice(0, 16);
+  }
+
+  function formatLocalTimestamp(isoTimestamp) {
+    const localValue = toLocalDateTimeInput(isoTimestamp);
+    return localValue ? localValue.replace("T", " ") : String(isoTimestamp ?? "");
   }
 
   function todayDate() {
@@ -333,6 +670,43 @@
       displayTime: `${thirdLengthMinutes}+${String(stoppageMinute).padStart(2, "0")}`,
       phase: "stoppage",
     };
+  }
+
+  function normalizePositiveInteger(value) {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  function normalizePositiveNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  function regulationMinuteForElapsedSeconds(totalSeconds, thirdLengthMinutes) {
+    const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+    const nominalSeconds = thirdLengthMinutes * 60;
+    return Math.max(1, Math.min(thirdLengthMinutes, Math.floor(Math.min(safeSeconds, nominalSeconds) / 60) + 1));
+  }
+
+  function fullMatchMinuteForThird(third, thirdMinute, thirdLengthMinutes) {
+    const safeThird = normalizePositiveInteger(third);
+    const safeThirdMinute = normalizePositiveInteger(thirdMinute);
+    if (!safeThird || !safeThirdMinute) {
+      return null;
+    }
+
+    return (safeThird - 1) * thirdLengthMinutes + Math.min(safeThirdMinute, thirdLengthMinutes);
+  }
+
+  function fullMatchMinuteForThirdElapsed(third, elapsedSecondsValue, thirdLengthMinutes) {
+    const safeThird = normalizePositiveInteger(third);
+    const safeElapsedSeconds = normalizePositiveNumber(elapsedSecondsValue);
+    if (!safeThird || safeElapsedSeconds === null) {
+      return null;
+    }
+
+    return (
+      (safeThird - 1) * thirdLengthMinutes +
+      regulationMinuteForElapsedSeconds(safeElapsedSeconds, thirdLengthMinutes)
+    );
   }
 
   function humanTimerStatus(value) {
@@ -873,7 +1247,7 @@
       gamesBody.innerHTML = games
         .map((game) => `<tr>
           <td><a href="/games/${encodeURIComponent(game.gameId)}">${escapeHtml(game.gameId)}</a></td>
-          <td>${escapeHtml(game.gameStartTs)}</td>
+          <td>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</td>
           <td>${escapeHtml(game.status)}</td>
           <td>
             <div data-ui="row-action-buttons">
@@ -1035,6 +1409,9 @@
     const gameSeasonLink = document.getElementById("game-season-link");
 
     const gameIdValue = document.getElementById("game-id-value");
+    const gameJoinCodeValue = document.getElementById("game-join-code-value");
+    const gameJoinLink = document.getElementById("game-join-link");
+    const gameJoinQr = document.getElementById("game-join-qr");
     const gameLeagueId = document.getElementById("game-league-id");
     const gameSeasonId = document.getElementById("game-season-id");
 
@@ -1050,14 +1427,31 @@
     const timerThirdLength = document.getElementById("timer-third-length");
     const timerStatus = document.getElementById("timer-status");
     const timerActiveThird = document.getElementById("timer-active-third");
+    const timerDisplayElement = document.getElementById("timer-display");
     const thirdStatusList = document.getElementById("third-status-list");
     const startThirdButton = root.querySelector('[data-action="start-active-third"]');
     const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
+    const finishGameButton = root.querySelector('[data-action="finish-game"]');
+    const gameResultSummaryElement = document.getElementById("game-result-summary");
+    const finalGameIdValue = document.getElementById("final-game-id-value");
+    const finalGameStatus = document.getElementById("final-game-status");
+    const finalGameReadiness = document.getElementById("final-game-readiness");
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerSearchInput = document.getElementById("player-search");
     const playerPoolElement = document.getElementById("player-pool");
     const rosterTeamsElement = document.getElementById("roster-teams");
+    const liveScoreboardElement = document.getElementById("live-scoreboard");
+    const goalScoringTeamInput = document.getElementById("goal-scoring-team");
+    const goalConcedingTeamInput = document.getElementById("goal-conceding-team");
+    const goalOwnGoalInput = document.getElementById("goal-own-goal");
+    const goalScorerInput = document.getElementById("goal-scorer");
+    const goalAssistsElement = document.getElementById("goal-assists");
+    const goalFormNote = document.getElementById("goal-form-note");
+    const saveGoalButton = root.querySelector('[data-action="save-goal"]');
+    const cancelGoalEditButton = root.querySelector('[data-action="cancel-goal-edit"]');
+    const undoLastGoalButton = root.querySelector('[data-action="undo-last-goal"]');
+    const goalTimelineElement = document.getElementById("goal-timeline");
 
     if (
       !(kickoffInput instanceof HTMLInputElement) ||
@@ -1066,7 +1460,9 @@
       !(saveButton instanceof HTMLButtonElement) ||
       !(deleteButton instanceof HTMLButtonElement) ||
       !(startThirdButton instanceof HTMLButtonElement) ||
-      !(finishThirdButton instanceof HTMLButtonElement)
+      !(finishThirdButton instanceof HTMLButtonElement) ||
+      !(finishGameButton instanceof HTMLButtonElement) ||
+      !(gameResultSummaryElement instanceof HTMLElement)
     ) {
       return;
     }
@@ -1079,10 +1475,260 @@
     let rosterPlayers = [];
     let rosterAssignments = [];
     let rosterSearchTimer = 0;
+    let scoreboardTeams = [];
+    let goalTimeline = [];
+    let goalTimelineLoaded = false;
+    let editingGoalId = null;
+    let currentLeagueRole = null;
+    let manualGameModeSelected = false;
+    let pendingCreateGoalIdempotency = null;
+    const pendingGoalMutationIdempotency = new Map();
+    const gameModes = ["structure", "players", "run", "final"];
+    const gameModeLabels = {
+      structure: "Game setup",
+      players: "Players",
+      run: "Run game",
+      final: "Finalisation",
+    };
+    const gameModeTabs = [...root.querySelectorAll('[data-ui="game-mode-tab"][data-game-mode]')];
+    const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
+    const gameModePanels = [...root.querySelectorAll('[data-ui="game-mode-panel"][data-game-mode]')];
+    const gameModeStatus = document.getElementById("game-mode-status");
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
     });
+
+    function isGameFinished() {
+      return currentGame?.status === "finished";
+    }
+
+    function isEditingGoal() {
+      return editingGoalId !== null;
+    }
+
+    function normalizeLeagueRole(role) {
+      return role === "admin" || role === "scorekeeper" || role === "viewer" ? role : null;
+    }
+
+    function canCorrectFinishedGoals() {
+      return currentLeagueRole === "admin";
+    }
+
+    function finishedRosterControlsLocked() {
+      return isGameFinished() && !canCorrectFinishedGoals();
+    }
+
+    function isFinishedGoalCorrection() {
+      return isGameFinished() && isEditingGoal() && canCorrectFinishedGoals();
+    }
+
+    function humanGameStatus(value) {
+      const labels = {
+        scheduled: "Scheduled",
+        live: "Live",
+        finished: "Finished",
+      };
+      return labels[value] ?? "Loading";
+    }
+
+    function isGameMode(value) {
+      return gameModes.includes(value);
+    }
+
+    function setModeMeta(mode, text) {
+      const meta = root.querySelector(`[data-mode-meta="${mode}"]`);
+      if (meta instanceof HTMLElement) {
+        meta.textContent = text;
+      }
+    }
+
+    function setModeLabel(mode, text) {
+      const label = root.querySelector(`[data-mode-label="${mode}"]`);
+      if (label instanceof HTMLElement) {
+        label.textContent = text;
+      }
+    }
+
+    function setGameMode(mode, options = {}) {
+      if (!isGameMode(mode)) {
+        return;
+      }
+
+      for (const panel of gameModePanels) {
+        if (!(panel instanceof HTMLElement)) {
+          continue;
+        }
+        const active = panel.getAttribute("data-game-mode") === mode;
+        panel.hidden = !active;
+        panel.setAttribute("tabindex", "-1");
+      }
+
+      for (const tab of gameModeTabs) {
+        if (!(tab instanceof HTMLElement)) {
+          continue;
+        }
+        const active = tab.getAttribute("data-game-mode") === mode;
+        tab.setAttribute("aria-pressed", active ? "true" : "false");
+        tab.setAttribute("data-state", active ? "active" : "idle");
+      }
+
+      for (const trigger of gameModeTriggers) {
+        if (trigger instanceof HTMLElement) {
+          trigger.setAttribute("data-current", trigger.getAttribute("data-game-mode") === mode ? "true" : "false");
+        }
+      }
+
+      if (gameModeStatus instanceof HTMLElement) {
+        gameModeStatus.textContent = gameModeLabels[mode] ?? "Game setup";
+      }
+
+      if (options.focusPanel === true) {
+        const panel = gameModePanels.find((candidate) => candidate.getAttribute("data-game-mode") === mode);
+        if (panel instanceof HTMLElement) {
+          panel.focus({ preventScroll: false });
+        }
+      }
+    }
+
+    function gameModeFromHash() {
+      const hashMode = window.location.hash.replace(/^#/, "").replace(/^mode-/, "");
+      return isGameMode(hashMode) ? hashMode : null;
+    }
+
+    function preferredInitialGameMode() {
+      const requested = gameModeFromHash();
+      if (requested) {
+        return requested;
+      }
+
+      if (!currentGame) {
+        return "structure";
+      }
+
+      if (isGameFinished()) {
+        return "final";
+      }
+
+      const timer = buildTimerState(currentGame);
+      const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
+      if (timer.status === "complete") {
+        return "final";
+      }
+      if (hasStarted || rosteredPlayers().length > 0) {
+        return hasStarted ? "run" : "players";
+      }
+
+      return "structure";
+    }
+
+    function gameModeAfterGameSave() {
+      if (!currentGame) {
+        return "structure";
+      }
+
+      if (isGameFinished()) {
+        return "final";
+      }
+
+      const timer = buildTimerState(currentGame);
+      if (timer.status === "complete") {
+        return "final";
+      }
+
+      const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
+      return hasStarted ? "run" : "players";
+    }
+
+    function gameStateTabState(timer) {
+      if (!currentGame || !timer) {
+        return {
+          label: "Pregame",
+          meta: "Loading",
+          state: "loading",
+        };
+      }
+
+      if (isGameFinished()) {
+        return {
+          label: "Final",
+          meta: "Summary",
+          state: "finished",
+        };
+      }
+
+      if (timer.status === "complete") {
+        return {
+          label: "Final",
+          meta: "Finish game",
+          state: "ready",
+        };
+      }
+
+      const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      if (activeSegment?.startedAt) {
+        const timerDisplay = formatTimerDisplay(
+          elapsedSeconds(activeSegment.startedAt, activeSegment.finishedAt),
+          timer.thirdLengthMinutes,
+        ).displayTime;
+        return {
+          label: timerDisplay,
+          meta: `Third ${activeSegment.third}`,
+          state: "running",
+        };
+      }
+
+      if (timer.status === "between_thirds") {
+        const nextThird = nextStartableThird(timer);
+        return {
+          label: "Break",
+          meta: nextThird ? `Start T${nextThird}` : "Ready",
+          state: "break",
+        };
+      }
+
+      return {
+        label: "Pregame",
+        meta: "Start clock",
+        state: "pregame",
+      };
+    }
+
+    function syncGameModeState() {
+      const timer = currentGame ? buildTimerState(currentGame) : null;
+      const rosteredCount = rosteredPlayers().length;
+      const hasStarted = timer ? timer.thirds.some((third) => third.startedAt !== null) : false;
+      const complete = timer?.status === "complete";
+      const finished = isGameFinished();
+      const finalReadiness = finished
+        ? "Summary posted"
+        : complete
+          ? "Ready to finish"
+          : hasStarted
+            ? humanTimerStatus(timer.status)
+            : "Not started";
+
+      setModeMeta("structure", humanGameStatus(currentGame?.status));
+      setModeMeta("players", `${rosteredCount} assigned`);
+      setModeMeta("run", timer ? humanTimerStatus(timer.status) : "Timer");
+      const gameState = gameStateTabState(timer);
+      setModeLabel("final", gameState.label);
+      setModeMeta("final", gameState.meta);
+      const gameStateTab = root.querySelector('[data-testid="game-mode-final-tab"]');
+      if (gameStateTab instanceof HTMLElement) {
+        gameStateTab.setAttribute("data-game-state", gameState.state);
+      }
+
+      if (finalGameIdValue instanceof HTMLElement && currentGame?.gameId) {
+        finalGameIdValue.textContent = currentGame.gameId;
+      }
+      if (finalGameStatus instanceof HTMLElement) {
+        finalGameStatus.textContent = humanGameStatus(currentGame?.status);
+      }
+      if (finalGameReadiness instanceof HTMLElement) {
+        finalGameReadiness.textContent = finalReadiness;
+      }
+    }
 
     function nextStartableThird(timer) {
       if (timer.status === "running" || timer.status === "complete") {
@@ -1107,6 +1753,36 @@
       return finished ?? timer.thirds[0] ?? null;
     }
 
+    function focusElementAction(element) {
+      if (!(element instanceof HTMLElement)) {
+        return;
+      }
+
+      if (typeof element.scrollIntoView === "function") {
+        element.scrollIntoView({ block: "center" });
+      }
+      element.focus({ preventScroll: true });
+    }
+
+    function selectGameStateAction() {
+      const timer = currentGame ? buildTimerState(currentGame) : null;
+      if (!timer) {
+        setGameMode("structure", { focusPanel: true });
+        return false;
+      }
+
+      if (isGameFinished() || timer.status === "complete") {
+        setGameMode("final");
+        focusElementAction(finishGameButton);
+        return true;
+      }
+
+      setGameMode("run");
+      const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      focusElementAction(activeSegment ? timerDisplayElement : startThirdButton);
+      return true;
+    }
+
     function syncStatusOptions(hasStarted) {
       const scheduledOption = statusInput.querySelector('option[value="scheduled"]');
       if (scheduledOption instanceof HTMLOptionElement) {
@@ -1127,6 +1803,8 @@
       const segment = displaySegmentForTimer(timer);
       const hasStarted = timer.thirds.some((third) => third.startedAt !== null);
       const activeSegment = timer.thirds.find((third) => third.status === "running") ?? null;
+      const gameFinished = isGameFinished();
+      const allThirdsFinished = timer.status === "complete";
       const display = segment?.startedAt
         ? formatTimerDisplay(
             elapsedSeconds(segment.startedAt, segment.finishedAt),
@@ -1136,7 +1814,11 @@
       const nextThird = nextStartableThird(timer);
 
       thirdLengthInput.value = String(timer.thirdLengthMinutes);
-      thirdLengthInput.disabled = hasStarted;
+      thirdLengthInput.disabled = gameFinished || hasStarted;
+      kickoffInput.disabled = gameFinished;
+      statusInput.disabled = gameFinished;
+      saveButton.disabled = gameFinished;
+      deleteButton.disabled = gameFinished;
       syncStatusOptions(hasStarted);
 
       if (timerThirdLabel) {
@@ -1165,9 +1847,9 @@
           .map((third) => {
             const status = humanTimerStatus(third.status);
             const detail = third.finishedAt
-              ? `Finished ${third.finishedAt}`
+              ? `Finished ${formatLocalTimestamp(third.finishedAt)}`
               : third.startedAt
-                ? `Started ${third.startedAt}`
+                ? `Started ${formatLocalTimestamp(third.startedAt)}`
                 : "Waiting";
             return `<li data-ui="third-status-item" data-state="${escapeHtml(third.status)}">
               <strong>Third ${third.third}</strong>
@@ -1178,11 +1860,12 @@
           .join("");
       }
 
-      const gameFinished = currentGame.status === "finished";
       startThirdButton.disabled = gameFinished || nextThird === null;
       finishThirdButton.disabled = gameFinished || !activeSegment;
+      finishGameButton.disabled = gameFinished || !allThirdsFinished;
       startThirdButton.textContent = nextThird ? `Start Third ${nextThird}` : "Start Third";
       finishThirdButton.textContent = activeSegment ? `Finish Third ${activeSegment.third}` : "Finish Third";
+      finishGameButton.textContent = gameFinished ? "Game finished" : "Finish game";
       if (nextThird) {
         startThirdButton.setAttribute("data-third", String(nextThird));
       } else {
@@ -1193,12 +1876,19 @@
       } else {
         finishThirdButton.removeAttribute("data-third");
       }
+      if (allThirdsFinished && !gameFinished) {
+        finishGameButton.setAttribute("data-state", "ready");
+      } else {
+        finishGameButton.removeAttribute("data-state");
+      }
 
       window.clearInterval(timerTickInterval);
       timerTickInterval = 0;
-      if (activeSegment) {
+      if (activeSegment && !gameFinished) {
         timerTickInterval = window.setInterval(renderTimer, 1000);
       }
+      renderGameResult();
+      syncGameModeState();
     }
 
     function rosterControlsAvailable() {
@@ -1208,6 +1898,22 @@
         playerSearchInput instanceof HTMLInputElement &&
         playerPoolElement instanceof HTMLElement &&
         rosterTeamsElement instanceof HTMLElement
+      );
+    }
+
+    function liveControlsAvailable() {
+      return (
+        liveScoreboardElement instanceof HTMLElement &&
+        goalScoringTeamInput instanceof HTMLSelectElement &&
+        goalConcedingTeamInput instanceof HTMLSelectElement &&
+        goalOwnGoalInput instanceof HTMLInputElement &&
+        goalScorerInput instanceof HTMLSelectElement &&
+        goalAssistsElement instanceof HTMLElement &&
+        goalFormNote instanceof HTMLElement &&
+        saveGoalButton instanceof HTMLButtonElement &&
+        cancelGoalEditButton instanceof HTMLButtonElement &&
+        undoLastGoalButton instanceof HTMLButtonElement &&
+        goalTimelineElement instanceof HTMLElement
       );
     }
 
@@ -1224,8 +1930,100 @@
       return rosterPlayers.find((player) => player.playerId === playerId) ?? null;
     }
 
+    function playerNickname(playerId) {
+      return playerById(playerId)?.nickname ?? playerId;
+    }
+
+    function teamName(teamId) {
+      return teamById(teamId)?.name ?? teamId;
+    }
+
     function assignmentByPlayerId(playerId) {
       return rosterAssignments.find((assignment) => assignment.playerId === playerId) ?? null;
+    }
+
+    function rosteredPlayers() {
+      const seen = new Set();
+      const players = [];
+
+      for (const assignment of rosterAssignments) {
+        const player = assignment.player ?? playerById(assignment.playerId);
+        if (!player || seen.has(assignment.playerId)) {
+          continue;
+        }
+
+        seen.add(assignment.playerId);
+        players.push({
+          ...player,
+          teamId: assignment.teamId,
+        });
+      }
+
+      return players;
+    }
+
+    function rosteredPlayersForTeam(teamId) {
+      return rosteredPlayers().filter((player) => player.teamId === teamId);
+    }
+
+    function activeThirdNumber() {
+      if (!currentGame) {
+        return null;
+      }
+
+      return buildTimerState(currentGame).activeThird;
+    }
+
+    function normalizeScoreboardTeams(teams) {
+      return teams.map((team) => ({
+        gameId: team.gameId ?? gameId,
+        teamId: team.teamId,
+        name: team.name ?? team.teamId,
+        color: typeof team.color === "string" ? team.color : null,
+        scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
+        conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
+        createdAt: team.createdAt ?? "",
+        updatedAt: team.updatedAt ?? "",
+      }));
+    }
+
+    function scoreboardTeamsInRosterOrder() {
+      const byTeamId = new Map(scoreboardTeams.map((team) => [team.teamId, team]));
+      const ordered = rosterTeams
+        .map((team) => byTeamId.get(team.teamId) ?? normalizeScoreboardTeams([team])[0])
+        .filter(Boolean);
+
+      if (ordered.length > 0) {
+        return ordered;
+      }
+
+      return scoreboardTeams;
+    }
+
+    function sortGoalTimeline(timeline) {
+      return [...timeline].sort((left, right) => {
+        const thirdDelta = (left.third ?? 0) - (right.third ?? 0);
+        if (thirdDelta !== 0) {
+          return thirdDelta;
+        }
+
+        const gameMinuteDelta = (left.gameMinute ?? 0) - (right.gameMinute ?? 0);
+        if (gameMinuteDelta !== 0) {
+          return gameMinuteDelta;
+        }
+
+        const elapsedDelta = (left.elapsedSeconds ?? 0) - (right.elapsedSeconds ?? 0);
+        if (elapsedDelta !== 0) {
+          return elapsedDelta;
+        }
+
+        const createdAtDelta = String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
+        if (createdAtDelta !== 0) {
+          return createdAtDelta;
+        }
+
+        return String(left.eventId ?? "").localeCompare(String(right.eventId ?? ""));
+      });
     }
 
     function teamSwatchStyle(team) {
@@ -1237,15 +2035,806 @@
       return ` style="--team-color: ${escapeHtml(color)}"`;
     }
 
+    function resultTeams() {
+      const teams = currentGame?.result?.teams;
+      if (!Array.isArray(teams)) {
+        return [];
+      }
+
+      return teams
+        .filter((team) => team && typeof team === "object" && typeof team.teamId === "string")
+        .map((team) => ({
+          teamId: team.teamId,
+          name: typeof team.name === "string" && team.name.length > 0 ? team.name : team.teamId,
+          color: typeof team.color === "string" ? team.color : null,
+          scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
+          conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
+          rank: Number.isInteger(team.rank) && team.rank > 0 ? team.rank : 0,
+          outcome: ["win", "draw", "loss"].includes(team.outcome) ? team.outcome : "loss",
+        }));
+    }
+
+    function renderGameResult() {
+      if (!(gameResultSummaryElement instanceof HTMLElement)) {
+        return;
+      }
+
+      const result = currentGame?.result;
+      const teams = resultTeams();
+      if (!isGameFinished() || !result || teams.length === 0) {
+        gameResultSummaryElement.hidden = true;
+        gameResultSummaryElement.innerHTML = "";
+        syncGameModeState();
+        return;
+      }
+
+      const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
+      const outcomeText = winner ? `${winner.name} win` : "Draw";
+      const resultOutcome = result.outcome === "win" ? "win" : "draw";
+      const computedAt = typeof result.computedAt === "string" ? formatLocalTimestamp(result.computedAt) : "";
+
+      const goalLogsLoaded = goalTimelineLoaded;
+      gameResultSummaryElement.hidden = false;
+      gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
+        <header>
+          <span>Final result</span>
+          <strong data-testid="game-result-outcome">${escapeHtml(outcomeText)}</strong>
+          ${computedAt ? `<small>Computed ${escapeHtml(computedAt)}</small>` : ""}
+        </header>
+        <div data-ui="result-team-list" data-testid="game-result-teams">
+          ${teams
+            .map((team) => {
+              const teamGoals = goalsForFinalTeam(team.teamId);
+              return `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}" data-outcome="${escapeHtml(
+                team.outcome,
+              )}"${teamSwatchStyle(team)}>
+                <header>
+                  <span data-ui="team-swatch"></span>
+                  <strong>${escapeHtml(team.name)}</strong>
+                  ${team.rank > 0 ? `<span data-ui="rank-chip">#${escapeHtml(String(team.rank))}</span>` : ""}
+                </header>
+                <dl>
+                  <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+                  <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
+                </dl>
+                ${goalLogsLoaded
+                  ? `<details data-ui="final-team-log" data-testid="final-team-log-${escapeHtml(team.teamId)}">
+                    <summary>Scoring log</summary>
+                    <ol data-ui="final-goal-list">
+                      ${renderFinalGoalItems(teamGoals, "No goals recorded for this team.")}
+                    </ol>
+                  </details>`
+                  : `<p data-ui="empty-note" data-testid="final-team-log-unavailable-${escapeHtml(team.teamId)}">Goal log unavailable.</p>`}
+              </article>`;
+            })
+            .join("")}
+        </div>
+        ${goalLogsLoaded ? `${renderFinalAggregateStats()}${renderFinalFullGoalLog()}` : renderFinalGoalSummariesUnavailable()}
+      </section>`;
+      syncGameModeState();
+    }
+
+    function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select", missingSelectedLabel = null) {
+      const selectedExists = options.some((option) => option.value === selectedValue);
+      const preservesMissingSelection =
+        !selectedExists && Boolean(selectedValue) && typeof missingSelectedLabel === "string";
+      const safeSelected = selectedExists || preservesMissingSelection
+        ? selectedValue
+        : (options[0]?.value ?? "");
+      const preservedOption = preservesMissingSelection
+        ? `<option value="${escapeHtml(selectedValue)}" selected>${escapeHtml(missingSelectedLabel)}</option>`
+        : "";
+      const renderedOptions = options
+        .map(
+          (option) =>
+            `<option value="${escapeHtml(option.value)}"${option.value === safeSelected ? " selected" : ""}>${escapeHtml(
+              option.label,
+            )}</option>`,
+        )
+        .join("");
+
+      selectElement.innerHTML =
+        options.length > 0 || preservesMissingSelection
+          ? `${preservedOption}${renderedOptions}`
+          : `<option value="">${escapeHtml(emptyLabel)}</option>`;
+      selectElement.value = safeSelected;
+      selectElement.disabled = options.length === 0 && !preservesMissingSelection;
+    }
+
+    function renderLiveScoreboard() {
+      if (!(liveScoreboardElement instanceof HTMLElement)) {
+        return;
+      }
+
+      const teams = scoreboardTeamsInRosterOrder();
+      if (teams.length === 0) {
+        liveScoreboardElement.innerHTML = `<p data-ui="empty-note">Teams load before scoring.</p>`;
+        return;
+      }
+
+      liveScoreboardElement.innerHTML = teams
+        .map(
+          (team) => `<article data-ui="score-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
+            <header>
+              <span data-ui="team-swatch"></span>
+              <strong>${escapeHtml(team.name)}</strong>
+            </header>
+            <dl>
+              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
+              <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+            </dl>
+          </article>`,
+        )
+        .join("");
+    }
+
+    function selectedAssistPlayerIds() {
+      if (!(goalAssistsElement instanceof HTMLElement)) {
+        return [];
+      }
+
+      return [...goalAssistsElement.querySelectorAll('input[type="checkbox"]:checked')]
+        .map((input) => (input instanceof HTMLInputElement ? input.value : ""))
+        .filter((value) => value.length > 0)
+        .slice(0, 3);
+    }
+
+    function renderGoalAssistChoices(scorerPlayerId, seedAssistPlayerIds = null) {
+      if (!(goalAssistsElement instanceof HTMLElement)) {
+        return;
+      }
+
+      const rostered = rosteredPlayers().filter((player) => player.playerId !== scorerPlayerId);
+      const seeded = seedAssistPlayerIds ?? selectedAssistPlayerIds();
+      const selected = new Set(seeded.filter((playerId) => playerId !== scorerPlayerId).slice(0, 3));
+
+      if (rostered.length === 0) {
+        goalAssistsElement.innerHTML = `<p data-ui="empty-note">No assist options yet.</p>`;
+        return;
+      }
+
+      goalAssistsElement.innerHTML = rostered
+        .map((player) => {
+          const checked = selected.has(player.playerId);
+          const disabled = (isGameFinished() && !isFinishedGoalCorrection()) || (!checked && selected.size >= 3);
+          return `<label data-ui="check-row">
+            <input type="checkbox" value="${escapeHtml(player.playerId)}"${checked ? " checked" : ""}${
+              disabled ? " disabled" : ""
+            } />
+            <span>${escapeHtml(player.nickname)} <small>${escapeHtml(teamName(player.teamId))}</small></span>
+          </label>`;
+        })
+        .join("");
+    }
+
+    function renderGoalControls(seed = {}) {
+      if (!liveControlsAvailable()) {
+        return;
+      }
+
+      const ownGoal = seed.ownGoal ?? goalOwnGoalInput.checked;
+      const teamOptions = rosterTeams.map((team) => ({
+        value: team.teamId,
+        label: team.name,
+      }));
+      const previousScoringTeamId = seed.scoringTeamId ?? goalScoringTeamInput.value;
+      const previousConcedingTeamId = seed.concedingTeamId ?? goalConcedingTeamInput.value;
+
+      goalOwnGoalInput.checked = ownGoal;
+      if (ownGoal) {
+        goalScoringTeamInput.innerHTML = `<option value="">Own goal</option>`;
+        goalScoringTeamInput.value = "";
+        goalScoringTeamInput.disabled = true;
+      } else {
+        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "No teams");
+      }
+
+      const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
+      const concedingOptions = ownGoal
+        ? teamOptions
+        : teamOptions.filter((team) => team.value !== scoringTeamId);
+      renderSelectOptions(goalConcedingTeamInput, concedingOptions, previousConcedingTeamId, "No conceding teams");
+
+      const concedingTeamId = goalConcedingTeamInput.value;
+      const scorerPool = ownGoal
+        ? rosteredPlayersForTeam(concedingTeamId)
+        : rosteredPlayersForTeam(scoringTeamId);
+      const scorerOptions = scorerPool.map((player) => ({
+        value: player.playerId,
+        label: player.nickname,
+      }));
+      const selectedScorerId = seed.scorerPlayerId ?? goalScorerInput.value;
+      const editingGoal = editingGoalId
+        ? goalTimeline.find((goal) => goal.eventId === editingGoalId)
+        : null;
+      const canPreserveHistoricalScorer =
+        Boolean(editingGoal) &&
+        selectedScorerId === editingGoal.scorerPlayerId &&
+        ownGoal === Boolean(editingGoal.ownGoal) &&
+        scoringTeamId === (editingGoal.scoringTeamId ?? null) &&
+        concedingTeamId === editingGoal.concedingTeamId;
+      const selectedScorerLabel = selectedScorerId && canPreserveHistoricalScorer
+        ? `${playerNickname(selectedScorerId)} (not currently rostered)`
+        : null;
+      renderSelectOptions(
+        goalScorerInput,
+        scorerOptions,
+        selectedScorerId,
+        "Assign players first",
+        selectedScorerLabel,
+      );
+      renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
+
+      const activeThird = activeThirdNumber();
+      const gameFinished = isGameFinished();
+      const finishedCorrectionsAllowed = canCorrectFinishedGoals();
+      const creatingFinishedCorrection = gameFinished && finishedCorrectionsAllowed && !isEditingGoal();
+      saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
+      cancelGoalEditButton.hidden = editingGoalId === null;
+      cancelGoalEditButton.disabled = editingGoalId === null;
+      undoLastGoalButton.disabled =
+        !goalTimelineLoaded || goalTimeline.length === 0 || (gameFinished && !finishedCorrectionsAllowed);
+      undoLastGoalButton.textContent = "Undo last";
+
+      if (!goalTimelineLoaded) {
+        goalScoringTeamInput.disabled = true;
+        goalConcedingTeamInput.disabled = true;
+        goalOwnGoalInput.disabled = true;
+        goalScorerInput.disabled = true;
+        saveGoalButton.disabled = true;
+        for (const input of goalAssistsElement.querySelectorAll("input")) {
+          if (input instanceof HTMLInputElement) {
+            input.disabled = true;
+          }
+        }
+        goalFormNote.textContent = "Goal timeline unavailable. Reload before scoring or correcting goals.";
+        return;
+      }
+
+      if (gameFinished && !finishedCorrectionsAllowed) {
+        goalScoringTeamInput.disabled = true;
+        goalConcedingTeamInput.disabled = true;
+        goalOwnGoalInput.disabled = true;
+        goalScorerInput.disabled = true;
+        saveGoalButton.disabled = true;
+        for (const input of goalAssistsElement.querySelectorAll("input")) {
+          if (input instanceof HTMLInputElement) {
+            input.disabled = true;
+          }
+        }
+        goalFormNote.textContent = "Game finished. Admin role is required to correct the result.";
+        return;
+      }
+
+      saveGoalButton.disabled = false;
+
+      if (rosterTeams.length < 2) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Teams load before scoring.";
+        return;
+      }
+
+      if (rosteredPlayers().length === 0) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Assign players before scoring.";
+        return;
+      }
+
+      if (!goalScorerInput.value) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Choose a scorer before adding a goal.";
+        return;
+      }
+
+      if (editingGoalId) {
+        saveGoalButton.disabled = false;
+        goalFormNote.textContent = gameFinished
+          ? "Finished-game correction keeps the original timer stamp."
+          : "Editing keeps the original timer stamp.";
+        return;
+      }
+
+      if (!activeThird) {
+        saveGoalButton.disabled = !creatingFinishedCorrection;
+        goalFormNote.textContent = creatingFinishedCorrection
+          ? "Finished-game correction will be recorded at final whistle."
+          : "Start a third before adding goals.";
+        return;
+      }
+
+      saveGoalButton.disabled = false;
+      goalFormNote.textContent = `Goal will be added to third ${activeThird}.`;
+    }
+
+    function timelineGoalLabel(goal) {
+      const scorer = playerNickname(goal.scorerPlayerId);
+      if (goal.ownGoal) {
+        return `${scorer} own goal against ${teamName(goal.concedingTeamId)}`;
+      }
+
+      return `${scorer} for ${teamName(goal.scoringTeamId)}`;
+    }
+
+    function goalDisplayTime(goal) {
+      const thirdLength = parseThirdLengthMinutes(currentGame?.thirdLengthMinutes ?? currentGame?.timer?.thirdLengthMinutes);
+      const stoppageMinute = normalizePositiveInteger(goal.stoppageMinute);
+      const safeThird = normalizePositiveInteger(goal.third);
+      if (stoppageMinute) {
+        const stoppageBaseMinute = safeThird
+          ? safeThird * thirdLength
+          : normalizePositiveInteger(goal.gameMinute);
+        if (stoppageBaseMinute) {
+          return `${stoppageBaseMinute}+${stoppageMinute}"`;
+        }
+      }
+
+      const regulationMinute = fullMatchMinuteForThird(goal.third, goal.thirdMinute, thirdLength);
+      if (regulationMinute) {
+        return `${regulationMinute}"`;
+      }
+
+      const elapsedMinute = fullMatchMinuteForThirdElapsed(goal.third, goal.elapsedSeconds, thirdLength);
+      if (elapsedMinute) {
+        return `${elapsedMinute}"`;
+      }
+
+      if (Number.isInteger(goal.gameMinute) && goal.gameMinute > 0) {
+        return `${goal.gameMinute}"`;
+      }
+
+      if (typeof goal.displayTime === "string" && goal.displayTime.length > 0) {
+        const stoppageMatch = goal.displayTime.match(/^(\d+)\+0?(\d+)$/);
+        if (stoppageMatch) {
+          const stoppageBaseMinute = safeThird
+            ? safeThird * thirdLength
+            : Number.parseInt(stoppageMatch[1], 10);
+          return `${stoppageBaseMinute}+${Number.parseInt(stoppageMatch[2], 10)}"`;
+        }
+
+        const clockMatch = goal.displayTime.match(/^(\d+):\d{2}$/);
+        if (clockMatch) {
+          const periodMinute = Math.max(1, Number.parseInt(clockMatch[1], 10));
+          if (safeThird) {
+            return `${(safeThird - 1) * thirdLength + Math.min(periodMinute, thirdLength)}"`;
+          }
+          return `${periodMinute}"`;
+        }
+
+        const decimalMinuteMatch = goal.displayTime.match(/^(\d+(?:\.\d+)?)$/);
+        if (decimalMinuteMatch) {
+          return `${Math.max(1, Math.ceil(Number.parseFloat(decimalMinuteMatch[1])))}"`;
+        }
+
+        const minuteMatch = goal.displayTime.match(/^(\d+)'?$/);
+        if (minuteMatch) {
+          return `${Number.parseInt(minuteMatch[1], 10)}"`;
+        }
+      }
+
+      return "-";
+    }
+
+    function goalAssistLabel(goal) {
+      const assistPlayerIds = Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : [];
+      if (assistPlayerIds.length === 0) {
+        return "No assists";
+      }
+
+      return `Assisted by ${assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")}`;
+    }
+
+    function finalTeamGoalLabel(goal) {
+      const scorer = playerNickname(goal.scorerPlayerId);
+      if (goal.ownGoal) {
+        return `${scorer} own goal`;
+      }
+
+      return scorer;
+    }
+
+    function finalTeamGoalDetail(goal) {
+      if (goal.ownGoal) {
+        return "Conceded-only own goal";
+      }
+
+      return goalAssistLabel(goal);
+    }
+
+    function goalsForFinalTeam(teamId) {
+      return goalTimeline.filter(
+        (goal) =>
+          (!goal.ownGoal && goal.scoringTeamId === teamId) ||
+          (goal.ownGoal && goal.concedingTeamId === teamId),
+      );
+    }
+
+    function renderFinalGoalItems(goals, emptyText, options = {}) {
+      if (goals.length === 0) {
+        return `<li data-ui="empty-note">${escapeHtml(emptyText)}</li>`;
+      }
+
+      return goals
+        .map((goal) => {
+          const detail = finalTeamGoalDetail(goal);
+          const rowDetail =
+            options.includeThird === true && Number.isInteger(goal.third)
+              ? `Third ${goal.third} · ${detail}`
+              : detail;
+          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}">
+            <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
+            <div>
+              <strong>${escapeHtml(finalTeamGoalLabel(goal))}</strong>
+              <small>${escapeHtml(rowDetail)}</small>
+            </div>
+          </li>`;
+        })
+        .join("");
+    }
+
+    function incrementPlayerStat(stats, playerId) {
+      if (typeof playerId !== "string" || playerId.length === 0) {
+        return;
+      }
+
+      const existing = stats.get(playerId) ?? 0;
+      stats.set(playerId, existing + 1);
+    }
+
+    function sortedPlayerStats(stats) {
+      return [...stats.entries()]
+        .map(([playerId, count]) => ({
+          playerId,
+          count,
+          name: playerNickname(playerId),
+        }))
+        .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+    }
+
+    function renderPlayerStatList(entries, emptyText) {
+      if (entries.length === 0) {
+        return `<p data-ui="empty-note">${escapeHtml(emptyText)}</p>`;
+      }
+
+      return `<ol data-ui="final-stat-list">
+        ${entries
+          .map(
+            (entry) => `<li>
+              <span>${escapeHtml(entry.name)}</span>
+              <strong>${escapeHtml(String(entry.count))}</strong>
+            </li>`,
+          )
+          .join("")}
+      </ol>`;
+    }
+
+    function finalAggregateStats() {
+      const scorers = new Map();
+      const assists = new Map();
+      const ownGoals = new Map();
+
+      for (const goal of goalTimeline) {
+        if (goal.ownGoal) {
+          incrementPlayerStat(ownGoals, goal.scorerPlayerId);
+        } else {
+          incrementPlayerStat(scorers, goal.scorerPlayerId);
+        }
+
+        for (const assistPlayerId of Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : []) {
+          incrementPlayerStat(assists, assistPlayerId);
+        }
+      }
+
+      return {
+        scorers: sortedPlayerStats(scorers),
+        assists: sortedPlayerStats(assists),
+        ownGoals: sortedPlayerStats(ownGoals),
+      };
+    }
+
+    function renderFinalAggregateStats() {
+      const stats = finalAggregateStats();
+      const ownGoalStats = stats.ownGoals.length > 0
+        ? `<section data-ui="final-stat-card" data-testid="final-own-goal-stats">
+          <h4>Own goals</h4>
+          ${renderPlayerStatList(stats.ownGoals, "No own goals.")}
+        </section>`
+        : "";
+
+      return `<section data-ui="final-aggregate-stats" data-testid="final-aggregate-stats" aria-label="Player statistics">
+        <section data-ui="final-stat-card" data-testid="final-scorer-stats">
+          <h4>Top scorers</h4>
+          ${renderPlayerStatList(stats.scorers, "No scorers recorded.")}
+        </section>
+        <section data-ui="final-stat-card" data-testid="final-assist-stats">
+          <h4>Assists</h4>
+          ${renderPlayerStatList(stats.assists, "No assists recorded.")}
+        </section>
+        ${ownGoalStats}
+      </section>`;
+    }
+
+    function renderFinalGoalSummariesUnavailable() {
+      return `<section data-ui="final-goal-unavailable" data-testid="final-goal-summary-unavailable" aria-label="Goal summaries unavailable">
+        <h4>Goal summaries unavailable</h4>
+        <p data-ui="empty-note">Team result totals are shown, but scorer, assist, and full goal logs could not be loaded.</p>
+      </section>`;
+    }
+
+    function renderFinalFullGoalLog() {
+      return `<details data-ui="final-full-log" data-testid="final-full-goal-log">
+        <summary>Full match log</summary>
+        <ol data-ui="final-goal-list">
+          ${renderFinalGoalItems(goalTimeline, "No goals recorded.", { includeThird: true })}
+        </ol>
+      </details>`;
+    }
+
+    function renderGoalTimeline() {
+      if (!(goalTimelineElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (!goalTimelineLoaded) {
+        goalTimelineElement.innerHTML = `<li data-ui="empty-note">Goal timeline unavailable.</li>`;
+        return;
+      }
+
+      if (goalTimeline.length === 0) {
+        goalTimelineElement.innerHTML = `<li data-ui="empty-note">No goals yet.</li>`;
+        return;
+      }
+
+      const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
+      const finishedActionsDisabled = isGameFinished() && !canCorrectFinishedGoals();
+      const disabledAttribute = finishedActionsDisabled ? " disabled" : "";
+      goalTimelineElement.innerHTML = [...goalTimeline]
+        .reverse()
+        .map((goal) => {
+          const assists =
+            Array.isArray(goal.assistPlayerIds) && goal.assistPlayerIds.length > 0
+              ? goal.assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")
+              : "None";
+          const latest = goal.eventId === latestEventId;
+          return `<li data-ui="goal-event" data-event-id="${escapeHtml(goal.eventId)}"${
+            latest ? ' data-state="latest"' : ""
+          }>
+            <div data-ui="goal-event-main">
+              <strong>${escapeHtml(goalDisplayTime(goal))} · Third ${escapeHtml(String(goal.third))}</strong>
+              <span>${escapeHtml(timelineGoalLabel(goal))}</span>
+              <small>Assists: ${escapeHtml(assists)}</small>
+              ${goal.ownGoal ? `<small>Own goal: conceding tally only</small>` : ""}
+            </div>
+            <div data-ui="row-action-buttons">
+              ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
+              <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
+                goal.eventId,
+              )}"${disabledAttribute}>Edit</button>
+              <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
+                goal.eventId,
+              )}"${disabledAttribute}>Delete</button>
+            </div>
+          </li>`;
+        })
+        .join("");
+    }
+
+    function renderLiveScoring(seed = {}) {
+      if (!liveControlsAvailable()) {
+        return;
+      }
+
+      renderLiveScoreboard();
+      renderGoalControls(seed);
+      renderGoalTimeline();
+      renderGameResult();
+      syncGameModeState();
+    }
+
+    function applyGoalMutationResult(result, fallback = {}) {
+      if (Array.isArray(result?.scoreboard?.teams)) {
+        scoreboardTeams = normalizeScoreboardTeams(result.scoreboard.teams);
+      }
+
+      if (Array.isArray(result?.timeline)) {
+        goalTimelineLoaded = true;
+        goalTimeline = sortGoalTimeline(result.timeline);
+      } else if (goalTimelineLoaded && result?.goal) {
+        const nextGoal = result.goal;
+        goalTimeline = sortGoalTimeline([
+          ...goalTimeline.filter((goal) => goal.eventId !== nextGoal.eventId),
+          nextGoal,
+        ]);
+      } else if (goalTimelineLoaded && fallback.deletedEventId) {
+        goalTimeline = goalTimeline.filter((goal) => goal.eventId !== fallback.deletedEventId);
+      }
+
+      editingGoalId = null;
+      renderLiveScoring();
+    }
+
+    function resetGoalForm() {
+      editingGoalId = null;
+      if (goalOwnGoalInput instanceof HTMLInputElement) {
+        goalOwnGoalInput.checked = false;
+      }
+      renderLiveScoring();
+    }
+
+    function populateGoalForm(goal) {
+      editingGoalId = goal.eventId;
+      renderLiveScoring({
+        ownGoal: Boolean(goal.ownGoal),
+        scoringTeamId: goal.scoringTeamId ?? "",
+        concedingTeamId: goal.concedingTeamId,
+        scorerPlayerId: goal.scorerPlayerId,
+        assistPlayerIds: Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : [],
+      });
+      goalScorerInput?.focus();
+    }
+
+    function buildGoalPayload() {
+      if (isGameFinished() && !canCorrectFinishedGoals()) {
+        return {
+          error: "Game finished. Admin role is required to correct the result.",
+        };
+      }
+
+      const creatingFinishedCorrection = isGameFinished() && canCorrectFinishedGoals() && !isEditingGoal();
+
+      const activeThird = activeThirdNumber();
+      if (!activeThird && !editingGoalId && !creatingFinishedCorrection) {
+        return {
+          error: "Start a third before adding goals.",
+        };
+      }
+
+      const ownGoal = goalOwnGoalInput.checked;
+      const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
+      const concedingTeamId = goalConcedingTeamInput.value;
+      const scorerPlayerId = goalScorerInput.value;
+      const assistPlayerIds = selectedAssistPlayerIds().filter((playerId) => playerId !== scorerPlayerId).slice(0, 3);
+
+      if (!concedingTeamId) {
+        return {
+          error: "Choose a conceding team.",
+        };
+      }
+
+      if (!ownGoal && !scoringTeamId) {
+        return {
+          error: "Choose a scoring team.",
+        };
+      }
+
+      if (!ownGoal && scoringTeamId === concedingTeamId) {
+        return {
+          error: "Scoring and conceding teams must differ.",
+        };
+      }
+
+      if (!scorerPlayerId) {
+        return {
+          error: "Choose a scorer.",
+        };
+      }
+
+      return {
+        payload: {
+          scoringTeamId,
+          concedingTeamId,
+          scorerPlayerId,
+          assistPlayerIds,
+          ownGoal,
+        },
+      };
+    }
+
+    function goalCreatePayloadFingerprint(payload) {
+      return JSON.stringify({
+        scoringTeamId: payload.scoringTeamId,
+        concedingTeamId: payload.concedingTeamId,
+        scorerPlayerId: payload.scorerPlayerId,
+        assistPlayerIds: Array.isArray(payload.assistPlayerIds) ? payload.assistPlayerIds : [],
+        ownGoal: payload.ownGoal === true,
+      });
+    }
+
+    function idempotencyKeyForGoalMutation(prefix, stablePart, fingerprint) {
+      const cacheKey = `${prefix}:${stablePart}`;
+      const existing = pendingGoalMutationIdempotency.get(cacheKey);
+      if (!existing || existing.fingerprint !== fingerprint) {
+        const next = {
+          fingerprint,
+          key: createIdempotencyKey(prefix, stablePart),
+        };
+        pendingGoalMutationIdempotency.set(cacheKey, next);
+        return next.key;
+      }
+
+      return existing.key;
+    }
+
+    function clearGoalMutationIdempotency(prefix, stablePart) {
+      pendingGoalMutationIdempotency.delete(`${prefix}:${stablePart}`);
+    }
+
+    async function refreshGameAfterFinishedCorrection() {
+      if (!isGameFinished()) {
+        return true;
+      }
+
+      try {
+        await loadGame();
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not refresh finished game result.";
+        showError(message);
+        setStatus("Finished result refresh failed.", "error");
+        return false;
+      }
+    }
+
+    function idempotencyKeyForGoalSave(eventId, payload) {
+      if (eventId) {
+        return idempotencyKeyForGoalMutation(
+          "update-goal",
+          `${gameId}-${eventId}`,
+          goalCreatePayloadFingerprint(payload),
+        );
+      }
+
+      const fingerprint = goalCreatePayloadFingerprint(payload);
+      if (!pendingCreateGoalIdempotency || pendingCreateGoalIdempotency.fingerprint !== fingerprint) {
+        pendingCreateGoalIdempotency = {
+          fingerprint,
+          key: createIdempotencyKey("create-goal", `${gameId}-new`),
+        };
+      }
+
+      return pendingCreateGoalIdempotency.key;
+    }
+
     function assignmentButtons(playerId, currentTeamId = null) {
+      const disabled = finishedRosterControlsLocked() ? " disabled" : "";
       return rosterTeams
         .map((team) => {
           const active = currentTeamId === team.teamId ? ' data-state="active" aria-pressed="true"' : "";
           return `<button data-ui="row-action" type="button" data-action="assign-player" data-player-id="${escapeHtml(
             playerId,
-          )}" data-team-id="${escapeHtml(team.teamId)}"${active}>${escapeHtml(team.name)}</button>`;
+          )}" data-team-id="${escapeHtml(team.teamId)}"${active}${disabled}>${escapeHtml(team.name)}</button>`;
         })
         .join("");
+    }
+
+    function playerAccessPanel(player) {
+      if (currentLeagueRole !== "admin") {
+        return "";
+      }
+
+      const access = player?.access;
+      if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
+        return `<div data-ui="player-access" data-testid="player-access">
+          <small>Not claimed</small>
+        </div>`;
+      }
+
+      const role = normalizeLeagueRole(access.role);
+      const roleLabel =
+        role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
+      const scorerDisabled = role === "scorekeeper" || role === "admin" ? " disabled" : "";
+      const adminDisabled = role === "admin" ? " disabled" : "";
+
+      return `<div data-ui="player-access" data-testid="player-access">
+        <small>${escapeHtml(roleLabel)} · ${escapeHtml(access.userId)}</small>
+        <div data-ui="access-actions">
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
+            access.userId,
+          )}" data-role="scorekeeper"${scorerDisabled}>Make scorer</button>
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
+            access.userId,
+          )}" data-role="admin"${adminDisabled}>Make co-organiser</button>
+        </div>
+      </div>`;
     }
 
     function renderPlayerPool() {
@@ -1262,16 +2851,17 @@
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
           const assignedTeam = assignment ? teamById(assignment.teamId) : null;
-          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
-          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
-            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
-            <div data-ui="roster-player-main">
-              <strong>${escapeHtml(player.nickname)}</strong>
-              <span>${escapeHtml(statusText)}</span>
-            </div>
-            <div data-ui="row-action-buttons">
-              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
-            </div>
+	          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
+	          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
+	            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
+	            <div data-ui="roster-player-main">
+	              <strong>${escapeHtml(player.nickname)}</strong>
+	              <span>${escapeHtml(statusText)}</span>
+	              ${playerAccessPanel(player)}
+	            </div>
+	            <div data-ui="row-action-buttons">
+	              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
+	            </div>
           </article>`;
         })
         .join("");
@@ -1318,8 +2908,16 @@
     }
 
     function renderRosterSetup() {
+      const rosterLocked = finishedRosterControlsLocked();
+      if (quickCreatePlayerButton instanceof HTMLButtonElement) {
+        quickCreatePlayerButton.disabled = rosterLocked;
+      }
+      if (playerNicknameInput instanceof HTMLInputElement) {
+        playerNicknameInput.disabled = rosterLocked;
+      }
       renderPlayerPool();
       renderRosterTeams();
+      syncGameModeState();
     }
 
     async function loadRosterSetup(options = {}) {
@@ -1339,11 +2937,44 @@
       rosterTeams = Array.isArray(rosterPayload?.teams) ? rosterPayload.teams : [];
       rosterAssignments = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : [];
       rosterPlayers = Array.isArray(playersPayload?.players) ? playersPayload.players : [];
+      if (scoreboardTeams.length === 0 || goalTimeline.length === 0) {
+        scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
+      }
       renderRosterSetup();
+      renderLiveScoring();
 
       if (options.updateStatus !== false) {
         setStatus("Game roster ready.", "success");
       }
+    }
+
+    async function loadGameGoals() {
+      if (!liveControlsAvailable()) {
+        return true;
+      }
+
+      let payload;
+      try {
+        payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals`, {
+          method: "GET",
+        });
+      } catch (error) {
+        goalTimelineLoaded = false;
+        const message = error instanceof Error ? error.message : "Could not load goal timeline.";
+        showError(message);
+        setStatus("Could not load goal timeline.", "error");
+        renderLiveScoring();
+        return false;
+      }
+
+      goalTimelineLoaded = true;
+      if (Array.isArray(payload?.scoreboard?.teams)) {
+        scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
+      }
+
+      goalTimeline = Array.isArray(payload?.timeline) ? sortGoalTimeline(payload.timeline) : [];
+      renderLiveScoring();
+      return true;
     }
 
     async function loadGame() {
@@ -1360,11 +2991,34 @@
       }
 
       if (subtitle) {
-        subtitle.innerHTML = `Kickoff (UTC): <code>${escapeHtml(game.gameStartTs)}</code>`;
+        subtitle.innerHTML = `Kickoff: <code>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</code>`;
       }
 
       if (gameIdValue) {
         gameIdValue.textContent = game.gameId;
+      }
+      if (finalGameIdValue) {
+        finalGameIdValue.textContent = game.gameId;
+      }
+      if (gameJoinCodeValue) {
+        gameJoinCodeValue.textContent = typeof game.joinCode === "string" && game.joinCode.length > 0
+          ? game.joinCode
+          : "Unavailable";
+      }
+      if (gameJoinLink instanceof HTMLAnchorElement) {
+        if (typeof game.joinCode === "string" && game.joinCode.length > 0) {
+          const joinPath = `/join?code=${encodeURIComponent(game.joinCode)}`;
+          const joinUrl = new URL(joinPath, window.location.origin).toString();
+          gameJoinLink.href = joinUrl;
+          gameJoinLink.textContent = joinUrl;
+          renderJoinQrCode(gameJoinQr, joinUrl);
+        } else {
+          gameJoinLink.href = "/join";
+          gameJoinLink.textContent = "Unavailable";
+          if (gameJoinQr instanceof HTMLElement) {
+            gameJoinQr.textContent = "Unavailable";
+          }
+        }
       }
       if (gameLeagueId) {
         gameLeagueId.textContent = game.leagueId;
@@ -1377,6 +3031,7 @@
       statusInput.value = game.status;
       thirdLengthInput.value = String(parseThirdLengthMinutes(game.thirdLengthMinutes ?? game.timer?.thirdLengthMinutes));
       renderTimer();
+      syncGameModeState();
 
       if (gameLeagueLink instanceof HTMLAnchorElement) {
         gameLeagueLink.href = `/leagues/${encodeURIComponent(game.leagueId)}`;
@@ -1389,7 +3044,33 @@
       }
     }
 
+    async function loadLeagueAccess() {
+      currentLeagueRole = null;
+      if (!currentLeagueId) {
+        renderLiveScoring();
+        return;
+      }
+
+      try {
+        const league = await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(currentLeagueId)}`, {
+          method: "GET",
+        });
+        currentLeagueRole = normalizeLeagueRole(league?.access?.role);
+      } catch {
+        currentLeagueRole = null;
+      }
+
+      if (rosterControlsAvailable()) {
+        renderRosterSetup();
+      }
+      renderLiveScoring();
+    }
+
     saveButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        return;
+      }
+
       clearError();
 
       const kickoffIso = toIsoTimestamp(kickoffInput.value.trim());
@@ -1417,17 +3098,23 @@
         });
 
         await loadGame();
+        setGameMode(gameModeAfterGameSave(), { focusPanel: true });
         setStatus("Game updated.", "success");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not update game.";
         showError(message);
         setStatus("Game update failed.", "error");
       } finally {
-        saveButton.disabled = false;
+        saveButton.disabled = isGameFinished();
       }
     });
 
     deleteButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        setStatus("Finished games are locked.", "error");
+        return;
+      }
+
       if (!window.confirm(`Delete game ${gameId}?`)) {
         return;
       }
@@ -1446,11 +3133,15 @@
         showError(message);
         setStatus("Game deletion failed.", "error");
       } finally {
-        deleteButton.disabled = false;
+        deleteButton.disabled = isGameFinished();
       }
     });
 
     startThirdButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        return;
+      }
+
       const third = startThirdButton.getAttribute("data-third");
       if (!third) {
         return;
@@ -1465,7 +3156,9 @@
           `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/start`,
           { method: "POST" },
         );
+        setGameMode("run");
         renderTimer();
+        renderLiveScoring();
         statusInput.value = currentGame.status;
         setStatus(`Third ${third} started.`, "success");
       } catch (error) {
@@ -1475,10 +3168,15 @@
       } finally {
         startThirdButton.disabled = false;
         renderTimer();
+        renderLiveScoring();
       }
     });
 
     finishThirdButton.addEventListener("click", async () => {
+      if (isGameFinished()) {
+        return;
+      }
+
       const third = finishThirdButton.getAttribute("data-third");
       if (!third) {
         return;
@@ -1493,7 +3191,11 @@
           `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/finish`,
           { method: "POST" },
         );
+        if (buildTimerState(currentGame).status === "complete") {
+          setGameMode("final");
+        }
         renderTimer();
+        renderLiveScoring();
         statusInput.value = currentGame.status;
         setStatus(`Third ${third} finished.`, "success");
       } catch (error) {
@@ -1503,7 +3205,71 @@
       } finally {
         finishThirdButton.disabled = false;
         renderTimer();
+        renderLiveScoring();
       }
+    });
+
+    finishGameButton.addEventListener("click", async () => {
+      if (!currentGame || isGameFinished()) {
+        return;
+      }
+
+      const timer = buildTimerState(currentGame);
+      if (timer.status !== "complete") {
+        return;
+      }
+
+      finishGameButton.disabled = true;
+      clearError();
+      setStatus("Finishing game…", "default");
+
+      try {
+        currentGame = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/finish`, {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": createIdempotencyKey("finish-game", gameId),
+          },
+        });
+        if (Array.isArray(currentGame?.result?.teams)) {
+          scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
+        }
+        if (isGameFinished()) {
+          await loadLeagueAccess();
+        }
+        setGameMode("final");
+        statusInput.value = currentGame.status;
+        renderTimer();
+        renderRosterSetup();
+        renderLiveScoring();
+        setStatus("Game finished.", "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not finish game.";
+        showError(message);
+        setStatus("Game finish failed.", "error");
+      } finally {
+        renderTimer();
+        renderRosterSetup();
+        renderLiveScoring();
+      }
+    });
+
+    root.addEventListener("click", (event) => {
+      const target = event.target;
+      const trigger =
+        target instanceof Element
+          ? target.closest('[data-action="select-game-mode"][data-game-mode]')
+          : null;
+      if (!(trigger instanceof HTMLElement)) {
+        return;
+      }
+
+      const mode = trigger.getAttribute("data-game-mode");
+      if (mode === "final") {
+        manualGameModeSelected = selectGameStateAction();
+        return;
+      }
+      manualGameModeSelected = true;
+      setGameMode(mode, { focusPanel: trigger.getAttribute("data-ui") !== "game-mode-tab" });
     });
 
     if (rosterControlsAvailable()) {
@@ -1523,6 +3289,10 @@
       });
 
       quickCreatePlayerButton.addEventListener("click", async () => {
+        if (finishedRosterControlsLocked()) {
+          return;
+        }
+
         clearError();
 
         const nickname = playerNicknameInput.value.trim();
@@ -1560,7 +3330,7 @@
           showError(message);
           setStatus("Player creation failed.", "error");
         } finally {
-          quickCreatePlayerButton.disabled = false;
+          quickCreatePlayerButton.disabled = finishedRosterControlsLocked();
         }
       });
 
@@ -1570,7 +3340,56 @@
           return;
         }
 
-        if (target.getAttribute("data-action") !== "assign-player") {
+        const action = target.getAttribute("data-action");
+        if (action === "grant-player-access") {
+          if (currentLeagueRole !== "admin") {
+            return;
+          }
+
+          const userId = target.getAttribute("data-user-id");
+          const role = target.getAttribute("data-role");
+          if (!currentLeagueId || !userId || (role !== "scorekeeper" && role !== "admin")) {
+            return;
+          }
+
+          target.disabled = true;
+          clearError();
+          setStatus("Updating scorer access…", "default");
+
+          try {
+            await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(currentLeagueId)}/access`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                userId,
+                role,
+              }),
+            });
+
+            await loadRosterSetup({ updateStatus: false });
+            setStatus(
+              role === "admin"
+                ? "Player can now co-organise and score."
+                : "Player can now score this league's games.",
+              "success",
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Could not update scorer access.";
+            showError(message);
+            setStatus("Scorer access update failed.", "error");
+          } finally {
+            target.disabled = false;
+          }
+          return;
+        }
+
+        if (action !== "assign-player") {
+          return;
+        }
+
+        if (finishedRosterControlsLocked()) {
           return;
         }
 
@@ -1615,26 +3434,483 @@
       });
     }
 
+    if (liveControlsAvailable()) {
+      goalScoringTeamInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalConcedingTeamInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalOwnGoalInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalScorerInput.addEventListener("change", () => {
+        renderLiveScoring();
+      });
+
+      goalAssistsElement.addEventListener("change", () => {
+        renderGoalAssistChoices(goalScorerInput.value);
+      });
+
+      saveGoalButton.addEventListener("click", async () => {
+        if (isGameFinished() && !canCorrectFinishedGoals()) {
+          renderLiveScoring();
+          return;
+        }
+
+        clearError();
+        const draft = buildGoalPayload();
+        if (draft.error || !draft.payload) {
+          showError(draft.error ?? "Goal details are incomplete.");
+          setStatus("Goal validation failed.", "error");
+          return;
+        }
+
+        saveGoalButton.disabled = true;
+        const eventId = editingGoalId;
+        const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
+        setStatus(`${actionLabel}…`, "default");
+
+        try {
+          const path = eventId
+            ? `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`
+            : `/v1/games/${encodeURIComponent(gameId)}/goals`;
+          const result = await requestJsonOrThrow(path, {
+            method: eventId ? "PATCH" : "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKeyForGoalSave(eventId, draft.payload),
+            },
+            body: JSON.stringify(draft.payload),
+          });
+
+          if (!eventId) {
+            applyGoalMutationResult(result);
+            pendingCreateGoalIdempotency = null;
+            const gameRefreshed = await refreshGameAfterFinishedCorrection();
+            if (!gameRefreshed) {
+              showError("Goal was added, but the finished result could not be refreshed.");
+              setStatus("Goal added; result refresh failed.", "success");
+              return;
+            }
+          } else {
+            const goalsLoaded = await loadGameGoals();
+            if (!goalsLoaded) {
+              throw new Error("Goal update was saved, but the latest goal state could not be loaded.");
+            }
+            const gameRefreshed = await refreshGameAfterFinishedCorrection();
+            if (!gameRefreshed) {
+              throw new Error("Goal update was saved, but the finished result could not be refreshed.");
+            }
+            editingGoalId = null;
+            clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
+          }
+          setStatus(eventId ? "Goal updated." : "Goal added.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not save goal.";
+          showError(message);
+          setStatus("Goal save failed.", "error");
+        } finally {
+          saveGoalButton.disabled = false;
+          renderLiveScoring();
+        }
+      });
+
+      cancelGoalEditButton.addEventListener("click", () => {
+        resetGoalForm();
+        setStatus("Goal edit cancelled.", "default");
+      });
+
+      undoLastGoalButton.addEventListener("click", async () => {
+        if (isGameFinished() && !canCorrectFinishedGoals()) {
+          renderLiveScoring();
+          return;
+        }
+
+        const latest = goalTimeline.at(-1);
+        if (!latest) {
+          return;
+        }
+
+        undoLastGoalButton.disabled = true;
+        clearError();
+        setStatus("Undoing latest goal…", "default");
+
+        try {
+          const stablePart = `${gameId}-${latest.eventId}`;
+          const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKeyForGoalMutation("undo-goal", stablePart, latest.eventId),
+            },
+            body: JSON.stringify({
+              expectedEventId: latest.eventId,
+            }),
+          });
+
+          applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          clearGoalMutationIdempotency("undo-goal", stablePart);
+          const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!gameRefreshed) {
+            showError("Latest goal was undone, but the finished result could not be refreshed.");
+            setStatus("Latest goal undone; result refresh failed.", "success");
+            return;
+          }
+          setStatus("Latest goal undone.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not undo latest goal.";
+          showError(message);
+          setStatus("Goal undo failed.", "error");
+        } finally {
+          undoLastGoalButton.disabled = false;
+          renderLiveScoring();
+        }
+      });
+
+      root.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement)) {
+          return;
+        }
+
+        const action = target.getAttribute("data-action");
+        if (action !== "edit-goal" && action !== "delete-goal") {
+          return;
+        }
+
+        const eventId = target.getAttribute("data-event-id");
+        if (!eventId) {
+          return;
+        }
+
+        const goal = goalTimeline.find((item) => item.eventId === eventId);
+        if (!goal) {
+          return;
+        }
+
+        if (isGameFinished() && !canCorrectFinishedGoals()) {
+          renderLiveScoring();
+          return;
+        }
+
+        if (action === "edit-goal") {
+          populateGoalForm(goal);
+          setStatus("Goal ready to edit.", "default");
+          return;
+        }
+
+        if (!window.confirm(`Delete goal ${eventId}?`)) {
+          return;
+        }
+
+        target.disabled = true;
+        clearError();
+        setStatus("Deleting goal…", "default");
+
+        try {
+          const stablePart = `${gameId}-${eventId}`;
+          const result = await requestJsonOrThrow(
+            `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
+            {
+              method: "DELETE",
+              headers: {
+                "Idempotency-Key": idempotencyKeyForGoalMutation("delete-goal", stablePart, eventId),
+              },
+            },
+          );
+
+          applyGoalMutationResult(result, { deletedEventId: eventId });
+          clearGoalMutationIdempotency("delete-goal", stablePart);
+          const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!gameRefreshed) {
+            showError("Goal was deleted, but the finished result could not be refreshed.");
+            setStatus("Goal deleted; result refresh failed.", "success");
+            return;
+          }
+          setStatus("Goal deleted.", "success");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not delete goal.";
+          showError(message);
+          setStatus("Goal deletion failed.", "error");
+        } finally {
+          target.disabled = false;
+          renderLiveScoring();
+        }
+      });
+    }
+
+    syncGameModeState();
     await loadGame();
+    await loadLeagueAccess();
     await loadRosterSetup({ updateStatus: false });
+    const goalsLoaded = await loadGameGoals();
+    if (!manualGameModeSelected) {
+      setGameMode(preferredInitialGameMode());
+    }
+    syncGameModeState();
 
     try {
       const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {
         method: "GET",
       });
+      const previousLeagueId = currentLeagueId;
       currentLeagueId = season.leagueId;
       if (gameLeagueLink instanceof HTMLAnchorElement) {
         gameLeagueLink.href = `/leagues/${encodeURIComponent(currentLeagueId)}`;
+      }
+      if (currentLeagueId !== previousLeagueId) {
+        await loadLeagueAccess();
       }
     } catch {
       // Keep existing game context if season lookup fails.
     }
 
-    setStatus("Game page ready.", "success");
+    if (goalsLoaded) {
+      setStatus("Game page ready.", "success");
+    }
+  }
+
+  async function initJoinPage() {
+    const searchParams = new URLSearchParams(window.location.search);
+    const queryJoinCode = searchParams.get("code") ?? "";
+    const routeJoinCode = queryJoinCode || resolveRouteEntityId("data-join-code", "join") || "";
+    const joinCode = routeJoinCode.trim().toUpperCase();
+    const joinCodeValue = document.getElementById("join-code-value");
+    const form = document.getElementById("join-game-form");
+    const nicknameInput = document.getElementById("join-player-nickname");
+    const joinButton = root.querySelector('[data-action="join-game"]');
+    const resultElement = document.getElementById("join-result");
+    const resultPlayer = document.getElementById("join-result-player");
+    const resultGame = document.getElementById("join-result-game");
+    const claimActions = document.getElementById("join-claim-actions");
+    const claimStatus = document.getElementById("join-claim-status");
+    const signInLink = document.getElementById("join-signin-link");
+    const claimButton = root.querySelector('[data-action="claim-player"]');
+    const initialPlayerId = searchParams.get("playerId") ?? "";
+    let claimPlayerId = initialPlayerId.trim();
+
+    if (joinCodeValue) {
+      joinCodeValue.textContent = joinCode || "Missing";
+    }
+
+    if (!joinCode) {
+      setStatus("Join code missing.", "error");
+      showError("Open a join link from a game page.");
+      return;
+    }
+
+    if (!(form instanceof HTMLFormElement) || !(nicknameInput instanceof HTMLInputElement)) {
+      setStatus("Join form unavailable.", "error");
+      return;
+    }
+
+    nicknameInput.addEventListener("input", () => {
+      clearError();
+      setFieldMessage("join-player-nickname");
+    });
+
+    function signInHrefForClaim(playerId) {
+      const returnParams = new URLSearchParams(window.location.search);
+      returnParams.set("playerId", playerId);
+      if (!returnParams.has("code") && window.location.pathname === "/join" && joinCode) {
+        returnParams.set("code", joinCode);
+      }
+      const returnTo = `${window.location.pathname}?${returnParams.toString()}`;
+      return `/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
+    }
+
+    function showClaimActions() {
+      if (claimActions instanceof HTMLElement) {
+        claimActions.hidden = false;
+      }
+    }
+
+    async function claimJoinedPlayer(playerId) {
+      if (!playerId) {
+        return;
+      }
+
+      showClaimActions();
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = "Claiming player for this account…";
+      }
+      if (claimButton instanceof HTMLButtonElement) {
+        claimButton.disabled = true;
+        claimButton.hidden = false;
+      }
+      if (signInLink instanceof HTMLAnchorElement) {
+        signInLink.hidden = true;
+      }
+
+      const result = await requestJsonOrThrow(`/v1/players/${encodeURIComponent(playerId)}/claim`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (resultPlayer) {
+        resultPlayer.textContent = result?.player?.nickname ?? resultPlayer.textContent;
+      }
+      if (resultElement) {
+        resultElement.hidden = false;
+      }
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = "Player claimed. The organiser can now make this account a scorer.";
+      }
+      setStatus("Player claimed.", "success");
+    }
+
+    async function refreshClaimActions(playerId, options = {}) {
+      if (!playerId) {
+        return;
+      }
+
+      showClaimActions();
+      const session = await currentAuthenticatedSession();
+      if (session) {
+        if (signInLink instanceof HTMLAnchorElement) {
+          signInLink.hidden = true;
+        }
+        if (claimButton instanceof HTMLButtonElement) {
+          claimButton.hidden = false;
+          claimButton.disabled = false;
+        }
+        if (claimStatus instanceof HTMLElement) {
+          claimStatus.textContent = `Signed in as ${session.email}. Claim this player for scorer access.`;
+        }
+        if (options.autoClaim === true) {
+          await claimJoinedPlayer(playerId);
+        }
+        return;
+      }
+
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = "Sign in to claim this player so the organiser can make you a scorer.";
+      }
+      if (signInLink instanceof HTMLAnchorElement) {
+        signInLink.hidden = false;
+        signInLink.href = signInHrefForClaim(playerId);
+      }
+      if (claimButton instanceof HTMLButtonElement) {
+        claimButton.hidden = true;
+        claimButton.disabled = true;
+      }
+    }
+
+    if (claimPlayerId) {
+      void refreshClaimActions(claimPlayerId).catch((error) => {
+        const message = error instanceof Error ? error.message : "Could not claim player.";
+        showError(message);
+        setStatus("Player claim failed.", "error");
+        if (claimButton instanceof HTMLButtonElement) {
+          claimButton.disabled = false;
+          claimButton.hidden = false;
+        }
+      });
+    }
+
+    if (claimButton instanceof HTMLButtonElement) {
+      claimButton.addEventListener("click", async () => {
+        clearError();
+        try {
+          await claimJoinedPlayer(claimPlayerId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not claim player.";
+          showError(message);
+          setStatus("Player claim failed.", "error");
+          claimButton.disabled = false;
+        }
+      });
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+
+      const nickname = nicknameInput.value.trim();
+      if (!nickname) {
+        setFieldMessage("join-player-nickname", "invalid", "Nickname is required.");
+        setStatus("Nickname required.", "error");
+        return;
+      }
+
+      if (joinButton instanceof HTMLButtonElement) {
+        joinButton.disabled = true;
+      }
+      nicknameInput.disabled = true;
+      setStatus("Joining game...", "default");
+
+      try {
+        const result = await requestJsonOrThrow(`/v1/join/${encodeURIComponent(joinCode)}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "Idempotency-Key": idempotencyKeyForPublicJoin(joinCode, nickname),
+          },
+          body: JSON.stringify({
+            nickname,
+          }),
+        });
+
+        clearIdempotencyKeyForPublicJoin(joinCode, nickname);
+        claimPlayerId = result?.player?.playerId ?? "";
+        setFieldMessage("join-player-nickname", "valid", "Joined.");
+        setStatus("Joined game.", "success");
+        if (resultPlayer) {
+          resultPlayer.textContent = result?.player?.nickname ?? nickname;
+        }
+        if (resultGame) {
+          resultGame.textContent = result?.gameId ?? "";
+        }
+        if (resultElement) {
+          resultElement.hidden = false;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not join game.";
+        showError(message);
+        setStatus("Join failed.", "error");
+        nicknameInput.disabled = false;
+        if (joinButton instanceof HTMLButtonElement) {
+          joinButton.disabled = false;
+        }
+        return;
+      }
+
+      try {
+        await refreshClaimActions(claimPlayerId, { autoClaim: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not claim player.";
+        showError(message);
+        setStatus("Joined game. Player claim failed.", "error");
+        if (claimButton instanceof HTMLButtonElement) {
+          claimButton.disabled = false;
+          claimButton.hidden = false;
+        }
+      }
+    });
+
+    setStatus("Join page ready.", "success");
   }
 
   async function initialize() {
     clearError();
+
+    if (page === "join") {
+      try {
+        await initJoinPage();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unexpected join page error.";
+        showError(message);
+        setStatus("Page load failed.", "error");
+      }
+      return;
+    }
 
     try {
       await ensureAuthenticatedSession();

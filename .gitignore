@@ -40,6 +40,13 @@ coverage
 node_modules/
 dist/
 dist-tests/
+playwright-report/
+test-results/
+
+# Keep repo-owned browser specs visible even if a developer has broad global ignores.
+!tests/
+!tests/e2e/
+!tests/e2e/*.spec.ts
 
 # Optional npm cache directory
 .npm

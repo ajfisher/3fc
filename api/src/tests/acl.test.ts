@@ -36,10 +36,13 @@ class InMemoryAclLookup implements AclLookup {
   }
 }
 
-function defaultTimerFields(): Pick<GameRecord, "thirdLengthMinutes" | "thirds"> {
+function defaultGameStateFields(): Pick<GameRecord, "joinCode" | "thirdLengthMinutes" | "thirds" | "finishedAt" | "result"> {
   return {
+    joinCode: "JOIN1234",
     thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
     thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
   };
 }
 
@@ -79,6 +82,10 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "finishGameThird",
     gameId: "game-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/finish"), {
+    operation: "finishGame",
+    gameId: "game-1",
+  });
   assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/goals"), {
     operation: "createGoal",
     gameId: "game-1",
@@ -95,6 +102,13 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "undoLastGoal",
     gameId: "game-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/players/player-1/claim"), {
+    operation: "claimPlayer",
+  });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/leagues/league-1/access"), {
+    operation: "grantLeagueAccess",
+    leagueId: "league-1",
+  });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
 
@@ -109,6 +123,66 @@ test("createLeague mutation is allowed for authenticated users", async () => {
   assert.equal(result.allowed, true);
   assert.equal(result.operation, "createLeague");
   assert.equal(result.error, null);
+});
+
+test("claimPlayer mutation is allowed for authenticated users without league access", async () => {
+  const result = await authorizeProtectedMutation(
+    "POST",
+    "/v1/players/player-1/claim",
+    "participant@example.com",
+    new InMemoryAclLookup({}),
+  );
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.operation, "claimPlayer");
+  assert.equal(result.scope, null);
+  assert.equal(result.error, null);
+});
+
+test("grantLeagueAccess mutation requires league admin", async () => {
+  const adminResult = await authorizeProtectedMutation(
+    "POST",
+    "/v1/leagues/league-1/access",
+    "admin-user",
+    new InMemoryAclLookup({
+      leagueAccess: {
+        "league-1:admin-user": {
+          leagueId: "league-1",
+          userId: "admin-user",
+          role: "admin",
+          grantedByUserId: "owner",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(adminResult.allowed, true);
+  assert.equal(adminResult.operation, "grantLeagueAccess");
+  assert.deepEqual(adminResult.scope, { leagueId: "league-1" });
+
+  const scorekeeperResult = await authorizeProtectedMutation(
+    "POST",
+    "/v1/leagues/league-1/access",
+    "scorekeeper-user",
+    new InMemoryAclLookup({
+      leagueAccess: {
+        "league-1:scorekeeper-user": {
+          leagueId: "league-1",
+          userId: "scorekeeper-user",
+          role: "scorekeeper",
+          grantedByUserId: "owner",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          updatedAt: "2026-02-23T00:00:00.000Z",
+        },
+      },
+    }),
+  );
+
+  assert.equal(scorekeeperResult.allowed, false);
+  assert.equal(scorekeeperResult.statusCode, 403);
+  assert.equal(scorekeeperResult.error?.code, "admin_required");
 });
 
 test("league-scoped mutation rejects non-admin users", async () => {
@@ -201,7 +275,7 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -254,7 +328,7 @@ test("game-scoped timer mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -307,7 +381,7 @@ test("game-scoped goal mutation allows scorekeepers", async () => {
           gameId: "game-1",
           status: "live",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -360,7 +434,7 @@ test("game team override mutation rejects scorekeepers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
@@ -409,7 +483,7 @@ test("game player creation mutation rejects viewers", async () => {
           gameId: "game-1",
           status: "scheduled",
           gameStartTs: "2026-02-23T10:00:00.000Z",
-          ...defaultTimerFields(),
+          ...defaultGameStateFields(),
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         },
