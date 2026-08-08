@@ -2859,8 +2859,12 @@ export class ThreeFcRepository {
     const remainingGames = await this.listGamesForSession(game.sessionId, {
       consistentRead: true,
     });
+    const hasRemainingGamesForDeletedScope = remainingGames.some(
+      (remainingGame) =>
+        remainingGame.leagueId === game.leagueId && remainingGame.seasonId === game.seasonId,
+    );
     const sessionDeleteTargets: Array<StoredEntity<unknown>> = [];
-    if (remainingGames.length === 0) {
+    if (!hasRemainingGamesForDeletedScope) {
       sessionDeleteTargets.push(
         ...sessionCleanupTargets.filter(
           (target) =>
@@ -2868,14 +2872,6 @@ export class ThreeFcRepository {
             (target.pk === sessionPk(game.sessionId) && target.sk === metadataSk()),
         ),
       );
-    }
-    if (
-      remainingGames.every(
-        (remainingGame) =>
-          remainingGame.leagueId !== game.leagueId ||
-          remainingGame.seasonId !== game.seasonId,
-      )
-    ) {
       sessionDeleteTargets.push(
         ...sessionCleanupTargets.filter(
           (target) =>
@@ -2910,7 +2906,9 @@ export class ThreeFcRepository {
           )
         : null;
     const season = options.leagueId
-      ? await this.getEntity(leaguePk(options.leagueId), seasonSk(seasonId))
+      ? await this.getEntity(leaguePk(options.leagueId), seasonSk(seasonId), {
+          consistentRead: true,
+        })
       : null;
     const scopedSeason =
       season?.entityType === ENTITY_TYPE.season
@@ -2924,6 +2922,12 @@ export class ThreeFcRepository {
     if (!resolvedSeason) {
       return false;
     }
+    const canUseProvenanceLessLegacySessions =
+      options.leagueId !== undefined &&
+      this.isMatchingSeasonEntity(globalSeasonItem, {
+        leagueId: options.leagueId,
+        seasonId,
+      });
 
     const scopedSessions = await this.listSessionsForSeason(seasonId, {
       leagueId: options.leagueId,
@@ -2931,7 +2935,9 @@ export class ThreeFcRepository {
     });
     const legacySessions = options.leagueId
       ? (await this.listSessionsForSeason(seasonId, { consistentRead: true })).filter(
-          (session) => session.leagueId === options.leagueId,
+          (session) =>
+            session.leagueId === options.leagueId ||
+            (canUseProvenanceLessLegacySessions && session.leagueId === undefined),
         )
       : [];
     const sessions = [
@@ -2961,10 +2967,10 @@ export class ThreeFcRepository {
         `SEASON#${seasonId}#TEAM#`,
         { consistentRead: true },
       );
-      const ownedLegacyTeamItems =
-        globalSeasonItem?.entityType === ENTITY_TYPE.season && globalSeason?.leagueId === options.leagueId
-          ? await this.queryByPrefix(seasonPk(seasonId), "TEAM#", { consistentRead: true })
-          : [];
+      const ownedLegacyTeamItems = await this.readOwnedLegacySeasonTeamTemplateItems(
+        seasonId,
+        options.leagueId,
+      );
 
       const deleteItems: TransactWriteItem[] = [
         {

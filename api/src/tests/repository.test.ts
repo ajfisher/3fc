@@ -1905,6 +1905,72 @@ test("repository scoped game cleanup deletes row-attributed legacy sessions afte
   assert.equal(client.readItem("SESSION#20260222", "METADATA"), undefined);
 });
 
+test("repository scoped game cleanup deletes owned legacy sessions despite foreign games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: true,
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+  await repository.createSession({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-2",
+    joinCode: "WXYZ6789",
+    leagueId: "league-2",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:05:00Z",
+    linkSession: true,
+  });
+
+  const deleted = await repository.deleteGame("game-1");
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SESSION#20260222", "METADATA"), undefined);
+  assert.ok(client.readItem("LEAGUE#league-2", "SEASON#season-1#SESSION#20260222"));
+  assert.ok(client.readItem("SESSION#20260222", "GAME#2026-02-22T10:05:00Z#game-2"));
+});
+
 test("repository scoped season game listings include owned provenance-less legacy sessions", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -3066,6 +3132,57 @@ test("repository scoped season delete blocks owned legacy sessions without games
   );
 });
 
+test("repository scoped season delete blocks owned provenance-less legacy sessions without games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  client.seedItem({
+    pk: { S: "SEASON#season-1" },
+    sk: { S: "SESSION#20260222" },
+    entityType: { S: "session" },
+    createdAt: { S: "2026-02-22T10:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T10:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        seasonId: "season-1",
+        sessionId: "20260222",
+        sessionDate: "2026-02-22",
+      }),
+    },
+  });
+  client.seedItem({
+    pk: { S: "SESSION#20260222" },
+    sk: { S: "METADATA" },
+    entityType: { S: "session" },
+    createdAt: { S: "2026-02-22T10:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T10:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        seasonId: "season-1",
+        sessionId: "20260222",
+        sessionDate: "2026-02-22",
+      }),
+    },
+  });
+
+  await assert.rejects(
+    repository.deleteSeason("season-1", { leagueId: "league-1" }),
+    /Cannot delete season with existing games/,
+  );
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1"));
+  assert.ok(client.readItem("SEASON#season-1", "SESSION#20260222"));
+  assert.ok(client.readItem("SESSION#20260222", "METADATA"));
+});
+
 test("repository scoped session creation touches season metadata to serialize deletion", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -3405,6 +3522,14 @@ test("repository scoped season delete uses consistent descendant reads", async (
           query.consistentRead === true,
       ),
   );
+  assert.ok(
+    client.getItemRequests.some(
+      (request) =>
+        request.pk === "LEAGUE#league-1" &&
+        request.sk === "SEASON#season-1" &&
+        request.consistentRead === true,
+    ),
+  );
 });
 
 test("repository scoped season delete conditionally preserves a replaced global mirror", async () => {
@@ -3519,6 +3644,54 @@ test("repository scoped season delete removes owned legacy season team templates
   assert.equal(deleted, true);
   assert.equal(client.readItem("SEASON#season-1", "TEAM#red"), undefined);
   assert.equal(client.readItem("SEASON#season-1", "TEAM#blue"), undefined);
+});
+
+test("repository scoped season delete removes row-attributed legacy templates after mirror replacement", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Legacy Red",
+    color: "#ff0000",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "blue",
+    name: "Legacy Blue",
+    color: "#0000ff",
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+
+  const deleted = await repository.deleteSeason("season-1", { leagueId: "league-1" });
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#red"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#blue"), undefined);
+  assert.equal(
+    JSON.parse(client.readItem("SEASON#season-1", "METADATA")?.data?.S ?? "{}").leagueId,
+    "league-2",
+  );
 });
 
 test("repository supports idempotency record create/get semantics", async () => {
