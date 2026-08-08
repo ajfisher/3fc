@@ -340,6 +340,7 @@ interface RepositoryContract {
     gameStartTs: string;
     leagueId: string;
     seasonId: string;
+    requireExistingGame?: boolean;
   }): Promise<unknown>;
   listGamesForSeason(
     seasonId: string,
@@ -1757,6 +1758,7 @@ async function createGameMutationResponse(input: {
             gameStartTs: createdGame.gameStartTs,
             leagueId: createdGame.leagueId,
             seasonId: createdGame.seasonId,
+            requireExistingGame: true,
           });
         }
         await ensureGameTeamsForGame(input.dependencies.repository, createdGame, {
@@ -3870,13 +3872,23 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          await ensureSeasonDefaultTeams(dependencies.repository, seasonId);
-          const team = await dependencies.repository.createTeam({
-            seasonId,
-            teamId,
-            name: parsedBody.data.name,
-            color: parsedBody.data.color ?? null,
-          });
+          let team: Awaited<ReturnType<RepositoryContract["createTeam"]>>;
+          try {
+            await ensureSeasonDefaultTeams(dependencies.repository, seasonId);
+            team = await dependencies.repository.createTeam({
+              seasonId,
+              teamId,
+              name: parsedBody.data.name,
+              color: parsedBody.data.color ?? null,
+            });
+          } catch (error) {
+            if (error instanceof GameMutationStateError) {
+              status = 409;
+              return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+            }
+
+            throw error;
+          }
           status = 200;
           return createJsonResponse(
             status,
@@ -4128,6 +4140,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     gameStartTs: createdGame.gameStartTs,
                     leagueId: createdGame.leagueId,
                     seasonId: createdGame.seasonId,
+                    requireExistingGame: true,
                   });
                 }
                 await ensureGameTeamsForGame(dependencies.repository, createdGame, {
@@ -4183,6 +4196,10 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
               status = 409;
               return gameJoinCodeCollisionConflictResponse(origin, dependencies.corsAllowedOrigins);
+            }
+            if (error instanceof GameMutationStateError) {
+              status = 409;
+              return conflict(origin, dependencies.corsAllowedOrigins, error.message);
             }
 
             throw error;

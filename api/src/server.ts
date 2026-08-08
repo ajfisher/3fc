@@ -2594,6 +2594,7 @@ async function createGameWithDerivedRecords(input: {
       gameStartTs: game.gameStartTs,
       leagueId: game.leagueId,
       seasonId: game.seasonId,
+      requireExistingGame: true,
     });
   }
   await ensureGameTeamsForGame(game, input.repositoryClient, {
@@ -4070,13 +4071,23 @@ async function start(): Promise<void> {
           return;
         }
 
-        await ensureSeasonDefaultTeams(seasonId);
-        const team = await repository.createTeam({
-          seasonId,
-          teamId,
-          name: parsedBody.data.name,
-          color: parsedBody.data.color ?? null,
-        });
+        let team;
+        try {
+          await ensureSeasonDefaultTeams(seasonId);
+          team = await repository.createTeam({
+            seasonId,
+            teamId,
+            name: parsedBody.data.name,
+            color: parsedBody.data.color ?? null,
+          });
+        } catch (error) {
+          if (error instanceof GameMutationStateError) {
+            status = conflict(request, response, error.message);
+            return;
+          }
+
+          throw error;
+        }
         status = 200;
         sendJsonWithCors(request, response, status, team);
         return;

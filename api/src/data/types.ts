@@ -281,6 +281,7 @@ export interface CreateSessionGameInput {
   gameStartTs: string;
   leagueId: string;
   seasonId: string;
+  requireExistingGame?: boolean;
 }
 
 export interface CreatePlayerInput {

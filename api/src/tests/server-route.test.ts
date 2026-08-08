@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import test from "node:test";
 
@@ -18,6 +19,40 @@ import {
   GameTimerTransitionError,
 } from "../data/repository.js";
 import type { GameRecord, GameTeamRecord } from "../data/types.js";
+
+function normalizePayloadForTestHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizePayloadForTestHash);
+  }
+
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(source)
+        .sort()
+        .map((key) => [key, normalizePayloadForTestHash(source[key])] as const),
+    );
+  }
+
+  return value;
+}
+
+function buildTestIdempotencyRequestHash(scope: string, payload: unknown): string {
+  return createHash("sha256")
+    .update(`${scope}:${JSON.stringify(normalizePayloadForTestHash(payload))}`)
+    .digest("hex");
+}
+
+function buildTestKeyedRecoveryRequestHash(input: {
+  scope: string;
+  idempotencyKey: string;
+  payload: unknown;
+}): string {
+  return buildTestIdempotencyRequestHash(input.scope, {
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
+}
 
 class MockResponse {
   statusCode = 0;
@@ -278,6 +313,7 @@ test("local server create game route recovers retry after atomic session-link fa
     gameStartTs: string;
     leagueId: string;
     seasonId: string;
+    requireExistingGame?: boolean;
   }> = [];
   const createdGameTeams: GameTeamRecord[] = [];
   let createSessionGameFailures = 1;
@@ -371,6 +407,7 @@ test("local server create game route recovers retry after atomic session-link fa
       gameStartTs: string;
       leagueId: string;
       seasonId: string;
+      requireExistingGame?: boolean;
     }) {
       if (createSessionGameFailures > 0) {
         createSessionGameFailures -= 1;
@@ -476,6 +513,49 @@ test("local server create game route recovers retry after atomic session-link fa
   assert.equal(createdSessionGames.length, 1);
   assert.equal(JSON.parse(replayResponse.body).gameId, "game-local");
   assert.equal("createRequestHash" in JSON.parse(replayResponse.body), false);
+
+  const duplicateRecoveryBody = {
+    gameId: "game-existing",
+    gameStartTs: "2026-02-23T11:00:00.000Z",
+  };
+  const duplicateRecoveryKey = "local-create-game-existing-recover-1";
+  games.set("game-existing", {
+    ...gameRecord({
+      status: "scheduled",
+      thirds: createDefaultThirdTimerSegments(),
+    }),
+    gameId: "game-existing",
+    createRequestHash: buildTestKeyedRecoveryRequestHash({
+      scope: "admin@example.com:POST:/v1/sessions/session-1/games",
+      idempotencyKey: duplicateRecoveryKey,
+      payload: duplicateRecoveryBody,
+    }),
+    joinCode: "EXIST234",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: duplicateRecoveryBody.gameStartTs,
+    thirdLengthMinutes: 20,
+  });
+  const duplicateRecoveryResponse = createMockResponse();
+  const duplicateRecoveryStatus = await handleLocalCreateGameRoute({
+    request: buildRequest(duplicateRecoveryBody, duplicateRecoveryKey),
+    response: duplicateRecoveryResponse,
+    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+    sessionEmail: "admin@example.com",
+    method: "POST",
+    route: "/v1/sessions/session-1/games",
+    repositoryClient,
+  });
+  assert.equal(duplicateRecoveryStatus, 201);
+  assert.deepEqual(createdSessionGames.at(-1), {
+    sessionId: "session-1",
+    gameId: "game-existing",
+    gameStartTs: "2026-02-23T11:00:00.000Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    requireExistingGame: true,
+  });
 });
 
 test("local server finish route returns finished game result", async () => {

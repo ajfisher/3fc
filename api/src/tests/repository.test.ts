@@ -56,6 +56,10 @@ class InMemoryDynamoClient {
     return this.items.get(`${pk}|${sk}`);
   }
 
+  deleteItem(pk: string, sk: string): void {
+    this.items.delete(`${pk}|${sk}`);
+  }
+
   readQueries(): readonly ObservedQuery[] {
     return this.queries;
   }
@@ -475,6 +479,7 @@ function seedStoredGameTeam(
 function seedStoredSeasonTeam(
   client: InMemoryDynamoClient,
   input: {
+    leagueId?: string;
     seasonId: string;
     teamId: TeamId;
     name: string;
@@ -491,6 +496,7 @@ function seedStoredSeasonTeam(
     updatedAt: { S: input.updatedAt },
     data: {
       S: JSON.stringify({
+        ...(input.leagueId ? { leagueId: input.leagueId } : {}),
         seasonId: input.seasonId,
         teamId: input.teamId,
         name: input.name,
@@ -734,6 +740,36 @@ test("repository prefers newer owned legacy season team templates over older sco
   assert.deepEqual(await repository.listTeamsForSeason("season-1", { leagueId: "league-1" }), [
     updatedLegacyTemplate,
   ]);
+});
+
+test("repository rejects legacy season team writes when the season is deleted before commit", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  client.runBeforeNextPut(() => {
+    client.deleteItem("LEAGUE#league-1", "SEASON#season-1");
+    client.deleteItem("SEASON#season-1", "METADATA");
+  });
+
+  await assert.rejects(
+    repository.createTeam({
+      seasonId: "season-1",
+      teamId: "red",
+      name: "Late Red",
+      color: "#ff0000",
+    }),
+    /Season season-1 changed before the team could be created/,
+  );
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#red"), undefined);
 });
 
 test("repository does not treat another league's legacy templates as owned after mirror replacement", async () => {
@@ -2138,8 +2174,19 @@ test("repository create-only season teams preserve existing configuration", asyn
 
 test("repository create-only season teams do not replace concurrent teams", async () => {
   const { repository, client } = createRepositoryHarness();
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
   client.runBeforeNextPut(() => {
     seedStoredSeasonTeam(client, {
+      leagueId: "league-1",
       seasonId: "season-1",
       teamId: "red",
       name: "Concurrent Red",
@@ -2158,6 +2205,7 @@ test("repository create-only season teams do not replace concurrent teams", asyn
   });
 
   assert.deepEqual(concurrent, {
+    leagueId: "league-1",
     seasonId: "season-1",
     teamId: "red",
     name: "Concurrent Red",
@@ -3228,6 +3276,52 @@ test("repository scoped session-game linking touches session metadata to seriali
   const after = client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222");
   assert.ok(after);
   assert.notEqual(after.updatedAt?.S, before.updatedAt?.S);
+});
+
+test("repository recovery session linking rejects games deleted before commit", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: false,
+  });
+  client.runBeforeNextPut(() => {
+    client.deleteItem("GAME#game-1", "METADATA");
+  });
+
+  await assert.rejects(
+    repository.createSessionGame({
+      sessionId: "20260222",
+      gameId: "game-1",
+      gameStartTs: "2026-02-22T10:00:00Z",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      requireExistingGame: true,
+    }),
+    /Game game-1 changed before the session could be linked/,
+  );
+  assert.equal(client.readItem("SESSION#20260222", "GAME#2026-02-22T10:00:00Z#game-1"), undefined);
 });
 
 test("repository scoped season delete rejects sessions created after descendant checks", async () => {

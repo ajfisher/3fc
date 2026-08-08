@@ -1223,48 +1223,71 @@ export class ThreeFcRepository {
       return withTimestamps(payload, now, now);
     }
 
-    if (input.createOnly) {
-      try {
-        await this.client.send(
-          new PutItemCommand({
-            TableName: this.tableName,
-            Item: buildItemWithTimestamps(
-              teamPartitionKey,
-              teamSortKey,
-              ENTITY_TYPE.team,
-              payload,
-              now,
-              now,
-            ),
-            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-          }),
-        );
-      } catch (error) {
-        if (isConditionalWriteFailure(error)) {
-          const concurrent = await this.getEntity(teamPartitionKey, teamSortKey, {
-            consistentRead: true,
-          });
-          if (concurrent?.entityType === ENTITY_TYPE.team) {
-            return withTimestamps(
-              concurrent.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
-              concurrent.createdAt,
-              concurrent.updatedAt,
-            );
-          }
+    if (!legacySeasonItem || legacySeasonItem.entityType !== ENTITY_TYPE.season) {
+      throw new GameMutationStateError(
+        "game_state_changed",
+        `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
+      );
+    }
 
-          throw new GameMutationStateError(
-            "game_state_changed",
-            `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
-          );
-        }
+    const teamPut: TransactWriteItem = {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItemWithTimestamps(
+          teamPartitionKey,
+          teamSortKey,
+          ENTITY_TYPE.team,
+          payload,
+          now,
+          now,
+        ),
+        ...(input.createOnly
+          ? {
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            }
+          : {}),
+      },
+    };
 
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            this.buildConditionalCheckFromStoredEntity(legacySeasonItem),
+            teamPut,
+          ],
+        }),
+      );
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) {
         throw error;
       }
 
-      return withTimestamps(payload, now, now);
+      if (input.createOnly) {
+        const [currentSeason, concurrent] = await Promise.all([
+          this.getEntity(seasonPk(input.seasonId), metadataSk(), { consistentRead: true }),
+          this.getEntity(teamPartitionKey, teamSortKey, { consistentRead: true }),
+        ]);
+        if (
+          currentSeason?.entityType === ENTITY_TYPE.season &&
+          currentSeason.updatedAt === legacySeasonItem.updatedAt &&
+          currentSeason.rawData === legacySeasonItem.rawData &&
+          concurrent?.entityType === ENTITY_TYPE.team
+        ) {
+          return withTimestamps(
+            concurrent.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
+            concurrent.createdAt,
+            concurrent.updatedAt,
+          );
+        }
+      }
+
+      throw new GameMutationStateError(
+        "game_state_changed",
+        `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
+      );
     }
 
-    await this.putEntity(teamPartitionKey, teamSortKey, ENTITY_TYPE.team, payload, now);
     return withTimestamps(payload, now, now);
   }
 
@@ -2162,12 +2185,39 @@ export class ThreeFcRepository {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("seasonId", input.seasonId);
 
-    const sessionTargets = await this.readSessionMutationTargets(input);
+    const [sessionTargets, guardedGameItem] = await Promise.all([
+      this.readSessionMutationTargets(input),
+      input.requireExistingGame === true
+        ? this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true })
+        : Promise.resolve(null),
+    ]);
     if (sessionTargets.length === 0) {
       throw new GameMutationStateError(
         "game_state_changed",
         `Session ${input.sessionId} changed before the game could be linked. Reload and try again.`,
       );
+    }
+    if (input.requireExistingGame === true) {
+      if (!guardedGameItem || guardedGameItem.entityType !== ENTITY_TYPE.game) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the session could be linked. Reload and try again.`,
+        );
+      }
+
+      const guardedGame = normalizeGamePayload(guardedGameItem.data);
+      if (
+        guardedGame.gameId !== input.gameId ||
+        guardedGame.leagueId !== input.leagueId ||
+        guardedGame.seasonId !== input.seasonId ||
+        guardedGame.sessionId !== input.sessionId ||
+        guardedGame.gameStartTs !== input.gameStartTs
+      ) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Game ${input.gameId} changed before the session could be linked. Reload and try again.`,
+        );
+      }
     }
 
     const now = this.clock.now();
@@ -2183,6 +2233,7 @@ export class ThreeFcRepository {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...(guardedGameItem ? [this.buildGameConditionCheck(input.gameId, guardedGameItem)] : []),
             {
               Put: {
                 TableName: this.tableName,
@@ -2201,6 +2252,16 @@ export class ThreeFcRepository {
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
+        if (
+          guardedGameItem &&
+          isConditionalCancellationCode(transactionCancellationCode(error, 0) ?? undefined)
+        ) {
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Game ${input.gameId} changed before the session could be linked. Reload and try again.`,
+          );
+        }
+
         throw new GameMutationStateError(
           "game_state_changed",
           `Session ${input.sessionId} changed before the game could be linked. Reload and try again.`,

@@ -220,6 +220,7 @@ interface CreatedSessionGameInput {
   gameStartTs: string;
   leagueId: string;
   seasonId: string;
+  requireExistingGame?: boolean;
 }
 
 interface StoredIdempotencyRecord {
@@ -321,6 +322,17 @@ function buildTestIdempotencyRequestHash(scope: string, payload: unknown): strin
   return createHash("sha256")
     .update(`${scope}:${JSON.stringify(normalizePayloadForTestHash(payload))}`)
     .digest("hex");
+}
+
+function buildTestKeyedRecoveryRequestHash(input: {
+  scope: string;
+  idempotencyKey: string;
+  payload: unknown;
+}): string {
+  return buildTestIdempotencyRequestHash(input.scope, {
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
 }
 
 function buildTestOrganiserInviteCode(scope: string, idempotencyKey: string): string {
@@ -5065,6 +5077,99 @@ test("core lambda recovers idempotent create game retry after atomic session-lin
   const replayResponse = await harness.handler(event);
   assert.equal(replayResponse.statusCode, 201);
   assert.equal(harness.createdSessionGames.length, 1);
+});
+
+test("core lambda guards duplicate-game recovery session linking with the existing game", async () => {
+  const key = "create-game-existing-recover-1";
+  const route = "/v1/sessions/session-abc/games";
+  const scope = `admin@example.com:POST:${route}`;
+  const requestPayload = {
+    gameId: "game-1",
+    gameStartTs: "2026-02-23T10:00:00Z",
+  };
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-1": {
+        gameId: "game-1",
+        createRequestHash: buildTestKeyedRecoveryRequestHash({
+          scope,
+          idempotencyKey: key,
+          payload: requestPayload,
+        }),
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: route,
+      headers: {
+        Cookie: "threefc_session=session-1",
+        "Idempotency-Key": key,
+      },
+      body: requestPayload,
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(harness.createdGames.length, 0);
+  assert.deepEqual(harness.createdSessionGames, [
+    {
+      sessionId: "session-abc",
+      gameId: "game-1",
+      gameStartTs: "2026-02-23T10:00:00Z",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      requireExistingGame: true,
+    },
+  ]);
 });
 
 test("core lambda maps duplicate game IDs to conflict on game creation", async () => {
