@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: |
     Core routes for public join-code registration plus authenticated league/season/session/game creation,
-    M2 roster setup, third timer control, goal scoring reads and writes, and game finish.
+    organiser invites, M2 roster setup, third timer control, goal scoring reads and writes, and game finish.
 servers:
   - url: https://qa-api.3fc.football
     description: QA
@@ -110,6 +110,93 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/leagues/{leagueId}/organiser-invites:
+    post:
+      summary: Create or ensure a league organiser invite
+      description: >-
+        With no email, ensures and returns the league's reusable share invite.
+        With an email, creates a one-time, email-restricted invite and starts
+        direct magic-link delivery.
+      operationId: createLeagueOrganiserInvite
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeagueOrganiserInviteRequest"
+      responses:
+        "201":
+          description: Organiser invite created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLeagueOrganiserInviteResponse"
+        "202":
+          description: Organiser invite created, but direct email delivery could not be confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLeagueOrganiserInviteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/invites/{inviteCode}/accept:
+    post:
+      summary: Accept a league organiser invite
+      description: >-
+        Grants league admin access. Reusable share invites remain active after
+        acceptance; one-time email invites are consumed on first acceptance and
+        require the signed-in email to match the invite email.
+      operationId: acceptLeagueOrganiserInvite
+      parameters:
+        - name: inviteCode
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 8
+            pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptLeagueOrganiserInviteRequest"
+      responses:
+        "200":
+          description: Organiser invite accepted and league admin access granted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptLeagueOrganiserInviteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/leagues/{leagueId}/seasons:
     post:
       summary: Create season
@@ -144,6 +231,192 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}/seasons/{seasonId}:
+    get:
+      summary: Get a league-scoped season
+      description: >-
+        Resolves a season within its league so reused season slugs or IDs in
+        another league cannot select the wrong season.
+      operationId: getLeagueSeason
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Season found within the league
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Season"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Delete a league-scoped season
+      description: >-
+        Deletes the season only from the requested league. The season must have
+        no remaining scoped sessions or games.
+      operationId: deleteLeagueSeason
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Season deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/leagues/{leagueId}/seasons/{seasonId}/sessions:
+    post:
+      summary: Create a session for a league-scoped season
+      description: >-
+        Creates the session after resolving the season within the requested
+        league, avoiding global season ID ambiguity.
+      operationId: createLeagueSeasonSession
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}/seasons/{seasonId}/games:
+    get:
+      summary: List games for a league-scoped season
+      description: >-
+        Lists games only when both the session index and loaded game metadata
+        belong to the requested league and season.
+      operationId: listLeagueSeasonGames
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: League-scoped season games
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - games
+                properties:
+                  games:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Game"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games:
+    post:
+      summary: Create a game for a league-scoped season session
+      description: >-
+        Creates a game with explicit league, season, and session scope so reused
+        season IDs cannot attach the game to another league.
+      operationId: createLeagueSeasonSessionGame
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGameRequest"
+      responses:
+        "201":
+          description: Game created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/CreateGameConflict"
   /v1/seasons/{seasonId}/sessions:
     post:
       summary: Create session
@@ -801,7 +1074,13 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     Conflict:
-      description: State transition rejected
+      description: State transition or idempotent write rejected
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Direct email invite delivery rate limit exceeded
       content:
         application/json:
           schema:
@@ -813,7 +1092,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     JoinGameConflict:
-      description: Idempotency key was reused with a different request payload, join registration is closed, or the join state changed while registering
+      description: Idempotency key was reused with a different request payload, or the join state changed while registering
       content:
         application/json:
           schema:
@@ -958,6 +1237,22 @@ components:
           enum:
             - admin
             - scorekeeper
+    CreateLeagueOrganiserInviteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        email:
+          type:
+            - string
+            - "null"
+          format: email
+          description: >-
+            Optional email restriction. When omitted or null, the API ensures the
+            reusable league share invite. When present, the API creates a
+            one-time email invite and sends a magic-link invite to this email.
+    AcceptLeagueOrganiserInviteRequest:
+      type: object
+      additionalProperties: false
     AssignRosterPlayerRequest:
       type: object
       additionalProperties: false
@@ -1501,6 +1796,122 @@ components:
         updatedAt:
           type: string
           format: date-time
+    LeagueOrganiserInvite:
+      type: object
+      required:
+        - leagueId
+        - inviteCode
+        - kind
+        - role
+        - email
+        - createdByUserId
+        - acceptedByUserId
+        - acceptedAt
+        - createdAt
+        - updatedAt
+      properties:
+        leagueId:
+          type: string
+        inviteCode:
+          type: string
+          minLength: 8
+          maxLength: 8
+          pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$"
+        kind:
+          type: string
+          enum:
+            - share
+            - email
+          description: >-
+            Share invites are reusable league-level codes and are not consumed
+            when accepted. Email invites are one-time and restricted to the
+            invited email.
+        role:
+          type: string
+          enum:
+            - admin
+        email:
+          type:
+            - string
+            - "null"
+          format: email
+        createdByUserId:
+          type: string
+        acceptedByUserId:
+          type:
+            - string
+            - "null"
+        acceptedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    LeagueOrganiserInviteEmailDelivery:
+      type:
+        - object
+        - "null"
+      required:
+        - status
+        - email
+        - expiresAt
+        - messageId
+      properties:
+        status:
+          type: string
+          enum:
+            - sent
+            - unknown
+        email:
+          type: string
+          format: email
+        expiresAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        messageId:
+          type:
+            - string
+            - "null"
+        message:
+          type: string
+    CreateLeagueOrganiserInviteResponse:
+      type: object
+      required:
+        - invite
+        - inviteCode
+        - inviteLink
+        - emailDelivery
+      properties:
+        invite:
+          $ref: "#/components/schemas/LeagueOrganiserInvite"
+        inviteCode:
+          type: string
+        inviteLink:
+          type: string
+          format: uri
+        emailDelivery:
+          $ref: "#/components/schemas/LeagueOrganiserInviteEmailDelivery"
+    AcceptLeagueOrganiserInviteResponse:
+      type: object
+      required:
+        - invite
+        - access
+        - inviteLink
+      properties:
+        invite:
+          $ref: "#/components/schemas/LeagueOrganiserInvite"
+        access:
+          $ref: "#/components/schemas/LeagueAccessGrant"
+        inviteLink:
+          type: string
+          format: uri
     JoinGameResponse:
       type: object
       required:

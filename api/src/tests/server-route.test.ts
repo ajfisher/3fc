@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import test from "node:test";
 
@@ -18,6 +19,40 @@ import {
   GameTimerTransitionError,
 } from "../data/repository.js";
 import type { GameRecord, GameTeamRecord } from "../data/types.js";
+
+function normalizePayloadForTestHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizePayloadForTestHash);
+  }
+
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(source)
+        .sort()
+        .map((key) => [key, normalizePayloadForTestHash(source[key])] as const),
+    );
+  }
+
+  return value;
+}
+
+function buildTestIdempotencyRequestHash(scope: string, payload: unknown): string {
+  return createHash("sha256")
+    .update(`${scope}:${JSON.stringify(normalizePayloadForTestHash(payload))}`)
+    .digest("hex");
+}
+
+function buildTestKeyedRecoveryRequestHash(input: {
+  scope: string;
+  idempotencyKey: string;
+  payload: unknown;
+}): string {
+  return buildTestIdempotencyRequestHash(input.scope, {
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
+}
 
 class MockResponse {
   statusCode = 0;
@@ -151,12 +186,27 @@ const scorekeeperAccess = {
 test("local server get game route does not repair legacy join codes before access is authorized", async () => {
   const request = createMockRequest();
   const response = createMockResponse();
-  const getGameCalls: Array<{ consistentRead: boolean; repairLegacyJoinCode: boolean }> = [];
+  const getGameCalls: Array<{
+    consistentRead: boolean;
+    repairLegacyJoinCode: boolean;
+    expectedLeagueId: string | null;
+    expectedSeasonId: string | null;
+  }> = [];
   const repositoryClient = {
-    async getGame(_gameId: string, options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {}) {
+    async getGame(
+      _gameId: string,
+      options: {
+        consistentRead?: boolean;
+        repairLegacyJoinCode?: boolean;
+        expectedLeagueId?: string;
+        expectedSeasonId?: string;
+      } = {},
+    ) {
       getGameCalls.push({
         consistentRead: options.consistentRead ?? false,
         repairLegacyJoinCode: options.repairLegacyJoinCode ?? false,
+        expectedLeagueId: options.expectedLeagueId ?? null,
+        expectedSeasonId: options.expectedSeasonId ?? null,
       });
       return gameRecord({ status: "scheduled", joinCode: "FALL2345" });
     },
@@ -175,18 +225,40 @@ test("local server get game route does not repair legacy join codes before acces
 
   assert.equal(status, 403);
   assert.equal(response.statusCode, 403);
-  assert.deepEqual(getGameCalls, [{ consistentRead: false, repairLegacyJoinCode: false }]);
+  assert.deepEqual(getGameCalls, [
+    {
+      consistentRead: false,
+      repairLegacyJoinCode: false,
+      expectedLeagueId: null,
+      expectedSeasonId: null,
+    },
+  ]);
 });
 
 test("local server get game route repairs legacy join codes after access is authorized", async () => {
   const request = createMockRequest();
   const response = createMockResponse();
-  const getGameCalls: Array<{ consistentRead: boolean; repairLegacyJoinCode: boolean }> = [];
+  const getGameCalls: Array<{
+    consistentRead: boolean;
+    repairLegacyJoinCode: boolean;
+    expectedLeagueId: string | null;
+    expectedSeasonId: string | null;
+  }> = [];
   const repositoryClient = {
-    async getGame(_gameId: string, options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {}) {
+    async getGame(
+      _gameId: string,
+      options: {
+        consistentRead?: boolean;
+        repairLegacyJoinCode?: boolean;
+        expectedLeagueId?: string;
+        expectedSeasonId?: string;
+      } = {},
+    ) {
       getGameCalls.push({
         consistentRead: options.consistentRead ?? false,
         repairLegacyJoinCode: options.repairLegacyJoinCode ?? false,
+        expectedLeagueId: options.expectedLeagueId ?? null,
+        expectedSeasonId: options.expectedSeasonId ?? null,
       });
       return options.repairLegacyJoinCode
         ? gameRecord({ status: "scheduled", joinCode: "RNDM2345" })
@@ -209,12 +281,22 @@ test("local server get game route repairs legacy join codes after access is auth
   assert.equal(response.statusCode, 200);
   assert.equal((JSON.parse(response.body) as { joinCode: string }).joinCode, "RNDM2345");
   assert.deepEqual(getGameCalls, [
-    { consistentRead: false, repairLegacyJoinCode: false },
-    { consistentRead: true, repairLegacyJoinCode: true },
+    {
+      consistentRead: false,
+      repairLegacyJoinCode: false,
+      expectedLeagueId: null,
+      expectedSeasonId: null,
+    },
+    {
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+      expectedLeagueId: "league-1",
+      expectedSeasonId: "season-1",
+    },
   ]);
 });
 
-test("local server create game route recovers retry after the game write commits", async () => {
+test("local server create game route recovers retry after atomic session-link failure", async () => {
   const idempotencyRecords = new Map<string, {
     scope: string;
     key: string;
@@ -231,6 +313,7 @@ test("local server create game route recovers retry after the game write commits
     gameStartTs: string;
     leagueId: string;
     seasonId: string;
+    requireExistingGame?: boolean;
   }> = [];
   const createdGameTeams: GameTeamRecord[] = [];
   let createSessionGameFailures = 1;
@@ -279,9 +362,14 @@ test("local server create game route recovers retry after the game write commits
       status?: "scheduled" | "live" | "finished";
       gameStartTs: string;
       thirdLengthMinutes?: ThirdLengthMinutes;
+      linkSession?: boolean;
     }) {
       if (games.has(input.gameId)) {
         throw new GameAlreadyExistsError(input.gameId);
+      }
+      if (input.linkSession === true && createSessionGameFailures > 0) {
+        createSessionGameFailures -= 1;
+        throw new Error("Session game index write failed.");
       }
 
       const game = {
@@ -299,6 +387,15 @@ test("local server create game route recovers retry after the game write commits
         thirdLengthMinutes: input.thirdLengthMinutes ?? 20,
       };
       games.set(input.gameId, game);
+      if (input.linkSession === true) {
+        createdSessionGames.push({
+          sessionId: input.sessionId,
+          gameId: input.gameId,
+          gameStartTs: input.gameStartTs,
+          leagueId: input.leagueId,
+          seasonId: input.seasonId,
+        });
+      }
       return game;
     },
     async getGame(gameId: string) {
@@ -310,6 +407,7 @@ test("local server create game route recovers retry after the game write commits
       gameStartTs: string;
       leagueId: string;
       seasonId: string;
+      requireExistingGame?: boolean;
     }) {
       if (createSessionGameFailures > 0) {
         createSessionGameFailures -= 1;
@@ -365,55 +463,7 @@ test("local server create game route recovers retry after the game write commits
     }),
     /Session game index write failed/,
   );
-  assert.equal(games.size, 1);
-  assert.equal(createdSessionGames.length, 0);
-  const existingGame = games.get("game-local");
-  assert.ok(existingGame);
-  games.set("game-local", {
-    ...existingGame,
-    status: "live",
-    gameStartTs: "2026-02-23T11:00:00.000Z",
-    thirdLengthMinutes: 25,
-    updatedAt: "2026-02-23T00:01:00.000Z",
-  });
-
-  const unrelatedRetryResponse = createMockResponse();
-  const unrelatedRetryStatus = await handleLocalCreateGameRoute({
-    request: buildRequest({
-      gameId: "game-local",
-      gameStartTs: "2026-02-23T12:00:00.000Z",
-    }),
-    response: unrelatedRetryResponse,
-    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
-    sessionEmail: "admin@example.com",
-    method: "POST",
-    route: "/v1/sessions/session-1/games",
-    repositoryClient,
-  });
-  assert.equal(unrelatedRetryStatus, 409);
-  assert.deepEqual(JSON.parse(unrelatedRetryResponse.body), {
-    error: "conflict",
-    code: "game_exists",
-    message: "Game game-local already exists.",
-  });
-  assert.equal(createdSessionGames.length, 0);
-
-  const differentKeyRetryResponse = createMockResponse();
-  const differentKeyRetryStatus = await handleLocalCreateGameRoute({
-    request: buildRequest(undefined, "local-create-game-recover-2"),
-    response: differentKeyRetryResponse,
-    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
-    sessionEmail: "admin@example.com",
-    method: "POST",
-    route: "/v1/sessions/session-1/games",
-    repositoryClient,
-  });
-  assert.equal(differentKeyRetryStatus, 409);
-  assert.deepEqual(JSON.parse(differentKeyRetryResponse.body), {
-    error: "conflict",
-    code: "game_exists",
-    message: "Game game-local already exists.",
-  });
+  assert.equal(games.size, 0);
   assert.equal(createdSessionGames.length, 0);
 
   const retryResponse = createMockResponse();
@@ -427,8 +477,9 @@ test("local server create game route recovers retry after the game write commits
     repositoryClient,
   });
   assert.equal(retryStatus, 201);
+  assert.equal(games.size, 1);
   assert.equal(createdSessionGames.length, 1);
-  assert.equal(createdSessionGames[0]?.gameStartTs, "2026-02-23T11:00:00.000Z");
+  assert.equal(createdSessionGames[0]?.gameStartTs, "2026-02-23T10:00:00.000Z");
   assert.deepEqual(
     createdGameTeams.map((team) => team.teamId),
     ["red", "blue", "yellow"],
@@ -442,9 +493,9 @@ test("local server create game route recovers retry after the game write commits
     },
     {
       gameId: "game-local",
-      status: "live",
-      gameStartTs: "2026-02-23T11:00:00.000Z",
-      thirdLengthMinutes: 25,
+      status: "scheduled",
+      gameStartTs: "2026-02-23T10:00:00.000Z",
+      thirdLengthMinutes: 20,
     },
   );
 
@@ -462,6 +513,49 @@ test("local server create game route recovers retry after the game write commits
   assert.equal(createdSessionGames.length, 1);
   assert.equal(JSON.parse(replayResponse.body).gameId, "game-local");
   assert.equal("createRequestHash" in JSON.parse(replayResponse.body), false);
+
+  const duplicateRecoveryBody = {
+    gameId: "game-existing",
+    gameStartTs: "2026-02-23T11:00:00.000Z",
+  };
+  const duplicateRecoveryKey = "local-create-game-existing-recover-1";
+  games.set("game-existing", {
+    ...gameRecord({
+      status: "scheduled",
+      thirds: createDefaultThirdTimerSegments(),
+    }),
+    gameId: "game-existing",
+    createRequestHash: buildTestKeyedRecoveryRequestHash({
+      scope: "admin@example.com:POST:/v1/sessions/session-1/games",
+      idempotencyKey: duplicateRecoveryKey,
+      payload: duplicateRecoveryBody,
+    }),
+    joinCode: "EXIST234",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: duplicateRecoveryBody.gameStartTs,
+    thirdLengthMinutes: 20,
+  });
+  const duplicateRecoveryResponse = createMockResponse();
+  const duplicateRecoveryStatus = await handleLocalCreateGameRoute({
+    request: buildRequest(duplicateRecoveryBody, duplicateRecoveryKey),
+    response: duplicateRecoveryResponse,
+    scope: { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1" },
+    sessionEmail: "admin@example.com",
+    method: "POST",
+    route: "/v1/sessions/session-1/games",
+    repositoryClient,
+  });
+  assert.equal(duplicateRecoveryStatus, 201);
+  assert.deepEqual(createdSessionGames.at(-1), {
+    sessionId: "session-1",
+    gameId: "game-existing",
+    gameStartTs: "2026-02-23T11:00:00.000Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    requireExistingGame: true,
+  });
 });
 
 test("local server finish route returns finished game result", async () => {

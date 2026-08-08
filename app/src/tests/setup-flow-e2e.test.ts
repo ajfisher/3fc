@@ -16,6 +16,7 @@ import {
 
 import {
   renderGamePage,
+  renderInvitePage,
   renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
@@ -36,6 +37,19 @@ interface MockLeague {
   name: string;
   slug: string | null;
   createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MockLeagueInvite {
+  leagueId: string;
+  inviteCode: string;
+  kind: "share" | "email";
+  role: "admin";
+  email: string | null;
+  createdByUserId: string;
+  acceptedByUserId: string | null;
+  acceptedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,9 +149,11 @@ interface MockApiState {
   storage: Map<string, string>;
   pendingToken: string | null;
   pendingEmail: string | null;
+  disableScopedSeasonApi: boolean;
   session: MockSession | null;
   leagues: Map<string, MockLeague>;
   leagueAccess: Map<string, MockLeagueRole>;
+  leagueInvites: Map<string, MockLeagueInvite>;
   seasons: Map<string, MockSeason>;
   sessions: Map<string, MockSessionEntity>;
   games: Map<string, MockGame>;
@@ -150,6 +166,12 @@ interface MockApiState {
   goalSequence: number;
   lastPublicJoinRequest: { body: Record<string, unknown>; idempotencyKey: string | null } | null;
   lastGrantAccessRequest: { leagueId: string; body: Record<string, unknown> } | null;
+  lastOrganiserInviteRequest: {
+    leagueId: string;
+    body: Record<string, unknown>;
+    idempotencyKey: string | null;
+  } | null;
+  seasonDeleteRequests: Array<{ path: string; leagueId: string | null; seasonId: string }>;
 }
 
 function readUiScript(fileName: string): string {
@@ -162,9 +184,11 @@ function createMockApiState(): MockApiState {
     storage: new Map<string, string>(),
     pendingToken: null,
     pendingEmail: null,
+    disableScopedSeasonApi: false,
     session: null,
     leagues: new Map<string, MockLeague>(),
     leagueAccess: new Map<string, MockLeagueRole>(),
+    leagueInvites: new Map<string, MockLeagueInvite>(),
     seasons: new Map<string, MockSeason>(),
     sessions: new Map<string, MockSessionEntity>(),
     games: new Map<string, MockGame>(),
@@ -177,6 +201,8 @@ function createMockApiState(): MockApiState {
     goalSequence: 0,
     lastPublicJoinRequest: null,
     lastGrantAccessRequest: null,
+    lastOrganiserInviteRequest: null,
+    seasonDeleteRequests: [],
   };
 }
 
@@ -687,12 +713,6 @@ function createMockFetch(state: MockApiState) {
           message: "Join code was not found.",
         });
       }
-      if (game.status === "finished") {
-        return createJsonResponse(409, {
-          error: "conflict",
-          message: "Finished games cannot accept new joins.",
-        });
-      }
       if (!idempotencyKey?.trim()) {
         return createJsonResponse(400, {
           error: "bad_request",
@@ -862,6 +882,142 @@ function createMockFetch(state: MockApiState) {
       });
     }
 
+    const organiserInviteMatch = path.match(/^\/v1\/leagues\/([^/]+)\/organiser-invites$/);
+    if (method === "POST" && organiserInviteMatch) {
+      const leagueId = decodeURIComponent(organiserInviteMatch[1]);
+      const league = state.leagues.get(leagueId);
+      if (!league) {
+        return createJsonResponse(404, { error: "not_found", message: "League not found." });
+      }
+
+      const callerRole = mockLeagueRoleForSession(state, league);
+      if (callerRole !== "admin") {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          code: "admin_required",
+          message: `Admin role is required for league ${leagueId}.`,
+        });
+      }
+
+      const email = typeof body.email === "string" && body.email.trim().length > 0
+        ? body.email.trim().toLowerCase()
+        : null;
+      if (email && !isValidEmail(email)) {
+        return createJsonResponse(400, {
+          error: "invalid_email",
+          message: "Email must be a valid email address.",
+        });
+      }
+
+      if (!email) {
+        const existingShareInvite = [...state.leagueInvites.values()].find(
+          (candidate) =>
+            candidate.leagueId === leagueId &&
+            candidate.kind === "share" &&
+            candidate.email === null,
+        );
+        state.lastOrganiserInviteRequest = {
+          leagueId,
+          body,
+          idempotencyKey: readInitHeader(init, "idempotency-key"),
+        };
+        if (existingShareInvite) {
+          return createJsonResponse(201, {
+            invite: existingShareInvite,
+            inviteCode: existingShareInvite.inviteCode,
+            inviteLink: `http://localhost:3000/invites?code=${existingShareInvite.inviteCode}`,
+            emailDelivery: null,
+          });
+        }
+      }
+
+      const inviteCode = ["ABCD2345", "EFGH2345", "JKLM2345"][state.leagueInvites.size] ?? "NPQR2345";
+      const invite: MockLeagueInvite = {
+        leagueId,
+        inviteCode,
+        kind: email ? "email" : "share",
+        role: "admin",
+        email,
+        createdByUserId: state.session.email,
+        acceptedByUserId: null,
+        acceptedAt: null,
+        createdAt: "2026-03-28T11:00:15.000Z",
+        updatedAt: "2026-03-28T11:00:15.000Z",
+      };
+      state.lastOrganiserInviteRequest = {
+        leagueId,
+        body,
+        idempotencyKey: readInitHeader(init, "idempotency-key"),
+      };
+      state.leagueInvites.set(inviteCode, invite);
+      return createJsonResponse(201, {
+        invite,
+        inviteCode,
+        inviteLink: `http://localhost:3000/invites?code=${inviteCode}`,
+        emailDelivery: email
+          ? {
+              status: "sent",
+              email,
+              expiresAt: "2026-03-28T11:15:00.000Z",
+              messageId: "msg-1",
+            }
+          : null,
+      });
+    }
+
+    const acceptOrganiserInviteMatch = path.match(/^\/v1\/invites\/([^/]+)\/accept$/);
+    if (method === "POST" && acceptOrganiserInviteMatch) {
+      const inviteCode = decodeURIComponent(acceptOrganiserInviteMatch[1]).trim().toUpperCase();
+      const invite = state.leagueInvites.get(inviteCode);
+      if (!invite) {
+        return createJsonResponse(404, {
+          error: "not_found",
+          message: "Organiser invite was not found.",
+        });
+      }
+
+      const sessionEmail = state.session.email.trim().toLowerCase();
+      if (invite.email && invite.email !== sessionEmail) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          code: "invite_email_mismatch",
+          message: "This organiser invite was issued for a different email address.",
+        });
+      }
+
+      if (invite.kind !== "share" && invite.acceptedByUserId && invite.acceptedByUserId !== state.session.email) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          code: "invite_already_accepted",
+          message: "This organiser invite has already been accepted.",
+        });
+      }
+
+      const acceptedInvite: MockLeagueInvite = {
+        ...invite,
+        acceptedByUserId: invite.kind === "share" ? null : invite.acceptedByUserId ?? state.session.email,
+        acceptedAt: invite.kind === "share" ? null : invite.acceptedAt ?? "2026-03-28T11:00:16.000Z",
+        updatedAt:
+          invite.kind === "share" || invite.acceptedByUserId
+            ? invite.updatedAt
+            : "2026-03-28T11:00:16.000Z",
+      };
+      state.leagueInvites.set(inviteCode, acceptedInvite);
+      grantMockLeagueAccess(state, invite.leagueId, state.session.email, "admin");
+      return createJsonResponse(200, {
+        invite: acceptedInvite,
+        access: {
+          leagueId: invite.leagueId,
+          userId: state.session.email,
+          role: "admin",
+          grantedByUserId: invite.createdByUserId,
+          createdAt: "2026-03-28T11:00:16.000Z",
+          updatedAt: "2026-03-28T11:00:16.000Z",
+        },
+        inviteLink: `http://localhost:3000/invites?code=${inviteCode}`,
+      });
+    }
+
     if (method === "DELETE" && leagueMatch) {
       const leagueId = decodeURIComponent(leagueMatch[1]);
       if (![...state.leagues.keys()].includes(leagueId)) {
@@ -876,6 +1032,16 @@ function createMockFetch(state: MockApiState) {
       }
 
       state.leagues.delete(leagueId);
+      for (const [inviteCode, invite] of state.leagueInvites) {
+        if (invite.leagueId === leagueId) {
+          state.leagueInvites.delete(inviteCode);
+        }
+      }
+      for (const accessKey of state.leagueAccess.keys()) {
+        if (accessKey.startsWith(`${leagueId}:`)) {
+          state.leagueAccess.delete(accessKey);
+        }
+      }
       return new Response(null, { status: 204 });
     }
 
@@ -909,6 +1075,121 @@ function createMockFetch(state: MockApiState) {
       return createJsonResponse(201, season);
     }
 
+    const leagueSeasonMatch = path.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+    if (method === "GET" && leagueSeasonMatch) {
+      if (state.disableScopedSeasonApi) {
+        return createJsonResponse(404, { error: "not_found", message: "Route not found." });
+      }
+
+      const leagueId = decodeURIComponent(leagueSeasonMatch[1]);
+      const seasonId = decodeURIComponent(leagueSeasonMatch[2]);
+      const season =
+        [...state.seasons.values()].find(
+          (candidate) => candidate.leagueId === leagueId && candidate.seasonId === seasonId,
+        ) ?? null;
+      if (!season) {
+        return createJsonResponse(404, { error: "not_found", message: "Season not found." });
+      }
+
+      return createJsonResponse(200, season);
+    }
+
+    const leagueSeasonGamesMatch = path.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/games$/);
+    if (method === "GET" && leagueSeasonGamesMatch) {
+      if (state.disableScopedSeasonApi) {
+        return createJsonResponse(404, { error: "not_found", message: "Route not found." });
+      }
+
+      const leagueId = decodeURIComponent(leagueSeasonGamesMatch[1]);
+      const seasonId = decodeURIComponent(leagueSeasonGamesMatch[2]);
+      return createJsonResponse(200, {
+        games: [...state.games.values()].filter(
+          (game) => game.leagueId === leagueId && game.seasonId === seasonId,
+        ),
+      });
+    }
+
+    const leagueSeasonSessionsMatch = path.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions$/);
+    if (method === "POST" && leagueSeasonSessionsMatch) {
+      if (state.disableScopedSeasonApi) {
+        return createJsonResponse(404, { error: "not_found", message: "Route not found." });
+      }
+
+      const seasonId = decodeURIComponent(leagueSeasonSessionsMatch[2]);
+      const sessionId = String(body.sessionId ?? "");
+      const sessionDate = String(body.sessionDate ?? "");
+      const now = "2026-03-28T11:00:03.000Z";
+      const sessionRecord: MockSessionEntity = {
+        seasonId,
+        sessionId,
+        sessionDate,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.sessions.set(sessionId, sessionRecord);
+      return createJsonResponse(201, sessionRecord);
+    }
+
+    const leagueSeasonSessionGamesMatch = path.match(
+      /^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions\/([^/]+)\/games$/,
+    );
+    if (method === "POST" && leagueSeasonSessionGamesMatch) {
+      if (state.disableScopedSeasonApi) {
+        return createJsonResponse(404, { error: "not_found", message: "Route not found." });
+      }
+
+      const leagueId = decodeURIComponent(leagueSeasonSessionGamesMatch[1]);
+      const seasonId = decodeURIComponent(leagueSeasonSessionGamesMatch[2]);
+      const sessionId = decodeURIComponent(leagueSeasonSessionGamesMatch[3]);
+      const gameId = String(body.gameId ?? "");
+      const now = "2026-03-28T11:00:04.000Z";
+      const game: MockGame = {
+        gameId,
+        joinCode: `JOIN${gameId.slice(-4).toUpperCase()}`,
+        leagueId,
+        seasonId,
+        sessionId,
+        status: body.status === "live" || body.status === "finished" ? body.status : "scheduled",
+        gameStartTs: String(body.gameStartTs ?? ""),
+        thirdLengthMinutes:
+          body.thirdLengthMinutes === 25 || body.thirdLengthMinutes === 30
+            ? body.thirdLengthMinutes
+            : DEFAULT_THIRD_LENGTH_MINUTES,
+        thirds: createDefaultThirdTimerSegments(),
+        finishedAt: null,
+        result: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      state.games.set(gameId, game);
+      ensureGameTeams(state, game);
+      return createJsonResponse(201, game);
+    }
+
+    if (method === "DELETE" && leagueSeasonMatch) {
+      if (state.disableScopedSeasonApi) {
+        return createJsonResponse(404, { error: "not_found", message: "Route not found." });
+      }
+
+      const leagueId = decodeURIComponent(leagueSeasonMatch[1]);
+      const seasonId = decodeURIComponent(leagueSeasonMatch[2]);
+      state.seasonDeleteRequests.push({ path, leagueId, seasonId });
+      const season = state.seasons.get(seasonId);
+      if (!season || season.leagueId !== leagueId) {
+        return createJsonResponse(404, { error: "not_found", message: "Season not found." });
+      }
+
+      if ([...state.games.values()].some((game) => game.leagueId === leagueId && game.seasonId === seasonId)) {
+        return createJsonResponse(409, {
+          error: "conflict",
+          message: "Cannot delete season with existing games.",
+        });
+      }
+
+      state.seasons.delete(seasonId);
+      return new Response(null, { status: 204 });
+    }
+
     const seasonMatch = path.match(/^\/v1\/seasons\/([^/]+)$/);
     if (method === "GET" && seasonMatch) {
       const season = state.seasons.get(decodeURIComponent(seasonMatch[1]));
@@ -921,6 +1202,7 @@ function createMockFetch(state: MockApiState) {
 
     if (method === "DELETE" && seasonMatch) {
       const seasonId = decodeURIComponent(seasonMatch[1]);
+      state.seasonDeleteRequests.push({ path, leagueId: null, seasonId });
       if (![...state.seasons.keys()].includes(seasonId)) {
         return createJsonResponse(404, { error: "not_found", message: "Season not found." });
       }
@@ -1685,6 +1967,37 @@ test("sign-in page shows inline validation for invalid email", async () => {
   assert.equal(notice.textContent, "Enter a valid email address.");
 });
 
+test("auth callback rejects backslash return targets", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+
+  const callbackPage = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1&returnTo=/%5Cevil.example",
+    scriptFile: "auth-flow.js",
+    apiState,
+  });
+  await flushAsync();
+
+  assert.equal(callbackPage.navigations.length, 0);
+  assert.equal(apiState.cookieJar, "");
+  assert.equal(
+    callbackPage.document.getElementById("auth-callback-status")?.textContent,
+    "Magic link ready. Complete sign-in to continue.",
+  );
+
+  const completeButton = callbackPage.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof callbackPage.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  const callbackNavigation = callbackPage.navigations.at(-1);
+  assert(callbackNavigation);
+  assert.equal(callbackNavigation.url, "/setup");
+  assert.equal(apiState.cookieJar, "threefc_session=session-1");
+});
+
 test("setup flow shows inline validation for blank required fields", async () => {
   const apiState = createMockApiState();
   apiState.session = {
@@ -1745,11 +2058,11 @@ test("setup flow shows inline validation for blank required fields", async () =>
 
   const seasonNavigation = leaguePage.navigations.at(-1);
   assert(seasonNavigation);
-  assert.equal(seasonNavigation.url, "/seasons/autumn-2026");
+  assert.equal(seasonNavigation.url, "/leagues/autumn-league/seasons/autumn-2026");
 
   const seasonPage = await bootPage({
-    html: renderSeasonPage("http://localhost:3001", "autumn-2026"),
-    url: "http://localhost:3000/seasons/autumn-2026",
+    html: renderSeasonPage("http://localhost:3001", "autumn-2026", "autumn-league"),
+    url: "http://localhost:3000/leagues/autumn-league/seasons/autumn-2026",
     scriptFile: "setup-flow.js",
     apiState,
   });
@@ -1779,6 +2092,322 @@ test("setup flow shows inline validation for blank required fields", async () =>
   assert.equal(gameKickoffNotice.textContent, "Kickoff time must be valid.");
 });
 
+test("league page loads reusable organiser share invites and sends direct email invites", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-admin",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-admin";
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    updatedAt: "2026-03-28T11:00:00.000Z",
+  });
+  grantMockLeagueAccess(apiState, "autumn-league", "organizer@3fc.football", "admin");
+
+  const leaguePage = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "autumn-league"),
+    url: "http://localhost:3000/leagues/autumn-league",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const createInviteButton = leaguePage.document.querySelector('[data-testid="create-organiser-invite"]');
+  const inviteEmailInput = leaguePage.document.getElementById("organiser-invite-email");
+  assert(createInviteButton instanceof leaguePage.window.HTMLButtonElement);
+  assert(inviteEmailInput instanceof leaguePage.window.HTMLInputElement);
+
+  assert.equal(apiState.lastOrganiserInviteRequest?.leagueId, "autumn-league");
+  assert.deepEqual(apiState.lastOrganiserInviteRequest?.body, { email: null });
+  assert.equal(
+    apiState.lastOrganiserInviteRequest?.idempotencyKey,
+    "organiser-share-invite-autumn-league",
+  );
+  assert.equal(
+    apiState.storage.has("threefc-idempotency:organiser-invite:autumn-league-link"),
+    false,
+  );
+  assert.equal(
+    leaguePage.document.getElementById("organiser-share-invite-status")?.textContent,
+    "Share invite ready.",
+  );
+  assert.equal(leaguePage.document.getElementById("organiser-share-invite-code")?.textContent, "ABCD2345");
+  const inviteLink = leaguePage.document.getElementById("organiser-share-invite-link");
+  assert(inviteLink instanceof leaguePage.window.HTMLAnchorElement);
+  assert.equal(inviteLink.href, "http://localhost:3000/invites?code=ABCD2345");
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result")?.hidden, true);
+  assert.equal(leaguePage.document.getElementById("organiser-invite-email-status")?.textContent, "");
+
+  inviteEmailInput.value = "Coach@Example.COM";
+  inviteEmailInput.dispatchEvent(new leaguePage.window.Event("input", { bubbles: true }));
+  dispatchClick(createInviteButton);
+  await flushAsync();
+
+  assert.deepEqual(apiState.lastOrganiserInviteRequest?.body, { email: "Coach@Example.COM" });
+  assert.equal(leaguePage.document.getElementById("organiser-share-invite-code")?.textContent, "ABCD2345");
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result")?.hidden, false);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-code")?.textContent, "EFGH2345");
+  const emailInviteLink = leaguePage.document.getElementById("organiser-email-invite-link");
+  assert(emailInviteLink instanceof leaguePage.window.HTMLAnchorElement);
+  assert.equal(emailInviteLink.href, "http://localhost:3000/invites?code=EFGH2345");
+  assert.equal(
+    leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
+    "Sent to coach@example.com.",
+  );
+});
+
+test("league page reuses organiser invite idempotency key until a retry succeeds", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-admin",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-admin";
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    updatedAt: "2026-03-28T11:00:00.000Z",
+  });
+  grantMockLeagueAccess(apiState, "autumn-league", "organizer@3fc.football", "admin");
+
+  const defaultFetch = createMockFetch(apiState);
+  const requestedKeys: string[] = [];
+  let failNextInvite = true;
+  const retryFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (method === "POST" && target.pathname === "/v1/leagues/autumn-league/organiser-invites") {
+      const body =
+        typeof init.body === "string" && init.body.length > 0
+          ? (JSON.parse(init.body) as Record<string, unknown>)
+          : {};
+      if (typeof body.email === "string" && body.email.trim().length > 0) {
+        const idempotencyKey = readInitHeader(init, "idempotency-key");
+        if (idempotencyKey) {
+          requestedKeys.push(idempotencyKey);
+        }
+        if (failNextInvite) {
+          failNextInvite = false;
+          return createJsonResponse(503, {
+            error: "temporary_failure",
+            message: "Temporary failure.",
+          });
+        }
+      }
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const leaguePage = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "autumn-league"),
+    url: "http://localhost:3000/leagues/autumn-league",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: retryFetch,
+  });
+
+  const createInviteButton = leaguePage.document.querySelector('[data-testid="create-organiser-invite"]');
+  const inviteEmailInput = leaguePage.document.getElementById("organiser-invite-email");
+  assert(createInviteButton instanceof leaguePage.window.HTMLButtonElement);
+  assert(inviteEmailInput instanceof leaguePage.window.HTMLInputElement);
+
+  inviteEmailInput.value = "Coach@Example.COM";
+  inviteEmailInput.dispatchEvent(new leaguePage.window.Event("input", { bubbles: true }));
+  dispatchClick(createInviteButton);
+  await flushAsync();
+
+  assert.equal(leaguePage.document.getElementById("setup-status")?.textContent, "Organiser invite failed.");
+  assert.equal(
+    apiState.storage.get("threefc-idempotency:organiser-invite:autumn-league-coach%40example.com"),
+    requestedKeys[0],
+  );
+
+  dispatchClick(createInviteButton);
+  await flushAsync();
+
+  assert.equal(requestedKeys.length, 2);
+  assert.equal(requestedKeys[1], requestedKeys[0]);
+  assert.equal(
+    apiState.storage.has("threefc-idempotency:organiser-invite:autumn-league-coach%40example.com"),
+    false,
+  );
+  assert.equal(leaguePage.document.getElementById("setup-status")?.textContent, "Organiser invite sent.");
+});
+
+test("league page shows manual invite link when organiser email delivery is unconfirmed", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-admin",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-admin";
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    updatedAt: "2026-03-28T11:00:00.000Z",
+  });
+  grantMockLeagueAccess(apiState, "autumn-league", "organizer@3fc.football", "admin");
+
+  const defaultFetch = createMockFetch(apiState);
+  const uncertainFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (method === "POST" && target.pathname === "/v1/leagues/autumn-league/organiser-invites") {
+      const body =
+        typeof init.body === "string" && init.body.length > 0
+          ? (JSON.parse(init.body) as Record<string, unknown>)
+          : {};
+      if (typeof body.email !== "string" || body.email.trim().length === 0) {
+        return defaultFetch(input, init);
+      }
+
+      return createJsonResponse(202, {
+        invite: {
+          leagueId: "autumn-league",
+          inviteCode: "UNKN2345",
+          kind: "email",
+          role: "admin",
+          email: "coach@example.com",
+          createdByUserId: "organizer@3fc.football",
+          acceptedByUserId: null,
+          acceptedAt: null,
+          createdAt: "2026-03-28T11:00:15.000Z",
+          updatedAt: "2026-03-28T11:00:15.000Z",
+        },
+        inviteCode: "UNKN2345",
+        inviteLink: "http://localhost:3000/invites?code=UNKN2345",
+        emailDelivery: {
+          status: "unknown",
+          email: "coach@example.com",
+          expiresAt: null,
+          messageId: null,
+          message: "Email delivery could not be confirmed. Share the invite link manually.",
+        },
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const leaguePage = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "autumn-league"),
+    url: "http://localhost:3000/leagues/autumn-league",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: uncertainFetch,
+  });
+
+  const createInviteButton = leaguePage.document.querySelector('[data-testid="create-organiser-invite"]');
+  const inviteEmailInput = leaguePage.document.getElementById("organiser-invite-email");
+  assert(createInviteButton instanceof leaguePage.window.HTMLButtonElement);
+  assert(inviteEmailInput instanceof leaguePage.window.HTMLInputElement);
+
+  inviteEmailInput.value = "Coach@Example.COM";
+  inviteEmailInput.dispatchEvent(new leaguePage.window.Event("input", { bubbles: true }));
+  dispatchClick(createInviteButton);
+  await flushAsync();
+
+  assert.equal(
+    leaguePage.document.getElementById("setup-status")?.textContent,
+    "Organiser invite created; email delivery unconfirmed.",
+  );
+  assert.equal(
+    leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
+    "Delivery unconfirmed. Share the invite link manually.",
+  );
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-code")?.textContent, "UNKN2345");
+});
+
+test("invite page accepts organiser codes after confirmation and grants league admin access", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-invitee",
+    email: "coach@example.com",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-invitee";
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    updatedAt: "2026-03-28T11:00:00.000Z",
+  });
+  apiState.leagueInvites.set("ABCD2345", {
+    leagueId: "autumn-league",
+    inviteCode: "ABCD2345",
+    kind: "email",
+    role: "admin",
+    email: "coach@example.com",
+    createdByUserId: "organizer@3fc.football",
+    acceptedByUserId: null,
+    acceptedAt: null,
+    createdAt: "2026-03-28T11:00:15.000Z",
+    updatedAt: "2026-03-28T11:00:15.000Z",
+  });
+
+  const invitePage = await bootPage({
+    html: renderInvitePage("http://localhost:3001", ""),
+    url: "http://localhost:3000/invites?code=abcd2345",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  await flushAsync();
+
+  assert.equal(apiState.leagueAccess.get(leagueAccessKey("autumn-league", "coach@example.com")), undefined);
+  assert.equal(apiState.leagueInvites.get("ABCD2345")?.acceptedByUserId, null);
+  assert.equal(
+    invitePage.document.getElementById("setup-status")?.textContent,
+    "Invite page ready.",
+  );
+  assert.equal(invitePage.document.getElementById("organiser-invite-code-form")?.hidden, true);
+  assert.equal(invitePage.document.getElementById("organiser-invite-accept-code")?.textContent, "ABCD2345");
+
+  const acceptButton = invitePage.document.querySelector('[data-action="accept-organiser-invite"]');
+  assert(acceptButton instanceof invitePage.window.HTMLButtonElement);
+  dispatchClick(acceptButton);
+  await flushAsync();
+
+  assert.equal(apiState.leagueAccess.get(leagueAccessKey("autumn-league", "coach@example.com")), "admin");
+  assert.equal(
+    invitePage.document.getElementById("setup-status")?.textContent,
+    "Organiser invite accepted.",
+  );
+  assert.equal(invitePage.document.getElementById("organiser-invite-league")?.textContent, "autumn-league");
+  assert.equal(invitePage.document.getElementById("organiser-invite-code-form")?.hidden, true);
+  const leagueLink = invitePage.document.getElementById("organiser-invite-league-link");
+  assert(leagueLink instanceof invitePage.window.HTMLAnchorElement);
+  assert.equal(leagueLink.hidden, false);
+  assert.equal(leagueLink.getAttribute("href"), "/leagues/autumn-league");
+});
+
 test("season page renders game kickoff times in the user local timezone", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, {
@@ -1798,6 +2427,106 @@ test("season page renders game kickoff times in the user local timezone", async 
   assert(game);
   assert.match(gamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
   assert.doesNotMatch(gamesBody.textContent ?? "", /Z\b|UTC/);
+});
+
+test("league static shell remounts nested league season routes as scoped season pages", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-season-static-fallback",
+    role: "admin",
+  });
+
+  const page = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", ""),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const root = page.document.getElementById("setup-flow-root");
+  const shell = page.document.querySelector('[data-testid="season-shell"]');
+  const gamesBody = page.document.getElementById("season-games-body");
+
+  assert(shell instanceof page.window.HTMLElement);
+  assert.equal(root?.getAttribute("data-page"), "season");
+  assert.equal(root?.getAttribute("data-league-id"), "three-sided-football-club");
+  assert.equal(root?.getAttribute("data-season-id"), "autumn-cup");
+  assert.equal(page.document.getElementById("season-title")?.textContent, "Autumn Cup");
+  assert(gamesBody instanceof page.window.HTMLElement);
+  assert.match(gamesBody.textContent ?? "", /game-season-static-fallback/);
+});
+
+test("season page falls back to legacy season APIs during site-first scoped rollout", async () => {
+  const apiState = createMockApiState();
+  apiState.disableScopedSeasonApi = true;
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("league-a", {
+    leagueId: "league-a",
+    name: "League A",
+    slug: "league-a",
+    createdByUserId: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  apiState.seasons.set("winter-2026", {
+    leagueId: "league-a",
+    seasonId: "winter-2026",
+    name: "Winter 2026",
+    slug: "winter-2026",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+  apiState.games.set("game-visible", {
+    gameId: "game-visible",
+    joinCode: "JOIN1111",
+    leagueId: "league-a",
+    seasonId: "winter-2026",
+    sessionId: "session-shared",
+    status: "scheduled",
+    gameStartTs: "2026-06-21T10:00:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:03.000Z",
+    updatedAt: "2026-03-28T11:00:03.000Z",
+  });
+  apiState.games.set("game-foreign", {
+    gameId: "game-foreign",
+    joinCode: "JOIN2222",
+    leagueId: "league-b",
+    seasonId: "winter-2026",
+    sessionId: "session-shared",
+    status: "scheduled",
+    gameStartTs: "2026-06-21T10:05:00.000Z",
+    thirdLengthMinutes: DEFAULT_THIRD_LENGTH_MINUTES,
+    thirds: createDefaultThirdTimerSegments(),
+    finishedAt: null,
+    result: null,
+    createdAt: "2026-03-28T11:00:04.000Z",
+    updatedAt: "2026-03-28T11:00:04.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "winter-2026", "league-a"),
+    url: "http://localhost:3000/leagues/league-a/seasons/winter-2026",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const gamesBody = page.document.getElementById("season-games-body");
+  assert(gamesBody instanceof page.window.HTMLElement);
+  assert.equal(page.document.getElementById("season-title")?.textContent, "Winter 2026");
+  assert.match(gamesBody.textContent ?? "", /game-visible/);
+  assert.doesNotMatch(gamesBody.textContent ?? "", /game-foreign/);
 });
 
 test("setup happy path runs from sign-in to created game context", async () => {
@@ -1830,6 +2559,13 @@ test("setup happy path runs from sign-in to created game context", async () => {
     scriptFile: "auth-flow.js",
     apiState,
   });
+
+  assert.equal(callbackPage.navigations.length, 0);
+  assert.equal(apiState.cookieJar, "");
+  const completeButton = callbackPage.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof callbackPage.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
 
   const callbackNavigation = callbackPage.navigations.at(-1);
   assert(callbackNavigation);
@@ -1876,11 +2612,11 @@ test("setup happy path runs from sign-in to created game context", async () => {
 
   const seasonNavigation = leaguePage.navigations.at(-1);
   assert(seasonNavigation);
-  assert.equal(seasonNavigation.url, "/seasons/autumn-cup");
+  assert.equal(seasonNavigation.url, "/leagues/three-sided-football-club/seasons/autumn-cup");
 
   const seasonPage = await bootPage({
-    html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
-    url: "http://localhost:3000/seasons/autumn-cup",
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup",
     scriptFile: "setup-flow.js",
     apiState,
   });
@@ -1927,7 +2663,66 @@ test("setup happy path runs from sign-in to created game context", async () => {
   assert.doesNotMatch(subtitle?.textContent ?? "", /Z\b|UTC/);
   assert.equal(leagueId?.textContent, "three-sided-football-club");
   assert.equal(seasonId?.textContent, "autumn-cup");
-  assert.equal(createAnotherLink?.getAttribute("href"), "/seasons/autumn-cup");
+  assert.equal(
+    createAnotherLink?.getAttribute("href"),
+    "/leagues/three-sided-football-club/seasons/autumn-cup",
+  );
+});
+
+test("season page does not fall back to legacy create routes when scoped writes are unavailable", async () => {
+  const apiState = createMockApiState();
+  apiState.disableScopedSeasonApi = true;
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("three-sided-football-club", {
+    leagueId: "three-sided-football-club",
+    name: "Three Sided Football Club",
+    slug: "three-sided-football-club",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+
+  const seasonPage = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const gameDateInput = seasonPage.document.getElementById("game-date");
+  const gameKickoffInput = seasonPage.document.getElementById("game-kickoff");
+  const createGameButton = seasonPage.document.querySelector('[data-action="create-game"]');
+  assert(gameDateInput instanceof seasonPage.window.HTMLInputElement);
+  assert(gameKickoffInput instanceof seasonPage.window.HTMLInputElement);
+  assert(createGameButton instanceof seasonPage.window.HTMLButtonElement);
+
+  gameDateInput.value = "2026-03-28";
+  gameDateInput.dispatchEvent(new seasonPage.window.Event("change", { bubbles: true }));
+  gameKickoffInput.value = "2026-03-28T10:00";
+  gameKickoffInput.dispatchEvent(new seasonPage.window.Event("change", { bubbles: true }));
+  dispatchClick(createGameButton);
+  await flushAsync();
+
+  assert.equal(apiState.sessions.size, 0);
+  assert.equal(apiState.games.size, 0);
+  assert.equal(seasonPage.navigations.length, 0);
+  assert.equal(seasonPage.document.getElementById("setup-status")?.textContent, "Game creation failed.");
 });
 
 test("league page header delete button deletes an empty league", async () => {
@@ -2013,7 +2808,65 @@ test("season page header delete button deletes an empty season", async () => {
   await flushAsync();
 
   assert.equal(apiState.seasons.has("autumn-cup"), false);
+  assert.deepEqual(apiState.seasonDeleteRequests, [
+    {
+      path: "/v1/leagues/three-sided-football-club/seasons/autumn-cup",
+      leagueId: "three-sided-football-club",
+      seasonId: "autumn-cup",
+    },
+  ]);
   assert.equal(page.navigations.at(-1)?.url, "/leagues/three-sided-football-club");
+});
+
+test("season page delete does not fall back to legacy API during site-first scoped rollout", async () => {
+  const apiState = createMockApiState();
+  apiState.disableScopedSeasonApi = true;
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("three-sided-football-club", {
+    leagueId: "three-sided-football-club",
+    name: "Three Sided Football Club",
+    slug: "three-sided-football-club",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
+  apiState.seasons.set("autumn-cup", {
+    leagueId: "three-sided-football-club",
+    seasonId: "autumn-cup",
+    name: "Autumn Cup",
+    slug: "autumn-cup",
+    startsOn: null,
+    endsOn: null,
+    createdAt: "2026-03-28T11:00:02.000Z",
+    updatedAt: "2026-03-28T11:00:02.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const deleteSeasonButton = page.document.querySelector('[data-testid="delete-season"]');
+  assert(deleteSeasonButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteSeasonButton);
+  await flushAsync();
+
+  assert.equal(apiState.seasons.has("autumn-cup"), true);
+  assert.deepEqual(apiState.seasonDeleteRequests, []);
+  assert.equal(page.navigations.length, 0);
+  assert.equal(page.document.getElementById("setup-status")?.textContent, "Season deletion failed.");
 });
 
 test("game page quick-creates and assigns roster players", async () => {

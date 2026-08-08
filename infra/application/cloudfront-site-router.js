@@ -23,12 +23,16 @@ function rewriteToShell(uri) {
     return "/ui/components/index.html";
   }
 
-  if (uri === "/leagues" || uri.indexOf("/leagues/") === 0) {
-    return "/leagues/index.html";
-  }
-
   if (uri === "/seasons" || uri.indexOf("/seasons/") === 0) {
     return "/seasons/index.html";
+  }
+
+  if (/^\/leagues\/[^/]+\/seasons(?:\/|$)/.test(uri)) {
+    return "/seasons/index.html";
+  }
+
+  if (uri === "/leagues" || uri.indexOf("/leagues/") === 0) {
+    return "/leagues/index.html";
   }
 
   if (uri === "/games" || uri.indexOf("/games/") === 0) {
@@ -37,6 +41,10 @@ function rewriteToShell(uri) {
 
   if (uri === "/join" || uri.indexOf("/join/") === 0) {
     return "/join/index.html";
+  }
+
+  if (uri === "/invites" || uri.indexOf("/invites/") === 0) {
+    return "/invites/index.html";
   }
 
   return uri;

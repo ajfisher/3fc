@@ -18,6 +18,7 @@ const ROUTES = {
   undoLastGoal: /^\/v1\/games\/([^/]+)\/goals\/undo-last$/,
   claimPlayer: /^\/v1\/players\/([^/]+)\/claim$/,
   grantLeagueAccess: /^\/v1\/leagues\/([^/]+)\/access$/,
+  createLeagueOrganiserInvite: /^\/v1\/leagues\/([^/]+)\/organiser-invites$/,
 } as const;
 
 export type ProtectedMutationOperation =
@@ -37,7 +38,8 @@ export type ProtectedMutationOperation =
   | "deleteGoal"
   | "undoLastGoal"
   | "claimPlayer"
-  | "grantLeagueAccess";
+  | "grantLeagueAccess"
+  | "createLeagueOrganiserInvite";
 
 export interface ProtectedMutationRoute {
   operation: ProtectedMutationOperation;
@@ -208,6 +210,15 @@ export function resolveProtectedMutationRoute(
     };
   }
 
+  const createLeagueOrganiserInviteMatch =
+    upperMethod === "POST" ? route.match(ROUTES.createLeagueOrganiserInvite) : null;
+  if (createLeagueOrganiserInviteMatch) {
+    return {
+      operation: "createLeagueOrganiserInvite",
+      leagueId: decodeRouteParam(createLeagueOrganiserInviteMatch[1]),
+    };
+  }
+
   return null;
 }
 
@@ -367,7 +378,10 @@ export async function authorizeProtectedMutation(
     };
   }
 
-  if (resolvedRoute.operation === "grantLeagueAccess") {
+  if (
+    resolvedRoute.operation === "grantLeagueAccess" ||
+    resolvedRoute.operation === "createLeagueOrganiserInvite"
+  ) {
     const leagueId = resolvedRoute.leagueId as string;
     const isAdmin = await verifyLeagueAdmin(userId, leagueId, aclLookup);
 

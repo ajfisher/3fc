@@ -127,7 +127,7 @@ test("setup and auth flow script routes serve external javascript", () => {
   assert.match(authFlowResponse.body, /auth\/callback/);
 });
 
-test("league, season, game, and join routes render their shells", () => {
+test("league, season, game, join, and invite routes render their shells", () => {
   const leagueResponse = executeRoute("GET", "/leagues/league-1");
   assert.equal(leagueResponse.statusCode, 200);
   assert.match(leagueResponse.body, /data-testid="league-shell"/);
@@ -137,6 +137,11 @@ test("league, season, game, and join routes render their shells", () => {
   assert.equal(seasonResponse.statusCode, 200);
   assert.match(seasonResponse.body, /data-testid="season-shell"/);
   assert.match(seasonResponse.body, /data-page="season"/);
+
+  const leagueSeasonResponse = executeRoute("GET", "/leagues/league-1/seasons/season-1");
+  assert.equal(leagueSeasonResponse.statusCode, 200);
+  assert.match(leagueSeasonResponse.body, /data-testid="season-shell"/);
+  assert.match(leagueSeasonResponse.body, /data-league-id="league-1"/);
 
   const response = executeRoute(
     "GET",
@@ -157,6 +162,14 @@ test("league, season, game, and join routes render their shells", () => {
   assert.match(joinResponse.body, /data-testid="join-shell"/);
   assert.match(joinResponse.body, /data-page="join"/);
   assert.match(joinResponse.body, /data-join-code="join0001"/);
+
+  const inviteResponse = executeRoute("GET", "/invites?code=ABCD2345");
+  assert.equal(inviteResponse.statusCode, 200);
+  assertSecurityHeaders(inviteResponse.headers);
+  assert.equal(inviteResponse.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.match(inviteResponse.body, /data-testid="invite-shell"/);
+  assert.match(inviteResponse.body, /data-page="invite"/);
+  assert.match(inviteResponse.body, /data-invite-code=""/);
 });
 
 test("auth callback error and success responses include security headers", () => {
@@ -167,7 +180,8 @@ test("auth callback error and success responses include security headers", () =>
   const tokenResponse = executeRoute("GET", "/auth/callback?token=abc123");
   assert.equal(tokenResponse.statusCode, 200);
   assertSecurityHeaders(tokenResponse.headers);
-  assert.match(tokenResponse.body, /Completing sign-in/);
+  assert.match(tokenResponse.body, /Complete sign-in/);
+  assert.match(tokenResponse.body, /data-testid="complete-magic-link"/);
 
   const successResponse = executeRoute("GET", "/auth/callback?code=abc123");
   assert.equal(successResponse.statusCode, 200);

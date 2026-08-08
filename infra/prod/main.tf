@@ -9,7 +9,7 @@ module "app" {
   manage_shared_ses_domain_identity = false
   github_repository                 = "ajfisher/3fc"
   github_environment_name           = "production"
-  site_domain                       = "app.3fc.football"
+  site_domain                       = "3fc.football"
   api_domain                        = "api.3fc.football"
   cognito_domain                    = "auth.app.3fc.football"
   google_oauth_client_id            = var.google_oauth_client_id

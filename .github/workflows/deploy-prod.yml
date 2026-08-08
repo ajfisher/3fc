@@ -194,7 +194,7 @@ jobs:
           CLAIM_HTTP_CODE="$(curl -sS -o /tmp/prod-claim.json -w '%{http_code}' \
             -X POST "$CLAIM_ENDPOINT" \
             -H 'content-type: application/json' \
-            -H 'origin: https://app.3fc.football' \
+            -H 'origin: https://3fc.football' \
             -d '{}')"
 
           if [ "$CLAIM_HTTP_CODE" != "401" ]; then
@@ -209,7 +209,7 @@ jobs:
           ACCESS_HTTP_CODE="$(curl -sS -o /tmp/prod-access.json -w '%{http_code}' \
             -X POST "$ACCESS_ENDPOINT" \
             -H 'content-type: application/json' \
-            -H 'origin: https://app.3fc.football' \
+            -H 'origin: https://3fc.football' \
             -d '{"userId":"scorekeeper@3fc.football","role":"scorekeeper"}')"
 
           if [ "$ACCESS_HTTP_CODE" != "401" ]; then
@@ -224,7 +224,7 @@ jobs:
           MAGIC_HTTP_CODE="$(curl -sS -o /tmp/prod-magic.json -w '%{http_code}' \
             -X POST "$MAGIC_ENDPOINT" \
             -H 'content-type: application/json' \
-            -H 'origin: https://app.3fc.football' \
+            -H 'origin: https://3fc.football' \
             -d '{}')"
 
           if [ "$MAGIC_HTTP_CODE" != "400" ]; then

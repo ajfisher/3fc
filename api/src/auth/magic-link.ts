@@ -52,6 +52,12 @@ export interface MagicLinkStartResult {
   messageId: string | null;
 }
 
+export interface MagicLinkStartOptions {
+  returnTo?: string | null;
+  subject?: string;
+  introLines?: string[];
+}
+
 export interface MagicLinkCompleteResult {
   sessionId: string;
   email: string;
@@ -183,11 +189,19 @@ function assertPositiveInteger(name: string, value: number): void {
   }
 }
 
-function buildMagicLinkUrl(appBaseUrl: string, callbackPath: string, token: string): string {
+function buildMagicLinkUrl(
+  appBaseUrl: string,
+  callbackPath: string,
+  token: string,
+  returnTo?: string | null,
+): string {
   const normalizedBase = appBaseUrl.endsWith("/") ? appBaseUrl.slice(0, -1) : appBaseUrl;
   const normalizedPath = callbackPath.startsWith("/") ? callbackPath : `/${callbackPath}`;
-  const query = new URLSearchParams({ token }).toString();
-  return `${normalizedBase}${normalizedPath}?${query}`;
+  const query = new URLSearchParams({ token });
+  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    query.set("returnTo", returnTo);
+  }
+  return `${normalizedBase}${normalizedPath}?${query.toString()}`;
 }
 
 export class MagicLinkService {
@@ -208,7 +222,7 @@ export class MagicLinkService {
     this.randomProvider = randomProvider;
   }
 
-  async start(email: string): Promise<MagicLinkStartResult> {
+  async start(email: string, options: MagicLinkStartOptions = {}): Promise<MagicLinkStartResult> {
     const normalizedEmail = normalizeMagicLinkEmail(email);
 
     if (!isMagicLinkEmailLike(normalizedEmail)) {
@@ -228,6 +242,7 @@ export class MagicLinkService {
       this.options.appBaseUrl,
       this.options.callbackPath,
       rawToken,
+      options.returnTo,
     );
 
     await this.client.send(
@@ -250,8 +265,10 @@ export class MagicLinkService {
 
     const emailResponse = await this.emailSender.sendMagicLink({
       to: normalizedEmail,
-      subject: "Your 3FC sign-in link",
+      subject: options.subject?.trim() || "Your 3FC sign-in link",
       body: [
+        ...(options.introLines ?? []),
+        ...(options.introLines && options.introLines.length > 0 ? [""] : []),
         "Use this link to sign in to 3FC:",
         magicLink,
         "",

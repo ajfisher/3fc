@@ -30,6 +30,7 @@ export interface SeasonRecord {
 }
 
 export interface TeamRecord {
+  leagueId?: string;
   seasonId: string;
   teamId: TeamId;
   name: string;
@@ -50,6 +51,7 @@ export interface GameTeamRecord {
 }
 
 export interface SessionRecord {
+  leagueId?: string;
   seasonId: string;
   sessionId: string;
   sessionDate: string;
@@ -111,6 +113,21 @@ export interface LeagueAclRecord {
   userId: string;
   role: LeagueRole;
   grantedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LeagueInviteKind = "share" | "email";
+
+export interface LeagueInviteRecord {
+  leagueId: string;
+  inviteCode: string;
+  kind: LeagueInviteKind;
+  role: "admin";
+  email: string | null;
+  createdByUserId: string;
+  acceptedByUserId: string | null;
+  acceptedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -221,6 +238,7 @@ export interface CreateSeasonInput {
 }
 
 export interface CreateTeamInput {
+  leagueId?: string;
   seasonId: string;
   teamId: TeamId;
   name: string;
@@ -238,6 +256,7 @@ export interface CreateGameTeamInput {
 }
 
 export interface CreateSessionInput {
+  leagueId?: string;
   seasonId: string;
   sessionId: string;
   sessionDate: string;
@@ -253,6 +272,7 @@ export interface CreateGameInput {
   status?: GameStatus;
   gameStartTs: string;
   thirdLengthMinutes?: ThirdLengthMinutes;
+  linkSession?: boolean;
 }
 
 export interface CreateSessionGameInput {
@@ -261,6 +281,7 @@ export interface CreateSessionGameInput {
   gameStartTs: string;
   leagueId: string;
   seasonId: string;
+  requireExistingGame?: boolean;
 }
 
 export interface CreatePlayerInput {
@@ -307,6 +328,25 @@ export interface GrantLeagueAccessInput {
   userId: string;
   role: LeagueRole;
   grantedByUserId: string;
+}
+
+export interface CreateLeagueOrganiserInviteInput {
+  leagueId: string;
+  email?: string | null;
+  createdByUserId: string;
+  inviteCode?: string | null;
+  kind?: LeagueInviteKind;
+}
+
+export interface AcceptLeagueOrganiserInviteInput {
+  inviteCode: string;
+  userId: string;
+  email: string;
+}
+
+export interface AcceptLeagueOrganiserInviteResult {
+  invite: LeagueInviteRecord;
+  access: LeagueAclRecord;
 }
 
 export interface AssignRosterInput {
@@ -404,4 +444,19 @@ export interface CreateIdempotencyRecordInput {
   requestHash: string;
   responseStatusCode: number;
   responseBody: string;
+}
+
+export interface CompleteIdempotencyRecordInput extends CreateIdempotencyRecordInput {
+  expectedResponseStatusCode: number;
+  expectedResponseBody: string;
+  expectedUpdatedAt?: string;
+}
+
+export interface DeleteIdempotencyRecordInput {
+  scope: string;
+  key: string;
+  requestHash: string;
+  responseStatusCode: number;
+  responseBody: string;
+  updatedAt?: string;
 }

@@ -6,6 +6,7 @@ export const ENTITY_PK_PREFIX = {
   player: "PLAYER#",
   user: "USER#",
   joinCode: "JOIN_CODE#",
+  leagueInvite: "LEAGUE_INVITE#",
   idempotency: "IDEMPOTENCY#",
 } as const;
 
@@ -27,6 +28,14 @@ export function teamSk(teamId: string): string {
 
 export function sessionSk(sessionId: string): string {
   return `SESSION#${sessionId}`;
+}
+
+export function scopedSeasonSessionSk(seasonId: string, sessionId: string): string {
+  return `SEASON#${seasonId}#SESSION#${sessionId}`;
+}
+
+export function scopedSeasonTeamSk(seasonId: string, teamId: string): string {
+  return `SEASON#${seasonId}#TEAM#${teamId}`;
 }
 
 export function sessionPk(sessionId: string): string {
@@ -51,6 +60,14 @@ export function playerClaimSk(playerId: string): string {
 
 export function joinCodePk(joinCode: string): string {
   return `${ENTITY_PK_PREFIX.joinCode}${joinCode}`;
+}
+
+export function leagueInvitePk(inviteCode: string): string {
+  return `${ENTITY_PK_PREFIX.leagueInvite}${inviteCode}`;
+}
+
+export function leagueOrganiserShareInviteSk(): string {
+  return "INVITE#ORGANISER_SHARE";
 }
 
 export function idempotencyPk(scope: string, key: string): string {

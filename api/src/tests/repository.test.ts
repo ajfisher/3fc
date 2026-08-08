@@ -8,6 +8,7 @@ import {
   type AttributeValue,
   PutItemCommand,
   QueryCommand,
+  TransactGetItemsCommand,
   TransactWriteItemsCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
@@ -24,6 +25,7 @@ import {
   GameJoinRegistrationError,
   GameMutationStateError,
   GameTimerTransitionError,
+  LeagueInviteError,
   PlayerClaimError,
   ThreeFcRepository,
 } from "../data/repository.js";
@@ -40,7 +42,9 @@ class InMemoryDynamoClient {
   private readonly items = new Map<string, Item>();
   private readonly queries: ObservedQuery[] = [];
   private beforeNextPut: (() => void) | null = null;
+  private afterNextQuery: (() => void) | null = null;
   readonly getItemRequests: Array<{ pk: string; sk: string; consistentRead: boolean }> = [];
+  readonly transactGetRequests: Array<Array<{ pk: string; sk: string }>> = [];
 
   seedItem(item: Item): void {
     const pk = this.readString(item.pk, "pk");
@@ -52,12 +56,20 @@ class InMemoryDynamoClient {
     return this.items.get(`${pk}|${sk}`);
   }
 
+  deleteItem(pk: string, sk: string): void {
+    this.items.delete(`${pk}|${sk}`);
+  }
+
   readQueries(): readonly ObservedQuery[] {
     return this.queries;
   }
 
   runBeforeNextPut(callback: () => void): void {
     this.beforeNextPut = callback;
+  }
+
+  runAfterNextQuery(callback: () => void): void {
+    this.afterNextQuery = callback;
   }
 
   async send(command: unknown): Promise<unknown> {
@@ -128,12 +140,40 @@ class InMemoryDynamoClient {
         .sort((left, right) =>
           this.readString(left.sk, "sk").localeCompare(this.readString(right.sk, "sk")),
         );
+      if (this.afterNextQuery) {
+        const callback = this.afterNextQuery;
+        this.afterNextQuery = null;
+        callback();
+      }
 
       return { Items: items };
     }
 
     if (command instanceof ScanCommand) {
       return { Items: [...this.items.values()] };
+    }
+
+    if (command instanceof TransactGetItemsCommand) {
+      const gets = command.input.TransactItems ?? [];
+      const request = gets.map((item) => {
+        const key = item.Get?.Key;
+        if (!key) {
+          throw new Error("TransactGetItemsCommand item is missing Get.Key.");
+        }
+
+        return {
+          pk: this.readString(key.pk, "pk"),
+          sk: this.readString(key.sk, "sk"),
+        };
+      });
+      this.transactGetRequests.push(request);
+
+      return {
+        Responses: request.map(({ pk, sk }) => {
+          const item = this.items.get(`${pk}|${sk}`);
+          return item ? { Item: item } : {};
+        }),
+      };
     }
 
     if (command instanceof DeleteItemCommand) {
@@ -144,7 +184,22 @@ class InMemoryDynamoClient {
 
       const pk = this.readString(key.pk, "pk");
       const sk = this.readString(key.sk, "sk");
-      this.items.delete(`${pk}|${sk}`);
+      const id = `${pk}|${sk}`;
+      if (
+        command.input.ConditionExpression &&
+        !this.conditionMatches(
+          command.input.ConditionExpression,
+          this.items.get(id),
+          command.input.ExpressionAttributeNames ?? {},
+          command.input.ExpressionAttributeValues ?? {},
+        )
+      ) {
+        const error = new Error("Conditional request failed.");
+        (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+        throw error;
+      }
+
+      this.items.delete(id);
       return {};
     }
 
@@ -304,6 +359,12 @@ class InMemoryDynamoClient {
         return !existing || existing[attributeName] === undefined;
       }
 
+      const attributeExists = clause.match(/^attribute_exists\(([^)]+)\)$/);
+      if (attributeExists) {
+        const attributeName = this.resolveAttributeName(attributeExists[1], attributeNames);
+        return Boolean(existing && existing[attributeName] !== undefined);
+      }
+
       const equality = clause.match(/^(.+?)\s*=\s*(.+)$/);
       if (equality) {
         const attributeName = this.resolveAttributeName(equality[1], attributeNames);
@@ -418,6 +479,7 @@ function seedStoredGameTeam(
 function seedStoredSeasonTeam(
   client: InMemoryDynamoClient,
   input: {
+    leagueId?: string;
     seasonId: string;
     teamId: TeamId;
     name: string;
@@ -434,6 +496,7 @@ function seedStoredSeasonTeam(
     updatedAt: { S: input.updatedAt },
     data: {
       S: JSON.stringify({
+        ...(input.leagueId ? { leagueId: input.leagueId } : {}),
         seasonId: input.seasonId,
         teamId: input.teamId,
         name: input.name,
@@ -441,6 +504,68 @@ function seedStoredSeasonTeam(
       }),
     },
   });
+}
+
+function seedStoredSessionGame(
+  client: InMemoryDynamoClient,
+  input: {
+    sessionId: string;
+    gameId: string;
+    gameStartTs: string;
+    leagueId: string;
+    seasonId: string;
+    createdAt: string;
+    updatedAt: string;
+  },
+): void {
+  client.seedItem({
+    pk: { S: `SESSION#${input.sessionId}` },
+    sk: { S: `GAME#${input.gameStartTs}#${input.gameId}` },
+    entityType: { S: "sessionGame" },
+    createdAt: { S: input.createdAt },
+    updatedAt: { S: input.updatedAt },
+    data: {
+      S: JSON.stringify({
+        sessionId: input.sessionId,
+        gameId: input.gameId,
+        gameStartTs: input.gameStartTs,
+        leagueId: input.leagueId,
+        seasonId: input.seasonId,
+      }),
+    },
+  });
+}
+
+function touchStoredLeagueSeason(
+  client: InMemoryDynamoClient,
+  input: {
+    leagueId: string;
+    seasonId: string;
+    updatedAt: string;
+  },
+): void {
+  const item = client.readItem(`LEAGUE#${input.leagueId}`, `SEASON#${input.seasonId}`);
+  assert.ok(item);
+  item.updatedAt = { S: input.updatedAt };
+  client.seedItem(item);
+}
+
+function touchStoredScopedSession(
+  client: InMemoryDynamoClient,
+  input: {
+    leagueId: string;
+    seasonId: string;
+    sessionId: string;
+    updatedAt: string;
+  },
+): void {
+  const item = client.readItem(
+    `LEAGUE#${input.leagueId}`,
+    `SEASON#${input.seasonId}#SESSION#${input.sessionId}`,
+  );
+  assert.ok(item);
+  item.updatedAt = { S: input.updatedAt };
+  client.seedItem(item);
 }
 
 test("repository supports round-trip create/read for core entities", async () => {
@@ -555,6 +680,145 @@ test("repository supports round-trip create/read for core entities", async () =>
   assert.equal(reassignedRoster.teamId, "blue");
 });
 
+test("repository reads owned legacy season team templates for scoped season teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  const legacyTemplate = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "blue",
+    name: "Legacy Blue",
+    color: "#0000ff",
+  });
+  assert.equal(legacyTemplate.leagueId, "league-1");
+
+  assert.deepEqual(await repository.listTeamsForSeason("season-1", { leagueId: "league-1" }), [
+    legacyTemplate,
+  ]);
+  assert.deepEqual(client.transactGetRequests.at(-1), [
+    { pk: "LEAGUE#league-1", sk: "SEASON#season-1" },
+    { pk: "SEASON#season-1", sk: "TEAM#red" },
+    { pk: "SEASON#season-1", sk: "TEAM#blue" },
+    { pk: "SEASON#season-1", sk: "TEAM#yellow" },
+  ]);
+  assert.equal(
+    client.readQueries().some((query) => query.pk === "SEASON#season-1" && query.skPrefix === "TEAM#"),
+    false,
+  );
+  assert.deepEqual(await repository.listTeamsForSeason("season-1", { leagueId: "league-2" }), []);
+});
+
+test("repository prefers newer owned legacy season team templates over older scoped defaults", async () => {
+  const clock = new MutableClock("2026-02-22T10:00:00.000Z");
+  const repository = new ThreeFcRepository(new InMemoryDynamoClient(), "threefc_test", clock);
+
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  clock.set("2026-02-22T10:01:00.000Z");
+  await repository.createTeam({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Default Red",
+    color: "#ff0000",
+  });
+  clock.set("2026-02-22T10:02:00.000Z");
+  const updatedLegacyTemplate = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Custom Red",
+    color: "#aa0000",
+  });
+
+  assert.deepEqual(await repository.listTeamsForSeason("season-1", { leagueId: "league-1" }), [
+    updatedLegacyTemplate,
+  ]);
+});
+
+test("repository rejects legacy season team writes when the season is deleted before commit", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  client.runBeforeNextPut(() => {
+    client.deleteItem("LEAGUE#league-1", "SEASON#season-1");
+    client.deleteItem("SEASON#season-1", "METADATA");
+  });
+
+  await assert.rejects(
+    repository.createTeam({
+      seasonId: "season-1",
+      teamId: "red",
+      name: "Late Red",
+      color: "#ff0000",
+    }),
+    /Season season-1 changed before the team could be created/,
+  );
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#red"), undefined);
+});
+
+test("repository does not treat another league's legacy templates as owned after mirror replacement", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  const leagueOneTemplate = await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "League One Red",
+    color: "#ff0000",
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+
+  assert.deepEqual(await repository.listTeamsForSeason("season-1", { leagueId: "league-2" }), []);
+  assert.equal(await repository.deleteSeason("season-1", { leagueId: "league-2" }), true);
+  assert.deepEqual(await repository.listTeamsForSeason("season-1", { leagueId: "league-1" }), [
+    leagueOneTemplate,
+  ]);
+  assert.deepEqual(
+    JSON.parse(client.readItem("SEASON#season-1", "TEAM#red")?.data?.S ?? "{}"),
+    {
+      leagueId: "league-1",
+      seasonId: leagueOneTemplate.seasonId,
+      teamId: leagueOneTemplate.teamId,
+      name: leagueOneTemplate.name,
+      color: leagueOneTemplate.color,
+    },
+  );
+});
+
 test("repository claims players idempotently for one user and rejects another user", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -622,6 +886,185 @@ test("repository grants league access monotonically without downgrading admins",
 
   const storedAccess = await repository.getLeagueAccess("league-1", "delegate-subject");
   assert.equal(storedAccess?.role, "admin");
+});
+
+test("repository ensures reusable league organiser share invites", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-invite",
+    name: "League Invite",
+    createdByUserId: "owner-subject",
+  });
+
+  const invite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-invite",
+    createdByUserId: "owner-subject",
+    kind: "share",
+  });
+  const repeatedInvite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-invite",
+    createdByUserId: "owner-subject",
+    kind: "share",
+  });
+
+  assert.match(invite.inviteCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+  assert.equal(repeatedInvite.inviteCode, invite.inviteCode);
+  assert.equal(invite.kind, "share");
+  assert.equal(invite.role, "admin");
+  assert.equal(invite.email, null);
+  assert.equal(invite.acceptedByUserId, null);
+  assert.equal(client.readItem(`LEAGUE_INVITE#${invite.inviteCode}`, "METADATA")?.entityType?.S, "leagueInvite");
+  assert.equal(client.readItem("LEAGUE#league-invite", "INVITE#ORGANISER_SHARE")?.entityType?.S, "leagueInvitePointer");
+
+  const accepted = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode.toLowerCase(),
+    userId: "co-organiser-subject",
+    email: "Co@Example.COM",
+  });
+  assert(accepted);
+  assert.equal(accepted.invite.kind, "share");
+  assert.equal(accepted.invite.acceptedByUserId, null);
+  assert.equal(accepted.access.leagueId, "league-invite");
+  assert.equal(accepted.access.userId, "co-organiser-subject");
+  assert.equal(accepted.access.role, "admin");
+  assert.deepEqual(
+    await repository.getLeagueAccess("league-invite", "co-organiser-subject"),
+    accepted.access,
+  );
+
+  const replayed = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode,
+    userId: "co-organiser-subject",
+    email: "co@example.com",
+  });
+  assert.deepEqual(replayed, accepted);
+
+  const otherAccepted = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode,
+    userId: "other-subject",
+    email: "other@example.com",
+  });
+  assert(otherAccepted);
+  assert.equal(otherAccepted.invite.acceptedByUserId, null);
+  assert.equal(otherAccepted.access.userId, "other-subject");
+  assert.equal(otherAccepted.access.role, "admin");
+});
+
+test("repository restricts email organiser invites to the invited email", async () => {
+  const { repository } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-email-invite",
+    name: "League Email Invite",
+    createdByUserId: "owner-subject",
+  });
+
+  const invite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-email-invite",
+    email: "Coach@Example.COM",
+    createdByUserId: "owner-subject",
+    kind: "email",
+  });
+  assert.equal(invite.kind, "email");
+  assert.equal(invite.email, "coach@example.com");
+
+  await assert.rejects(
+    repository.acceptLeagueOrganiserInvite({
+      inviteCode: invite.inviteCode,
+      userId: "other-subject",
+      email: "other@example.com",
+    }),
+    (error: unknown) =>
+      error instanceof LeagueInviteError &&
+      error.code === "invite_email_mismatch" &&
+      error.statusCode === 403,
+  );
+  assert.equal(await repository.getLeagueAccess("league-email-invite", "other-subject"), null);
+
+  const accepted = await repository.acceptLeagueOrganiserInvite({
+    inviteCode: invite.inviteCode,
+    userId: "coach-subject",
+    email: "coach@example.com",
+  });
+  assert(accepted);
+  assert.equal(accepted.invite.acceptedByUserId, "coach-subject");
+  assert.equal(accepted.access.role, "admin");
+
+  await assert.rejects(
+    repository.acceptLeagueOrganiserInvite({
+      inviteCode: invite.inviteCode,
+      userId: "other-coach-subject",
+      email: "coach@example.com",
+    }),
+    (error: unknown) =>
+      error instanceof LeagueInviteError &&
+      error.code === "invite_already_accepted" &&
+      error.statusCode === 409,
+  );
+});
+
+test("repository revokes organiser invites when deleting a league", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-delete-invites",
+    name: "Delete Invite League",
+    createdByUserId: "owner-subject",
+  });
+
+  const shareInvite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-delete-invites",
+    createdByUserId: "owner-subject",
+    kind: "share",
+  });
+  const emailInvite = await repository.createLeagueOrganiserInvite({
+    leagueId: "league-delete-invites",
+    email: "Coach@Example.COM",
+    createdByUserId: "owner-subject",
+    kind: "email",
+  });
+
+  assert.equal(
+    client.readItem("LEAGUE#league-delete-invites", "INVITE#ORGANISER_SHARE")?.entityType?.S,
+    "leagueInvitePointer",
+  );
+
+  assert.equal(await repository.deleteLeague("league-delete-invites"), true);
+  assert.equal(await repository.getLeagueOrganiserInvite(shareInvite.inviteCode), null);
+  assert.equal(await repository.getLeagueOrganiserInvite(emailInvite.inviteCode), null);
+  assert.equal(client.readItem("LEAGUE#league-delete-invites", "INVITE#ORGANISER_SHARE"), undefined);
+
+  await repository.createLeague({
+    leagueId: "league-delete-invites",
+    name: "Replacement League",
+    createdByUserId: "replacement-owner-subject",
+  });
+
+  assert.equal(
+    await repository.acceptLeagueOrganiserInvite({
+      inviteCode: shareInvite.inviteCode,
+      userId: "old-share-holder-subject",
+      email: "share@example.com",
+    }),
+    null,
+  );
+  assert.equal(
+    await repository.acceptLeagueOrganiserInvite({
+      inviteCode: emailInvite.inviteCode,
+      userId: "old-email-holder-subject",
+      email: "coach@example.com",
+    }),
+    null,
+  );
+  assert.equal(
+    await repository.getLeagueAccess("league-delete-invites", "old-share-holder-subject"),
+    null,
+  );
+  assert.equal(
+    await repository.getLeagueAccess("league-delete-invites", "old-email-holder-subject"),
+    null,
+  );
 });
 
 test("repository rejects creating games directly as finished", async () => {
@@ -762,9 +1205,105 @@ test("repository strongly reads game join-code lookups", async () => {
   );
 });
 
+test("repository links scoped sessions atomically when creating games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    sessionDate: "2026-02-22",
+  });
+
+  const game = await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: true,
+  });
+
+  assert.equal(game.gameId, "game-1");
+  assert.ok(client.readItem("GAME#game-1", "METADATA"));
+  assert.ok(client.readItem("JOIN_CODE#ABCD2345", "METADATA"));
+  assert.ok(client.readItem("SESSION#session-1", "GAME#2026-02-22T10:00:00Z#game-1"));
+});
+
+test("repository rolls back scoped game creation when session linking loses a race", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "session-1",
+    sessionDate: "2026-02-22",
+  });
+  client.runBeforeNextPut(() => {
+    touchStoredScopedSession(client, {
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      updatedAt: "2026-02-22T10:03:00.000Z",
+    });
+  });
+
+  await assert.rejects(
+    repository.createGame({
+      gameId: "game-1",
+      joinCode: "ABCD2345",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "session-1",
+      gameStartTs: "2026-02-22T10:00:00Z",
+      linkSession: true,
+    }),
+    /Session session-1 changed before the game could be created/,
+  );
+  assert.equal(client.readItem("GAME#game-1", "METADATA"), undefined);
+  assert.equal(client.readItem("JOIN_CODE#ABCD2345", "METADATA"), undefined);
+  assert.equal(client.readItem("SESSION#session-1", "GAME#2026-02-22T10:00:00Z#game-1"), undefined);
+});
+
 test("repository query supports deterministic session->games ordering", async () => {
   const repository = createRepository();
 
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "2026",
+    name: "2026 Season",
+  });
+  await repository.createSession({
+    seasonId: "2026",
+    sessionId: "session-a",
+    sessionDate: "2026-02-22",
+  });
   await repository.createSessionGame({
     sessionId: "session-a",
     gameId: "game-late",
@@ -1147,6 +1686,406 @@ test("repository supports update and delete of games", async () => {
   assert.deepEqual(await repository.listSessionsForSeason("season-1"), []);
 });
 
+test("repository strongly reads session-game index before scoped game cleanup", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createSessionGame({
+    sessionId: "20260222",
+    gameId: "game-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+  });
+
+  const deleted = await repository.deleteGame("game-1");
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"), undefined);
+  assert.ok(
+    client
+      .readQueries()
+      .some(
+        (query) =>
+          query.pk === "SESSION#20260222" &&
+          query.skPrefix === "GAME#" &&
+          query.consistentRead === true,
+      ),
+  );
+});
+
+test("repository keeps scoped session when concurrent game linking wins cleanup race", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  await repository.createSessionGame({
+    sessionId: "20260222",
+    gameId: "game-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+  });
+
+  client.runAfterNextQuery(() => {
+    touchStoredScopedSession(client, {
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "20260222",
+      updatedAt: "2026-02-22T10:05:00.000Z",
+    });
+    client.seedItem({
+      pk: { S: "SESSION#20260222" },
+      sk: { S: "GAME#2026-02-22T10:05:00Z#game-2" },
+      entityType: { S: "sessionGame" },
+      createdAt: { S: "2026-02-22T10:05:00.000Z" },
+      updatedAt: { S: "2026-02-22T10:05:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          sessionId: "20260222",
+          gameId: "game-2",
+          gameStartTs: "2026-02-22T10:05:00Z",
+          leagueId: "league-1",
+          seasonId: "season-1",
+        }),
+      },
+    });
+  });
+
+  const deleted = await repository.deleteGame("game-1");
+
+  assert.equal(deleted, true);
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"));
+  assert.ok(client.readItem("SESSION#20260222", "GAME#2026-02-22T10:05:00Z#game-2"));
+});
+
+test("repository scoped game cleanup leaves unowned legacy sessions untouched", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: true,
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+  await repository.createSession({
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+
+  const deleted = await repository.deleteGame("game-1");
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"), undefined);
+  assert.ok(client.readItem("SEASON#season-1", "SESSION#20260222"));
+  assert.ok(client.readItem("SESSION#20260222", "METADATA"));
+});
+
+test("repository scoped game cleanup deletes row-attributed legacy sessions after mirror replacement", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: true,
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+
+  const deleted = await repository.deleteGame("game-1");
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SESSION#20260222", "METADATA"), undefined);
+});
+
+test("repository scoped game cleanup deletes owned legacy sessions despite foreign games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: true,
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+  await repository.createSession({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-2",
+    joinCode: "WXYZ6789",
+    leagueId: "league-2",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:05:00Z",
+    linkSession: true,
+  });
+
+  const deleted = await repository.deleteGame("game-1");
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SESSION#20260222", "METADATA"), undefined);
+  assert.ok(client.readItem("LEAGUE#league-2", "SEASON#season-1#SESSION#20260222"));
+  assert.ok(client.readItem("SESSION#20260222", "GAME#2026-02-22T10:05:00Z#game-2"));
+});
+
+test("repository scoped season game listings include owned provenance-less legacy sessions", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  client.seedItem({
+    pk: { S: "SEASON#season-1" },
+    sk: { S: "SESSION#20260222" },
+    entityType: { S: "session" },
+    createdAt: { S: "2026-02-22T10:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T10:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        seasonId: "season-1",
+        sessionId: "20260222",
+        sessionDate: "2026-02-22",
+      }),
+    },
+  });
+  await repository.createGame({
+    gameId: "game-visible",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  seedStoredSessionGame(client, {
+    sessionId: "20260222",
+    gameId: "game-visible",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    createdAt: "2026-02-22T10:00:00.000Z",
+    updatedAt: "2026-02-22T10:00:00.000Z",
+  });
+
+  const listed = await repository.listGamesForSeason("season-1", { leagueId: "league-1" });
+
+  assert.deepEqual(
+    listed.map((game) => game.gameId),
+    ["game-visible"],
+  );
+});
+
+test("repository scopes season game listings by league when session indexes collide", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-visible",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:00:00Z",
+  });
+  seedStoredSessionGame(client, {
+    sessionId: "20260222",
+    gameId: "game-visible",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    createdAt: "2026-02-22T10:00:00.000Z",
+    updatedAt: "2026-02-22T10:00:00.000Z",
+  });
+  await repository.createGame({
+    gameId: "game-other-league",
+    leagueId: "league-2",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    status: "scheduled",
+    gameStartTs: "2026-02-22T10:05:00Z",
+  });
+  seedStoredSessionGame(client, {
+    sessionId: "20260222",
+    gameId: "game-other-league",
+    gameStartTs: "2026-02-22T10:05:00Z",
+    leagueId: "league-2",
+    seasonId: "season-1",
+    createdAt: "2026-02-22T10:05:00.000Z",
+    updatedAt: "2026-02-22T10:05:00.000Z",
+  });
+
+  const listed = await repository.listGamesForSeason("season-1", { leagueId: "league-1" });
+
+  assert.deepEqual(
+    listed.map((game) => game.gameId),
+    ["game-visible"],
+  );
+});
+
 test("repository does not delete a game if it finishes before the delete transaction commits", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -1301,8 +2240,19 @@ test("repository create-only season teams preserve existing configuration", asyn
 
 test("repository create-only season teams do not replace concurrent teams", async () => {
   const { repository, client } = createRepositoryHarness();
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
   client.runBeforeNextPut(() => {
     seedStoredSeasonTeam(client, {
+      leagueId: "league-1",
       seasonId: "season-1",
       teamId: "red",
       name: "Concurrent Red",
@@ -1321,6 +2271,7 @@ test("repository create-only season teams do not replace concurrent teams", asyn
   });
 
   assert.deepEqual(concurrent, {
+    leagueId: "league-1",
     seasonId: "season-1",
     teamId: "red",
     name: "Concurrent Red",
@@ -1541,6 +2492,44 @@ test("repository repairs legacy game join codes with a random usable lookup when
   });
 });
 
+test("repository skips legacy game join-code repair when expected scope does not match", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const fallbackJoinCode = buildJoinCodeForGameId("game-legacy");
+
+  client.seedItem({
+    pk: { S: "GAME#game-legacy" },
+    sk: { S: "METADATA" },
+    entityType: { S: "game" },
+    createdAt: { S: "2026-02-22T00:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T00:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        gameId: "game-legacy",
+        leagueId: "league-2",
+        seasonId: "season-1",
+        sessionId: "session-1",
+        status: "scheduled",
+        gameStartTs: "2026-02-22T10:00:00.000Z",
+      }),
+    },
+  });
+
+  const game = await repository.getGame("game-legacy", {
+    repairLegacyJoinCode: true,
+    expectedLeagueId: "league-1",
+    expectedSeasonId: "season-1",
+  });
+
+  assert.ok(game);
+  assert.equal(game.leagueId, "league-2");
+  assert.equal(game.joinCode, fallbackJoinCode);
+  assert.equal(client.readItem(`JOIN_CODE#${fallbackJoinCode}`, "METADATA") ?? null, null);
+  assert.equal(
+    JSON.parse(client.readItem("GAME#game-legacy", "METADATA")?.data?.S ?? "{}").joinCode,
+    undefined,
+  );
+});
+
 test("repository repairs legacy game join-code collisions with a usable fallback", async () => {
   const { repository, client } = createRepositoryHarness();
   const claimedJoinCode = buildJoinCodeForGameId("game-legacy");
@@ -1732,7 +2721,7 @@ test("repository leaves game and join-code lookup intact if delete sees a join-c
   );
 });
 
-test("repository rejects join registration for finished games without creating a player", async () => {
+test("repository allows join registration for finished games so players can claim profiles", async () => {
   const { repository, client } = createRepositoryHarness();
   const game = await repository.createGame({
     gameId: "game-finished-join",
@@ -1743,19 +2732,30 @@ test("repository rejects join registration for finished games without creating a
   });
   markStoredGameFinished(client, "game-finished-join");
 
-  await assert.rejects(
-    repository.joinGameByCode({
-      joinCode: game.joinCode,
+  const joinResult = await repository.joinGameByCode({
+    joinCode: game.joinCode,
+    playerId: "player-late",
+    nickname: "Late",
+  });
+
+  assert(joinResult);
+  assert.equal(joinResult.game.status, "finished");
+  assert.equal(joinResult.player.playerId, "player-late");
+  assert.equal(joinResult.player.claimedByUserId, null);
+  assert.deepEqual(await repository.listGamePlayers(game.gameId), [
+    {
+      gameId: game.gameId,
       playerId: "player-late",
-      nickname: "Late",
-    }),
-    (error) =>
-      error instanceof GameJoinRegistrationError &&
-      error.code === "game_finished" &&
-      error.statusCode === 409,
-  );
-  assert.equal(await repository.getPlayer("player-late"), null);
-  assert.deepEqual(await repository.listGamePlayers(game.gameId), []);
+      createdAt: joinResult.link.createdAt,
+      updatedAt: joinResult.link.updatedAt,
+    },
+  ]);
+
+  const claimed = await repository.claimPlayer({
+    playerId: "player-late",
+    userId: "late-subject",
+  });
+  assert.equal(claimed?.claimedByUserId, "late-subject");
 });
 
 test("repository rejects join registration if join code lookup changes before write", async () => {
@@ -2107,6 +3107,593 @@ test("repository blocks deleting season or league while descendants exist", asyn
   );
 });
 
+test("repository scoped season delete blocks owned legacy sessions without games", async () => {
+  const repository = createRepository();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+
+  await assert.rejects(
+    repository.deleteSeason("season-1", { leagueId: "league-1" }),
+    /Cannot delete season with existing games/,
+  );
+});
+
+test("repository scoped season delete blocks owned provenance-less legacy sessions without games", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  client.seedItem({
+    pk: { S: "SEASON#season-1" },
+    sk: { S: "SESSION#20260222" },
+    entityType: { S: "session" },
+    createdAt: { S: "2026-02-22T10:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T10:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        seasonId: "season-1",
+        sessionId: "20260222",
+        sessionDate: "2026-02-22",
+      }),
+    },
+  });
+  client.seedItem({
+    pk: { S: "SESSION#20260222" },
+    sk: { S: "METADATA" },
+    entityType: { S: "session" },
+    createdAt: { S: "2026-02-22T10:00:00.000Z" },
+    updatedAt: { S: "2026-02-22T10:00:00.000Z" },
+    data: {
+      S: JSON.stringify({
+        seasonId: "season-1",
+        sessionId: "20260222",
+        sessionDate: "2026-02-22",
+      }),
+    },
+  });
+
+  await assert.rejects(
+    repository.deleteSeason("season-1", { leagueId: "league-1" }),
+    /Cannot delete season with existing games/,
+  );
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1"));
+  assert.ok(client.readItem("SEASON#season-1", "SESSION#20260222"));
+  assert.ok(client.readItem("SESSION#20260222", "METADATA"));
+});
+
+test("repository scoped session creation touches season metadata to serialize deletion", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  const before = client.readItem("LEAGUE#league-1", "SEASON#season-1");
+  assert.ok(before);
+
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+
+  const after = client.readItem("LEAGUE#league-1", "SEASON#season-1");
+  assert.ok(after);
+  assert.notEqual(after.updatedAt?.S, before.updatedAt?.S);
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"));
+  assert.equal(
+    JSON.parse(client.readItem("SEASON#season-1", "SESSION#20260222")?.data?.S ?? "{}").leagueId,
+    "league-1",
+  );
+  assert.equal(
+    JSON.parse(client.readItem("SESSION#20260222", "METADATA")?.data?.S ?? "{}").leagueId,
+    "league-1",
+  );
+});
+
+test("repository scoped session creation skips legacy compatibility rows when global mirror belongs to another league", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"));
+  assert.equal(client.readItem("SEASON#season-1", "SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SESSION#20260222", "METADATA"), undefined);
+});
+
+test("repository scoped session creation aborts compatibility writes if global mirror changes", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  client.runBeforeNextPut(() => {
+    const globalSeason = client.readItem("SEASON#season-1", "METADATA");
+    assert.ok(globalSeason);
+    globalSeason.updatedAt = { S: "2026-02-23T00:00:00.000Z" };
+    globalSeason.data = {
+      S: JSON.stringify({
+        leagueId: "league-2",
+        seasonId: "season-1",
+        name: "League Two Season",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+      }),
+    };
+    client.seedItem(globalSeason);
+  });
+
+  await assert.rejects(
+    repository.createSession({
+      leagueId: "league-1",
+      seasonId: "season-1",
+      sessionId: "20260222",
+      sessionDate: "2026-02-22",
+    }),
+    /Season season-1 changed before the session could be created/,
+  );
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "SESSION#20260222"), undefined);
+  assert.equal(client.readItem("SESSION#20260222", "METADATA"), undefined);
+});
+
+test("repository scoped session creation leaves foreign legacy session compatibility rows untouched", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+  await repository.createSession({
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-23",
+  });
+
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+
+  assert.equal(
+    JSON.parse(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222")?.data?.S ?? "{}").leagueId,
+    "league-1",
+  );
+  assert.deepEqual(
+    JSON.parse(client.readItem("SEASON#season-1", "SESSION#20260222")?.data?.S ?? "{}"),
+    {
+      leagueId: "league-2",
+      seasonId: "season-1",
+      sessionId: "20260222",
+      sessionDate: "2026-02-23",
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(client.readItem("SESSION#20260222", "METADATA")?.data?.S ?? "{}"),
+    {
+      leagueId: "league-2",
+      seasonId: "season-1",
+      sessionId: "20260222",
+      sessionDate: "2026-02-23",
+    },
+  );
+});
+
+test("repository scoped session-game linking touches session metadata to serialize cleanup", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  const before = client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222");
+  assert.ok(before);
+
+  await repository.createSessionGame({
+    sessionId: "20260222",
+    gameId: "game-1",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    leagueId: "league-1",
+    seasonId: "season-1",
+  });
+
+  const after = client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#20260222");
+  assert.ok(after);
+  assert.notEqual(after.updatedAt?.S, before.updatedAt?.S);
+});
+
+test("repository recovery session linking rejects games deleted before commit", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createSession({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    sessionDate: "2026-02-22",
+  });
+  await repository.createGame({
+    gameId: "game-1",
+    joinCode: "ABCD2345",
+    leagueId: "league-1",
+    seasonId: "season-1",
+    sessionId: "20260222",
+    gameStartTs: "2026-02-22T10:00:00Z",
+    linkSession: false,
+  });
+  client.runBeforeNextPut(() => {
+    client.deleteItem("GAME#game-1", "METADATA");
+  });
+
+  await assert.rejects(
+    repository.createSessionGame({
+      sessionId: "20260222",
+      gameId: "game-1",
+      gameStartTs: "2026-02-22T10:00:00Z",
+      leagueId: "league-1",
+      seasonId: "season-1",
+      requireExistingGame: true,
+    }),
+    /Game game-1 changed before the session could be linked/,
+  );
+  assert.equal(client.readItem("SESSION#20260222", "GAME#2026-02-22T10:00:00Z#game-1"), undefined);
+});
+
+test("repository scoped season delete rejects sessions created after descendant checks", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  client.runBeforeNextPut(() => {
+    touchStoredLeagueSeason(client, {
+      leagueId: "league-1",
+      seasonId: "season-1",
+      updatedAt: "2026-02-22T10:03:00.000Z",
+    });
+    client.seedItem({
+      pk: { S: "LEAGUE#league-1" },
+      sk: { S: "SEASON#season-1#SESSION#late-session" },
+      entityType: { S: "session" },
+      createdAt: { S: "2026-02-22T10:03:00.000Z" },
+      updatedAt: { S: "2026-02-22T10:03:00.000Z" },
+      data: {
+        S: JSON.stringify({
+          leagueId: "league-1",
+          seasonId: "season-1",
+          sessionId: "late-session",
+          sessionDate: "2026-02-22",
+        }),
+      },
+    });
+  });
+
+  await assert.rejects(
+    repository.deleteSeason("season-1", { leagueId: "league-1" }),
+    /Cannot delete season with existing games/,
+  );
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1"));
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1#SESSION#late-session"));
+});
+
+test("repository scoped season delete uses consistent descendant reads", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+
+  const deleted = await repository.deleteSeason("season-1", { leagueId: "league-1" });
+
+  assert.equal(deleted, true);
+  assert.ok(
+    client
+      .readQueries()
+      .some(
+        (query) =>
+          query.pk === "LEAGUE#league-1" &&
+          query.skPrefix === "SEASON#season-1#SESSION#" &&
+          query.consistentRead === true,
+      ),
+  );
+  assert.ok(
+    client
+      .readQueries()
+      .some(
+        (query) =>
+          query.pk === "SEASON#season-1" &&
+          query.skPrefix === "SESSION#" &&
+          query.consistentRead === true,
+      ),
+  );
+  assert.ok(
+    client.getItemRequests.some(
+      (request) =>
+        request.pk === "LEAGUE#league-1" &&
+        request.sk === "SEASON#season-1" &&
+        request.consistentRead === true,
+    ),
+  );
+});
+
+test("repository scoped season delete conditionally preserves a replaced global mirror", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Legacy Red",
+    color: "#ff0000",
+  });
+
+  client.runBeforeNextPut(() => {
+    const item = client.readItem("SEASON#season-1", "METADATA");
+    assert.ok(item);
+    const data = JSON.parse(item.data?.S ?? "{}") as Record<string, unknown>;
+    item.updatedAt = { S: "2026-02-22T10:05:00.000Z" };
+    item.data = {
+      S: JSON.stringify({
+        ...data,
+        leagueId: "league-2",
+      }),
+    };
+    client.seedItem(item);
+  });
+
+  await assert.rejects(
+    repository.deleteSeason("season-1", { leagueId: "league-1" }),
+    /Cannot delete season with existing games/,
+  );
+  assert.ok(client.readItem("LEAGUE#league-1", "SEASON#season-1"));
+  assert.equal(
+    JSON.parse(client.readItem("SEASON#season-1", "METADATA")?.data?.S ?? "{}").leagueId,
+    "league-2",
+  );
+  assert.ok(client.readItem("SEASON#season-1", "TEAM#red"));
+});
+
+test("repository scoped season delete removes scoped season teams", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createTeam({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Red",
+    color: "#ff0000",
+  });
+  await repository.createTeam({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    teamId: "blue",
+    name: "Blue",
+    color: "#0000ff",
+  });
+
+  const deleted = await repository.deleteSeason("season-1", { leagueId: "league-1" });
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#TEAM#red"), undefined);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1#TEAM#blue"), undefined);
+});
+
+test("repository scoped season delete removes owned legacy season team templates", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "Three FC",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "Season One",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Legacy Red",
+    color: "#ff0000",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "blue",
+    name: "Legacy Blue",
+    color: "#0000ff",
+  });
+
+  const deleted = await repository.deleteSeason("season-1", { leagueId: "league-1" });
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#red"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#blue"), undefined);
+});
+
+test("repository scoped season delete removes row-attributed legacy templates after mirror replacement", async () => {
+  const { repository, client } = createRepositoryHarness();
+
+  await repository.createLeague({
+    leagueId: "league-1",
+    name: "League One",
+    createdByUserId: "admin@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-1",
+    seasonId: "season-1",
+    name: "League One Season",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "red",
+    name: "Legacy Red",
+    color: "#ff0000",
+  });
+  await repository.createTeam({
+    seasonId: "season-1",
+    teamId: "blue",
+    name: "Legacy Blue",
+    color: "#0000ff",
+  });
+  await repository.createLeague({
+    leagueId: "league-2",
+    name: "League Two",
+    createdByUserId: "other@example.com",
+  });
+  await repository.createSeason({
+    leagueId: "league-2",
+    seasonId: "season-1",
+    name: "League Two Season",
+  });
+
+  const deleted = await repository.deleteSeason("season-1", { leagueId: "league-1" });
+
+  assert.equal(deleted, true);
+  assert.equal(client.readItem("LEAGUE#league-1", "SEASON#season-1"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#red"), undefined);
+  assert.equal(client.readItem("SEASON#season-1", "TEAM#blue"), undefined);
+  assert.equal(
+    JSON.parse(client.readItem("SEASON#season-1", "METADATA")?.data?.S ?? "{}").leagueId,
+    "league-2",
+  );
+});
+
 test("repository supports idempotency record create/get semantics", async () => {
   const { repository, client } = createRepositoryHarness();
 
@@ -2141,6 +3728,194 @@ test("repository supports idempotency record create/get semantics", async () => 
     client.getItemRequests.map((request) => request.consistentRead),
     [true],
   );
+});
+
+test("repository completes an existing idempotency reservation", async () => {
+  const { repository } = createRepositoryHarness();
+  const pendingBody = JSON.stringify({ idempotencyState: "pending" });
+
+  const reserved = await repository.createIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const completed = await repository.completeIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ inviteCode: "ABCD2345" }),
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: pendingBody,
+  });
+
+  const mismatched = await repository.completeIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "different-hash",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ inviteCode: "EFGH2345" }),
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: pendingBody,
+  });
+
+  const record = await repository.getIdempotencyRecord(
+    "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    "invite-email-1",
+  );
+
+  assert.equal(reserved, true);
+  assert.equal(completed, true);
+  assert.equal(mismatched, false);
+  assert.equal(record?.requestHash, "hash-1");
+  assert.equal(record?.responseStatusCode, 201);
+  assert.equal(record?.responseBody, JSON.stringify({ inviteCode: "ABCD2345" }));
+});
+
+test("repository deletes an existing idempotency reservation by matching request hash", async () => {
+  const { repository } = createRepositoryHarness();
+  const pendingBody = JSON.stringify({ idempotencyState: "pending" });
+
+  const reserved = await repository.createIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const mismatched = await repository.deleteIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "different-hash",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const deleted = await repository.deleteIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const missing = await repository.deleteIdempotencyRecord({
+    scope: "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+
+  const record = await repository.getIdempotencyRecord(
+    "admin@example.com:POST:/v1/leagues/league-1/organiser-invites",
+    "invite-email-1",
+  );
+
+  assert.equal(reserved, true);
+  assert.equal(mismatched, false);
+  assert.equal(deleted, true);
+  assert.equal(missing, false);
+  assert.equal(record, null);
+});
+
+test("repository does not delete an idempotency record that changed after it was read", async () => {
+  const { repository } = createRepositoryHarness();
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const pendingBody = JSON.stringify({ idempotencyState: "pending" });
+  const completedBody = JSON.stringify({ inviteCode: "ABCD2345" });
+
+  const reserved = await repository.createIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+  });
+  const pendingRecord = await repository.getIdempotencyRecord(scope, "invite-email-1");
+  const completed = await repository.completeIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: completedBody,
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: pendingBody,
+  });
+
+  const deleted = await repository.deleteIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: pendingBody,
+    updatedAt: pendingRecord?.updatedAt,
+  });
+  const record = await repository.getIdempotencyRecord(scope, "invite-email-1");
+
+  assert.equal(reserved, true);
+  assert(pendingRecord);
+  assert.equal(completed, true);
+  assert.equal(deleted, false);
+  assert.equal(record?.responseStatusCode, 201);
+  assert.equal(record?.responseBody, completedBody);
+});
+
+test("repository does not complete an idempotency reservation that changed after it was read", async () => {
+  const { repository } = createRepositoryHarness();
+  const scope = "admin@example.com:POST:/v1/leagues/league-1/organiser-invites";
+  const firstPendingBody = JSON.stringify({
+    idempotencyState: "pending",
+    reservationId: "reservation-a",
+  });
+  const replacementPendingBody = JSON.stringify({
+    idempotencyState: "pending",
+    reservationId: "reservation-b",
+  });
+
+  const firstReserved = await repository.createIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: firstPendingBody,
+  });
+  const firstDeleted = await repository.deleteIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: firstPendingBody,
+  });
+  const replacementReserved = await repository.createIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 202,
+    responseBody: replacementPendingBody,
+  });
+
+  const staleCompleted = await repository.completeIdempotencyRecord({
+    scope,
+    key: "invite-email-1",
+    requestHash: "hash-1",
+    responseStatusCode: 201,
+    responseBody: JSON.stringify({ inviteCode: "ABCD2345" }),
+    expectedResponseStatusCode: 202,
+    expectedResponseBody: firstPendingBody,
+  });
+  const record = await repository.getIdempotencyRecord(scope, "invite-email-1");
+
+  assert.equal(firstReserved, true);
+  assert.equal(firstDeleted, true);
+  assert.equal(replacementReserved, true);
+  assert.equal(staleCompleted, false);
+  assert.equal(record?.responseStatusCode, 202);
+  assert.equal(record?.responseBody, replacementPendingBody);
 });
 
 async function setupScoringGame(repository: ThreeFcRepository): Promise<void> {

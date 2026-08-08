@@ -109,6 +109,10 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "grantLeagueAccess",
     leagueId: "league-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/leagues/league-1/organiser-invites"), {
+    operation: "createLeagueOrganiserInvite",
+    leagueId: "league-1",
+  });
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
 

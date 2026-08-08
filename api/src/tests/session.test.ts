@@ -37,6 +37,9 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1/seasons"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1/seasons/season-1"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/leagues/league-1/seasons/season-1"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1/seasons/season-1/games"), true);
   assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/leagues/league-1"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/seasons/season-1"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/seasons/season-1/games"), true);
@@ -54,9 +57,16 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/games/game-1/goals/undo-last"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/players/player-1/claim"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/access"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/organiser-invites"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/invites/ABCD2345/accept"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/auth/session"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/seasons"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/seasons/season-1/sessions"), true);
+  assert.equal(
+    isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/seasons/season-1/sessions/session-1/games"),
+    true,
+  );
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/seasons/season-1/sessions"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/sessions/session-1/games"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/dev/items"), true);

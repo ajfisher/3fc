@@ -37,7 +37,7 @@ case "$ENV" in
     API_BASE_URL="${API_BASE_URL:-https://qa-api.3fc.football}"
     ;;
   prod)
-    SITE_DOMAIN="${SITE_DOMAIN:-app.3fc.football}"
+    SITE_DOMAIN="${SITE_DOMAIN:-3fc.football}"
     API_BASE_URL="${API_BASE_URL:-https://api.3fc.football}"
     ;;
 esac
@@ -107,6 +107,7 @@ upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/leagues/index.html" "leagues"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/seasons/index.html" "seasons"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/games/index.html" "games"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/join/index.html" "join"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/invites/index.html" "invites"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/ui/components/index.html" "ui/components"
 
 echo "[deploy] Creating CloudFront invalidation for ${SITE_DISTRIBUTION_ID}"

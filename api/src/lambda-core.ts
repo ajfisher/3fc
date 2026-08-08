@@ -41,8 +41,10 @@ import {
 } from "./auth/session.js";
 import {
   claimPlayerRequestSchema,
+  acceptLeagueOrganiserInviteRequestSchema,
   createGameRequestSchema,
   createGoalRequestSchema,
+  createLeagueOrganiserInviteRequestSchema,
   createLeagueRequestSchema,
   createSeasonRequestSchema,
   createSessionRequestSchema,
@@ -66,11 +68,20 @@ import {
   GameTimerTransitionError,
   GoalCorrectionError,
   GoalCreationError,
+  LeagueInviteCodeCollisionError,
+  LeagueInviteError,
   PlayerClaimError,
   ThreeFcRepository,
 } from "./data/repository.js";
-import type { CreateGoalResult, DeleteGoalResult, GameStatus, UpdateGoalResult } from "./data/types.js";
-import { logAuthRateLimit, logRequest, logRequestError } from "./logging.js";
+import type {
+  AcceptLeagueOrganiserInviteResult,
+  CreateGoalResult,
+  DeleteGoalResult,
+  GameStatus,
+  LeagueInviteRecord,
+  UpdateGoalResult,
+} from "./data/types.js";
+import { logAuthRateLimit, logMagicLinkEvent, logRequest, logRequestError } from "./logging.js";
 
 const FINISHED_REPAIR_RETRY_DELAYS_MS = [25, 50, 100] as const;
 const FINISHED_REPAIR_MAX_ATTEMPTS = 3;
@@ -117,7 +128,10 @@ interface SessionLookup {
 }
 
 interface MagicLinkServiceContract extends SessionLookup {
-  start(email: string): Promise<{
+  start(
+    email: string,
+    options?: { returnTo?: string | null; subject?: string; introLines?: string[] },
+  ): Promise<{
     email: string;
     expiresAt: string;
     messageId: string | null;
@@ -196,8 +210,26 @@ interface RepositoryContract {
       }
     | null
   >;
+  getSeasonForLeague(
+    leagueId: string,
+    seasonId: string,
+    options?: { consistentRead?: boolean },
+  ): Promise<
+    | {
+        leagueId: string;
+        seasonId: string;
+        name: string;
+        slug: string | null;
+        startsOn: string | null;
+        endsOn: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }
+    | null
+  >;
   listSeasonsForLeague(
     leagueId: string,
+    options?: { consistentRead?: boolean },
   ): Promise<
     Array<{
       leagueId: string;
@@ -228,6 +260,7 @@ interface RepositoryContract {
     updatedAt: string;
   }>;
   createTeam(input: {
+    leagueId?: string;
     seasonId: string;
     teamId: TeamId;
     name: string;
@@ -241,7 +274,7 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listTeamsForSeason(seasonId: string, options?: { consistentRead?: boolean }): Promise<
+  listTeamsForSeason(seasonId: string, options?: { consistentRead?: boolean; leagueId?: string }): Promise<
     Array<{
       seasonId: string;
       teamId: TeamId;
@@ -283,7 +316,12 @@ interface RepositoryContract {
       updatedAt: string;
     }>
   >;
-  createSession(input: { seasonId: string; sessionId: string; sessionDate: string }): Promise<unknown>;
+  createSession(input: { leagueId?: string; seasonId: string; sessionId: string; sessionDate: string }): Promise<unknown>;
+  getSessionForSeason(
+    seasonId: string,
+    sessionId: string,
+    options?: { leagueId?: string },
+  ): Promise<{ seasonId: string; sessionId: string; sessionDate: string } | null>;
   createGame(input: {
     gameId: string;
     joinCode?: string | null;
@@ -294,6 +332,7 @@ interface RepositoryContract {
     status?: GameStatus;
     gameStartTs: string;
     thirdLengthMinutes?: ThirdLengthMinutes;
+    linkSession?: boolean;
   }): Promise<RepositoryGameRecord>;
   createSessionGame(input: {
     sessionId: string;
@@ -301,11 +340,20 @@ interface RepositoryContract {
     gameStartTs: string;
     leagueId: string;
     seasonId: string;
+    requireExistingGame?: boolean;
   }): Promise<unknown>;
-  listGamesForSeason(seasonId: string): Promise<RepositoryGameRecord[]>;
+  listGamesForSeason(
+    seasonId: string,
+    options?: { leagueId?: string },
+  ): Promise<RepositoryGameRecord[]>;
   getGame(
     gameId: string,
-    options?: { consistentRead?: boolean; repairLegacyJoinCode?: boolean },
+    options?: {
+      consistentRead?: boolean;
+      repairLegacyJoinCode?: boolean;
+      expectedLeagueId?: string;
+      expectedSeasonId?: string;
+    },
   ): Promise<RepositoryGameRecord | null>;
   getGameByJoinCode(joinCode: string): Promise<RepositoryGameRecord | null>;
   joinGameByCode(input: {
@@ -332,7 +380,7 @@ interface RepositoryContract {
   finishGameThird(input: { gameId: string; third: ThirdNumber }): Promise<RepositoryGameRecord | null>;
   finishGame(input: { gameId: string }): Promise<RepositoryGameRecord | null>;
   deleteGame(gameId: string): Promise<boolean>;
-  deleteSeason(seasonId: string): Promise<boolean>;
+  deleteSeason(seasonId: string, options?: { leagueId?: string }): Promise<boolean>;
   deleteLeague(leagueId: string): Promise<boolean>;
   createPlayer(input: {
     playerId: string;
@@ -501,6 +549,19 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
+  createLeagueOrganiserInvite(input: {
+    leagueId: string;
+    email?: string | null;
+    createdByUserId: string;
+    inviteCode?: string | null;
+    kind?: LeagueInviteRecord["kind"];
+  }): Promise<LeagueInviteRecord>;
+  getLeagueOrganiserInvite(inviteCode: string): Promise<LeagueInviteRecord | null>;
+  acceptLeagueOrganiserInvite(input: {
+    inviteCode: string;
+    userId: string;
+    email: string;
+  }): Promise<AcceptLeagueOrganiserInviteResult | null>;
   getSeason(
     seasonId: string,
   ): Promise<
@@ -550,6 +611,24 @@ interface RepositoryContract {
     responseStatusCode: number;
     responseBody: string;
   }): Promise<boolean>;
+  completeIdempotencyRecord(input: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    expectedResponseStatusCode: number;
+    expectedResponseBody: string;
+    expectedUpdatedAt?: string;
+  }): Promise<boolean>;
+  deleteIdempotencyRecord(input: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    updatedAt?: string;
+  }): Promise<boolean>;
 }
 
 type LeagueListRecord = Awaited<ReturnType<RepositoryContract["listLeaguesForUser"]>>[number];
@@ -577,6 +656,8 @@ interface CoreHandlerDependencies {
   sessionCookieName: string;
   sessionCookieSecure: boolean;
   corsAllowedOrigins: string[];
+  appBaseUrl: string;
+  publicAppBaseUrl?: string;
 }
 
 function getRequestDetails(event: ApiGatewayHttpEvent): RequestDetails {
@@ -1097,7 +1178,7 @@ function gameJoinCodeCollisionConflictResponse(
 async function buildFinishedGameMutationBlock(input: {
   repository: RepositoryContract;
   game: Pick<RepositoryGameRecord, "gameId" | "leagueId" | "status">;
-  sessionEmail: string;
+  sessionUserIds: string | readonly string[];
   origin: string | undefined;
   allowedOrigins: string[];
 }): Promise<ApiGatewayHttpResponse | null> {
@@ -1105,12 +1186,12 @@ async function buildFinishedGameMutationBlock(input: {
     return null;
   }
 
-  const access = await ensureLeagueAccess(
+  const isAdmin = await ensureLeagueAdmin(
     input.repository,
     input.game.leagueId,
-    input.sessionEmail,
+    input.sessionUserIds,
   );
-  if (access.role === "admin") {
+  if (isAdmin) {
     return null;
   }
 
@@ -1213,9 +1294,14 @@ async function readSeasonTeams(
   return buildReadOnlySeasonTeams(season, existingTeams);
 }
 
-async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId: string) {
+async function ensureSeasonDefaultTeams(
+  repository: RepositoryContract,
+  seasonId: string,
+  options: { leagueId?: string } = {},
+) {
   const existingTeams = await repository.listTeamsForSeason(seasonId, {
     consistentRead: true,
+    leagueId: options.leagueId,
   });
   const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
 
@@ -1225,6 +1311,7 @@ async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId
     }
 
     const createdTeam = await repository.createTeam({
+      leagueId: options.leagueId,
       seasonId,
       teamId: defaultTeam.teamId,
       name: defaultTeam.name,
@@ -1243,9 +1330,11 @@ async function ensureGameTeamsForGame(
     gameId: string;
     seasonId: string;
   },
-  options: { allowFinished?: boolean } = {},
+  options: { allowFinished?: boolean; leagueId?: string } = {},
 ) {
-  const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId);
+  const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId, {
+    leagueId: options.leagueId,
+  });
   const existingGameTeams = await repository.listTeamsForGame(game.gameId, {
     consistentRead: true,
   });
@@ -1517,6 +1606,19 @@ function buildIdempotencyRequestHash(scope: string, payload: unknown): string {
     .digest("hex");
 }
 
+function hashDiagnosticValue(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function hashMagicLinkTokenId(rawToken: string): string {
+  const tokenId = rawToken.trim().split(".")[0]?.trim() ?? "";
+  return hashDiagnosticValue(tokenId || "missing-token-id");
+}
+
+function hashEmailDiagnostic(email: string): string {
+  return hashDiagnosticValue(normalizeMagicLinkEmail(email));
+}
+
 function parseOptionalIdempotencyKey(value: string | undefined): string | null {
   if (!value) {
     return null;
@@ -1556,6 +1658,170 @@ function buildCreateGameRecoveryRequestHash(input: {
   });
 }
 
+async function createGameMutationResponse(input: {
+  dependencies: CoreHandlerDependencies;
+  idempotencyKey: string | undefined;
+  session: AuthSessionRecord;
+  method: string;
+  route: string;
+  rawBody: Record<string, unknown>;
+  origin: string | undefined;
+  scope: { leagueId: string; seasonId: string; sessionId: string };
+}): Promise<ApiGatewayHttpResponse> {
+  const parsedBody = createGameRequestSchema.safeParse(input.rawBody);
+  if (!parsedBody.success) {
+    return badRequest(
+      input.origin,
+      input.dependencies.corsAllowedOrigins,
+      formatSchemaValidationError(parsedBody.error),
+    );
+  }
+
+  const createRequestHash = buildCreateGameRecoveryRequestHash({
+    idempotencyKey: input.idempotencyKey,
+    sessionEmail: input.session.email,
+    method: input.method,
+    route: input.route,
+    payload: parsedBody.data,
+  });
+
+  try {
+    return await executeIdempotentMutation({
+      repository: input.dependencies.repository,
+      idempotencyKey: input.idempotencyKey,
+      sessionEmail: input.session.email,
+      method: input.method,
+      route: input.route,
+      requestPayload: parsedBody.data,
+      origin: input.origin,
+      allowedOrigins: input.dependencies.corsAllowedOrigins,
+      execute: async () => {
+        let createdGame: RepositoryGameRecord;
+        let recoveredExistingGame = false;
+        try {
+          createdGame = await input.dependencies.repository.createGame({
+            gameId: parsedBody.data.gameId,
+            createRequestHash,
+            leagueId: input.scope.leagueId,
+            seasonId: input.scope.seasonId,
+            sessionId: input.scope.sessionId,
+            status: parsedBody.data.status as GameStatus | undefined,
+            gameStartTs: parsedBody.data.gameStartTs,
+            thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+            linkSession: true,
+          });
+        } catch (error) {
+          if (!(error instanceof GameAlreadyExistsError)) {
+            throw error;
+          }
+
+          const replayResponse = await replayStoredIdempotencyMutation({
+            repository: input.dependencies.repository,
+            idempotencyKey: input.idempotencyKey,
+            sessionEmail: input.session.email,
+            method: input.method,
+            route: input.route,
+            requestPayload: parsedBody.data,
+            origin: input.origin,
+            allowedOrigins: input.dependencies.corsAllowedOrigins,
+          });
+          if (replayResponse) {
+            return replayResponse;
+          }
+          if (!input.idempotencyKey || !createRequestHash) {
+            throw error;
+          }
+
+          const existingGame = await input.dependencies.repository.getGame(parsedBody.data.gameId);
+          if (
+            !existingGame ||
+            !existingGameMatchesCreateRequest({
+              game: existingGame,
+              leagueId: input.scope.leagueId,
+              seasonId: input.scope.seasonId,
+              sessionId: input.scope.sessionId,
+              createRequestHash,
+              request: parsedBody.data,
+            })
+          ) {
+            throw error;
+          }
+
+          createdGame = existingGame;
+          recoveredExistingGame = true;
+        }
+
+        if (recoveredExistingGame) {
+          await input.dependencies.repository.createSessionGame({
+            sessionId: createdGame.sessionId,
+            gameId: createdGame.gameId,
+            gameStartTs: createdGame.gameStartTs,
+            leagueId: createdGame.leagueId,
+            seasonId: createdGame.seasonId,
+            requireExistingGame: true,
+          });
+        }
+        await ensureGameTeamsForGame(input.dependencies.repository, createdGame, {
+          leagueId: input.scope.leagueId,
+        });
+
+        return createJsonResponse(
+          201,
+          buildGameResponse(createdGame),
+          buildCorsHeaders(input.origin, input.dependencies.corsAllowedOrigins),
+        );
+      },
+    });
+  } catch (error) {
+    if (error instanceof GameAlreadyExistsError) {
+      const replayResponse = await replayStoredIdempotencyMutation({
+        repository: input.dependencies.repository,
+        idempotencyKey: input.idempotencyKey,
+        sessionEmail: input.session.email,
+        method: input.method,
+        route: input.route,
+        requestPayload: parsedBody.data,
+        origin: input.origin,
+        allowedOrigins: input.dependencies.corsAllowedOrigins,
+      });
+      if (replayResponse) {
+        return replayResponse;
+      }
+
+      return gameAlreadyExistsConflictResponse(
+        input.origin,
+        input.dependencies.corsAllowedOrigins,
+        parsedBody.data.gameId,
+      );
+    }
+    if (error instanceof GameJoinCodeCollisionError) {
+      const replayResponse = await replayStoredIdempotencyMutation({
+        repository: input.dependencies.repository,
+        idempotencyKey: input.idempotencyKey,
+        sessionEmail: input.session.email,
+        method: input.method,
+        route: input.route,
+        requestPayload: parsedBody.data,
+        origin: input.origin,
+        allowedOrigins: input.dependencies.corsAllowedOrigins,
+      });
+      if (replayResponse) {
+        return replayResponse;
+      }
+
+      return gameJoinCodeCollisionConflictResponse(
+        input.origin,
+        input.dependencies.corsAllowedOrigins,
+      );
+    }
+    if (error instanceof GameMutationStateError) {
+      return conflict(input.origin, input.dependencies.corsAllowedOrigins, error.message);
+    }
+
+    throw error;
+  }
+}
+
 function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): string {
   const fingerprint = createHash("sha256")
     .update(`public-join:${joinCode}:${idempotencyKey}`)
@@ -1565,6 +1831,184 @@ function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): stri
 }
 
 const PUBLIC_JOIN_IDEMPOTENCY_SUBJECT = "public-join";
+const IDEMPOTENCY_PENDING_STATUS_CODE = 202;
+const IDEMPOTENCY_PENDING_STALE_AFTER_MS = 2 * 60 * 1000;
+const IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED = "email_delivery_started";
+const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const INVITE_CODE_LENGTH = 8;
+
+interface PendingIdempotencyBody {
+  idempotencyState?: unknown;
+  reservationId?: unknown;
+  reservedAtEpochMs?: unknown;
+  externalSideEffect?: unknown;
+  externalSideEffectStartedAtEpochMs?: unknown;
+}
+
+interface ReservedIdempotencyMutationContext {
+  markExternalSideEffectStarted: () => Promise<void>;
+}
+
+class ReservedIdempotencyReservationChangedError extends Error {
+  constructor() {
+    super("Idempotency reservation changed before external side effect could be marked.");
+  }
+}
+
+function parsePendingIdempotencyBody(responseBody: string): PendingIdempotencyBody | null {
+  try {
+    const parsed = JSON.parse(responseBody) as unknown;
+    return typeof parsed === "object" && parsed !== null ? parsed as PendingIdempotencyBody : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildPendingIdempotencyBody(input: {
+  reservationId?: string;
+  reservedAtEpochMs?: number;
+  externalSideEffect?: typeof IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED;
+  externalSideEffectStartedAtEpochMs?: number;
+} = {}): string {
+  const body: PendingIdempotencyBody = {
+    idempotencyState: "pending",
+    reservationId: input.reservationId ?? randomUUID(),
+    reservedAtEpochMs: input.reservedAtEpochMs ?? Date.now(),
+  };
+
+  if (input.externalSideEffect === IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED) {
+    body.externalSideEffect = IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED;
+    body.externalSideEffectStartedAtEpochMs =
+      input.externalSideEffectStartedAtEpochMs ?? Date.now();
+  }
+
+  return JSON.stringify(body);
+}
+
+function buildAppUrl(appBaseUrl: string, path: string): string {
+  const normalizedBase = appBaseUrl.endsWith("/") ? appBaseUrl.slice(0, -1) : appBaseUrl;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+function buildOrganiserInvitePath(inviteCode: string): string {
+  return `/invites?code=${encodeURIComponent(inviteCode)}`;
+}
+
+type OrganiserInviteEmailDeliveryResponse =
+  | { status: "sent"; email: string; expiresAt: string; messageId: string | null }
+  | { status: "unknown"; email: string; expiresAt: null; messageId: null; message: string };
+
+function buildOrganiserInviteResponse(
+  invite: LeagueInviteRecord,
+  appBaseUrl: string,
+  emailDelivery: OrganiserInviteEmailDeliveryResponse | null = null,
+): Record<string, unknown> {
+  const invitePath = buildOrganiserInvitePath(invite.inviteCode);
+  return {
+    invite,
+    inviteCode: invite.inviteCode,
+    inviteLink: buildAppUrl(appBaseUrl, invitePath),
+    emailDelivery,
+  };
+}
+
+function buildOrganiserInviteIdempotencyCode(input: {
+  sessionEmail: string;
+  method: string;
+  route: string;
+  idempotencyKey: string | undefined;
+}): string | null {
+  const parsedIdempotencyKey = input.idempotencyKey
+    ? idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey)
+    : null;
+
+  if (!parsedIdempotencyKey?.success) {
+    return null;
+  }
+
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const digest = createHash("sha256")
+    .update(`organiser-invite:${scope}:${parsedIdempotencyKey.data}`)
+    .digest();
+  let inviteCode = "";
+  for (let index = 0; index < INVITE_CODE_LENGTH; index += 1) {
+    inviteCode += INVITE_CODE_ALPHABET[digest[index] % INVITE_CODE_ALPHABET.length];
+  }
+  return inviteCode;
+}
+
+function isMatchingRecoveredOrganiserInvite(input: {
+  invite: LeagueInviteRecord;
+  leagueId: string;
+  email: string | null;
+  createdByUserId: string;
+  kind: LeagueInviteRecord["kind"];
+}): boolean {
+  return (
+    input.invite.leagueId === input.leagueId &&
+    input.invite.kind === input.kind &&
+    input.invite.role === "admin" &&
+    input.invite.email === input.email &&
+    input.invite.createdByUserId === input.createdByUserId
+  );
+}
+
+async function createOrRecoverLeagueOrganiserInvite(input: {
+  repository: RepositoryContract;
+  leagueId: string;
+  email: string | null;
+  createdByUserId: string;
+  inviteCode: string | null;
+  kind: LeagueInviteRecord["kind"];
+}): Promise<LeagueInviteRecord> {
+  try {
+    return await input.repository.createLeagueOrganiserInvite({
+      leagueId: input.leagueId,
+      email: input.email,
+      createdByUserId: input.createdByUserId,
+      inviteCode: input.inviteCode,
+      kind: input.kind,
+    });
+  } catch (error) {
+    if (!(error instanceof LeagueInviteCodeCollisionError) || !input.inviteCode) {
+      throw error;
+    }
+
+    const existingInvite = await input.repository.getLeagueOrganiserInvite(input.inviteCode);
+    if (
+      existingInvite &&
+      isMatchingRecoveredOrganiserInvite({
+        invite: existingInvite,
+        leagueId: input.leagueId,
+        email: input.email,
+        createdByUserId: input.createdByUserId,
+        kind: input.kind,
+      })
+    ) {
+      return existingInvite;
+    }
+
+    throw error;
+  }
+}
+
+function leagueInviteErrorResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  error: LeagueInviteError,
+): ApiGatewayHttpResponse {
+  const responseError = error.statusCode === 404 ? "not_found" : error.statusCode === 403 ? "forbidden" : "conflict";
+  return createJsonResponse(
+    error.statusCode,
+    {
+      error: responseError,
+      code: error.code,
+      message: error.message,
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
 
 function buildGoalEventId(input: {
   idempotencyKey: string | undefined;
@@ -1640,6 +2084,95 @@ function idempotencyConflictResponse(
   );
 }
 
+function idempotencyInProgressResponse(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    409,
+    {
+      error: "idempotency_in_progress",
+      message: "A request with this idempotency key is still in progress. Retry shortly.",
+    },
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
+function isPendingIdempotencyRecord(record: { responseStatusCode: number; responseBody: string }): boolean {
+  if (record.responseStatusCode !== IDEMPOTENCY_PENDING_STATUS_CODE) {
+    return false;
+  }
+
+  return parsePendingIdempotencyBody(record.responseBody)?.idempotencyState === "pending";
+}
+
+function pendingIdempotencyReservedAtEpochMs(record: {
+  responseBody: string;
+  createdAt?: string;
+}): number | null {
+  const parsed = parsePendingIdempotencyBody(record.responseBody);
+  if (
+    typeof parsed?.reservedAtEpochMs === "number" &&
+    Number.isFinite(parsed.reservedAtEpochMs)
+  ) {
+    return parsed.reservedAtEpochMs;
+  }
+
+  if (record.createdAt) {
+    const createdAtEpochMs = Date.parse(record.createdAt);
+    if (Number.isFinite(createdAtEpochMs)) {
+      return createdAtEpochMs;
+    }
+  }
+
+  return null;
+}
+
+function pendingIdempotencyBodyHasExternalSideEffectStarted(responseBody: string): boolean {
+  return parsePendingIdempotencyBody(responseBody)?.externalSideEffect ===
+    IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED;
+}
+
+function isStalePendingIdempotencyRecord(record: {
+  responseStatusCode: number;
+  responseBody: string;
+  createdAt?: string;
+}): boolean {
+  if (!isPendingIdempotencyRecord(record)) {
+    return false;
+  }
+
+  const reservedAtEpochMs = pendingIdempotencyReservedAtEpochMs(record);
+  return reservedAtEpochMs !== null && Date.now() - reservedAtEpochMs > IDEMPOTENCY_PENDING_STALE_AFTER_MS;
+}
+
+function isRecoverableStalePendingIdempotencyRecord(record: {
+  responseStatusCode: number;
+  responseBody: string;
+  createdAt?: string;
+}): boolean {
+  return (
+    isStalePendingIdempotencyRecord(record) &&
+    !pendingIdempotencyBodyHasExternalSideEffectStarted(record.responseBody)
+  );
+}
+
+function isRetryableReservedIdempotencyResponse(response: ApiGatewayHttpResponse): boolean {
+  return response.statusCode === 429 || response.statusCode >= 500;
+}
+
+function replayIdempotencyRecord(
+  record: { responseStatusCode: number; responseBody: string },
+  origin: string | undefined,
+  allowedOrigins: string[],
+): ApiGatewayHttpResponse {
+  return createJsonResponse(
+    record.responseStatusCode,
+    parseStoredIdempotencyResponseBody(record.responseBody),
+    buildCorsHeaders(origin, allowedOrigins),
+  );
+}
+
 async function executeIdempotentMutation(input: {
   repository: RepositoryContract;
   idempotencyKey: string | undefined;
@@ -1675,11 +2208,26 @@ async function executeIdempotentMutation(input: {
       return idempotencyConflictResponse(input.origin, input.allowedOrigins);
     }
 
-    return createJsonResponse(
-      existingRecord.responseStatusCode,
-      parseStoredIdempotencyResponseBody(existingRecord.responseBody),
-      buildCorsHeaders(input.origin, input.allowedOrigins),
-    );
+    if (isPendingIdempotencyRecord(existingRecord)) {
+      if (
+        isStalePendingIdempotencyRecord(existingRecord) &&
+        await input.repository.deleteIdempotencyRecord({
+          scope,
+          key: idempotencyKey,
+          requestHash,
+          responseStatusCode: existingRecord.responseStatusCode,
+          responseBody: existingRecord.responseBody,
+          updatedAt: existingRecord.updatedAt,
+        })
+      ) {
+        // Continue as a new mutation after clearing stale pending state.
+      } else {
+        const replay = await replayStoredIdempotencyMutation(input);
+        return replay ?? idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+      }
+    } else {
+      return replayIdempotencyRecord(existingRecord, input.origin, input.allowedOrigins);
+    }
   }
 
   const mutationResponse = await input.execute();
@@ -1708,11 +2256,225 @@ async function executeIdempotentMutation(input: {
     return idempotencyConflictResponse(input.origin, input.allowedOrigins);
   }
 
-  return createJsonResponse(
-    raceRecord.responseStatusCode,
-    parseStoredIdempotencyResponseBody(raceRecord.responseBody),
-    buildCorsHeaders(input.origin, input.allowedOrigins),
-  );
+  if (isPendingIdempotencyRecord(raceRecord)) {
+    if (
+      isStalePendingIdempotencyRecord(raceRecord) &&
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: raceRecord.responseStatusCode,
+        responseBody: raceRecord.responseBody,
+        updatedAt: raceRecord.updatedAt,
+      })
+    ) {
+      return mutationResponse;
+    }
+
+    const replay = await replayStoredIdempotencyMutation(input);
+    return replay ?? idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+  }
+
+  return replayIdempotencyRecord(raceRecord, input.origin, input.allowedOrigins);
+}
+
+async function executeReservedIdempotentMutation(input: {
+  repository: RepositoryContract;
+  idempotencyKey: string | undefined;
+  sessionEmail: string;
+  method: string;
+  route: string;
+  requestPayload: unknown;
+  origin: string | undefined;
+  allowedOrigins: string[];
+  execute: (context: ReservedIdempotencyMutationContext) => Promise<ApiGatewayHttpResponse>;
+  recoverStartedExternalSideEffect?: (record: {
+    scope: string;
+    key: string;
+    requestHash: string;
+    responseStatusCode: number;
+    responseBody: string;
+    updatedAt: string;
+  }) => Promise<ApiGatewayHttpResponse | null>;
+}): Promise<ApiGatewayHttpResponse> {
+  if (!input.idempotencyKey) {
+    return input.execute({
+      markExternalSideEffectStarted: async () => undefined,
+    });
+  }
+
+  const parsedHeader = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);
+  if (!parsedHeader.success) {
+    return badRequest(
+      input.origin,
+      input.allowedOrigins,
+      formatSchemaValidationError(parsedHeader.error),
+    );
+  }
+
+  const idempotencyKey = parsedHeader.data;
+  const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
+  const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  let reserved = false;
+  let reservedResponseBody: string | null = null;
+
+  for (let reserveAttempt = 0; reserveAttempt < 2; reserveAttempt += 1) {
+    const pendingResponseBody = buildPendingIdempotencyBody();
+    reserved = await input.repository.createIdempotencyRecord({
+      scope,
+      key: idempotencyKey,
+      requestHash,
+      responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+      responseBody: pendingResponseBody,
+    });
+
+    if (reserved) {
+      reservedResponseBody = pendingResponseBody;
+      break;
+    }
+
+    const existingRecord = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
+    if (!existingRecord) {
+      continue;
+    }
+
+    if (existingRecord.requestHash !== requestHash) {
+      return idempotencyConflictResponse(input.origin, input.allowedOrigins);
+    }
+
+    if (
+      isPendingIdempotencyRecord(existingRecord) &&
+      isRecoverableStalePendingIdempotencyRecord(existingRecord) &&
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: existingRecord.responseStatusCode,
+        responseBody: existingRecord.responseBody,
+        updatedAt: existingRecord.updatedAt,
+      })
+    ) {
+      continue;
+    }
+
+    if (isPendingIdempotencyRecord(existingRecord)) {
+      if (
+        input.recoverStartedExternalSideEffect &&
+        isStalePendingIdempotencyRecord(existingRecord) &&
+        pendingIdempotencyBodyHasExternalSideEffectStarted(existingRecord.responseBody)
+      ) {
+        const recovered = await input.recoverStartedExternalSideEffect(existingRecord);
+        if (recovered) {
+          const completed = await input.repository.completeIdempotencyRecord({
+            scope,
+            key: idempotencyKey,
+            requestHash,
+            responseStatusCode: recovered.statusCode,
+            responseBody: recovered.body,
+            expectedResponseStatusCode: existingRecord.responseStatusCode,
+            expectedResponseBody: existingRecord.responseBody,
+            expectedUpdatedAt: existingRecord.updatedAt,
+          });
+          if (completed) {
+            return recovered;
+          }
+
+          const replayAfterRecoveryRace = await replayStoredIdempotencyMutation(input);
+          return replayAfterRecoveryRace ?? idempotencyInProgressResponse(
+            input.origin,
+            input.allowedOrigins,
+          );
+        }
+      }
+
+      const replay = await replayStoredIdempotencyMutation(input);
+      if (replay) {
+        return replay;
+      }
+
+      return idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+    }
+
+    return replayIdempotencyRecord(existingRecord, input.origin, input.allowedOrigins);
+  }
+
+  if (!reserved) {
+    return idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+  }
+  if (!reservedResponseBody) {
+    return idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+  }
+  let ownedReservationBody = reservedResponseBody;
+
+  const markExternalSideEffectStarted = async (): Promise<void> => {
+    const parsed = parsePendingIdempotencyBody(ownedReservationBody);
+    const markedResponseBody = buildPendingIdempotencyBody({
+      reservationId: typeof parsed?.reservationId === "string" ? parsed.reservationId : undefined,
+      reservedAtEpochMs: typeof parsed?.reservedAtEpochMs === "number" ? parsed.reservedAtEpochMs : undefined,
+      externalSideEffect: IDEMPOTENCY_EXTERNAL_SIDE_EFFECT_EMAIL_DELIVERY_STARTED,
+    });
+    const marked = await input.repository.completeIdempotencyRecord({
+      scope,
+      key: idempotencyKey,
+      requestHash,
+      responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+      responseBody: markedResponseBody,
+      expectedResponseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+      expectedResponseBody: ownedReservationBody,
+    });
+    if (!marked) {
+      throw new ReservedIdempotencyReservationChangedError();
+    }
+    ownedReservationBody = markedResponseBody;
+  };
+
+  let mutationResponse: ApiGatewayHttpResponse;
+  try {
+    mutationResponse = await input.execute({
+      markExternalSideEffectStarted,
+    });
+  } catch (error) {
+    if (error instanceof ReservedIdempotencyReservationChangedError) {
+      const replay = await replayStoredIdempotencyMutation(input);
+      return replay ?? idempotencyInProgressResponse(input.origin, input.allowedOrigins);
+    }
+
+    if (!pendingIdempotencyBodyHasExternalSideEffectStarted(ownedReservationBody)) {
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+        responseBody: ownedReservationBody,
+      });
+    }
+    throw error;
+  }
+
+  if (isRetryableReservedIdempotencyResponse(mutationResponse)) {
+    if (!pendingIdempotencyBodyHasExternalSideEffectStarted(ownedReservationBody)) {
+      await input.repository.deleteIdempotencyRecord({
+        scope,
+        key: idempotencyKey,
+        requestHash,
+        responseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+        responseBody: ownedReservationBody,
+      });
+    }
+    return mutationResponse;
+  }
+
+  await input.repository.completeIdempotencyRecord({
+    scope,
+    key: idempotencyKey,
+    requestHash,
+    responseStatusCode: mutationResponse.statusCode,
+    responseBody: mutationResponse.body,
+    expectedResponseStatusCode: IDEMPOTENCY_PENDING_STATUS_CODE,
+    expectedResponseBody: ownedReservationBody,
+  });
+
+  return mutationResponse;
 }
 
 async function waitForIdempotencyRecord(): Promise<void> {
@@ -1741,6 +2503,7 @@ async function replayStoredIdempotencyMutation(input: {
   const idempotencyKey = parsedHeader.data;
   const scope = buildIdempotencyScope(input.sessionEmail, input.method, input.route);
   const requestHash = buildIdempotencyRequestHash(scope, input.requestPayload);
+  let sawPendingRecord = false;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const record = await input.repository.getIdempotencyRecord(scope, idempotencyKey);
@@ -1749,11 +2512,15 @@ async function replayStoredIdempotencyMutation(input: {
         return idempotencyConflictResponse(input.origin, input.allowedOrigins);
       }
 
-      return createJsonResponse(
-        record.responseStatusCode,
-        parseStoredIdempotencyResponseBody(record.responseBody),
-        buildCorsHeaders(input.origin, input.allowedOrigins),
-      );
+      if (isPendingIdempotencyRecord(record)) {
+        sawPendingRecord = true;
+        if (attempt < 2) {
+          await waitForIdempotencyRecord();
+        }
+        continue;
+      }
+
+      return replayIdempotencyRecord(record, input.origin, input.allowedOrigins);
     }
 
     if (attempt < 2) {
@@ -1761,7 +2528,7 @@ async function replayStoredIdempotencyMutation(input: {
     }
   }
 
-  return null;
+  return sawPendingRecord ? idempotencyInProgressResponse(input.origin, input.allowedOrigins) : null;
 }
 
 function decodeRouteParam(value: string): string {
@@ -1772,7 +2539,8 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   const region = process.env.AWS_REGION ?? "ap-southeast-2";
   const tableName = process.env.DYNAMODB_TABLE ?? "threefc_local";
   const ddbEndpoint = process.env.DYNAMODB_ENDPOINT;
-  const appBaseUrl = process.env.APP_BASE_URL ?? "https://app.3fc.football";
+  const appBaseUrl = process.env.APP_BASE_URL ?? "https://3fc.football";
+  const publicAppBaseUrl = process.env.PUBLIC_APP_BASE_URL ?? appBaseUrl;
   const sessionCookieSecure = resolveSessionCookieSecureFlag(
     process.env.SESSION_COOKIE_SECURE,
     appBaseUrl,
@@ -1853,6 +2621,8 @@ function createDefaultDependencies(): CoreHandlerDependencies {
     sessionCookieName: process.env.SESSION_COOKIE_NAME ?? "threefc_session",
     sessionCookieSecure,
     corsAllowedOrigins: parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS),
+    appBaseUrl,
+    publicAppBaseUrl,
   };
 }
 
@@ -1900,6 +2670,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const email = normalizeMagicLinkEmail(rawBody.email);
         if (!isMagicLinkEmailLike(email)) {
           status = 400;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "start",
+            outcome: "failure",
+            reason: "invalid_email",
+            emailHash: hashEmailDiagnostic(email),
+          });
           return magicLinkErrorResponse(
             origin,
             dependencies.corsAllowedOrigins,
@@ -1921,6 +2701,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             dimension: rateLimitDecision.dimension,
             retryAfterSeconds: rateLimitDecision.retryAfterSeconds,
           });
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "start",
+            outcome: "blocked",
+            reason: "rate_limited",
+            emailHash: hashEmailDiagnostic(email),
+          });
           return rateLimited(
             origin,
             dependencies.corsAllowedOrigins,
@@ -1931,6 +2721,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         try {
           const startResult = await dependencies.magicLinkService.start(email);
           status = 202;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "start",
+            outcome: "success",
+            reason: "sent",
+            emailHash: hashEmailDiagnostic(email),
+            correlationId: startResult.messageId ?? undefined,
+          });
           return createJsonResponse(
             status,
             {
@@ -1944,6 +2745,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         } catch (error) {
           if (error instanceof MagicLinkAuthError) {
             status = error.statusCode;
+            logMagicLinkEvent({
+              requestId: details.requestId,
+              route,
+              method,
+              status,
+              action: "start",
+              outcome: "failure",
+              reason: error.code,
+              emailHash: hashEmailDiagnostic(email),
+            });
             return magicLinkErrorResponse(origin, dependencies.corsAllowedOrigins, error);
           }
 
@@ -1962,12 +2773,31 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
         if (typeof rawBody.token !== "string") {
           status = 400;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "complete",
+            outcome: "failure",
+            reason: "missing_token",
+          });
           return badRequest(origin, dependencies.corsAllowedOrigins, "Field `token` is required.");
         }
 
         try {
           const completed = await dependencies.magicLinkService.complete(rawBody.token);
           status = 200;
+          logMagicLinkEvent({
+            requestId: details.requestId,
+            route,
+            method,
+            status,
+            action: "complete",
+            outcome: "success",
+            reason: "authenticated",
+            tokenIdHash: hashMagicLinkTokenId(rawBody.token),
+          });
           return createJsonResponse(
             status,
             {
@@ -1992,6 +2822,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         } catch (error) {
           if (error instanceof MagicLinkAuthError) {
             status = error.statusCode;
+            logMagicLinkEvent({
+              requestId: details.requestId,
+              route,
+              method,
+              status,
+              action: "complete",
+              outcome: "failure",
+              reason: error.code,
+              tokenIdHash: hashMagicLinkTokenId(rawBody.token),
+            });
             return magicLinkErrorResponse(origin, dependencies.corsAllowedOrigins, error);
           }
 
@@ -2282,6 +3122,281 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        const createLeagueOrganiserInviteMatch = route.match(
+          /^\/v1\/leagues\/([^/]+)\/organiser-invites$/,
+        );
+        if (method === "POST" && createLeagueOrganiserInviteMatch) {
+          const leagueId = decodeRouteParam(createLeagueOrganiserInviteMatch[1]);
+          const league = await dependencies.repository.getLeague(leagueId);
+          if (!league) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `League ${leagueId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = createLeagueOrganiserInviteRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          const inviteEmail =
+            typeof parsedBody.data.email === "string" && parsedBody.data.email.trim().length > 0
+              ? normalizeMagicLinkEmail(parsedBody.data.email)
+              : null;
+          if (inviteEmail && !isMagicLinkEmailLike(inviteEmail)) {
+            status = 400;
+            return magicLinkErrorResponse(
+              origin,
+              dependencies.corsAllowedOrigins,
+              new MagicLinkAuthError("invalid_email", 400, "Email must be a valid email address."),
+            );
+          }
+
+          const createdByUserId = sessionSubject(session);
+          const inviteKind: LeagueInviteRecord["kind"] = inviteEmail ? "email" : "share";
+          const inviteCode = inviteEmail
+            ? buildOrganiserInviteIdempotencyCode({
+                sessionEmail: session.email,
+                method,
+                route,
+                idempotencyKey,
+              })
+            : null;
+          const recoverStartedExternalSideEffect = inviteEmail && inviteCode
+            ? async (): Promise<ApiGatewayHttpResponse | null> => {
+                const existingInvite = await dependencies.repository.getLeagueOrganiserInvite(inviteCode);
+                if (
+                  !existingInvite ||
+                  !isMatchingRecoveredOrganiserInvite({
+                    invite: existingInvite,
+                    leagueId,
+                    email: inviteEmail,
+                    createdByUserId,
+                    kind: inviteKind,
+                  })
+                ) {
+                  return null;
+                }
+
+                logMagicLinkEvent({
+                  requestId: details.requestId,
+                  route,
+                  method,
+                  status: 202,
+                  action: "organiser_invite_start",
+                  outcome: "unknown",
+                  reason: "stale_started_recovered",
+                  emailHash: hashEmailDiagnostic(inviteEmail),
+                });
+
+                return createJsonResponse(
+                  202,
+                  buildOrganiserInviteResponse(
+                    existingInvite,
+                    dependencies.publicAppBaseUrl ?? dependencies.appBaseUrl,
+                    {
+                      status: "unknown",
+                      email: inviteEmail,
+                      expiresAt: null,
+                      messageId: null,
+                      message: "Email delivery could not be confirmed. Share the invite link manually.",
+                    },
+                  ),
+                  buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                );
+              }
+            : undefined;
+
+          const inviteResponse = await executeReservedIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: { email: inviteEmail },
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            ...(recoverStartedExternalSideEffect ? { recoverStartedExternalSideEffect } : {}),
+            execute: async ({ markExternalSideEffectStarted }) => {
+              if (inviteEmail) {
+                const rateLimitDecision = await dependencies.magicLinkRateLimiter.consumeMagicLinkStart({
+                  email: inviteEmail,
+                  clientIp,
+                });
+                if (!rateLimitDecision.allowed) {
+                  logAuthRateLimit({
+                    requestId: details.requestId,
+                    route,
+                    method,
+                    status: 429,
+                    dimension: rateLimitDecision.dimension,
+                    retryAfterSeconds: rateLimitDecision.retryAfterSeconds,
+                  });
+                  return rateLimited(
+                    origin,
+                    dependencies.corsAllowedOrigins,
+                    rateLimitDecision.retryAfterSeconds,
+                  );
+                }
+              }
+
+              let invite: LeagueInviteRecord;
+              try {
+                invite = await createOrRecoverLeagueOrganiserInvite({
+                  repository: dependencies.repository,
+                  leagueId,
+                  email: inviteEmail,
+                  createdByUserId,
+                  inviteCode,
+                  kind: inviteKind,
+                });
+              } catch (error) {
+                if (error instanceof LeagueInviteCodeCollisionError) {
+                  return createJsonResponse(
+                    409,
+                    {
+                      error: "conflict",
+                      code: "invite_code_collision",
+                      message: error.message,
+                    },
+                    buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+                  );
+                }
+
+                throw error;
+              }
+              const invitePath = buildOrganiserInvitePath(invite.inviteCode);
+              let responseStatusCode = 201;
+              let emailDelivery: OrganiserInviteEmailDeliveryResponse | null = null;
+              if (inviteEmail) {
+                await markExternalSideEffectStarted();
+                try {
+                  const delivery = await dependencies.magicLinkService.start(inviteEmail, {
+                    returnTo: invitePath,
+                    subject: `You're invited to organise ${league.name} on 3FC`,
+                    introLines: [
+                      `You have been invited to help organise ${league.name} on 3FC.`,
+                    ],
+                  });
+                  emailDelivery = {
+                    status: "sent",
+                    email: delivery.email,
+                    expiresAt: delivery.expiresAt,
+                    messageId: delivery.messageId,
+                  };
+                  logMagicLinkEvent({
+                    requestId: details.requestId,
+                    route,
+                    method,
+                    status: responseStatusCode,
+                    action: "organiser_invite_start",
+                    outcome: "success",
+                    reason: "sent",
+                    emailHash: hashEmailDiagnostic(inviteEmail),
+                    correlationId: delivery.messageId ?? undefined,
+                  });
+                } catch {
+                  responseStatusCode = 202;
+                  emailDelivery = {
+                    status: "unknown",
+                    email: inviteEmail,
+                    expiresAt: null,
+                    messageId: null,
+                    message: "Email delivery could not be confirmed. Share the invite link manually.",
+                  };
+                  logMagicLinkEvent({
+                    requestId: details.requestId,
+                    route,
+                    method,
+                    status: responseStatusCode,
+                    action: "organiser_invite_start",
+                    outcome: "unknown",
+                    reason: "delivery_unconfirmed",
+                    emailHash: hashEmailDiagnostic(inviteEmail),
+                  });
+                }
+              }
+
+              return createJsonResponse(
+                responseStatusCode,
+                buildOrganiserInviteResponse(
+                  invite,
+                  dependencies.publicAppBaseUrl ?? dependencies.appBaseUrl,
+                  emailDelivery,
+                ),
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
+          });
+          status = inviteResponse.statusCode;
+          return inviteResponse;
+        }
+
+        const acceptLeagueOrganiserInviteMatch = route.match(/^\/v1\/invites\/([^/]+)\/accept$/);
+        if (method === "POST" && acceptLeagueOrganiserInviteMatch) {
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = acceptLeagueOrganiserInviteRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          try {
+            const result = await dependencies.repository.acceptLeagueOrganiserInvite({
+              inviteCode: decodeRouteParam(acceptLeagueOrganiserInviteMatch[1]),
+              userId: sessionSubject(session),
+              email: session.email,
+            });
+            if (!result) {
+              status = 404;
+              return notFound(origin, dependencies.corsAllowedOrigins, "Organiser invite was not found.");
+            }
+
+            status = 200;
+            return createJsonResponse(
+              status,
+              {
+                ...result,
+                inviteLink: buildAppUrl(
+                  dependencies.publicAppBaseUrl ?? dependencies.appBaseUrl,
+                  buildOrganiserInvitePath(result.invite.inviteCode),
+                ),
+              },
+              buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            );
+          } catch (error) {
+            if (error instanceof LeagueInviteError) {
+              status = error.statusCode;
+              return leagueInviteErrorResponse(origin, dependencies.corsAllowedOrigins, error);
+            }
+
+            throw error;
+          }
+        }
+
         const createSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons$/);
         if (method === "POST" && createSeasonMatch) {
           let rawBody: Record<string, unknown>;
@@ -2359,6 +3474,90 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        const getLeagueSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+        if (method === "GET" && getLeagueSeasonMatch) {
+          const leagueId = decodeRouteParam(getLeagueSeasonMatch[1]);
+          const seasonId = decodeRouteParam(getLeagueSeasonMatch[2]);
+          const access = await ensureLeagueAccess(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${leagueId} is required.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          status = 200;
+          return createJsonResponse(
+            status,
+            season,
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const listLeagueSeasonGamesMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/games$/);
+        if (method === "GET" && listLeagueSeasonGamesMatch) {
+          const leagueId = decodeRouteParam(listLeagueSeasonGamesMatch[1]);
+          const seasonId = decodeRouteParam(listLeagueSeasonGamesMatch[2]);
+          const access = await ensureLeagueAccess(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${leagueId} is required.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          const games = await dependencies.repository.listGamesForSeason(seasonId, { leagueId });
+          const gamesWithUsableJoinCodes = await Promise.all(
+            games.map(async (game) => {
+              const refreshedGame = await dependencies.repository.getGame(game.gameId, {
+                consistentRead: true,
+                repairLegacyJoinCode: true,
+                expectedLeagueId: leagueId,
+                expectedSeasonId: seasonId,
+              });
+              if (
+                !refreshedGame ||
+                refreshedGame.leagueId !== leagueId ||
+                refreshedGame.seasonId !== seasonId
+              ) {
+                return game;
+              }
+
+              return refreshedGame;
+            }),
+          );
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              games: gamesWithUsableJoinCodes.map((game) => buildGameResponse(game)),
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
         const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
         if (method === "DELETE" && deleteLeagueMatch) {
           const leagueId = decodeRouteParam(deleteLeagueMatch[1]);
@@ -2394,6 +3593,85 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           status = 204;
           return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
+        }
+
+        const createLeagueSeasonSessionMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions$/);
+        if (method === "POST" && createLeagueSeasonSessionMatch) {
+          const leagueId = decodeRouteParam(createLeagueSeasonSessionMatch[1]);
+          const seasonId = decodeRouteParam(createLeagueSeasonSessionMatch[2]);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!isAdmin) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "admin_required",
+              `Admin role is required for league ${leagueId}.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = createSessionRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              let createdSession: unknown;
+              try {
+                createdSession = await dependencies.repository.createSession({
+                  leagueId,
+                  seasonId,
+                  sessionId: parsedBody.data.sessionId,
+                  sessionDate: parsedBody.data.sessionDate,
+                });
+              } catch (error) {
+                if (error instanceof GameMutationStateError) {
+                  return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+                }
+
+                throw error;
+              }
+
+              return createJsonResponse(
+                201,
+                createdSession,
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
+          });
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createSessionMatch = route.match(/^\/v1\/seasons\/([^/]+)\/sessions$/);
@@ -2456,7 +3734,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2488,7 +3766,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2500,15 +3778,26 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          const games = await dependencies.repository.listGamesForSeason(seasonId);
+          const games = await dependencies.repository.listGamesForSeason(seasonId, {
+            leagueId: season.leagueId,
+          });
           const gamesWithUsableJoinCodes = await Promise.all(
             games.map(async (game) => {
-              return (
-                (await dependencies.repository.getGame(game.gameId, {
-                  consistentRead: true,
-                  repairLegacyJoinCode: true,
-                })) ?? game
-              );
+              const refreshedGame = await dependencies.repository.getGame(game.gameId, {
+                consistentRead: true,
+                repairLegacyJoinCode: true,
+                expectedLeagueId: season.leagueId,
+                expectedSeasonId: seasonId,
+              });
+              if (
+                !refreshedGame ||
+                refreshedGame.leagueId !== season.leagueId ||
+                refreshedGame.seasonId !== seasonId
+              ) {
+                return game;
+              }
+
+              return refreshedGame;
             }),
           );
           status = 200;
@@ -2533,7 +3822,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2583,19 +3872,63 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          await ensureSeasonDefaultTeams(dependencies.repository, seasonId);
-          const team = await dependencies.repository.createTeam({
-            seasonId,
-            teamId,
-            name: parsedBody.data.name,
-            color: parsedBody.data.color ?? null,
-          });
+          let team: Awaited<ReturnType<RepositoryContract["createTeam"]>>;
+          try {
+            await ensureSeasonDefaultTeams(dependencies.repository, seasonId);
+            team = await dependencies.repository.createTeam({
+              seasonId,
+              teamId,
+              name: parsedBody.data.name,
+              color: parsedBody.data.color ?? null,
+            });
+          } catch (error) {
+            if (error instanceof GameMutationStateError) {
+              status = 409;
+              return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+            }
+
+            throw error;
+          }
           status = 200;
           return createJsonResponse(
             status,
             team,
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
+        }
+
+        const deleteLeagueSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+        if (method === "DELETE" && deleteLeagueSeasonMatch) {
+          const leagueId = decodeRouteParam(deleteLeagueSeasonMatch[1]);
+          const seasonId = decodeRouteParam(deleteLeagueSeasonMatch[2]);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!isAdmin) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "admin_required",
+              `Admin role is required for league ${leagueId}.`,
+            );
+          }
+
+          try {
+            const deleted = await dependencies.repository.deleteSeason(seasonId, { leagueId });
+            if (!deleted) {
+              status = 404;
+              return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+            }
+          } catch (error) {
+            if (error instanceof Error && /Cannot delete season/.test(error.message)) {
+              status = 409;
+              return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+            }
+
+            throw error;
+          }
+
+          status = 204;
+          return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
         }
 
         const deleteSeasonMatch = route.match(/^\/v1\/seasons\/([^/]+)$/);
@@ -2610,7 +3943,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const isAdmin = await ensureLeagueAdmin(
             dependencies.repository,
             season.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!isAdmin) {
             status = 403;
@@ -2635,6 +3968,62 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           status = 204;
           return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
+        }
+
+        const createLeagueSeasonSessionGameMatch = route.match(
+          /^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions\/([^/]+)\/games$/,
+        );
+        if (method === "POST" && createLeagueSeasonSessionGameMatch) {
+          const leagueId = decodeRouteParam(createLeagueSeasonSessionGameMatch[1]);
+          const seasonId = decodeRouteParam(createLeagueSeasonSessionGameMatch[2]);
+          const sessionId = decodeRouteParam(createLeagueSeasonSessionGameMatch[3]);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!isAdmin) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "admin_required",
+              `Admin role is required for league ${leagueId}.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          const sessionRecord = await dependencies.repository.getSessionForSeason(seasonId, sessionId, {
+            leagueId,
+          });
+          if (!sessionRecord) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Session ${sessionId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const mutationResponse = await createGameMutationResponse({
+            dependencies,
+            idempotencyKey,
+            session,
+            method,
+            route,
+            rawBody,
+            origin,
+            scope: { leagueId, seasonId, sessionId },
+          });
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createGameMatch = route.match(/^\/v1\/sessions\/([^/]+)\/games$/);
@@ -2690,6 +4079,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               allowedOrigins: dependencies.corsAllowedOrigins,
               execute: async () => {
                 let createdGame: RepositoryGameRecord;
+                let recoveredExistingGame = false;
                 try {
                   createdGame = await dependencies.repository.createGame({
                     gameId: parsedBody.data.gameId,
@@ -2700,6 +4090,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     status: parsedBody.data.status as GameStatus | undefined,
                     gameStartTs: parsedBody.data.gameStartTs,
                     thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+                    linkSession: true,
                   });
                 } catch (error) {
                   if (!(error instanceof GameAlreadyExistsError)) {
@@ -2739,16 +4130,22 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   }
 
                   createdGame = existingGame;
+                  recoveredExistingGame = true;
                 }
 
-                await dependencies.repository.createSessionGame({
-                  sessionId: createdGame.sessionId,
-                  gameId: createdGame.gameId,
-                  gameStartTs: createdGame.gameStartTs,
+                if (recoveredExistingGame) {
+                  await dependencies.repository.createSessionGame({
+                    sessionId: createdGame.sessionId,
+                    gameId: createdGame.gameId,
+                    gameStartTs: createdGame.gameStartTs,
+                    leagueId: createdGame.leagueId,
+                    seasonId: createdGame.seasonId,
+                    requireExistingGame: true,
+                  });
+                }
+                await ensureGameTeamsForGame(dependencies.repository, createdGame, {
                   leagueId: createdGame.leagueId,
-                  seasonId: createdGame.seasonId,
                 });
-                await ensureGameTeamsForGame(dependencies.repository, createdGame);
 
                 return createJsonResponse(
                   201,
@@ -2800,6 +4197,10 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               status = 409;
               return gameJoinCodeCollisionConflictResponse(origin, dependencies.corsAllowedOrigins);
             }
+            if (error instanceof GameMutationStateError) {
+              status = 409;
+              return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+            }
 
             throw error;
           }
@@ -2820,7 +4221,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -2836,6 +4237,8 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             (await dependencies.repository.getGame(gameId, {
               consistentRead: true,
               repairLegacyJoinCode: true,
+              expectedLeagueId: game.leagueId,
+              expectedSeasonId: game.seasonId,
             })) ?? game;
 
           status = 200;
@@ -2864,7 +4267,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const finishedBlock = await buildFinishedGameMutationBlock({
             repository: dependencies.repository,
             game,
-            sessionEmail: session.email,
+            sessionUserIds: sessionUserIds(session),
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
           });
@@ -2920,7 +4323,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const finishedBlock = await buildFinishedGameMutationBlock({
             repository: dependencies.repository,
             game,
-            sessionEmail: session.email,
+            sessionUserIds: sessionUserIds(session),
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
           });
@@ -2984,7 +4387,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 }
 
                 try {
-                  await ensureGameTeamsForGame(dependencies.repository, currentGame);
+                  await ensureGameTeamsForGame(dependencies.repository, currentGame, {
+                    leagueId: currentGame.leagueId,
+                  });
                 } catch (error) {
                   if (error instanceof GameMutationStateError) {
                     const replayResponse = await replayStoredIdempotencyMutation({
@@ -3201,7 +4606,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   const finishedBlock = await buildFinishedGameMutationBlock({
                     repository: dependencies.repository,
                     game: currentGame,
-                    sessionEmail: session.email,
+                    sessionUserIds: sessionUserIds(session),
                     origin,
                     allowedOrigins: dependencies.corsAllowedOrigins,
                   });
@@ -3218,7 +4623,10 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
-                await ensureGameTeamsForGame(dependencies.repository, currentGame, { allowFinished });
+                await ensureGameTeamsForGame(dependencies.repository, currentGame, {
+                  allowFinished,
+                  leagueId: currentGame.leagueId,
+                });
                 const result = await dependencies.repository.createGoal({
                   gameId,
                   eventId: buildGoalEventId({
@@ -3323,7 +4731,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -3413,7 +4821,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -3518,7 +4926,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -3577,7 +4985,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -3674,7 +5082,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           let team;
           try {
-            await ensureGameTeamsForGame(dependencies.repository, game);
+            await ensureGameTeamsForGame(dependencies.repository, game, {
+              leagueId: game.leagueId,
+            });
             team = await dependencies.repository.createGameTeamOverride({
               gameId,
               teamId,
@@ -3898,7 +5308,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               const finishedBlock = await buildFinishedGameMutationBlock({
                 repository: dependencies.repository,
                 game: currentGame,
-                sessionEmail: session.email,
+                sessionUserIds: sessionUserIds(session),
                 origin,
                 allowedOrigins: dependencies.corsAllowedOrigins,
               });
@@ -3911,7 +5321,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 (await ensureLeagueAccess(
                   dependencies.repository,
                   currentGame.leagueId,
-                  session.email,
+                  sessionUserIds(session),
                 )).role === "admin";
               let player;
               try {
@@ -3928,7 +5338,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     const finishedBlockAfterRace = await buildFinishedGameMutationBlock({
                       repository: dependencies.repository,
                       game: latestGame,
-                      sessionEmail: session.email,
+                      sessionUserIds: sessionUserIds(session),
                       origin,
                       allowedOrigins: dependencies.corsAllowedOrigins,
                     });
@@ -3975,7 +5385,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const access = await ensureLeagueAccess(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!access.allowed) {
             status = 403;
@@ -4009,7 +5419,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const finishedBlock = await buildFinishedGameMutationBlock({
             repository: dependencies.repository,
             game,
-            sessionEmail: session.email,
+            sessionUserIds: sessionUserIds(session),
             origin,
             allowedOrigins: dependencies.corsAllowedOrigins,
           });
@@ -4037,7 +5447,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          const teams = await ensureGameTeamsForGame(dependencies.repository, game);
+          const teams = await ensureGameTeamsForGame(dependencies.repository, game, {
+            leagueId: game.leagueId,
+          });
           if (!teams.some((team) => team.teamId === parsedBody.data.teamId)) {
             status = 400;
             return badRequest(origin, dependencies.corsAllowedOrigins, "Team ID must be active for this game.");
@@ -4064,7 +5476,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 const finishedBlock = await buildFinishedGameMutationBlock({
                   repository: dependencies.repository,
                   game: currentGame,
-                  sessionEmail: session.email,
+                  sessionUserIds: sessionUserIds(session),
                   origin,
                   allowedOrigins: dependencies.corsAllowedOrigins,
                 });
@@ -4111,7 +5523,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const isAdmin = await ensureLeagueAdmin(
             dependencies.repository,
             existingGame.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!isAdmin) {
             status = 403;
@@ -4187,7 +5599,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const isAdmin = await ensureLeagueAdmin(
             dependencies.repository,
             game.leagueId,
-            session.email,
+            sessionUserIds(session),
           );
           if (!isAdmin) {
             status = 403;
