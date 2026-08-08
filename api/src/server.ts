@@ -817,9 +817,11 @@ async function readSeasonTeams(season: {
 async function ensureSeasonDefaultTeams(
   seasonId: string,
   repositoryClient: Pick<ThreeFcRepository, "listTeamsForSeason" | "createTeam"> = repository,
+  options: { leagueId?: string } = {},
 ) {
   const existingTeams = await repositoryClient.listTeamsForSeason(seasonId, {
     consistentRead: true,
+    leagueId: options.leagueId,
   });
   const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
 
@@ -829,6 +831,7 @@ async function ensureSeasonDefaultTeams(
     }
 
     const createdTeam = await repositoryClient.createTeam({
+      leagueId: options.leagueId,
       seasonId,
       teamId: defaultTeam.teamId,
       name: defaultTeam.name,
@@ -847,9 +850,11 @@ async function ensureGameTeamsForGame(
     ThreeFcRepository,
     "listTeamsForSeason" | "createTeam" | "listTeamsForGame" | "createGameTeamOverride"
   > = repository,
-  options: { allowFinished?: boolean } = {},
+  options: { allowFinished?: boolean; leagueId?: string } = {},
 ) {
-  const seasonTeams = await ensureSeasonDefaultTeams(game.seasonId, repositoryClient);
+  const seasonTeams = await ensureSeasonDefaultTeams(game.seasonId, repositoryClient, {
+    leagueId: options.leagueId,
+  });
   const existingGameTeams = await repositoryClient.listTeamsForGame(game.gameId, {
     consistentRead: true,
   });
@@ -1471,6 +1476,7 @@ async function recoverLocalFinishedGameForFinishRoute(input: {
   if (!current || current.status !== "finished") {
     return null;
   }
+  const currentLeagueId = current.leagueId;
 
   if (isCompleteFinishedGame(current)) {
     return {
@@ -1482,7 +1488,10 @@ async function recoverLocalFinishedGameForFinishRoute(input: {
   let repaired: GameRecord | null = current;
   for (let attempt = 0; attempt < FINISHED_REPAIR_MAX_ATTEMPTS; attempt += 1) {
     try {
-      await ensureGameTeamsForGame(current, input.repositoryClient, { allowFinished: true });
+      await ensureGameTeamsForGame(current, input.repositoryClient, {
+        allowFinished: true,
+        leagueId: currentLeagueId,
+      });
       repaired = await input.repositoryClient.finishGame({ gameId: input.gameId });
       if (isCompleteFinishedGame(repaired)) {
         break;
@@ -2024,6 +2033,8 @@ export async function handleLocalGetGameRoute(input: {
     (await repositoryClient.getGame(input.gameId, {
       consistentRead: true,
       repairLegacyJoinCode: true,
+      expectedLeagueId: game.leagueId,
+      expectedSeasonId: game.seasonId,
     })) ?? game;
 
   sendJsonWithCors(input.request, input.response, 200, buildGameResponse(responseGame));
@@ -2063,7 +2074,9 @@ export async function handleLocalFinishGameRoute(input: {
         }
 
         try {
-          await ensureGameTeamsForGame(currentGame, repositoryClient);
+          await ensureGameTeamsForGame(currentGame, repositoryClient, {
+            leagueId: currentGame.leagueId,
+          });
         } catch (error) {
           if (error instanceof GameMutationStateError) {
             const recovered = await recoverLocalFinishedGameForFinishRoute({
@@ -2240,7 +2253,9 @@ export async function handleLocalUpdateGameTeamRoute(input: {
 
   let team;
   try {
-    await ensureGameTeamsForGame(game, repositoryClient);
+    await ensureGameTeamsForGame(game, repositoryClient, {
+      leagueId: game.leagueId,
+    });
     team = await repositoryClient.createGameTeamOverride({
       gameId: input.gameId,
       teamId: input.teamId,
@@ -2461,6 +2476,7 @@ async function handleCreateSession(
   sessionEmail: string,
   method: string,
   route: string,
+  leagueId?: string,
 ): Promise<number> {
   let rawBody: Record<string, unknown>;
 
@@ -2483,11 +2499,28 @@ async function handleCreateSession(
     route,
     requestPayload: parsedBody.data,
     execute: async () => {
-      const session = await repository.createSession({
-        seasonId,
-        sessionId: parsedBody.data.sessionId,
-        sessionDate: parsedBody.data.sessionDate,
-      });
+      let session: unknown;
+      try {
+        session = await repository.createSession({
+          leagueId,
+          seasonId,
+          sessionId: parsedBody.data.sessionId,
+          sessionDate: parsedBody.data.sessionDate,
+        });
+      } catch (error) {
+        if (error instanceof GameMutationStateError) {
+          return {
+            statusCode: 409,
+            payload: {
+              error: "conflict",
+              code: error.code,
+              message: error.message,
+            },
+          };
+        }
+
+        throw error;
+      }
 
       return {
         statusCode: 201,
@@ -2500,6 +2533,7 @@ async function handleCreateSession(
 async function createGameWithDerivedRecords(input: {
   repositoryClient: LocalCreateGameRouteRepository;
   scope: { leagueId: string; seasonId: string; sessionId: string };
+  seasonTeamLeagueId?: string;
   allowExistingGameRecovery: boolean;
   request: {
     gameId: string;
@@ -2510,6 +2544,7 @@ async function createGameWithDerivedRecords(input: {
   createRequestHash: string | null;
 }) {
   let game;
+  let recoveredExistingGame = false;
   try {
     game = await input.repositoryClient.createGame({
       gameId: input.request.gameId,
@@ -2520,6 +2555,7 @@ async function createGameWithDerivedRecords(input: {
       status: input.request.status,
       gameStartTs: input.request.gameStartTs,
       thirdLengthMinutes: input.request.thirdLengthMinutes,
+      linkSession: true,
     });
   } catch (error) {
     if (!(error instanceof GameAlreadyExistsError)) {
@@ -2548,16 +2584,21 @@ async function createGameWithDerivedRecords(input: {
     }
 
     game = existingGame;
+    recoveredExistingGame = true;
   }
 
-  await input.repositoryClient.createSessionGame({
-    sessionId: game.sessionId,
-    gameId: game.gameId,
-    gameStartTs: game.gameStartTs,
-    leagueId: game.leagueId,
-    seasonId: game.seasonId,
+  if (recoveredExistingGame) {
+    await input.repositoryClient.createSessionGame({
+      sessionId: game.sessionId,
+      gameId: game.gameId,
+      gameStartTs: game.gameStartTs,
+      leagueId: game.leagueId,
+      seasonId: game.seasonId,
+    });
+  }
+  await ensureGameTeamsForGame(game, input.repositoryClient, {
+    leagueId: input.seasonTeamLeagueId,
   });
-  await ensureGameTeamsForGame(game, input.repositoryClient);
 
   return game;
 }
@@ -2609,6 +2650,7 @@ export async function handleLocalCreateGameRoute(input: {
         const game = await createGameWithDerivedRecords({
           repositoryClient,
           scope: input.scope,
+          seasonTeamLeagueId: input.scope.leagueId,
           allowExistingGameRecovery: createRequestHash !== null,
           request: parsedBody.data,
           createRequestHash,
@@ -2652,6 +2694,9 @@ export async function handleLocalCreateGameRoute(input: {
       }
 
       return gameJoinCodeCollisionConflict(input.request, input.response);
+    }
+    if (error instanceof GameMutationStateError) {
+      return conflict(input.request, input.response, error.message);
     }
 
     throw error;
@@ -3668,6 +3713,102 @@ async function start(): Promise<void> {
         return;
       }
 
+      const getLeagueSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+      if (method === "GET" && getLeagueSeasonMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(getLeagueSeasonMatch[1]);
+        const seasonId = decodeURIComponent(getLeagueSeasonMatch[2]);
+        const access = await ensureLeagueAccess(leagueId, sessionUserIds(authGate.session));
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${leagueId} is required.`,
+          );
+          return;
+        }
+
+        const season = await repository.getSeasonForLeague(leagueId, seasonId, {
+          consistentRead: true,
+        });
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        status = 200;
+        sendJsonWithCors(request, response, status, season);
+        return;
+      }
+
+      const listLeagueSeasonGamesMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/games$/);
+      if (method === "GET" && listLeagueSeasonGamesMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(listLeagueSeasonGamesMatch[1]);
+        const seasonId = decodeURIComponent(listLeagueSeasonGamesMatch[2]);
+        const access = await ensureLeagueAccess(leagueId, sessionUserIds(authGate.session));
+        if (!access.allowed) {
+          status = forbidden(
+            request,
+            response,
+            "league_access_required",
+            `Access to league ${leagueId} is required.`,
+          );
+          return;
+        }
+
+        const season = await repository.getSeasonForLeague(leagueId, seasonId, {
+          consistentRead: true,
+        });
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        const games = await repository.listGamesForSeason(seasonId, { leagueId });
+        const gamesWithUsableJoinCodes = await Promise.all(
+          games.map(async (game) => {
+            const refreshedGame = await repository.getGame(game.gameId, {
+              consistentRead: true,
+              repairLegacyJoinCode: true,
+              expectedLeagueId: leagueId,
+              expectedSeasonId: seasonId,
+            });
+            if (
+              !refreshedGame ||
+              refreshedGame.leagueId !== leagueId ||
+              refreshedGame.seasonId !== seasonId
+            ) {
+              return game;
+            }
+
+            return refreshedGame;
+          }),
+        );
+        status = 200;
+        sendJsonWithCors(request, response, status, {
+          games: gamesWithUsableJoinCodes.map((game) => buildGameResponse(game)),
+        });
+        return;
+      }
+
       const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
       if (method === "DELETE" && deleteLeagueMatch) {
         if (!authGate.session) {
@@ -3708,6 +3849,50 @@ async function start(): Promise<void> {
 
         status = 204;
         sendNoContentWithCors(request, response);
+        return;
+      }
+
+      const createLeagueSeasonSessionMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions$/);
+      if (method === "POST" && createLeagueSeasonSessionMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(createLeagueSeasonSessionMatch[1]);
+        const seasonId = decodeURIComponent(createLeagueSeasonSessionMatch[2]);
+        const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${leagueId}.`,
+          );
+          return;
+        }
+
+        const season = await repository.getSeasonForLeague(leagueId, seasonId, {
+          consistentRead: true,
+        });
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        status = await handleCreateSession(
+          request,
+          response,
+          seasonId,
+          authGate.session.email,
+          method,
+          route,
+          leagueId,
+        );
         return;
       }
 
@@ -3796,15 +3981,26 @@ async function start(): Promise<void> {
           return;
         }
 
-        const games = await repository.listGamesForSeason(seasonId);
+        const games = await repository.listGamesForSeason(seasonId, {
+          leagueId: season.leagueId,
+        });
         const gamesWithUsableJoinCodes = await Promise.all(
           games.map(async (game) => {
-            return (
-              (await repository.getGame(game.gameId, {
-                consistentRead: true,
-                repairLegacyJoinCode: true,
-              })) ?? game
-            );
+            const refreshedGame = await repository.getGame(game.gameId, {
+              consistentRead: true,
+              repairLegacyJoinCode: true,
+              expectedLeagueId: season.leagueId,
+              expectedSeasonId: seasonId,
+            });
+            if (
+              !refreshedGame ||
+              refreshedGame.leagueId !== season.leagueId ||
+              refreshedGame.seasonId !== seasonId
+            ) {
+              return game;
+            }
+
+            return refreshedGame;
           }),
         );
         status = 200;
@@ -3886,6 +4082,50 @@ async function start(): Promise<void> {
         return;
       }
 
+      const deleteLeagueSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+      if (method === "DELETE" && deleteLeagueSeasonMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(deleteLeagueSeasonMatch[1]);
+        const seasonId = decodeURIComponent(deleteLeagueSeasonMatch[2]);
+        const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${leagueId}.`,
+          );
+          return;
+        }
+
+        try {
+          const deleted = await repository.deleteSeason(seasonId, { leagueId });
+          if (!deleted) {
+            status = notFound(request, response, `Season ${seasonId} was not found.`);
+            return;
+          }
+        } catch (error) {
+          if (error instanceof Error && /Cannot delete season/.test(error.message)) {
+            status = conflict(request, response, error.message);
+            return;
+          }
+
+          throw error;
+        }
+
+        status = 204;
+        sendNoContentWithCors(request, response);
+        return;
+      }
+
       const deleteSeasonMatch = route.match(/^\/v1\/seasons\/([^/]+)$/);
       if (method === "DELETE" && deleteSeasonMatch) {
         if (!authGate.session) {
@@ -3928,6 +4168,57 @@ async function start(): Promise<void> {
 
         status = 204;
         sendNoContentWithCors(request, response);
+        return;
+      }
+
+      const createLeagueSeasonSessionGameMatch = route.match(
+        /^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions\/([^/]+)\/games$/,
+      );
+      if (method === "POST" && createLeagueSeasonSessionGameMatch) {
+        if (!authGate.session) {
+          status = 500;
+          sendJsonWithCors(request, response, status, {
+            error: "internal_error",
+            message: "Session should be available for authenticated route.",
+          });
+          return;
+        }
+
+        const leagueId = decodeURIComponent(createLeagueSeasonSessionGameMatch[1]);
+        const seasonId = decodeURIComponent(createLeagueSeasonSessionGameMatch[2]);
+        const sessionId = decodeURIComponent(createLeagueSeasonSessionGameMatch[3]);
+        const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
+        if (!isAdmin) {
+          status = forbidden(
+            request,
+            response,
+            "admin_required",
+            `Admin role is required for league ${leagueId}.`,
+          );
+          return;
+        }
+
+        const season = await repository.getSeasonForLeague(leagueId, seasonId, {
+          consistentRead: true,
+        });
+        if (!season) {
+          status = notFound(request, response, `Season ${seasonId} was not found.`);
+          return;
+        }
+
+        const session = await repository.getSessionForSeason(seasonId, sessionId, {
+          leagueId,
+        });
+        if (!session) {
+          status = notFound(request, response, `Session ${sessionId} was not found.`);
+          return;
+        }
+
+        status = await handleCreateGame(request, response, {
+          leagueId,
+          seasonId,
+          sessionId,
+        }, authGate.session.email, method, route);
         return;
       }
 
@@ -4139,7 +4430,10 @@ async function start(): Promise<void> {
                 );
               }
 
-              await ensureGameTeamsForGame(currentGame, repository, { allowFinished });
+              await ensureGameTeamsForGame(currentGame, repository, {
+                allowFinished,
+                leagueId: currentGame.leagueId,
+              });
               const result = await repository.createGoal({
                 gameId,
                 eventId: buildGoalEventId({
@@ -4923,7 +5217,9 @@ async function start(): Promise<void> {
           return;
         }
 
-        const teams = await ensureGameTeamsForGame(game);
+        const teams = await ensureGameTeamsForGame(game, repository, {
+          leagueId: game.leagueId,
+        });
         if (!teams.some((team) => team.teamId === parsedBody.data.teamId)) {
           status = badRequest(request, response, "Team ID must be active for this game.");
           return;

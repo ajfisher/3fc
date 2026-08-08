@@ -49,8 +49,21 @@ gameId.
 
 - League: PK=LEAGUE#{leagueId}  SK=METADATA
 - Season: PK=LEAGUE#{leagueId}  SK=SEASON#{seasonId}
-- Team: PK=SEASON#{seasonId}    SK=TEAM#{teamId}
-- Session/Day: PK=SEASON#{seasonId} SK=SESSION#{yyyymmdd}
+- Season team: PK=LEAGUE#{leagueId} SK=SEASON#{seasonId}#TEAM#{teamId}
+- Session/Day: PK=LEAGUE#{leagueId} SK=SEASON#{seasonId}#SESSION#{yyyymmdd}
+- Legacy season team template: PK=SEASON#{seasonId} SK=TEAM#{teamId}
+  (compatibility read/write path during scoped-key migration; scoped reads only
+  accept templates with row-level `leagueId` provenance for an atomically
+  validated scoped season).
+- Legacy session/day: PK=SEASON#{seasonId} SK=SESSION#{yyyymmdd}
+  (compatibility read/write path during scoped-key migration; scoped reads
+  accept row-attributed sessions and provenance-less legacy sessions only while
+  the global season mirror still belongs to the requested league. Scoped writes
+  preserve rollback-compatible legacy rows only under the same mirror ownership
+  rule and when existing legacy rows are absent, provenance-less under that
+  mirror, or carry matching row-level `leagueId` provenance. Row-attributed
+  legacy session rows remain owned cleanup targets even if the global mirror is
+  later replaced by another league).
 - Game (metadata): PK=GAME#{gameId} SK=METADATA (leagueId, seasonId, sessionId,
   date, location, thirdLength, status, finishedAt, result).
 - GoalEvent (timeline): PK=GAME#{gameId}
@@ -70,7 +83,7 @@ gameId.
 - League organiser share invite pointer: PK=LEAGUE#{leagueId}
   SK=INVITE#ORGANISER_SHARE (active reusable organiser share invite code).
   Deleting a league invalidates organiser invite records and removes this pointer.
-- Admin grants: PK=ACL#{scopeType}#{scopeId} SK=ADMIN#{cognitoSub}
+- League ACL grants: PK=LEAGUE#{leagueId} SK=ACL#USER#{userId}
 
 ### 5.2 GoalEvent fields
 
@@ -118,6 +131,11 @@ POST  /v1/auth/magic/complete
 Core (authed):
 POST  /v1/leagues
 POST  /v1/leagues/{leagueId}/seasons
+GET   /v1/leagues/{leagueId}/seasons/{seasonId}
+DELETE /v1/leagues/{leagueId}/seasons/{seasonId}
+GET   /v1/leagues/{leagueId}/seasons/{seasonId}/games
+POST  /v1/leagues/{leagueId}/seasons/{seasonId}/sessions
+POST  /v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games
 POST  /v1/seasons/{seasonId}/sessions
 POST  /v1/sessions/{sessionId}/games
 PATCH /v1/games/{gameId}

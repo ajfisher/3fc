@@ -116,6 +116,7 @@ type MockGameInput = Omit<MockGameRecord, "joinCode" | "thirdLengthMinutes" | "t
   Partial<Pick<MockGameRecord, "joinCode" | "thirdLengthMinutes" | "thirds" | "finishedAt" | "result">>;
 
 interface MockSeasonTeamRecord {
+  leagueId?: string;
   seasonId: string;
   teamId: TeamId;
   name: string;
@@ -257,6 +258,11 @@ interface HarnessConfig {
   assignRosterPlayerStateChangedOnce?: boolean;
   finishBeforeGoalCorrectionOnce?: boolean;
   createSessionGameFailures?: number;
+  afterListGamesForSeason?: (input: {
+    seasonId: string;
+    leagueId: string | null;
+    games: Map<string, MockGameRecord>;
+  }) => void;
   rateLimitDecision?:
     | RateLimitDecision
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
@@ -344,6 +350,7 @@ function createHarness(config: HarnessConfig = {}) {
   const createdGames: CreatedGameInput[] = [];
   const createdSessionGames: CreatedSessionGameInput[] = [];
   const createdSeasonTeams: Array<{
+    leagueId?: string;
     seasonId: string;
     teamId: TeamId;
     name: string;
@@ -386,9 +393,14 @@ function createHarness(config: HarnessConfig = {}) {
     gameId: string;
     consistentRead: boolean;
     repairLegacyJoinCode: boolean;
+    expectedLeagueId: string | null;
+    expectedSeasonId: string | null;
   }> = [];
+  const getSessionForSeasonCalls: Array<{ seasonId: string; sessionId: string; leagueId: string | null }> = [];
+  const listGamesForSeasonCalls: Array<{ seasonId: string; leagueId: string | null }> = [];
+  const getSeasonForLeagueCalls: Array<{ leagueId: string; seasonId: string; consistentRead: boolean }> = [];
   const grantedLeagueAccess: MockLeagueAccessRecord[] = [];
-  const listTeamsForSeasonCalls: Array<{ seasonId: string; consistentRead: boolean }> = [];
+  const listTeamsForSeasonCalls: Array<{ seasonId: string; consistentRead: boolean; leagueId: string | null }> = [];
   const listTeamsForGameCalls: Array<{ gameId: string; consistentRead: boolean }> = [];
   const idempotencyRecords = new Map<string, StoredIdempotencyRecord>();
   let finishGameStateChangedOnce = config.finishGameStateChangedOnce ?? false;
@@ -411,6 +423,8 @@ function createHarness(config: HarnessConfig = {}) {
   const sessionEntities = new Map<string, MockSessionEntity>(
     Object.entries(config.seasonSessions ?? {}),
   );
+  const scopedSessionKey = (leagueId: string | undefined, seasonId: string, sessionId: string) =>
+    leagueId ? `${leagueId}:${seasonId}:${sessionId}` : sessionId;
   const games = new Map<string, MockGameRecord>(
     Object.entries(config.games ?? {}).map(([gameId, game]) => [
       gameId,
@@ -824,6 +838,19 @@ function createHarness(config: HarnessConfig = {}) {
       async getLeague(leagueId: string) {
         return leagues.get(leagueId) ?? null;
       },
+      async getSeasonForLeague(
+        leagueId: string,
+        seasonId: string,
+        options: { consistentRead?: boolean } = {},
+      ) {
+        getSeasonForLeagueCalls.push({
+          leagueId,
+          seasonId,
+          consistentRead: options.consistentRead ?? false,
+        });
+        const season = seasons.get(seasonId) ?? null;
+        return season?.leagueId === leagueId ? season : null;
+      },
       async listSeasonsForLeague(leagueId: string) {
         return [...seasons.values()].filter((season) => season.leagueId === leagueId);
       },
@@ -844,8 +871,12 @@ function createHarness(config: HarnessConfig = {}) {
       },
       async createTeam(input) {
         createdSeasonTeams.push(input);
-        const existing = seasonTeams.get(`${input.seasonId}:${input.teamId}`);
+        const teamKey = input.leagueId
+          ? `${input.leagueId}:${input.seasonId}:${input.teamId}`
+          : `${input.seasonId}:${input.teamId}`;
+        const existing = seasonTeams.get(teamKey);
         const record = {
+          ...(input.leagueId ? { leagueId: input.leagueId } : {}),
           seasonId: input.seasonId,
           teamId: input.teamId,
           name: input.name,
@@ -853,12 +884,22 @@ function createHarness(config: HarnessConfig = {}) {
           createdAt: existing?.createdAt ?? "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
-        seasonTeams.set(`${input.seasonId}:${input.teamId}`, record);
+        seasonTeams.set(teamKey, record);
         return record;
       },
-      async listTeamsForSeason(seasonId: string, options: { consistentRead?: boolean } = {}) {
-        listTeamsForSeasonCalls.push({ seasonId, consistentRead: options.consistentRead ?? false });
-        return [...seasonTeams.values()].filter((team) => team.seasonId === seasonId);
+      async listTeamsForSeason(seasonId: string, options: { consistentRead?: boolean; leagueId?: string } = {}) {
+        listTeamsForSeasonCalls.push({
+          seasonId,
+          consistentRead: options.consistentRead ?? false,
+          leagueId: options.leagueId ?? null,
+        });
+        return [...seasonTeams.values()].filter((team) => {
+          if (team.seasonId !== seasonId) {
+            return false;
+          }
+
+          return !options.leagueId || team.leagueId === options.leagueId;
+        });
       },
       async createGameTeamOverride(input) {
         if (createGameTeamOverrideFinishesIncompleteOnce) {
@@ -923,7 +964,7 @@ function createHarness(config: HarnessConfig = {}) {
           createdAt: "2026-02-23T00:00:00.000Z",
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
-        sessionEntities.set(input.sessionId, record);
+        sessionEntities.set(scopedSessionKey(input.leagueId, input.seasonId, input.sessionId), record);
         return record;
       },
       async createGame(input) {
@@ -937,6 +978,10 @@ function createHarness(config: HarnessConfig = {}) {
           )
         ) {
           throw new GameJoinCodeCollisionError();
+        }
+        if (input.linkSession === true && createSessionGameFailures > 0) {
+          createSessionGameFailures -= 1;
+          throw new Error("Session game index write failed.");
         }
 
         createdGames.push(input);
@@ -957,6 +1002,15 @@ function createHarness(config: HarnessConfig = {}) {
           updatedAt: "2026-02-23T00:00:00.000Z",
         };
         games.set(input.gameId, record);
+        if (input.linkSession === true) {
+          createdSessionGames.push({
+            sessionId: input.sessionId,
+            gameId: input.gameId,
+            gameStartTs: input.gameStartTs,
+            leagueId: input.leagueId,
+            seasonId: input.seasonId,
+          });
+        }
         return record;
       },
       async createSessionGame(input) {
@@ -968,17 +1022,34 @@ function createHarness(config: HarnessConfig = {}) {
         createdSessionGames.push(input);
         return input;
       },
-      async listGamesForSeason(seasonId: string) {
-        return [...games.values()].filter((game) => game.seasonId === seasonId);
+      async listGamesForSeason(seasonId: string, options: { leagueId?: string } = {}) {
+        const leagueId = options.leagueId ?? null;
+        listGamesForSeasonCalls.push({ seasonId, leagueId });
+        const listedGames = [...games.values()].filter((game) => {
+          if (game.seasonId !== seasonId) {
+            return false;
+          }
+
+          return !options.leagueId || game.leagueId === options.leagueId;
+        });
+        config.afterListGamesForSeason?.({ seasonId, leagueId, games });
+        return listedGames;
       },
       async getGame(
         gameId: string,
-        options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {},
+        options: {
+          consistentRead?: boolean;
+          repairLegacyJoinCode?: boolean;
+          expectedLeagueId?: string;
+          expectedSeasonId?: string;
+        } = {},
       ) {
         getGameCalls.push({
           gameId,
           consistentRead: options.consistentRead ?? false,
           repairLegacyJoinCode: options.repairLegacyJoinCode ?? false,
+          expectedLeagueId: options.expectedLeagueId ?? null,
+          expectedSeasonId: options.expectedSeasonId ?? null,
         });
         const game = games.get(gameId) ?? null;
         if (
@@ -1001,7 +1072,11 @@ function createHarness(config: HarnessConfig = {}) {
         }
 
         const repairedJoinCode = config.legacyJoinCodeRepairs?.[gameId];
-        if (game && options.repairLegacyJoinCode && repairedJoinCode) {
+        const repairScopeMatches =
+          game &&
+          (options.expectedLeagueId === undefined || game.leagueId === options.expectedLeagueId) &&
+          (options.expectedSeasonId === undefined || game.seasonId === options.expectedSeasonId);
+        if (game && options.repairLegacyJoinCode && repairScopeMatches && repairedJoinCode) {
           const repairedGame = {
             ...game,
             joinCode: repairedJoinCode,
@@ -1316,7 +1391,12 @@ function createHarness(config: HarnessConfig = {}) {
         deletedGames.push(gameId);
         return games.delete(gameId);
       },
-      async deleteSeason(seasonId: string) {
+      async deleteSeason(seasonId: string, options: { leagueId?: string } = {}) {
+        const season = seasons.get(seasonId);
+        if (!season || (options.leagueId && season.leagueId !== options.leagueId)) {
+          return false;
+        }
+
         return seasons.delete(seasonId);
       },
       async deleteLeague(leagueId: string) {
@@ -1823,6 +1903,11 @@ function createHarness(config: HarnessConfig = {}) {
       async getSession(sessionId: string) {
         return sessionEntities.get(sessionId) ?? null;
       },
+      async getSessionForSeason(seasonId: string, sessionId: string, options: { leagueId?: string } = {}) {
+        getSessionForSeasonCalls.push({ seasonId, sessionId, leagueId: options.leagueId ?? null });
+        const session = sessionEntities.get(scopedSessionKey(options.leagueId, seasonId, sessionId)) ?? null;
+        return session?.seasonId === seasonId ? session : null;
+      },
       async getIdempotencyRecord(scope: string, key: string) {
         const recordKey = `${scope}:${key}`;
         const readCount = (idempotencyRecordReads.get(recordKey) ?? 0) + 1;
@@ -1913,7 +1998,10 @@ function createHarness(config: HarnessConfig = {}) {
     magicLinkCompletes,
     magicLinkRateLimitChecks,
     grantedLeagueAccess,
+    listGamesForSeasonCalls,
+    getSeasonForLeagueCalls,
     getGameCalls,
+    getSessionForSeasonCalls,
     listTeamsForSeasonCalls,
     listTeamsForGameCalls,
     idempotencyRecords,
@@ -2346,6 +2434,8 @@ test("core lambda does not repair legacy join codes before game access is author
       gameId: "game-legacy",
       consistentRead: false,
       repairLegacyJoinCode: false,
+      expectedLeagueId: null,
+      expectedSeasonId: null,
     },
   ]);
 });
@@ -2405,11 +2495,277 @@ test("core lambda repairs legacy join codes only after game access is authorized
       gameId: "game-legacy",
       consistentRead: false,
       repairLegacyJoinCode: false,
+      expectedLeagueId: null,
+      expectedSeasonId: null,
     },
     {
       gameId: "game-legacy",
       consistentRead: true,
       repairLegacyJoinCode: true,
+      expectedLeagueId: "league-1",
+      expectedSeasonId: "season-1",
+    },
+  ]);
+});
+
+test("core lambda scopes season game listings to the authorized season league", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-visible": {
+        gameId: "game-visible",
+        joinCode: "JOIN1111",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "shared-session",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-other-league": {
+        gameId: "game-other-league",
+        joinCode: "JOIN2222",
+        leagueId: "league-2",
+        seasonId: "season-1",
+        sessionId: "shared-session",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:05:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/seasons/season-1/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as { games: Array<{ gameId: string }> };
+  assert.deepEqual(
+    body.games.map((game) => game.gameId),
+    ["game-visible"],
+  );
+  assert.deepEqual(harness.listGamesForSeasonCalls, [{ seasonId: "season-1", leagueId: "league-1" }]);
+  assert.deepEqual(harness.getGameCalls, [
+    {
+      gameId: "game-visible",
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+      expectedLeagueId: "league-1",
+      expectedSeasonId: "season-1",
+    },
+  ]);
+});
+
+test("core lambda serves league-scoped season game listings without global season lookup", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-visible": {
+        gameId: "game-visible",
+        joinCode: "JOIN1111",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "shared-session",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+      "game-other-league": {
+        gameId: "game-other-league",
+        joinCode: "JOIN2222",
+        leagueId: "league-2",
+        seasonId: "season-1",
+        sessionId: "shared-session",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:05:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/leagues/league-1/seasons/season-1/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as { games: Array<{ gameId: string }> };
+  assert.deepEqual(
+    body.games.map((game) => game.gameId),
+    ["game-visible"],
+  );
+  assert.deepEqual(harness.getSeasonForLeagueCalls, [
+    { leagueId: "league-1", seasonId: "season-1", consistentRead: true },
+  ]);
+  assert.deepEqual(harness.listGamesForSeasonCalls, [{ seasonId: "season-1", leagueId: "league-1" }]);
+});
+
+test("core lambda keeps scoped season listing when join-code refresh sees foreign game metadata", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "viewer@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    games: {
+      "game-visible": {
+        gameId: "game-visible",
+        joinCode: "JOIN1111",
+        leagueId: "league-1",
+        seasonId: "season-1",
+        sessionId: "shared-session",
+        status: "scheduled",
+        gameStartTs: "2026-02-23T10:00:00.000Z",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    legacyJoinCodeRepairs: {
+      "game-visible": "JOIN3333",
+    },
+    leagueAccess: {
+      "league-1:viewer@example.com": {
+        leagueId: "league-1",
+        userId: "viewer@example.com",
+        role: "viewer",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    afterListGamesForSeason: ({ games }) => {
+      const listedGame = games.get("game-visible");
+      if (!listedGame) {
+        return;
+      }
+
+      games.set("game-visible", {
+        ...listedGame,
+        joinCode: "JOIN2222",
+        leagueId: "league-2",
+        updatedAt: "2026-02-23T00:00:01.000Z",
+      });
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "GET",
+      path: "/v1/leagues/league-1/seasons/season-1/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body) as {
+    games: Array<{ gameId: string; leagueId: string; joinCode: string }>;
+  };
+  assert.deepEqual(
+    body.games.map((game) => ({
+      gameId: game.gameId,
+      leagueId: game.leagueId,
+      joinCode: game.joinCode,
+    })),
+    [{ gameId: "game-visible", leagueId: "league-1", joinCode: "JOIN1111" }],
+  );
+  assert.deepEqual(harness.getGameCalls, [
+    {
+      gameId: "game-visible",
+      consistentRead: true,
+      repairLegacyJoinCode: true,
+      expectedLeagueId: "league-1",
+      expectedSeasonId: "season-1",
     },
   ]);
 });
@@ -2484,6 +2840,8 @@ test("core lambda repairs legacy join codes in authorized season game listings",
       gameId: "game-legacy",
       consistentRead: true,
       repairLegacyJoinCode: true,
+      expectedLeagueId: "league-1",
+      expectedSeasonId: "season-1",
     },
   ]);
 });
@@ -4408,6 +4766,154 @@ test("core lambda creates game for admin with resolved ACL scope", async () => {
   );
 });
 
+test("core lambda creates league-scoped games from sessions in the requested league", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "league-1:season-1:session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/seasons/season-1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        gameId: "game-1",
+        gameStartTs: "2026-02-23T10:00:00Z",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(harness.getSeasonForLeagueCalls, [
+    { leagueId: "league-1", seasonId: "season-1", consistentRead: true },
+  ]);
+  assert.deepEqual(harness.getSessionForSeasonCalls, [
+    { seasonId: "season-1", sessionId: "session-abc", leagueId: "league-1" },
+  ]);
+  assert.equal(harness.createdGames[0]?.leagueId, "league-1");
+  assert.equal(harness.createdGames[0]?.seasonId, "season-1");
+  assert.equal(harness.createdGames[0]?.sessionId, "session-abc");
+  assert.deepEqual(
+    harness.createdSeasonTeams.map((team) => ({ leagueId: team.leagueId, teamId: team.teamId })),
+    [
+      { leagueId: "league-1", teamId: "red" },
+      { leagueId: "league-1", teamId: "blue" },
+      { leagueId: "league-1", teamId: "yellow" },
+    ],
+  );
+  assert.deepEqual(harness.listTeamsForSeasonCalls, [
+    { seasonId: "season-1", consistentRead: true, leagueId: "league-1" },
+  ]);
+});
+
+test("core lambda rejects league-scoped game creation for a session in another league", async () => {
+  const harness = createHarness({
+    sessions: {
+      "session-1": {
+        sessionId: "session-1",
+        email: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        expiresAt: "2026-02-24T00:00:00.000Z",
+      },
+    },
+    seasonSessions: {
+      "league-2:season-1:session-abc": {
+        seasonId: "season-1",
+        sessionId: "session-abc",
+        sessionDate: "2026-02-23",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    seasons: {
+      "season-1": {
+        leagueId: "league-1",
+        seasonId: "season-1",
+        name: "Season 1",
+        slug: null,
+        startsOn: null,
+        endsOn: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+    leagueAccess: {
+      "league-1:admin@example.com": {
+        leagueId: "league-1",
+        userId: "admin@example.com",
+        role: "admin",
+        grantedByUserId: "admin@example.com",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:00.000Z",
+      },
+    },
+  });
+
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/leagues/league-1/seasons/season-1/sessions/session-abc/games",
+      headers: {
+        Cookie: "threefc_session=session-1",
+      },
+      body: {
+        gameId: "game-1",
+        gameStartTs: "2026-02-23T10:00:00Z",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(harness.getSeasonForLeagueCalls, [
+    { leagueId: "league-1", seasonId: "season-1", consistentRead: true },
+  ]);
+  assert.deepEqual(harness.getSessionForSeasonCalls, [
+    { seasonId: "season-1", sessionId: "session-abc", leagueId: "league-1" },
+  ]);
+  assert.equal(harness.createdGames.length, 0);
+  assert.equal(harness.createdSessionGames.length, 0);
+});
+
 test("core lambda rejects creating games directly as finished", async () => {
   const harness = createHarness({
     sessions: {
@@ -4472,7 +4978,7 @@ test("core lambda rejects creating games directly as finished", async () => {
   assert.equal(harness.createdSessionGames.length, 0);
 });
 
-test("core lambda recovers idempotent create game retry after the game write commits", async () => {
+test("core lambda recovers idempotent create game retry after atomic session-link failure", async () => {
   const harness = createHarness({
     createSessionGameFailures: 1,
     sessions: {
@@ -4531,68 +5037,16 @@ test("core lambda recovers idempotent create game retry after the game write com
 
   const failedResponse = await harness.handler(event);
   assert.equal(failedResponse.statusCode, 500);
-  assert.equal(harness.createdGames.length, 1);
-  assert.ok(harness.createdGames[0]?.createRequestHash);
+  assert.equal(harness.createdGames.length, 0);
   assert.equal(harness.createdSessionGames.length, 0);
-  const existingGame = harness.games.get("game-1");
-  assert.ok(existingGame);
-  harness.games.set("game-1", {
-    ...existingGame,
-    status: "live",
-    gameStartTs: "2026-02-23T11:00:00Z",
-    thirdLengthMinutes: 25,
-    updatedAt: "2026-02-23T00:01:00.000Z",
-  });
-
-  const unrelatedRetryResponse = await harness.handler(
-    createEvent({
-      method: "POST",
-      path: "/v1/sessions/session-abc/games",
-      headers: {
-        Cookie: "threefc_session=session-1",
-        "Idempotency-Key": "create-game-recover-1",
-      },
-      body: {
-        gameId: "game-1",
-        gameStartTs: "2026-02-23T12:00:00Z",
-      },
-    }),
-  );
-  assert.equal(unrelatedRetryResponse.statusCode, 409);
-  assert.deepEqual(JSON.parse(unrelatedRetryResponse.body), {
-    error: "conflict",
-    code: "game_exists",
-    message: "Game game-1 already exists.",
-  });
-  assert.equal(harness.createdSessionGames.length, 0);
-
-  const differentKeyRetryResponse = await harness.handler(
-    createEvent({
-      method: "POST",
-      path: "/v1/sessions/session-abc/games",
-      headers: {
-        Cookie: "threefc_session=session-1",
-        "Idempotency-Key": "create-game-recover-2",
-      },
-      body: {
-        gameId: "game-1",
-        gameStartTs: "2026-02-23T10:00:00Z",
-      },
-    }),
-  );
-  assert.equal(differentKeyRetryResponse.statusCode, 409);
-  assert.deepEqual(JSON.parse(differentKeyRetryResponse.body), {
-    error: "conflict",
-    code: "game_exists",
-    message: "Game game-1 already exists.",
-  });
-  assert.equal(harness.createdSessionGames.length, 0);
+  assert.equal(harness.games.get("game-1"), undefined);
 
   const retryResponse = await harness.handler(event);
   assert.equal(retryResponse.statusCode, 201);
   assert.equal(harness.createdGames.length, 1);
+  assert.ok(harness.createdGames[0]?.createRequestHash);
   assert.equal(harness.createdSessionGames.length, 1);
-  assert.equal(harness.createdSessionGames[0]?.gameStartTs, "2026-02-23T11:00:00Z");
+  assert.equal(harness.createdSessionGames[0]?.gameStartTs, "2026-02-23T10:00:00Z");
   assert.deepEqual(
     harness.createdGameTeams.map((team) => team.teamId),
     ["red", "blue", "yellow"],
@@ -4603,9 +5057,9 @@ test("core lambda recovers idempotent create game retry after the game write com
     gameStartTs: string;
     thirdLengthMinutes: number;
   };
-  assert.equal(retryBody.status, "live");
-  assert.equal(retryBody.gameStartTs, "2026-02-23T11:00:00Z");
-  assert.equal(retryBody.thirdLengthMinutes, 25);
+  assert.equal(retryBody.status, "scheduled");
+  assert.equal(retryBody.gameStartTs, "2026-02-23T10:00:00Z");
+  assert.equal(retryBody.thirdLengthMinutes, 20);
   assert.equal("createRequestHash" in retryBody, false);
 
   const replayResponse = await harness.handler(event);

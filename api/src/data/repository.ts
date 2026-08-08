@@ -7,6 +7,8 @@ import {
   type QueryCommandOutput,
   ScanCommand,
   type ScanCommandOutput,
+  TransactGetItemsCommand,
+  type TransactGetItemsCommandOutput,
   TransactWriteItemsCommand,
   type AttributeValue,
   type TransactWriteItem,
@@ -48,6 +50,8 @@ import {
   playerPk,
   profileSk,
   rosterSk,
+  scopedSeasonSessionSk,
+  scopedSeasonTeamSk,
   seasonPk,
   seasonSk,
   sessionPk,
@@ -375,6 +379,14 @@ function normalizeThirdTimerSegments(value: unknown): ThirdTimerSegment[] {
 
 function isValidTimestamp(value: unknown): value is string {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function shouldUseTeamCandidate(existing: TeamRecord | undefined, candidate: TeamRecord): boolean {
+  if (!existing) {
+    return true;
+  }
+
+  return candidate.updatedAt >= existing.updatedAt;
 }
 
 const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -1065,9 +1077,32 @@ export class ThreeFcRepository {
     );
   }
 
-  async listSeasonsForLeague(leagueId: string): Promise<SeasonRecord[]> {
+  async getSeasonForLeague(
+    leagueId: string,
+    seasonId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<SeasonRecord | null> {
     requireNonEmpty("leagueId", leagueId);
-    const items = await this.queryByPrefix(leaguePk(leagueId), "SEASON#");
+    requireNonEmpty("seasonId", seasonId);
+    const item = await this.getEntity(leaguePk(leagueId), seasonSk(seasonId), options);
+
+    if (!item || item.entityType !== ENTITY_TYPE.season) {
+      return null;
+    }
+
+    return withTimestamps(
+      item.data as Omit<SeasonRecord, "createdAt" | "updatedAt">,
+      item.createdAt,
+      item.updatedAt,
+    );
+  }
+
+  async listSeasonsForLeague(
+    leagueId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<SeasonRecord[]> {
+    requireNonEmpty("leagueId", leagueId);
+    const items = await this.queryByPrefix(leaguePk(leagueId), "SEASON#", options);
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.season)
@@ -1081,11 +1116,18 @@ export class ThreeFcRepository {
   }
 
   async createTeam(input: CreateTeamInput): Promise<TeamRecord> {
+    if (input.leagueId !== undefined) {
+      requireNonEmpty("leagueId", input.leagueId);
+    }
     requireNonEmpty("seasonId", input.seasonId);
     requireNonEmpty("name", input.name);
 
     const now = this.clock.now();
-    const existing = await this.getEntity(seasonPk(input.seasonId), teamSk(input.teamId), {
+    const teamPartitionKey = input.leagueId ? leaguePk(input.leagueId) : seasonPk(input.seasonId);
+    const teamSortKey = input.leagueId
+      ? scopedSeasonTeamSk(input.seasonId, input.teamId)
+      : teamSk(input.teamId);
+    const existing = await this.getEntity(teamPartitionKey, teamSortKey, {
       consistentRead: input.createOnly,
     });
     const existingTeam = existing?.entityType === ENTITY_TYPE.team ? existing : null;
@@ -1095,13 +1137,91 @@ export class ThreeFcRepository {
     if (input.createOnly && existingTeam && existingPayload) {
       return withTimestamps(existingPayload, existingTeam.createdAt, existingTeam.updatedAt);
     }
+    const legacySeasonItem = input.leagueId
+      ? null
+      : await this.getEntity(seasonPk(input.seasonId), metadataSk(), { consistentRead: true });
+    const legacySeason =
+      legacySeasonItem?.entityType === ENTITY_TYPE.season
+        ? (legacySeasonItem.data as Partial<SeasonRecord>)
+        : null;
 
     const payload = {
+      ...(input.leagueId
+        ? { leagueId: input.leagueId }
+        : legacySeason?.leagueId
+          ? { leagueId: legacySeason.leagueId }
+          : {}),
       seasonId: input.seasonId,
       teamId: input.teamId,
       name: input.name,
       color: input.color ?? null,
     };
+
+    if (input.leagueId) {
+      const seasonItem = await this.getEntity(leaguePk(input.leagueId), seasonSk(input.seasonId), {
+        consistentRead: true,
+      });
+      if (!seasonItem || seasonItem.entityType !== ENTITY_TYPE.season) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
+        );
+      }
+
+      const transactionItems: TransactWriteItem[] = [
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItemWithTimestamps(
+              teamPartitionKey,
+              teamSortKey,
+              ENTITY_TYPE.team,
+              payload,
+              now,
+              now,
+            ),
+            ...(input.createOnly
+              ? {
+                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                }
+              : {}),
+          },
+        },
+        this.buildConditionalPutFromStoredEntity(seasonItem, now),
+      ];
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: transactionItems,
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          if (input.createOnly) {
+            const concurrent = await this.getEntity(teamPartitionKey, teamSortKey, {
+              consistentRead: true,
+            });
+            if (concurrent?.entityType === ENTITY_TYPE.team) {
+              return withTimestamps(
+                concurrent.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
+                concurrent.createdAt,
+                concurrent.updatedAt,
+              );
+            }
+          }
+
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Season ${input.seasonId} changed before the team could be created. Reload and try again.`,
+          );
+        }
+
+        throw error;
+      }
+
+      return withTimestamps(payload, now, now);
+    }
 
     if (input.createOnly) {
       try {
@@ -1109,8 +1229,8 @@ export class ThreeFcRepository {
           new PutItemCommand({
             TableName: this.tableName,
             Item: buildItemWithTimestamps(
-              seasonPk(input.seasonId),
-              teamSk(input.teamId),
+              teamPartitionKey,
+              teamSortKey,
               ENTITY_TYPE.team,
               payload,
               now,
@@ -1121,7 +1241,7 @@ export class ThreeFcRepository {
         );
       } catch (error) {
         if (isConditionalWriteFailure(error)) {
-          const concurrent = await this.getEntity(seasonPk(input.seasonId), teamSk(input.teamId), {
+          const concurrent = await this.getEntity(teamPartitionKey, teamSortKey, {
             consistentRead: true,
           });
           if (concurrent?.entityType === ENTITY_TYPE.team) {
@@ -1144,18 +1264,28 @@ export class ThreeFcRepository {
       return withTimestamps(payload, now, now);
     }
 
-    await this.putEntity(seasonPk(input.seasonId), teamSk(input.teamId), ENTITY_TYPE.team, payload, now);
+    await this.putEntity(teamPartitionKey, teamSortKey, ENTITY_TYPE.team, payload, now);
     return withTimestamps(payload, now, now);
   }
 
   async listTeamsForSeason(
     seasonId: string,
-    options: { consistentRead?: boolean } = {},
+    options: { consistentRead?: boolean; leagueId?: string } = {},
   ): Promise<TeamRecord[]> {
     requireNonEmpty("seasonId", seasonId);
-    const items = await this.queryByPrefix(seasonPk(seasonId), "TEAM#", options);
+    if (options.leagueId !== undefined) {
+      requireNonEmpty("leagueId", options.leagueId);
+    }
 
-    return items
+    const scopedItems = options.leagueId
+      ? await this.queryByPrefix(leaguePk(options.leagueId), `SEASON#${seasonId}#TEAM#`, options)
+      : [];
+    const legacyItems = options.leagueId
+      ? await this.readOwnedLegacySeasonTeamTemplateItems(seasonId, options.leagueId)
+      : await this.queryByPrefix(seasonPk(seasonId), "TEAM#", options);
+
+    const teamsById = new Map<TeamId, TeamRecord>();
+    for (const team of legacyItems
       .filter((item) => item.entityType === ENTITY_TYPE.team)
       .map((item) =>
         withTimestamps(
@@ -1163,7 +1293,26 @@ export class ThreeFcRepository {
           item.createdAt,
           item.updatedAt,
         ),
-      );
+      )) {
+      if (shouldUseTeamCandidate(teamsById.get(team.teamId), team)) {
+        teamsById.set(team.teamId, team);
+      }
+    }
+    for (const team of scopedItems
+      .filter((item) => item.entityType === ENTITY_TYPE.team)
+      .map((item) =>
+        withTimestamps(
+          item.data as Omit<TeamRecord, "createdAt" | "updatedAt">,
+          item.createdAt,
+          item.updatedAt,
+        ),
+      )) {
+      if (shouldUseTeamCandidate(teamsById.get(team.teamId), team)) {
+        teamsById.set(team.teamId, team);
+      }
+    }
+
+    return [...teamsById.values()];
   }
 
   async createGameTeamOverride(input: CreateGameTeamInput): Promise<GameTeamRecord> {
@@ -1367,16 +1516,150 @@ export class ThreeFcRepository {
   }
 
   async createSession(input: CreateSessionInput): Promise<SessionRecord> {
+    if (input.leagueId !== undefined) {
+      requireNonEmpty("leagueId", input.leagueId);
+    }
     requireNonEmpty("seasonId", input.seasonId);
     requireNonEmpty("sessionId", input.sessionId);
     requireNonEmpty("sessionDate", input.sessionDate);
 
     const now = this.clock.now();
+    const legacySeasonItem = input.leagueId
+      ? null
+      : await this.getEntity(seasonPk(input.seasonId), metadataSk(), { consistentRead: true });
+    const legacySeason =
+      legacySeasonItem?.entityType === ENTITY_TYPE.season
+        ? (legacySeasonItem.data as Partial<SeasonRecord>)
+        : null;
     const payload = {
+      ...(input.leagueId
+        ? { leagueId: input.leagueId }
+        : legacySeason?.leagueId
+          ? { leagueId: legacySeason.leagueId }
+          : {}),
       seasonId: input.seasonId,
       sessionId: input.sessionId,
       sessionDate: input.sessionDate,
     };
+
+    if (input.leagueId) {
+      const [seasonItem, globalSeasonItem, legacySeasonSessionItem, legacySessionMetadataItem] =
+        await Promise.all([
+          this.getEntity(leaguePk(input.leagueId), seasonSk(input.seasonId), {
+            consistentRead: true,
+          }),
+          this.getEntity(seasonPk(input.seasonId), metadataSk(), {
+            consistentRead: true,
+          }),
+          this.getEntity(seasonPk(input.seasonId), sessionSk(input.sessionId), {
+            consistentRead: true,
+          }),
+          this.getEntity(sessionPk(input.sessionId), metadataSk(), {
+            consistentRead: true,
+          }),
+        ]);
+      if (!seasonItem || seasonItem.entityType !== ENTITY_TYPE.season) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Season ${input.seasonId} changed before the session could be created. Reload and try again.`,
+        );
+      }
+      const expectedLegacySession = {
+        leagueId: input.leagueId,
+        seasonId: input.seasonId,
+        sessionId: input.sessionId,
+      };
+      const canWriteLegacyCompatibility = this.isMatchingSeasonEntity(globalSeasonItem, {
+        leagueId: input.leagueId,
+        seasonId: input.seasonId,
+      });
+      const hasForeignLegacySession = [legacySeasonSessionItem, legacySessionMetadataItem].some(
+        (item) =>
+          item &&
+          !this.isMatchingSessionEntity(item, expectedLegacySession) &&
+          !(
+            canWriteLegacyCompatibility &&
+            this.isMatchingLegacySessionEntityWithoutLeague(item, expectedLegacySession)
+          ),
+      );
+      const legacyCompatibilityWrites = hasForeignLegacySession || !canWriteLegacyCompatibility
+        ? []
+        : [
+            this.buildConditionalCheckFromStoredEntity(globalSeasonItem),
+            this.buildLegacySessionCompatibilityPut({
+              pk: seasonPk(input.seasonId),
+              sk: sessionSk(input.sessionId),
+              payload,
+              existing: legacySeasonSessionItem,
+              expected: expectedLegacySession,
+              allowLegacyWithoutLeague: true,
+              now,
+            }),
+            this.buildLegacySessionCompatibilityPut({
+              pk: sessionPk(input.sessionId),
+              sk: metadataSk(),
+              payload,
+              existing: legacySessionMetadataItem,
+              expected: expectedLegacySession,
+              allowLegacyWithoutLeague: true,
+              now,
+            }),
+          ].filter((item): item is TransactWriteItem => item !== null);
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItem(
+                    leaguePk(input.leagueId),
+                    scopedSeasonSessionSk(input.seasonId, input.sessionId),
+                    ENTITY_TYPE.session,
+                    payload,
+                    now,
+                  ),
+                },
+              },
+              ...legacyCompatibilityWrites,
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: buildItemWithTimestamps(
+                    leaguePk(input.leagueId),
+                    seasonSk(input.seasonId),
+                    ENTITY_TYPE.season,
+                    seasonItem.data,
+                    seasonItem.createdAt,
+                    now,
+                  ),
+                  ConditionExpression: "#updatedAt = :expectedSeasonUpdatedAt AND #data = :expectedSeasonData",
+                  ExpressionAttributeNames: {
+                    "#updatedAt": "updatedAt",
+                    "#data": "data",
+                  },
+                  ExpressionAttributeValues: {
+                    ":expectedSeasonUpdatedAt": { S: seasonItem.updatedAt },
+                    ":expectedSeasonData": { S: seasonItem.rawData },
+                  },
+                },
+              },
+            ],
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          throw new GameMutationStateError(
+            "game_state_changed",
+            `Season ${input.seasonId} changed before the session could be created. Reload and try again.`,
+          );
+        }
+
+        throw error;
+      }
+      return withTimestamps(payload, now, now);
+    }
 
     await this.putEntity(
       seasonPk(input.seasonId),
@@ -1404,9 +1687,54 @@ export class ThreeFcRepository {
     );
   }
 
-  async listSessionsForSeason(seasonId: string): Promise<SessionRecord[]> {
+  async getSessionForSeason(
+    seasonId: string,
+    sessionId: string,
+    options: { leagueId?: string } = {},
+  ): Promise<SessionRecord | null> {
     requireNonEmpty("seasonId", seasonId);
-    const items = await this.queryByPrefix(seasonPk(seasonId), "SESSION#");
+    requireNonEmpty("sessionId", sessionId);
+    if (options.leagueId !== undefined) {
+      requireNonEmpty("leagueId", options.leagueId);
+      const item = await this.getEntity(
+        leaguePk(options.leagueId),
+        scopedSeasonSessionSk(seasonId, sessionId),
+        { consistentRead: true },
+      );
+
+      if (!item || item.entityType !== ENTITY_TYPE.session) {
+        return null;
+      }
+
+      return withTimestamps(
+        item.data as Omit<SessionRecord, "createdAt" | "updatedAt">,
+        item.createdAt,
+        item.updatedAt,
+      );
+    }
+
+    const session = await this.getSession(sessionId);
+    return session?.seasonId === seasonId ? session : null;
+  }
+
+  async listSessionsForSeason(
+    seasonId: string,
+    options: { leagueId?: string; consistentRead?: boolean } = {},
+  ): Promise<SessionRecord[]> {
+    requireNonEmpty("seasonId", seasonId);
+    if (options.leagueId !== undefined) {
+      requireNonEmpty("leagueId", options.leagueId);
+    }
+
+    const items = options.leagueId
+      ? await this.queryByPrefix(
+          leaguePk(options.leagueId),
+          `SEASON#${seasonId}#SESSION#`,
+          { consistentRead: options.consistentRead },
+        )
+      : await this.queryByPrefix(seasonPk(seasonId), "SESSION#", {
+          consistentRead: options.consistentRead,
+        });
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.session)
@@ -1437,10 +1765,20 @@ export class ThreeFcRepository {
     const customJoinCode = input.joinCode?.trim()
       ? normalizeCustomJoinCode(input.joinCode)
       : null;
+    const linkSession = input.linkSession === true;
 
     for (let attempt = 0; attempt < (customJoinCode ? 1 : JOIN_CODE_GENERATION_ATTEMPTS); attempt += 1) {
       const joinCode = customJoinCode ?? generateJoinCode();
       const createRequestHash = input.createRequestHash?.trim() || null;
+      const sessionTargets = linkSession
+        ? await this.readSessionMutationTargets(input)
+        : [];
+      if (linkSession && sessionTargets.length === 0) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Session ${input.sessionId} changed before the game could be created. Reload and try again.`,
+        );
+      }
       const payload = {
         gameId: input.gameId,
         joinCode,
@@ -1455,35 +1793,63 @@ export class ThreeFcRepository {
         finishedAt: null,
         result: null,
       };
+      const sessionGamePayload = linkSession
+        ? {
+            sessionId: input.sessionId,
+            gameId: input.gameId,
+            gameStartTs: input.gameStartTs,
+            leagueId: input.leagueId,
+            seasonId: input.seasonId,
+          }
+        : null;
+      const transactionItems: TransactWriteItem[] = [
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItem(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          },
+        },
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: buildItem(
+              joinCodePk(joinCode),
+              metadataSk(),
+              ENTITY_TYPE.gameJoinCode,
+              {
+                joinCode,
+                gameId: input.gameId,
+              },
+              now,
+            ),
+            ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+          },
+        },
+      ];
+      if (sessionGamePayload) {
+        transactionItems.push(
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: buildItem(
+                gameSessionIndexPk(input.sessionId),
+                gameSessionIndexSk(input.gameStartTs, input.gameId),
+                ENTITY_TYPE.sessionGame,
+                sessionGamePayload,
+                now,
+              ),
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            },
+          },
+          ...sessionTargets.map((target) => this.buildConditionalPutFromStoredEntity(target, now)),
+        );
+      }
 
       try {
         await this.client.send(
           new TransactWriteItemsCommand({
-            TransactItems: [
-              {
-                Put: {
-                  TableName: this.tableName,
-                  Item: buildItem(gamePk(input.gameId), metadataSk(), ENTITY_TYPE.game, payload, now),
-                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-                },
-              },
-              {
-                Put: {
-                  TableName: this.tableName,
-                  Item: buildItem(
-                    joinCodePk(joinCode),
-                    metadataSk(),
-                    ENTITY_TYPE.gameJoinCode,
-                    {
-                      joinCode,
-                      gameId: input.gameId,
-                    },
-                    now,
-                  ),
-                  ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-                },
-              },
-            ],
+            TransactItems: transactionItems,
           }),
         );
         return withTimestamps(payload, now, now);
@@ -1499,6 +1865,19 @@ export class ThreeFcRepository {
               throw new GameJoinCodeCollisionError();
             }
             continue;
+          }
+          if (
+            linkSession &&
+            transactionItems
+              .slice(2)
+              .some((_, index) =>
+                isConditionalCancellationCode(transactionCancellationCode(error, index + 2) ?? undefined),
+              )
+          ) {
+            throw new GameMutationStateError(
+              "game_state_changed",
+              `Session ${input.sessionId} changed before the game could be created. Reload and try again.`,
+            );
           }
 
           const [existingGameItem, existingJoinCodeItem] = await Promise.all([
@@ -1525,7 +1904,12 @@ export class ThreeFcRepository {
 
   async getGame(
     gameId: string,
-    options: { consistentRead?: boolean; repairLegacyJoinCode?: boolean } = {},
+    options: {
+      consistentRead?: boolean;
+      repairLegacyJoinCode?: boolean;
+      expectedLeagueId?: string;
+      expectedSeasonId?: string;
+    } = {},
   ): Promise<GameRecord | null> {
     requireNonEmpty("gameId", gameId);
     const item = await this.getEntity(gamePk(gameId), metadataSk(), options);
@@ -1536,6 +1920,13 @@ export class ThreeFcRepository {
 
     const game = withTimestamps(normalizeGamePayload(item.data), item.createdAt, item.updatedAt);
     if (options.repairLegacyJoinCode) {
+      if (
+        (options.expectedLeagueId !== undefined && game.leagueId !== options.expectedLeagueId) ||
+        (options.expectedSeasonId !== undefined && game.seasonId !== options.expectedSeasonId)
+      ) {
+        return game;
+      }
+
       return this.repairLegacyGameJoinCode(item);
     }
 
@@ -1771,6 +2162,14 @@ export class ThreeFcRepository {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("seasonId", input.seasonId);
 
+    const sessionTargets = await this.readSessionMutationTargets(input);
+    if (sessionTargets.length === 0) {
+      throw new GameMutationStateError(
+        "game_state_changed",
+        `Session ${input.sessionId} changed before the game could be linked. Reload and try again.`,
+      );
+    }
+
     const now = this.clock.now();
     const payload = {
       sessionId: input.sessionId,
@@ -1780,20 +2179,48 @@ export class ThreeFcRepository {
       seasonId: input.seasonId,
     };
 
-    await this.putEntity(
-      gameSessionIndexPk(input.sessionId),
-      gameSessionIndexSk(input.gameStartTs, input.gameId),
-      ENTITY_TYPE.sessionGame,
-      payload,
-      now,
-    );
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: this.tableName,
+                Item: buildItem(
+                  gameSessionIndexPk(input.sessionId),
+                  gameSessionIndexSk(input.gameStartTs, input.gameId),
+                  ENTITY_TYPE.sessionGame,
+                  payload,
+                  now,
+                ),
+              },
+            },
+            ...sessionTargets.map((target) => this.buildConditionalPutFromStoredEntity(target, now)),
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new GameMutationStateError(
+          "game_state_changed",
+          `Session ${input.sessionId} changed before the game could be linked. Reload and try again.`,
+        );
+      }
+
+      throw error;
+    }
 
     return withTimestamps(payload, now, now);
   }
 
-  async listGamesForSession(sessionId: string): Promise<SessionGameRecord[]> {
+  async listGamesForSession(
+    sessionId: string,
+    options: { consistentRead?: boolean } = {},
+  ): Promise<SessionGameRecord[]> {
     requireNonEmpty("sessionId", sessionId);
-    const items = await this.queryByPrefix(gameSessionIndexPk(sessionId), "GAME#");
+    const items = await this.queryByPrefix(gameSessionIndexPk(sessionId), "GAME#", {
+      consistentRead: options.consistentRead,
+    });
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.sessionGame)
@@ -1806,12 +2233,48 @@ export class ThreeFcRepository {
       );
   }
 
-  async listGamesForSeason(seasonId: string): Promise<GameRecord[]> {
+  async listGamesForSeason(
+    seasonId: string,
+    options: { leagueId?: string; consistentRead?: boolean } = {},
+  ): Promise<GameRecord[]> {
     requireNonEmpty("seasonId", seasonId);
+    if (options.leagueId !== undefined) {
+      requireNonEmpty("leagueId", options.leagueId);
+    }
 
-    const sessions = await this.listSessionsForSeason(seasonId);
+    const legacySeasonItem = options.leagueId
+      ? await this.getEntity(seasonPk(seasonId), metadataSk(), {
+          consistentRead: options.consistentRead,
+        })
+      : null;
+    const canUseProvenanceLessLegacySessions =
+      options.leagueId !== undefined &&
+      this.isMatchingSeasonEntity(legacySeasonItem, {
+        leagueId: options.leagueId,
+        seasonId,
+      });
+    const scopedSessions = await this.listSessionsForSeason(seasonId, {
+      leagueId: options.leagueId,
+      consistentRead: options.consistentRead,
+    });
+    const legacySessions = options.leagueId
+      ? (await this.listSessionsForSeason(seasonId, { consistentRead: options.consistentRead })).filter(
+          (session) =>
+            session.leagueId === options.leagueId ||
+            (canUseProvenanceLessLegacySessions && session.leagueId === undefined),
+        )
+      : [];
+    const sessions = [
+      ...new Map(
+        [...scopedSessions, ...legacySessions].map((session) => [session.sessionId, session]),
+      ).values(),
+    ];
     const sessionGames = await Promise.all(
-      sessions.map((session) => this.listGamesForSession(session.sessionId)),
+      sessions.map((session) =>
+        this.listGamesForSession(session.sessionId, {
+          consistentRead: options.consistentRead,
+        }),
+      ),
     );
 
     const orderedSessionGames = sessionGames
@@ -1824,12 +2287,29 @@ export class ThreeFcRepository {
 
         return left.gameId.localeCompare(right.gameId);
       });
+    const scopedSessionGames = orderedSessionGames.filter((sessionGame) => {
+      if (sessionGame.seasonId !== seasonId) {
+        return false;
+      }
+
+      return !options.leagueId || sessionGame.leagueId === options.leagueId;
+    });
 
     const gameRecords = await Promise.all(
-      orderedSessionGames.map((sessionGame) => this.getGame(sessionGame.gameId)),
+      scopedSessionGames.map((sessionGame) =>
+        this.getGame(sessionGame.gameId, { consistentRead: options.consistentRead }),
+      ),
     );
 
-    return gameRecords.filter((game): game is GameRecord => game !== null);
+    return gameRecords
+      .filter((game): game is GameRecord => game !== null)
+      .filter((game) => {
+        if (game.seasonId !== seasonId) {
+          return false;
+        }
+
+        return !options.leagueId || game.leagueId === options.leagueId;
+      });
   }
 
   async updateGame(input: {
@@ -2250,6 +2730,7 @@ export class ThreeFcRepository {
       joinCodeItem !== null &&
       joinCodeRecord?.gameId === gameId &&
       normalizeJoinCode(joinCodeRecord.joinCode) === normalizeJoinCode(game.joinCode);
+    const sessionCleanupTargets = await this.readSessionMutationTargets(game);
     const transactionItems: TransactWriteItem[] = [
       {
         Delete: {
@@ -2314,30 +2795,184 @@ export class ThreeFcRepository {
       throw error;
     }
 
-    const remainingGames = await this.listGamesForSession(game.sessionId);
+    const remainingGames = await this.listGamesForSession(game.sessionId, {
+      consistentRead: true,
+    });
+    const sessionDeleteTargets: Array<StoredEntity<unknown>> = [];
     if (remainingGames.length === 0) {
-      await this.deleteEntity(seasonPk(game.seasonId), sessionSk(game.sessionId));
-      await this.deleteEntity(sessionPk(game.sessionId), metadataSk());
+      sessionDeleteTargets.push(
+        ...sessionCleanupTargets.filter(
+          (target) =>
+            (target.pk === seasonPk(game.seasonId) && target.sk === sessionSk(game.sessionId)) ||
+            (target.pk === sessionPk(game.sessionId) && target.sk === metadataSk()),
+        ),
+      );
     }
+    if (
+      remainingGames.every(
+        (remainingGame) =>
+          remainingGame.leagueId !== game.leagueId ||
+          remainingGame.seasonId !== game.seasonId,
+      )
+    ) {
+      sessionDeleteTargets.push(
+        ...sessionCleanupTargets.filter(
+          (target) =>
+            target.pk === leaguePk(game.leagueId) &&
+            target.sk === scopedSeasonSessionSk(game.seasonId, game.sessionId),
+        ),
+      );
+    }
+    await this.deleteSessionTargetsIfUnchanged(sessionDeleteTargets);
 
     return true;
   }
 
-  async deleteSeason(seasonId: string): Promise<boolean> {
+  async deleteSeason(
+    seasonId: string,
+    options: { leagueId?: string } = {},
+  ): Promise<boolean> {
     requireNonEmpty("seasonId", seasonId);
+    if (options.leagueId !== undefined) {
+      requireNonEmpty("leagueId", options.leagueId);
+    }
 
-    const season = await this.getSeason(seasonId);
-    if (!season) {
+    const globalSeasonItem = await this.getEntity(seasonPk(seasonId), metadataSk(), {
+      consistentRead: true,
+    });
+    const globalSeason =
+      globalSeasonItem?.entityType === ENTITY_TYPE.season
+        ? withTimestamps(
+            globalSeasonItem.data as Omit<SeasonRecord, "createdAt" | "updatedAt">,
+            globalSeasonItem.createdAt,
+            globalSeasonItem.updatedAt,
+          )
+        : null;
+    const season = options.leagueId
+      ? await this.getEntity(leaguePk(options.leagueId), seasonSk(seasonId))
+      : null;
+    const scopedSeason =
+      season?.entityType === ENTITY_TYPE.season
+        ? withTimestamps(
+            season.data as Omit<SeasonRecord, "createdAt" | "updatedAt">,
+            season.createdAt,
+            season.updatedAt,
+          )
+        : null;
+    const resolvedSeason = scopedSeason ?? (!options.leagueId ? globalSeason : null);
+    if (!resolvedSeason) {
       return false;
     }
 
-    const sessions = await this.listSessionsForSeason(seasonId);
+    const scopedSessions = await this.listSessionsForSeason(seasonId, {
+      leagueId: options.leagueId,
+      consistentRead: true,
+    });
+    const legacySessions = options.leagueId
+      ? (await this.listSessionsForSeason(seasonId, { consistentRead: true })).filter(
+          (session) => session.leagueId === options.leagueId,
+        )
+      : [];
+    const sessions = [
+      ...new Map(
+        [...scopedSessions, ...legacySessions].map((session) => [session.sessionId, session]),
+      ).values(),
+    ];
     if (sessions.length > 0) {
       throw new Error("Cannot delete season with existing games.");
     }
+    if (options.leagueId) {
+      const games = await this.listGamesForSeason(seasonId, {
+        leagueId: options.leagueId,
+        consistentRead: true,
+      });
+      if (games.length > 0) {
+        throw new Error("Cannot delete season with existing games.");
+      }
+    }
+
+    if (options.leagueId) {
+      if (!season || season.entityType !== ENTITY_TYPE.season) {
+        return false;
+      }
+      const scopedTeamItems = await this.queryByPrefix(
+        leaguePk(options.leagueId),
+        `SEASON#${seasonId}#TEAM#`,
+        { consistentRead: true },
+      );
+      const ownedLegacyTeamItems =
+        globalSeasonItem?.entityType === ENTITY_TYPE.season && globalSeason?.leagueId === options.leagueId
+          ? await this.queryByPrefix(seasonPk(seasonId), "TEAM#", { consistentRead: true })
+          : [];
+
+      const deleteItems: TransactWriteItem[] = [
+        {
+          Delete: {
+            TableName: this.tableName,
+            Key: {
+              pk: { S: leaguePk(options.leagueId) },
+              sk: { S: seasonSk(seasonId) },
+            },
+            ConditionExpression: "#scopedUpdatedAt = :expectedSeasonUpdatedAt AND #scopedData = :expectedSeasonData",
+            ExpressionAttributeNames: {
+              "#scopedUpdatedAt": "updatedAt",
+              "#scopedData": "data",
+            },
+            ExpressionAttributeValues: {
+              ":expectedSeasonUpdatedAt": { S: season.updatedAt },
+              ":expectedSeasonData": { S: season.rawData },
+            },
+          },
+        },
+        ...scopedTeamItems
+          .filter((item) => item.entityType === ENTITY_TYPE.team)
+          .map((item) => this.buildConditionalDeleteFromStoredEntity(item)),
+        ...ownedLegacyTeamItems
+          .filter((item) => this.isMatchingSeasonTeamEntity(item, {
+            seasonId,
+            leagueId: options.leagueId,
+          }))
+          .map((item) => this.buildConditionalDeleteFromStoredEntity(item)),
+      ];
+      if (globalSeasonItem?.entityType === ENTITY_TYPE.season && globalSeason?.leagueId === options.leagueId) {
+        deleteItems.push({
+          Delete: {
+            TableName: this.tableName,
+            Key: {
+              pk: { S: seasonPk(seasonId) },
+              sk: { S: metadataSk() },
+            },
+            ConditionExpression: "#globalUpdatedAt = :expectedGlobalSeasonUpdatedAt AND #globalData = :expectedGlobalSeasonData",
+            ExpressionAttributeNames: {
+              "#globalUpdatedAt": "updatedAt",
+              "#globalData": "data",
+            },
+            ExpressionAttributeValues: {
+              ":expectedGlobalSeasonUpdatedAt": { S: globalSeasonItem.updatedAt },
+              ":expectedGlobalSeasonData": { S: globalSeasonItem.rawData },
+            },
+          },
+        });
+      }
+
+      try {
+        await this.client.send(
+          new TransactWriteItemsCommand({
+            TransactItems: deleteItems,
+          }),
+        );
+      } catch (error) {
+        if (isConditionalWriteFailure(error)) {
+          throw new Error("Cannot delete season with existing games.");
+        }
+
+        throw error;
+      }
+      return true;
+    }
 
     await this.deleteEntity(seasonPk(seasonId), metadataSk());
-    await this.deleteEntity(leaguePk(season.leagueId), seasonSk(seasonId));
+    await this.deleteEntity(leaguePk(resolvedSeason.leagueId), seasonSk(seasonId));
     return true;
   }
 
@@ -5170,6 +5805,298 @@ export class ThreeFcRepository {
     }
 
     return withTimestamps(repairedGame, input.stored.createdAt, now);
+  }
+
+  private async readSessionMutationTargets(input: {
+    leagueId: string;
+    seasonId: string;
+    sessionId: string;
+  }): Promise<Array<StoredEntity<unknown>>> {
+    const [scopedSessionItem, legacySeasonSessionItem, legacySessionMetadataItem, globalSeasonItem] =
+      await Promise.all([
+        this.getEntity(
+          leaguePk(input.leagueId),
+          scopedSeasonSessionSk(input.seasonId, input.sessionId),
+          { consistentRead: true },
+        ),
+        this.getEntity(seasonPk(input.seasonId), sessionSk(input.sessionId), {
+          consistentRead: true,
+        }),
+        this.getEntity(sessionPk(input.sessionId), metadataSk(), {
+          consistentRead: true,
+        }),
+        this.getEntity(seasonPk(input.seasonId), metadataSk(), {
+          consistentRead: true,
+        }),
+      ]);
+    const isCurrentLegacyOwner = this.isMatchingSeasonEntity(globalSeasonItem, input);
+    const legacySessionTargets = [legacySeasonSessionItem, legacySessionMetadataItem].filter(
+      (item): item is StoredEntity<unknown> =>
+        this.isMatchingSessionEntity(item, input) ||
+        (isCurrentLegacyOwner && this.isMatchingLegacySessionEntityWithoutLeague(item, input)),
+    );
+
+    return [
+      ...[scopedSessionItem].filter((item): item is StoredEntity<unknown> =>
+        this.isMatchingSessionEntity(item, input),
+      ),
+      ...legacySessionTargets,
+    ];
+  }
+
+  private isMatchingSeasonEntity(
+    item: StoredEntity<unknown> | null,
+    expected: { leagueId: string; seasonId: string },
+  ): item is StoredEntity<unknown> {
+    if (!item || item.entityType !== ENTITY_TYPE.season) {
+      return false;
+    }
+
+    const season = item.data as Partial<SeasonRecord>;
+    return season.leagueId === expected.leagueId && season.seasonId === expected.seasonId;
+  }
+
+  private isMatchingSessionEntity(
+    item: StoredEntity<unknown> | null,
+    expected: { leagueId: string; seasonId: string; sessionId: string },
+  ): item is StoredEntity<unknown> {
+    if (!item || item.entityType !== ENTITY_TYPE.session) {
+      return false;
+    }
+
+    const session = item.data as Partial<SessionRecord>;
+    if (session.seasonId !== expected.seasonId || session.sessionId !== expected.sessionId) {
+      return false;
+    }
+
+    return session.leagueId === expected.leagueId;
+  }
+
+  private isMatchingLegacySessionEntityWithoutLeague(
+    item: StoredEntity<unknown> | null,
+    expected: { seasonId: string; sessionId: string },
+  ): item is StoredEntity<unknown> {
+    if (!item || item.entityType !== ENTITY_TYPE.session) {
+      return false;
+    }
+
+    const session = item.data as Partial<SessionRecord>;
+    return (
+      session.leagueId === undefined &&
+      session.seasonId === expected.seasonId &&
+      session.sessionId === expected.sessionId
+    );
+  }
+
+  private buildLegacySessionCompatibilityPut(input: {
+    pk: string;
+    sk: string;
+    payload: Omit<SessionRecord, "createdAt" | "updatedAt">;
+    existing: StoredEntity<unknown> | null;
+    expected: { leagueId: string; seasonId: string; sessionId: string };
+    allowLegacyWithoutLeague?: boolean;
+    now: string;
+  }): TransactWriteItem | null {
+    if (
+      input.existing &&
+      !this.isMatchingSessionEntity(input.existing, input.expected) &&
+      !(
+        input.allowLegacyWithoutLeague === true &&
+        this.isMatchingLegacySessionEntityWithoutLeague(input.existing, input.expected)
+      )
+    ) {
+      return null;
+    }
+
+    return {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItemWithTimestamps(
+          input.pk,
+          input.sk,
+          ENTITY_TYPE.session,
+          input.payload,
+          input.existing?.createdAt ?? input.now,
+          input.now,
+        ),
+        ...(input.existing
+          ? {
+              ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+              ExpressionAttributeNames: {
+                "#updatedAt": "updatedAt",
+                "#data": "data",
+              },
+              ExpressionAttributeValues: {
+                ":expectedUpdatedAt": { S: input.existing.updatedAt },
+                ":expectedData": { S: input.existing.rawData },
+              },
+            }
+          : {
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            }),
+      },
+    };
+  }
+
+  private async readOwnedLegacySeasonTeamTemplateItems(
+    seasonId: string,
+    leagueId: string,
+  ): Promise<Array<StoredEntity<unknown>>> {
+    const result = (await this.client.send(
+      new TransactGetItemsCommand({
+        TransactItems: [
+          {
+            Get: {
+              TableName: this.tableName,
+              Key: {
+                pk: { S: leaguePk(leagueId) },
+                sk: { S: seasonSk(seasonId) },
+              },
+            },
+          },
+          ...TEAM_IDS.map((teamId) => ({
+            Get: {
+              TableName: this.tableName,
+              Key: {
+                pk: { S: seasonPk(seasonId) },
+                sk: { S: teamSk(teamId) },
+              },
+            },
+          })),
+        ],
+      }),
+    )) as TransactGetItemsCommandOutput;
+
+    const responses = result.Responses ?? [];
+    const seasonItem = responses[0]?.Item;
+    if (!seasonItem) {
+      return [];
+    }
+
+    const season = parseStoredEntity<Partial<SeasonRecord>>(seasonItem);
+    if (!this.isMatchingSeasonEntity(season, { leagueId, seasonId })) {
+      return [];
+    }
+
+    return responses
+      .slice(1)
+      .flatMap((response) => (response.Item ? [parseStoredEntity(response.Item)] : []))
+      .filter((item): item is StoredEntity<unknown> =>
+        this.isMatchingSeasonTeamEntity(item, { seasonId, leagueId }),
+      );
+  }
+
+  private isMatchingSeasonTeamEntity(
+    item: StoredEntity<unknown> | null,
+    expected: { seasonId: string; leagueId?: string },
+  ): item is StoredEntity<unknown> {
+    if (!item || item.entityType !== ENTITY_TYPE.team) {
+      return false;
+    }
+
+    const team = item.data as Partial<TeamRecord>;
+    if (team.seasonId !== expected.seasonId || !TEAM_IDS.includes(team.teamId as TeamId)) {
+      return false;
+    }
+
+    return expected.leagueId === undefined || team.leagueId === expected.leagueId;
+  }
+
+  private buildConditionalPutFromStoredEntity(
+    stored: StoredEntity<unknown>,
+    now: string,
+  ): TransactWriteItem {
+    return {
+      Put: {
+        TableName: this.tableName,
+        Item: buildItemWithTimestamps(
+          stored.pk,
+          stored.sk,
+          stored.entityType,
+          stored.data,
+          stored.createdAt,
+          now,
+        ),
+        ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedUpdatedAt": { S: stored.updatedAt },
+          ":expectedData": { S: stored.rawData },
+        },
+      },
+    };
+  }
+
+  private buildConditionalCheckFromStoredEntity(stored: StoredEntity<unknown>): TransactWriteItem {
+    return {
+      ConditionCheck: {
+        TableName: this.tableName,
+        Key: {
+          pk: { S: stored.pk },
+          sk: { S: stored.sk },
+        },
+        ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedUpdatedAt": { S: stored.updatedAt },
+          ":expectedData": { S: stored.rawData },
+        },
+      },
+    };
+  }
+
+  private buildConditionalDeleteFromStoredEntity(stored: StoredEntity<unknown>): TransactWriteItem {
+    return {
+      Delete: {
+        TableName: this.tableName,
+        Key: {
+          pk: { S: stored.pk },
+          sk: { S: stored.sk },
+        },
+        ConditionExpression: "#updatedAt = :expectedUpdatedAt AND #data = :expectedData",
+        ExpressionAttributeNames: {
+          "#updatedAt": "updatedAt",
+          "#data": "data",
+        },
+        ExpressionAttributeValues: {
+          ":expectedUpdatedAt": { S: stored.updatedAt },
+          ":expectedData": { S: stored.rawData },
+        },
+      },
+    };
+  }
+
+  private async deleteSessionTargetsIfUnchanged(
+    targets: Array<StoredEntity<unknown>>,
+  ): Promise<void> {
+    const uniqueTargets = [
+      ...new Map(targets.map((target) => [`${target.pk}|${target.sk}`, target])).values(),
+    ];
+    if (uniqueTargets.length === 0) {
+      return;
+    }
+
+    try {
+      await this.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: uniqueTargets.map((target) =>
+            this.buildConditionalDeleteFromStoredEntity(target),
+          ),
+        }),
+      );
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        return;
+      }
+
+      throw error;
+    }
   }
 
   private async putEntityWithTimestampsIfUnchanged<T>(

@@ -152,6 +152,33 @@ functions:
           path: /v1/leagues/{leagueId}/seasons
       - httpApi:
           method: GET
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}
+      - httpApi:
+          method: DELETE
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}
+      - httpApi:
+          method: GET
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}/games
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}/games
+      - httpApi:
+          method: POST
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}/sessions
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}/sessions
+      - httpApi:
+          method: POST
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games
+      - httpApi:
+          method: OPTIONS
+          path: /v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games
+      - httpApi:
+          method: GET
           path: /v1/seasons/{seasonId}
       - httpApi:
           method: DELETE

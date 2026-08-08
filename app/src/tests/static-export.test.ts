@@ -74,5 +74,6 @@ test("CloudFront router maps deployed join deep links to exported shells", () =>
   assert.equal(runCloudFrontRouter("/join/ABCD2345"), "/join/index.html");
   assert.equal(runCloudFrontRouter("/invites"), "/invites/index.html");
   assert.equal(runCloudFrontRouter("/invites/ABCD2345"), "/invites/index.html");
+  assert.equal(runCloudFrontRouter("/leagues/league-1/seasons/season-1"), "/seasons/index.html");
   assert.equal(runCloudFrontRouter("/ui/setup-flow.js"), "/ui/setup-flow.js");
 });

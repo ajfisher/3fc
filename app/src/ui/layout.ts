@@ -406,8 +406,9 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
 </html>`;
 }
 
-export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
+export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId = ""): string {
   const safeSeasonId = escapeHtml(seasonId);
+  const safeLeagueId = escapeHtml(leagueId);
   const seasonHeading = safeSeasonId.length > 0 ? safeSeasonId : "Season";
   const createGamePanel = renderPanel(
     "Create game",
@@ -463,7 +464,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
-    <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
         <h1 id="season-title">${seasonHeading}</h1>
@@ -474,7 +475,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string): string {
           "data-testid": "delete-season",
         })}</div>
       </section>
-      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}">
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
         <p data-ui="status-note" id="setup-status">Loading season data…</p>
         <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
         <section data-ui="panel-grid" data-testid="season-grid">

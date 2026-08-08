@@ -1,14 +1,29 @@
 (() => {
-  const root = document.getElementById("setup-flow-root");
-  if (!root) {
-    return;
+  let root = document.getElementById("setup-flow-root");
+  let apiBaseUrl = "";
+  let page = "dashboard";
+  let statusElement = null;
+  let errorElement = null;
+
+  function refreshShellReferences() {
+    root = document.getElementById("setup-flow-root");
+    if (!root) {
+      return false;
+    }
+
+    apiBaseUrl =
+      root.getAttribute("data-api-base-url") ??
+      document.body.getAttribute("data-api-base-url") ??
+      "";
+    page = root.getAttribute("data-page") ?? "dashboard";
+    statusElement = document.getElementById("setup-status");
+    errorElement = document.getElementById("setup-error");
+    return true;
   }
 
-  const apiBaseUrl = root.getAttribute("data-api-base-url") ?? "";
-  const page = root.getAttribute("data-page") ?? "dashboard";
-
-  const statusElement = document.getElementById("setup-status");
-  const errorElement = document.getElementById("setup-error");
+  if (!refreshShellReferences()) {
+    return;
+  }
 
   function escapeHtml(value) {
     return value
@@ -182,6 +197,159 @@
     } catch {
       return pathSegments[collectionIndex + 1];
     }
+  }
+
+  function buildLeagueSeasonPath(leagueId, seasonId) {
+    return `/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`;
+  }
+
+  function resolveNestedLeagueSeasonRoute() {
+    const pathSegments = window.location.pathname
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+
+    const leaguesIndex = pathSegments.indexOf("leagues");
+    if (
+      leaguesIndex < 0 ||
+      pathSegments[leaguesIndex + 2] !== "seasons" ||
+      pathSegments.length <= leaguesIndex + 3
+    ) {
+      return null;
+    }
+
+    try {
+      return {
+        leagueId: decodeURIComponent(pathSegments[leaguesIndex + 1]),
+        seasonId: decodeURIComponent(pathSegments[leaguesIndex + 3]),
+      };
+    } catch {
+      return {
+        leagueId: pathSegments[leaguesIndex + 1],
+        seasonId: pathSegments[leaguesIndex + 3],
+      };
+    }
+  }
+
+  function renderClientValidatedField({ id, label, type, required = false }) {
+    return `<div data-ui="field">
+      <label for="${escapeHtml(id)}">${escapeHtml(label)}</label>
+      <input id="${escapeHtml(id)}" data-ui="input" data-testid="${escapeHtml(id)}" type="${escapeHtml(type)}"${required ? " required" : ""} />
+      <p data-ui="field-hint" id="${escapeHtml(id)}-notice" data-default-kind="empty" data-default-message=""></p>
+    </div>`;
+  }
+
+  function renderClientPanel(title, description, body, footer, testId) {
+    return `<article data-ui="panel" data-testid="${escapeHtml(testId)}">
+      <div data-ui="panel-heading">
+        <h2>${escapeHtml(title)}</h2>
+        <p>${escapeHtml(description)}</p>
+      </div>
+      <div data-ui="panel-body">${body}</div>
+      ${footer ? `<div data-ui="panel-footer">${footer}</div>` : ""}
+    </article>`;
+  }
+
+  function renderClientButton(label, variant, attributes) {
+    const renderedAttributes = Object.entries(attributes)
+      .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
+      .join(" ");
+    return `<button data-ui="button" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${escapeHtml(label)}</button>`;
+  }
+
+  function renderClientTableShell({ tableTestId, bodyId, emptyId, emptyText, headers }) {
+    return `<div data-ui="table-wrap" data-testid="${escapeHtml(tableTestId)}" hidden>
+      <table>
+        <thead>
+          <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
+        </thead>
+        <tbody id="${escapeHtml(bodyId)}"></tbody>
+      </table>
+    </div>
+    <p data-ui="empty-state" id="${escapeHtml(emptyId)}">${escapeHtml(emptyText)}</p>`;
+  }
+
+  function mountSeasonShellForNestedLeagueRoute() {
+    if (page !== "league") {
+      return;
+    }
+
+    const route = resolveNestedLeagueSeasonRoute();
+    if (!route) {
+      return;
+    }
+
+    const safeApiBaseUrl = escapeHtml(apiBaseUrl);
+    const safeLeagueId = escapeHtml(route.leagueId);
+    const safeSeasonId = escapeHtml(route.seasonId);
+    const createGamePanel = renderClientPanel(
+      "Create game",
+      "Add a game into this season.",
+      `${renderClientValidatedField({
+        id: "game-date",
+        label: "Game date",
+        type: "date",
+        required: true,
+      })}${renderClientValidatedField({
+        id: "game-kickoff",
+        label: "Kickoff time",
+        type: "datetime-local",
+        required: true,
+      })}
+      <div data-ui="field">
+        <label for="game-third-length">Third length</label>
+        <select id="game-third-length" data-ui="input" data-testid="game-third-length">
+          <option value="20" selected>20 minutes</option>
+          <option value="25">25 minutes</option>
+          <option value="30">30 minutes</option>
+        </select>
+      </div>
+      <dl data-ui="id-preview"><div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div></dl>`,
+      `<div data-ui="button-row">${renderClientButton("Create game", "primary", {
+        type: "button",
+        "data-action": "create-game",
+        "data-testid": "create-game",
+      })}</div>`,
+      "panel-season-create-game",
+    );
+    const gamesPanel = renderClientPanel(
+      "Games",
+      "Manage scheduled games for this season.",
+      renderClientTableShell({
+        tableTestId: "season-games-table",
+        bodyId: "season-games-body",
+        emptyId: "season-games-empty",
+        emptyText: "No games yet. Create your first game.",
+        headers: ["Game", "Kickoff", "Status", "Actions"],
+      }),
+      "",
+      "panel-season-games",
+    );
+
+    document.title = "3FC Season";
+    document.body.setAttribute("data-api-base-url", apiBaseUrl);
+    document.body.innerHTML = `<main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
+      <section data-ui="hero">
+        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
+        <h1 id="season-title">${safeSeasonId || "Season"}</h1>
+        <p data-ui="hero-copy" id="season-subtitle">Loading season details...</p>
+        <div data-ui="button-row">${renderClientButton("Delete season", "danger", {
+          type: "button",
+          "data-action": "delete-season",
+          "data-testid": "delete-season",
+        })}</div>
+      </section>
+      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
+        <p data-ui="status-note" id="setup-status">Loading season data...</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
+        <section data-ui="panel-grid" data-testid="season-grid">
+          ${createGamePanel}
+          ${gamesPanel}
+        </section>
+      </section>
+    </main>`;
+
+    refreshShellReferences();
   }
 
   function createIdempotencyKey(prefix, stablePart) {
@@ -570,6 +738,27 @@
     }
 
     return result.body;
+  }
+
+  function isRouteUnavailable(error) {
+    return error instanceof Error && (error.statusCode === 404 || error.statusCode === 405);
+  }
+
+  async function requestJsonOrThrowWithFallback(primaryPath, fallbackPath, init = {}, validateFallback = null) {
+    try {
+      return await requestJsonOrThrow(primaryPath, init);
+    } catch (error) {
+      if (!fallbackPath || !isRouteUnavailable(error)) {
+        throw error;
+      }
+
+      const fallbackBody = await requestJsonOrThrow(fallbackPath, init);
+      if (typeof validateFallback === "function" && !validateFallback(fallbackBody)) {
+        throw error;
+      }
+
+      return fallbackBody;
+    }
   }
 
   async function currentAuthenticatedSession() {
@@ -1125,13 +1314,14 @@
       seasonsBody.innerHTML = seasons
         .map((season) => {
           const dateRange = `${season.startsOn ?? "-"} to ${season.endsOn ?? "-"}`;
+          const seasonPath = buildLeagueSeasonPath(leagueId, season.seasonId);
           return `<tr>
-            <td><a href="/seasons/${encodeURIComponent(season.seasonId)}">${escapeHtml(season.name)}</a></td>
+            <td><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
             <td>${escapeHtml(dateRange)}</td>
             <td><code>${escapeHtml(season.slug ?? "-")}</code></td>
             <td>
               <div data-ui="row-action-buttons">
-                <a href="/seasons/${encodeURIComponent(season.seasonId)}" data-ui="button-link" data-variant="secondary">View</a>
+                <a href="${seasonPath}" data-ui="button-link" data-variant="secondary">View</a>
                 <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-season" data-season-id="${escapeHtml(season.seasonId)}">Delete</button>
               </div>
             </td>
@@ -1181,7 +1371,7 @@
           }),
         });
 
-        navigateTo(`/seasons/${encodeURIComponent(seasonId)}`);
+        navigateTo(buildLeagueSeasonPath(leagueId, seasonId));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create season.";
         showError(message);
@@ -1332,6 +1522,7 @@
     if (!seasonId) {
       return;
     }
+    const routeLeagueId = resolveRouteEntityId("data-league-id", "leagues");
 
     const seasonTitle = document.getElementById("season-title");
     const seasonSubtitle = document.getElementById("season-subtitle");
@@ -1359,7 +1550,7 @@
       return;
     }
 
-    let leagueId = "";
+    let leagueId = routeLeagueId ?? "";
     let gameIdNonce = randomSuffix(4);
 
     function updateDerivedGameId() {
@@ -1397,9 +1588,16 @@
     updateDerivedGameId();
 
     async function loadSeason() {
-      const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(seasonId)}`, {
-        method: "GET",
-      });
+      const seasonPath = routeLeagueId
+        ? `/v1/leagues/${encodeURIComponent(routeLeagueId)}/seasons/${encodeURIComponent(seasonId)}`
+        : `/v1/seasons/${encodeURIComponent(seasonId)}`;
+      const legacySeasonPath = `/v1/seasons/${encodeURIComponent(seasonId)}`;
+      const season = await requestJsonOrThrowWithFallback(
+        seasonPath,
+        routeLeagueId ? legacySeasonPath : null,
+        { method: "GET" },
+        (fallbackSeason) => fallbackSeason?.leagueId === routeLeagueId,
+      );
 
       leagueId = season.leagueId;
       if (seasonTitle) {
@@ -1418,11 +1616,19 @@
     }
 
     async function renderGames() {
-      const payload = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(seasonId)}/games`, {
-        method: "GET",
-      });
+      const gamesPath = leagueId
+        ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}/games`
+        : `/v1/seasons/${encodeURIComponent(seasonId)}/games`;
+      const legacyGamesPath = `/v1/seasons/${encodeURIComponent(seasonId)}/games`;
+      const payload = await requestJsonOrThrowWithFallback(
+        gamesPath,
+        leagueId ? legacyGamesPath : null,
+        { method: "GET" },
+      );
 
-      const games = Array.isArray(payload?.games) ? payload.games : [];
+      const games = (Array.isArray(payload?.games) ? payload.games : []).filter(
+        (game) => !leagueId || (game.leagueId === leagueId && game.seasonId === seasonId),
+      );
       if (games.length === 0) {
         gamesBody.innerHTML = "";
         if (gamesTableWrap instanceof HTMLElement) {
@@ -1483,11 +1689,14 @@
       setStatus("Creating game…", "default");
 
       try {
-        await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(seasonId)}/sessions`, {
+        const createSessionPath = leagueId
+          ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}/sessions`
+          : `/v1/seasons/${encodeURIComponent(seasonId)}/sessions`;
+        await requestJsonOrThrow(createSessionPath, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Idempotency-Key": createIdempotencyKey("create-session", `${seasonId}-${sessionId}`),
+            "Idempotency-Key": createIdempotencyKey("create-session", `${leagueId}-${seasonId}-${sessionId}`),
           },
           body: JSON.stringify({
             sessionId,
@@ -1495,7 +1704,10 @@
           }),
         });
 
-        await requestJsonOrThrow(`/v1/sessions/${encodeURIComponent(sessionId)}/games`, {
+        const createGamePath = leagueId
+          ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}/sessions/${encodeURIComponent(sessionId)}/games`
+          : `/v1/sessions/${encodeURIComponent(sessionId)}/games`;
+        await requestJsonOrThrow(createGamePath, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1568,7 +1780,10 @@
         setStatus(`Deleting season ${seasonId}…`, "default");
 
         try {
-          await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(seasonId)}`, {
+          const deleteSeasonPath = leagueId
+            ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`
+            : `/v1/seasons/${encodeURIComponent(seasonId)}`;
+          await requestJsonOrThrow(deleteSeasonPath, {
             method: "DELETE",
           });
           navigateTo(`/leagues/${encodeURIComponent(leagueId)}`);
@@ -3227,10 +3442,10 @@
         gameLeagueLink.href = `/leagues/${encodeURIComponent(game.leagueId)}`;
       }
       if (gameSeasonLink instanceof HTMLAnchorElement) {
-        gameSeasonLink.href = `/seasons/${encodeURIComponent(game.seasonId)}`;
+        gameSeasonLink.href = buildLeagueSeasonPath(game.leagueId, game.seasonId);
       }
       if (createAnotherLink instanceof HTMLAnchorElement) {
-        createAnotherLink.href = `/seasons/${encodeURIComponent(game.seasonId)}`;
+        createAnotherLink.href = buildLeagueSeasonPath(game.leagueId, game.seasonId);
       }
     }
 
@@ -3317,7 +3532,7 @@
         await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
           method: "DELETE",
         });
-        navigateTo(`/seasons/${encodeURIComponent(currentSeasonId)}`);
+        navigateTo(buildLeagueSeasonPath(currentLeagueId, currentSeasonId));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not delete game.";
         showError(message);
@@ -3844,9 +4059,10 @@
     syncGameModeState();
 
     try {
-      const season = await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(currentSeasonId)}`, {
-        method: "GET",
-      });
+      const seasonPath = currentLeagueId
+        ? `/v1/leagues/${encodeURIComponent(currentLeagueId)}/seasons/${encodeURIComponent(currentSeasonId)}`
+        : `/v1/seasons/${encodeURIComponent(currentSeasonId)}`;
+      const season = await requestJsonOrThrow(seasonPath, { method: "GET" });
       const previousLeagueId = currentLeagueId;
       currentLeagueId = season.leagueId;
       if (gameLeagueLink instanceof HTMLAnchorElement) {
@@ -4218,6 +4434,7 @@
   }
 
   async function initialize() {
+    mountSeasonShellForNestedLeagueRoute();
     clearError();
 
     if (page === "join") {

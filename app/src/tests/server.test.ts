@@ -138,6 +138,11 @@ test("league, season, game, join, and invite routes render their shells", () => 
   assert.match(seasonResponse.body, /data-testid="season-shell"/);
   assert.match(seasonResponse.body, /data-page="season"/);
 
+  const leagueSeasonResponse = executeRoute("GET", "/leagues/league-1/seasons/season-1");
+  assert.equal(leagueSeasonResponse.statusCode, 200);
+  assert.match(leagueSeasonResponse.body, /data-testid="season-shell"/);
+  assert.match(leagueSeasonResponse.body, /data-league-id="league-1"/);
+
   const response = executeRoute(
     "GET",
     "/games/game-123",

@@ -210,8 +210,26 @@ interface RepositoryContract {
       }
     | null
   >;
+  getSeasonForLeague(
+    leagueId: string,
+    seasonId: string,
+    options?: { consistentRead?: boolean },
+  ): Promise<
+    | {
+        leagueId: string;
+        seasonId: string;
+        name: string;
+        slug: string | null;
+        startsOn: string | null;
+        endsOn: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }
+    | null
+  >;
   listSeasonsForLeague(
     leagueId: string,
+    options?: { consistentRead?: boolean },
   ): Promise<
     Array<{
       leagueId: string;
@@ -242,6 +260,7 @@ interface RepositoryContract {
     updatedAt: string;
   }>;
   createTeam(input: {
+    leagueId?: string;
     seasonId: string;
     teamId: TeamId;
     name: string;
@@ -255,7 +274,7 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listTeamsForSeason(seasonId: string, options?: { consistentRead?: boolean }): Promise<
+  listTeamsForSeason(seasonId: string, options?: { consistentRead?: boolean; leagueId?: string }): Promise<
     Array<{
       seasonId: string;
       teamId: TeamId;
@@ -297,7 +316,12 @@ interface RepositoryContract {
       updatedAt: string;
     }>
   >;
-  createSession(input: { seasonId: string; sessionId: string; sessionDate: string }): Promise<unknown>;
+  createSession(input: { leagueId?: string; seasonId: string; sessionId: string; sessionDate: string }): Promise<unknown>;
+  getSessionForSeason(
+    seasonId: string,
+    sessionId: string,
+    options?: { leagueId?: string },
+  ): Promise<{ seasonId: string; sessionId: string; sessionDate: string } | null>;
   createGame(input: {
     gameId: string;
     joinCode?: string | null;
@@ -308,6 +332,7 @@ interface RepositoryContract {
     status?: GameStatus;
     gameStartTs: string;
     thirdLengthMinutes?: ThirdLengthMinutes;
+    linkSession?: boolean;
   }): Promise<RepositoryGameRecord>;
   createSessionGame(input: {
     sessionId: string;
@@ -316,10 +341,18 @@ interface RepositoryContract {
     leagueId: string;
     seasonId: string;
   }): Promise<unknown>;
-  listGamesForSeason(seasonId: string): Promise<RepositoryGameRecord[]>;
+  listGamesForSeason(
+    seasonId: string,
+    options?: { leagueId?: string },
+  ): Promise<RepositoryGameRecord[]>;
   getGame(
     gameId: string,
-    options?: { consistentRead?: boolean; repairLegacyJoinCode?: boolean },
+    options?: {
+      consistentRead?: boolean;
+      repairLegacyJoinCode?: boolean;
+      expectedLeagueId?: string;
+      expectedSeasonId?: string;
+    },
   ): Promise<RepositoryGameRecord | null>;
   getGameByJoinCode(joinCode: string): Promise<RepositoryGameRecord | null>;
   joinGameByCode(input: {
@@ -346,7 +379,7 @@ interface RepositoryContract {
   finishGameThird(input: { gameId: string; third: ThirdNumber }): Promise<RepositoryGameRecord | null>;
   finishGame(input: { gameId: string }): Promise<RepositoryGameRecord | null>;
   deleteGame(gameId: string): Promise<boolean>;
-  deleteSeason(seasonId: string): Promise<boolean>;
+  deleteSeason(seasonId: string, options?: { leagueId?: string }): Promise<boolean>;
   deleteLeague(leagueId: string): Promise<boolean>;
   createPlayer(input: {
     playerId: string;
@@ -1260,9 +1293,14 @@ async function readSeasonTeams(
   return buildReadOnlySeasonTeams(season, existingTeams);
 }
 
-async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId: string) {
+async function ensureSeasonDefaultTeams(
+  repository: RepositoryContract,
+  seasonId: string,
+  options: { leagueId?: string } = {},
+) {
   const existingTeams = await repository.listTeamsForSeason(seasonId, {
     consistentRead: true,
+    leagueId: options.leagueId,
   });
   const teamsById = new Map(existingTeams.map((team) => [team.teamId, team]));
 
@@ -1272,6 +1310,7 @@ async function ensureSeasonDefaultTeams(repository: RepositoryContract, seasonId
     }
 
     const createdTeam = await repository.createTeam({
+      leagueId: options.leagueId,
       seasonId,
       teamId: defaultTeam.teamId,
       name: defaultTeam.name,
@@ -1290,9 +1329,11 @@ async function ensureGameTeamsForGame(
     gameId: string;
     seasonId: string;
   },
-  options: { allowFinished?: boolean } = {},
+  options: { allowFinished?: boolean; leagueId?: string } = {},
 ) {
-  const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId);
+  const seasonTeams = await ensureSeasonDefaultTeams(repository, game.seasonId, {
+    leagueId: options.leagueId,
+  });
   const existingGameTeams = await repository.listTeamsForGame(game.gameId, {
     consistentRead: true,
   });
@@ -1614,6 +1655,169 @@ function buildCreateGameRecoveryRequestHash(input: {
     idempotencyKey: parsedIdempotencyKey,
     payload: input.payload,
   });
+}
+
+async function createGameMutationResponse(input: {
+  dependencies: CoreHandlerDependencies;
+  idempotencyKey: string | undefined;
+  session: AuthSessionRecord;
+  method: string;
+  route: string;
+  rawBody: Record<string, unknown>;
+  origin: string | undefined;
+  scope: { leagueId: string; seasonId: string; sessionId: string };
+}): Promise<ApiGatewayHttpResponse> {
+  const parsedBody = createGameRequestSchema.safeParse(input.rawBody);
+  if (!parsedBody.success) {
+    return badRequest(
+      input.origin,
+      input.dependencies.corsAllowedOrigins,
+      formatSchemaValidationError(parsedBody.error),
+    );
+  }
+
+  const createRequestHash = buildCreateGameRecoveryRequestHash({
+    idempotencyKey: input.idempotencyKey,
+    sessionEmail: input.session.email,
+    method: input.method,
+    route: input.route,
+    payload: parsedBody.data,
+  });
+
+  try {
+    return await executeIdempotentMutation({
+      repository: input.dependencies.repository,
+      idempotencyKey: input.idempotencyKey,
+      sessionEmail: input.session.email,
+      method: input.method,
+      route: input.route,
+      requestPayload: parsedBody.data,
+      origin: input.origin,
+      allowedOrigins: input.dependencies.corsAllowedOrigins,
+      execute: async () => {
+        let createdGame: RepositoryGameRecord;
+        let recoveredExistingGame = false;
+        try {
+          createdGame = await input.dependencies.repository.createGame({
+            gameId: parsedBody.data.gameId,
+            createRequestHash,
+            leagueId: input.scope.leagueId,
+            seasonId: input.scope.seasonId,
+            sessionId: input.scope.sessionId,
+            status: parsedBody.data.status as GameStatus | undefined,
+            gameStartTs: parsedBody.data.gameStartTs,
+            thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+            linkSession: true,
+          });
+        } catch (error) {
+          if (!(error instanceof GameAlreadyExistsError)) {
+            throw error;
+          }
+
+          const replayResponse = await replayStoredIdempotencyMutation({
+            repository: input.dependencies.repository,
+            idempotencyKey: input.idempotencyKey,
+            sessionEmail: input.session.email,
+            method: input.method,
+            route: input.route,
+            requestPayload: parsedBody.data,
+            origin: input.origin,
+            allowedOrigins: input.dependencies.corsAllowedOrigins,
+          });
+          if (replayResponse) {
+            return replayResponse;
+          }
+          if (!input.idempotencyKey || !createRequestHash) {
+            throw error;
+          }
+
+          const existingGame = await input.dependencies.repository.getGame(parsedBody.data.gameId);
+          if (
+            !existingGame ||
+            !existingGameMatchesCreateRequest({
+              game: existingGame,
+              leagueId: input.scope.leagueId,
+              seasonId: input.scope.seasonId,
+              sessionId: input.scope.sessionId,
+              createRequestHash,
+              request: parsedBody.data,
+            })
+          ) {
+            throw error;
+          }
+
+          createdGame = existingGame;
+          recoveredExistingGame = true;
+        }
+
+        if (recoveredExistingGame) {
+          await input.dependencies.repository.createSessionGame({
+            sessionId: createdGame.sessionId,
+            gameId: createdGame.gameId,
+            gameStartTs: createdGame.gameStartTs,
+            leagueId: createdGame.leagueId,
+            seasonId: createdGame.seasonId,
+          });
+        }
+        await ensureGameTeamsForGame(input.dependencies.repository, createdGame, {
+          leagueId: input.scope.leagueId,
+        });
+
+        return createJsonResponse(
+          201,
+          buildGameResponse(createdGame),
+          buildCorsHeaders(input.origin, input.dependencies.corsAllowedOrigins),
+        );
+      },
+    });
+  } catch (error) {
+    if (error instanceof GameAlreadyExistsError) {
+      const replayResponse = await replayStoredIdempotencyMutation({
+        repository: input.dependencies.repository,
+        idempotencyKey: input.idempotencyKey,
+        sessionEmail: input.session.email,
+        method: input.method,
+        route: input.route,
+        requestPayload: parsedBody.data,
+        origin: input.origin,
+        allowedOrigins: input.dependencies.corsAllowedOrigins,
+      });
+      if (replayResponse) {
+        return replayResponse;
+      }
+
+      return gameAlreadyExistsConflictResponse(
+        input.origin,
+        input.dependencies.corsAllowedOrigins,
+        parsedBody.data.gameId,
+      );
+    }
+    if (error instanceof GameJoinCodeCollisionError) {
+      const replayResponse = await replayStoredIdempotencyMutation({
+        repository: input.dependencies.repository,
+        idempotencyKey: input.idempotencyKey,
+        sessionEmail: input.session.email,
+        method: input.method,
+        route: input.route,
+        requestPayload: parsedBody.data,
+        origin: input.origin,
+        allowedOrigins: input.dependencies.corsAllowedOrigins,
+      });
+      if (replayResponse) {
+        return replayResponse;
+      }
+
+      return gameJoinCodeCollisionConflictResponse(
+        input.origin,
+        input.dependencies.corsAllowedOrigins,
+      );
+    }
+    if (error instanceof GameMutationStateError) {
+      return conflict(input.origin, input.dependencies.corsAllowedOrigins, error.message);
+    }
+
+    throw error;
+  }
 }
 
 function buildPublicJoinPlayerId(joinCode: string, idempotencyKey: string): string {
@@ -3268,6 +3472,90 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        const getLeagueSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+        if (method === "GET" && getLeagueSeasonMatch) {
+          const leagueId = decodeRouteParam(getLeagueSeasonMatch[1]);
+          const seasonId = decodeRouteParam(getLeagueSeasonMatch[2]);
+          const access = await ensureLeagueAccess(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${leagueId} is required.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          status = 200;
+          return createJsonResponse(
+            status,
+            season,
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
+        const listLeagueSeasonGamesMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/games$/);
+        if (method === "GET" && listLeagueSeasonGamesMatch) {
+          const leagueId = decodeRouteParam(listLeagueSeasonGamesMatch[1]);
+          const seasonId = decodeRouteParam(listLeagueSeasonGamesMatch[2]);
+          const access = await ensureLeagueAccess(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!access.allowed) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "league_access_required",
+              `Access to league ${leagueId} is required.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          const games = await dependencies.repository.listGamesForSeason(seasonId, { leagueId });
+          const gamesWithUsableJoinCodes = await Promise.all(
+            games.map(async (game) => {
+              const refreshedGame = await dependencies.repository.getGame(game.gameId, {
+                consistentRead: true,
+                repairLegacyJoinCode: true,
+                expectedLeagueId: leagueId,
+                expectedSeasonId: seasonId,
+              });
+              if (
+                !refreshedGame ||
+                refreshedGame.leagueId !== leagueId ||
+                refreshedGame.seasonId !== seasonId
+              ) {
+                return game;
+              }
+
+              return refreshedGame;
+            }),
+          );
+          status = 200;
+          return createJsonResponse(
+            status,
+            {
+              games: gamesWithUsableJoinCodes.map((game) => buildGameResponse(game)),
+            },
+            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          );
+        }
+
         const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
         if (method === "DELETE" && deleteLeagueMatch) {
           const leagueId = decodeRouteParam(deleteLeagueMatch[1]);
@@ -3303,6 +3591,85 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           status = 204;
           return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
+        }
+
+        const createLeagueSeasonSessionMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions$/);
+        if (method === "POST" && createLeagueSeasonSessionMatch) {
+          const leagueId = decodeRouteParam(createLeagueSeasonSessionMatch[1]);
+          const seasonId = decodeRouteParam(createLeagueSeasonSessionMatch[2]);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!isAdmin) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "admin_required",
+              `Admin role is required for league ${leagueId}.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const parsedBody = createSessionRequestSchema.safeParse(rawBody);
+          if (!parsedBody.success) {
+            status = 400;
+            return badRequest(
+              origin,
+              dependencies.corsAllowedOrigins,
+              formatSchemaValidationError(parsedBody.error),
+            );
+          }
+
+          const mutationResponse = await executeIdempotentMutation({
+            repository: dependencies.repository,
+            idempotencyKey,
+            sessionEmail: session.email,
+            method,
+            route,
+            requestPayload: parsedBody.data,
+            origin,
+            allowedOrigins: dependencies.corsAllowedOrigins,
+            execute: async () => {
+              let createdSession: unknown;
+              try {
+                createdSession = await dependencies.repository.createSession({
+                  leagueId,
+                  seasonId,
+                  sessionId: parsedBody.data.sessionId,
+                  sessionDate: parsedBody.data.sessionDate,
+                });
+              } catch (error) {
+                if (error instanceof GameMutationStateError) {
+                  return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+                }
+
+                throw error;
+              }
+
+              return createJsonResponse(
+                201,
+                createdSession,
+                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+              );
+            },
+          });
+
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createSessionMatch = route.match(/^\/v1\/seasons\/([^/]+)\/sessions$/);
@@ -3409,15 +3776,26 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          const games = await dependencies.repository.listGamesForSeason(seasonId);
+          const games = await dependencies.repository.listGamesForSeason(seasonId, {
+            leagueId: season.leagueId,
+          });
           const gamesWithUsableJoinCodes = await Promise.all(
             games.map(async (game) => {
-              return (
-                (await dependencies.repository.getGame(game.gameId, {
-                  consistentRead: true,
-                  repairLegacyJoinCode: true,
-                })) ?? game
-              );
+              const refreshedGame = await dependencies.repository.getGame(game.gameId, {
+                consistentRead: true,
+                repairLegacyJoinCode: true,
+                expectedLeagueId: season.leagueId,
+                expectedSeasonId: seasonId,
+              });
+              if (
+                !refreshedGame ||
+                refreshedGame.leagueId !== season.leagueId ||
+                refreshedGame.seasonId !== seasonId
+              ) {
+                return game;
+              }
+
+              return refreshedGame;
             }),
           );
           status = 200;
@@ -3507,6 +3885,40 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        const deleteLeagueSeasonMatch = route.match(/^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+        if (method === "DELETE" && deleteLeagueSeasonMatch) {
+          const leagueId = decodeRouteParam(deleteLeagueSeasonMatch[1]);
+          const seasonId = decodeRouteParam(deleteLeagueSeasonMatch[2]);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!isAdmin) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "admin_required",
+              `Admin role is required for league ${leagueId}.`,
+            );
+          }
+
+          try {
+            const deleted = await dependencies.repository.deleteSeason(seasonId, { leagueId });
+            if (!deleted) {
+              status = 404;
+              return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+            }
+          } catch (error) {
+            if (error instanceof Error && /Cannot delete season/.test(error.message)) {
+              status = 409;
+              return conflict(origin, dependencies.corsAllowedOrigins, error.message);
+            }
+
+            throw error;
+          }
+
+          status = 204;
+          return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
+        }
+
         const deleteSeasonMatch = route.match(/^\/v1\/seasons\/([^/]+)$/);
         if (method === "DELETE" && deleteSeasonMatch) {
           const seasonId = decodeRouteParam(deleteSeasonMatch[1]);
@@ -3544,6 +3956,62 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           status = 204;
           return createNoContentResponse(buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
+        }
+
+        const createLeagueSeasonSessionGameMatch = route.match(
+          /^\/v1\/leagues\/([^/]+)\/seasons\/([^/]+)\/sessions\/([^/]+)\/games$/,
+        );
+        if (method === "POST" && createLeagueSeasonSessionGameMatch) {
+          const leagueId = decodeRouteParam(createLeagueSeasonSessionGameMatch[1]);
+          const seasonId = decodeRouteParam(createLeagueSeasonSessionGameMatch[2]);
+          const sessionId = decodeRouteParam(createLeagueSeasonSessionGameMatch[3]);
+          const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
+          if (!isAdmin) {
+            status = 403;
+            return forbidden(
+              origin,
+              dependencies.corsAllowedOrigins,
+              "admin_required",
+              `Admin role is required for league ${leagueId}.`,
+            );
+          }
+
+          const season = await dependencies.repository.getSeasonForLeague(leagueId, seasonId, {
+            consistentRead: true,
+          });
+          if (!season) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Season ${seasonId} was not found.`);
+          }
+
+          const sessionRecord = await dependencies.repository.getSessionForSeason(seasonId, sessionId, {
+            leagueId,
+          });
+          if (!sessionRecord) {
+            status = 404;
+            return notFound(origin, dependencies.corsAllowedOrigins, `Session ${sessionId} was not found.`);
+          }
+
+          let rawBody: Record<string, unknown>;
+          try {
+            rawBody = parseJsonBody(event);
+          } catch {
+            status = 400;
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+
+          const mutationResponse = await createGameMutationResponse({
+            dependencies,
+            idempotencyKey,
+            session,
+            method,
+            route,
+            rawBody,
+            origin,
+            scope: { leagueId, seasonId, sessionId },
+          });
+          status = mutationResponse.statusCode;
+          return mutationResponse;
         }
 
         const createGameMatch = route.match(/^\/v1\/sessions\/([^/]+)\/games$/);
@@ -3599,6 +4067,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               allowedOrigins: dependencies.corsAllowedOrigins,
               execute: async () => {
                 let createdGame: RepositoryGameRecord;
+                let recoveredExistingGame = false;
                 try {
                   createdGame = await dependencies.repository.createGame({
                     gameId: parsedBody.data.gameId,
@@ -3609,6 +4078,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                     status: parsedBody.data.status as GameStatus | undefined,
                     gameStartTs: parsedBody.data.gameStartTs,
                     thirdLengthMinutes: parsedBody.data.thirdLengthMinutes,
+                    linkSession: true,
                   });
                 } catch (error) {
                   if (!(error instanceof GameAlreadyExistsError)) {
@@ -3648,16 +4118,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   }
 
                   createdGame = existingGame;
+                  recoveredExistingGame = true;
                 }
 
-                await dependencies.repository.createSessionGame({
-                  sessionId: createdGame.sessionId,
-                  gameId: createdGame.gameId,
-                  gameStartTs: createdGame.gameStartTs,
+                if (recoveredExistingGame) {
+                  await dependencies.repository.createSessionGame({
+                    sessionId: createdGame.sessionId,
+                    gameId: createdGame.gameId,
+                    gameStartTs: createdGame.gameStartTs,
+                    leagueId: createdGame.leagueId,
+                    seasonId: createdGame.seasonId,
+                  });
+                }
+                await ensureGameTeamsForGame(dependencies.repository, createdGame, {
                   leagueId: createdGame.leagueId,
-                  seasonId: createdGame.seasonId,
                 });
-                await ensureGameTeamsForGame(dependencies.repository, createdGame);
 
                 return createJsonResponse(
                   201,
@@ -3745,6 +4220,8 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             (await dependencies.repository.getGame(gameId, {
               consistentRead: true,
               repairLegacyJoinCode: true,
+              expectedLeagueId: game.leagueId,
+              expectedSeasonId: game.seasonId,
             })) ?? game;
 
           status = 200;
@@ -3893,7 +4370,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 }
 
                 try {
-                  await ensureGameTeamsForGame(dependencies.repository, currentGame);
+                  await ensureGameTeamsForGame(dependencies.repository, currentGame, {
+                    leagueId: currentGame.leagueId,
+                  });
                 } catch (error) {
                   if (error instanceof GameMutationStateError) {
                     const replayResponse = await replayStoredIdempotencyMutation({
@@ -4127,7 +4606,10 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                   );
                 }
 
-                await ensureGameTeamsForGame(dependencies.repository, currentGame, { allowFinished });
+                await ensureGameTeamsForGame(dependencies.repository, currentGame, {
+                  allowFinished,
+                  leagueId: currentGame.leagueId,
+                });
                 const result = await dependencies.repository.createGoal({
                   gameId,
                   eventId: buildGoalEventId({
@@ -4583,7 +5065,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           let team;
           try {
-            await ensureGameTeamsForGame(dependencies.repository, game);
+            await ensureGameTeamsForGame(dependencies.repository, game, {
+              leagueId: game.leagueId,
+            });
             team = await dependencies.repository.createGameTeamOverride({
               gameId,
               teamId,
@@ -4946,7 +5430,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             );
           }
 
-          const teams = await ensureGameTeamsForGame(dependencies.repository, game);
+          const teams = await ensureGameTeamsForGame(dependencies.repository, game, {
+            leagueId: game.leagueId,
+          });
           if (!teams.some((team) => team.teamId === parsedBody.data.teamId)) {
             status = 400;
             return badRequest(origin, dependencies.corsAllowedOrigins, "Team ID must be active for this game.");

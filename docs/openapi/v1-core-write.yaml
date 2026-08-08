@@ -231,6 +231,192 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}/seasons/{seasonId}:
+    get:
+      summary: Get a league-scoped season
+      description: >-
+        Resolves a season within its league so reused season slugs or IDs in
+        another league cannot select the wrong season.
+      operationId: getLeagueSeason
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Season found within the league
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Season"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Delete a league-scoped season
+      description: >-
+        Deletes the season only from the requested league. The season must have
+        no remaining scoped sessions or games.
+      operationId: deleteLeagueSeason
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Season deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/leagues/{leagueId}/seasons/{seasonId}/sessions:
+    post:
+      summary: Create a session for a league-scoped season
+      description: >-
+        Creates the session after resolving the season within the requested
+        league, avoiding global season ID ambiguity.
+      operationId: createLeagueSeasonSession
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}/seasons/{seasonId}/games:
+    get:
+      summary: List games for a league-scoped season
+      description: >-
+        Lists games only when both the session index and loaded game metadata
+        belong to the requested league and season.
+      operationId: listLeagueSeasonGames
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: League-scoped season games
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - games
+                properties:
+                  games:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Game"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games:
+    post:
+      summary: Create a game for a league-scoped season session
+      description: >-
+        Creates a game with explicit league, season, and session scope so reused
+        season IDs cannot attach the game to another league.
+      operationId: createLeagueSeasonSessionGame
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: seasonId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGameRequest"
+      responses:
+        "201":
+          description: Game created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/CreateGameConflict"
   /v1/seasons/{seasonId}/sessions:
     post:
       summary: Create session

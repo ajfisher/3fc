@@ -206,6 +206,21 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
+    const leagueSeasonPageMatch = route.match(/^\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+    if (method === "GET" && leagueSeasonPageMatch) {
+      sendHtml(
+        response,
+        securityHeaders,
+        200,
+        renderSeasonPage(
+          apiBaseUrl,
+          decodeURIComponent(leagueSeasonPageMatch[2]),
+          decodeURIComponent(leagueSeasonPageMatch[1]),
+        ),
+      );
+      return;
+    }
+
     const seasonPageMatch = route.match(/^\/seasons\/([^/]+)$/);
     if (method === "GET" && seasonPageMatch) {
       sendHtml(

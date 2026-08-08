@@ -30,6 +30,14 @@ export function sessionSk(sessionId: string): string {
   return `SESSION#${sessionId}`;
 }
 
+export function scopedSeasonSessionSk(seasonId: string, sessionId: string): string {
+  return `SEASON#${seasonId}#SESSION#${sessionId}`;
+}
+
+export function scopedSeasonTeamSk(seasonId: string, teamId: string): string {
+  return `SEASON#${seasonId}#TEAM#${teamId}`;
+}
+
 export function sessionPk(sessionId: string): string {
   return `${ENTITY_PK_PREFIX.session}${sessionId}`;
 }

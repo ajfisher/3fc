@@ -43,6 +43,18 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
     return true;
   }
 
+  if (method === "GET" && /^\/v1\/leagues\/[^/]+\/seasons\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "DELETE" && /^\/v1\/leagues\/[^/]+\/seasons\/[^/]+$/.test(route)) {
+    return true;
+  }
+
+  if (method === "GET" && /^\/v1\/leagues\/[^/]+\/seasons\/[^/]+\/games$/.test(route)) {
+    return true;
+  }
+
   if (method === "DELETE" && /^\/v1\/leagues\/[^/]+$/.test(route)) {
     return true;
   }
@@ -160,6 +172,14 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
   }
 
   if (method === "POST" && /^\/v1\/leagues\/[^/]+\/seasons$/.test(route)) {
+    return true;
+  }
+
+  if (method === "POST" && /^\/v1\/leagues\/[^/]+\/seasons\/[^/]+\/sessions$/.test(route)) {
+    return true;
+  }
+
+  if (method === "POST" && /^\/v1\/leagues\/[^/]+\/seasons\/[^/]+\/sessions\/[^/]+\/games$/.test(route)) {
     return true;
   }
 

@@ -21,12 +21,35 @@ This document defines the baseline key structure and access patterns for the
 - Season lookup mirror (for ACL scope resolution):
   - `pk=SEASON#{seasonId}`
   - `sk=METADATA`
-- Team:
+- Season team:
+  - `pk=LEAGUE#{leagueId}`
+  - `sk=SEASON#{seasonId}#TEAM#{teamId}`
+  - canonical scoped season team defaults used when creating games
+- Session:
+  - `pk=LEAGUE#{leagueId}`
+  - `sk=SEASON#{seasonId}#SESSION#{sessionId}`
+  - canonical scoped season session/day owned by the league season
+- Legacy season team template:
   - `pk=SEASON#{seasonId}`
   - `sk=TEAM#{teamId}`
-- Session:
+  - compatibility read/write path during the scoped-key migration
+  - scoped reads only accept templates with row-level `leagueId` provenance
+    after atomically validating the requested scoped season exists
+  - scoped season deletion removes owned legacy templates in the same
+    conditional cleanup transaction as the season mirror
+- Legacy session:
   - `pk=SEASON#{seasonId}`
   - `sk=SESSION#{sessionId}`
+  - compatibility read/write path during the scoped-key migration
+  - scoped reads accept row-attributed sessions, or provenance-less legacy
+    sessions only while the global season mirror still belongs to the requested
+    league
+  - scoped session creation writes rollback-compatible legacy rows under the
+    same mirror ownership rule and only when existing legacy rows are absent,
+    provenance-less under that mirror, or already carry matching row-level
+    `leagueId` provenance
+  - row-attributed legacy session rows remain cleanup targets for that league
+    even if another league later replaces the global season mirror
 - Session lookup mirror (for ACL scope resolution):
   - `pk=SESSION#{sessionId}`
   - `sk=METADATA`
@@ -103,8 +126,10 @@ without schema rewrites at this stage.
 
 - Create/read league metadata.
 - Create/list seasons for a league.
-- Create/list teams for a season.
-- Create/list sessions for a season.
+- Create/list scoped teams for a league season, with owned legacy template
+  compatibility during migration.
+- Create/list scoped sessions for a league season, with global-mirror-gated
+  legacy session compatibility during migration.
 - Create/read game metadata.
 - Resolve join code to game for player self-registration.
 - Create/accept reusable share organiser invites and one-time email organiser invites, then grant league admin ACL entries.

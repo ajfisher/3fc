@@ -30,6 +30,7 @@ export interface SeasonRecord {
 }
 
 export interface TeamRecord {
+  leagueId?: string;
   seasonId: string;
   teamId: TeamId;
   name: string;
@@ -50,6 +51,7 @@ export interface GameTeamRecord {
 }
 
 export interface SessionRecord {
+  leagueId?: string;
   seasonId: string;
   sessionId: string;
   sessionDate: string;
@@ -236,6 +238,7 @@ export interface CreateSeasonInput {
 }
 
 export interface CreateTeamInput {
+  leagueId?: string;
   seasonId: string;
   teamId: TeamId;
   name: string;
@@ -253,6 +256,7 @@ export interface CreateGameTeamInput {
 }
 
 export interface CreateSessionInput {
+  leagueId?: string;
   seasonId: string;
   sessionId: string;
   sessionDate: string;
@@ -268,6 +272,7 @@ export interface CreateGameInput {
   status?: GameStatus;
   gameStartTs: string;
   thirdLengthMinutes?: ThirdLengthMinutes;
+  linkSession?: boolean;
 }
 
 export interface CreateSessionGameInput {

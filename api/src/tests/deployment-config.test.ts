@@ -23,6 +23,15 @@ test("api core deployment config registers claim and access routes", () => {
   assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/organiser-invites");
   assertServerlessRoute("POST", "/v1/invites/{inviteCode}/accept");
   assertServerlessRoute("OPTIONS", "/v1/invites/{inviteCode}/accept");
+  assertServerlessRoute("GET", "/v1/leagues/{leagueId}/seasons/{seasonId}");
+  assertServerlessRoute("DELETE", "/v1/leagues/{leagueId}/seasons/{seasonId}");
+  assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/seasons/{seasonId}");
+  assertServerlessRoute("GET", "/v1/leagues/{leagueId}/seasons/{seasonId}/games");
+  assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/seasons/{seasonId}/games");
+  assertServerlessRoute("POST", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions");
+  assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions");
+  assertServerlessRoute("POST", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games");
+  assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games");
 });
 
 test("api core deployment config sets canonical public invite link origins", () => {
