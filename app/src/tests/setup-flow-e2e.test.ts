@@ -4642,6 +4642,62 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*0/);
 });
 
+test("game page enables and creates a fresh own goal after the timeline loads", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-own-goal-create",
+    status: "live",
+    thirds,
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-own-goal-create" }),
+    url: "http://localhost:3000/games/game-own-goal-create",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const ownGoalInput = page.document.getElementById("goal-own-goal");
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  assert(ownGoalInput instanceof page.window.HTMLInputElement);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+
+  assert.equal(ownGoalInput.disabled, false);
+  ownGoalInput.click();
+  assert.equal(ownGoalInput.checked, true);
+  assert.equal(scoringTeamInput.disabled, true);
+  assert.equal(scoringTeamInput.value, "");
+
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  const goal = apiState.goalEvents.get("goal-1");
+  assert(goal);
+  assert.equal(goal.ownGoal, true);
+  assert.equal(goal.scoringTeamId, null);
+  assert.equal(goal.concedingTeamId, "blue");
+  assert.equal(goal.scorerPlayerId, "player-cy");
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
+  assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Scored\s*0/);
+});
+
 test("setup smoke completes live game through finish", async () => {
   const apiState = createMockApiState();
   apiState.session = {

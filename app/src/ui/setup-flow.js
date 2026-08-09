@@ -2711,6 +2711,7 @@
         return;
       }
 
+      goalOwnGoalInput.disabled = false;
       saveGoalButton.disabled = false;
 
       if (rosterTeams.length < 2) {
