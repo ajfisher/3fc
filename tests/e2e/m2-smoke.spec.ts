@@ -938,7 +938,13 @@ test.describe("M2 local-stack smoke", () => {
 
       const magicLink = await waitForMagicLink(email);
       await page.goto(magicLink);
-      await page.waitForURL("**/setup");
+      await expect(page.getByTestId("auth-callback-shell")).toBeVisible();
+      const completeMagicLinkButton = page.getByTestId("complete-magic-link");
+      await expect(completeMagicLinkButton).toBeVisible();
+      await Promise.all([
+        page.waitForURL("**/setup"),
+        completeMagicLinkButton.click(),
+      ]);
       await expect(page.getByTestId("setup-shell")).toBeVisible();
 
       await page.locator("#league-name").fill(leagueName);
@@ -1074,9 +1080,12 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("final-team-log-red")).toContainText(ariNickname);
       await expect(page.getByTestId("final-scorer-stats").locator("li").filter({ hasText: ariNickname })).toContainText("1");
       await expect(page.getByTestId("final-assist-stats").locator("li").filter({ hasText: beaNickname })).toContainText("1");
-      await expect(page.getByTestId("final-full-goal-log")).toContainText(ariNickname);
-      await expect(page.getByTestId("final-full-goal-log").locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
-      await expect(page.getByTestId("final-full-goal-log")).not.toContainText("Third 1");
+      const fullGoalLog = page.getByTestId("final-full-goal-log");
+      await expect(fullGoalLog).toContainText(ariNickname);
+      await fullGoalLog.locator("summary").click();
+      await expect(fullGoalLog).toHaveAttribute("open", "");
+      await expect(fullGoalLog.locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
+      await expect(fullGoalLog).not.toContainText("Third 1");
       await expect(page.locator("#game-edit-status")).toHaveValue("finished");
       await expect(page.getByTestId("finish-game")).toBeDisabled();
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
@@ -1085,6 +1094,13 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("quick-create-player")).toBeEnabled();
       await expectAllEnabled(page.locator('[data-action="assign-player"]'));
       await selectGameMode(page, "run");
+      await expect(page.locator("#goal-scoring-team")).toHaveValue("");
+      await expect(page.locator("#goal-conceding-team")).toBeDisabled();
+      await expect(page.locator("#goal-scorer")).toBeDisabled();
+      await expect(page.getByTestId("add-goal")).toBeDisabled();
+      await page.locator("#goal-scoring-team").selectOption("red");
+      await page.locator("#goal-conceding-team").selectOption("blue");
+      await page.locator("#goal-scorer").selectOption(ariPlayerId);
       await expect(page.getByTestId("add-goal")).toBeEnabled();
       await expect(page.locator("#goal-form-note")).not.toContainText("final whistle");
       await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
