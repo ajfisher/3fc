@@ -99,7 +99,7 @@
     const isLoading = state === "default" && /(?:…|\.{3})$/.test(text.trim());
     messageElement.textContent = text;
     messageElement.classList.toggle("sr-only", state !== "error");
-    statusElement.hidden = text.length === 0;
+    statusElement.hidden = false;
     statusElement.setAttribute("data-activity", isLoading ? "loading" : "message");
     if (state === "default") {
       statusElement.removeAttribute("data-state");

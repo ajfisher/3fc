@@ -2243,7 +2243,7 @@ test("empty dashboard does not reopen creation after a slow response overrides u
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(region.hidden, true);
   assert.equal(page.document.activeElement, toggle);
-  assert.equal(activityStatus.hidden, true);
+  assert.equal(activityStatus.hidden, false);
   assert.equal(activityStatus.textContent, "");
 });
 
@@ -2702,7 +2702,7 @@ test("invite page accepts organiser codes after confirmation and grants league a
   assert.equal(apiState.leagueAccess.get(leagueAccessKey("autumn-league", "coach@example.com")), undefined);
   assert.equal(apiState.leagueInvites.get("ABCD2345")?.acceptedByUserId, null);
   assert.equal(invitePage.document.getElementById("setup-status")?.textContent, "");
-  assert.equal(invitePage.document.getElementById("setup-status")?.hidden, true);
+  assert.equal(invitePage.document.getElementById("setup-status")?.hidden, false);
   assert.equal(invitePage.document.getElementById("organiser-invite-code-form")?.hidden, true);
   assert.equal(invitePage.document.getElementById("organiser-invite-accept-code")?.textContent, "ABCD2345");
 
@@ -2865,7 +2865,7 @@ test("league static shell remounts nested league season routes as scoped season 
   assert.equal(activityStatus.getAttribute("aria-live"), "polite");
   assert(activityStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
   assert(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
-  assert.equal(activityStatus.hidden, true);
+  assert.equal(activityStatus.hidden, false);
   assert.equal(activityStatus.textContent, "");
 });
 
@@ -7620,7 +7620,7 @@ test("join page registers a player without organizer authentication", async () =
   assert.equal(joinPage.navigations.length, 0);
   assert.equal(joinPage.document.getElementById("join-code-value")?.textContent, "JOIN0001");
   assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "");
-  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, true);
+  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, false);
 
   const nicknameInput = joinPage.document.getElementById("join-player-nickname");
   const form = joinPage.document.getElementById("join-game-form");

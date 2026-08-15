@@ -45,8 +45,7 @@ function renderSetupScriptTag(): string {
 }
 
 function renderActivityStatus(message: string, loading = true): string {
-  const hidden = message ? "" : " hidden";
-  return `<div data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="${loading ? "loading" : "message"}"${hidden}>${renderIcon("loader-circle")}<span data-ui="activity-message" class="sr-only">${escapeHtml(message)}</span></div>`;
+  return `<div data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="${loading ? "loading" : "message"}">${renderIcon("loader-circle")}<span data-ui="activity-message" class="sr-only">${escapeHtml(message)}</span></div>`;
 }
 
 function renderAuthScriptTag(): string {
