@@ -1572,11 +1572,15 @@
         if (payload.emailDelivery?.status === "sent") {
           setLocalStatus(organiserInviteEmailStatus, `Sent to ${payload.emailDelivery.email}.`, "success");
         } else if (payload.emailDelivery?.status === "unknown") {
-          setLocalStatus(
-            organiserInviteEmailStatus,
-            "Delivery unconfirmed. Use the reusable link above.",
-            "error",
-          );
+          const recoveryLink = typeof payload.inviteLink === "string" ? payload.inviteLink : "";
+          setLocalStatus(organiserInviteEmailStatus, "Delivery unconfirmed.", "error");
+          if (recoveryLink) {
+            const recoveryAnchor = document.createElement("a");
+            recoveryAnchor.href = recoveryLink;
+            recoveryAnchor.textContent = "Open the email-restricted recovery link";
+            recoveryAnchor.className = "inline-recovery-link";
+            organiserInviteEmailStatus.append(" ", recoveryAnchor, ".");
+          }
         } else {
           setLocalStatus(organiserInviteEmailStatus, "Invite created.", "success");
         }

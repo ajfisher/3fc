@@ -2529,9 +2529,16 @@ test("league page shows manual invite link when organiser email delivery is unco
   );
   assert.equal(
     leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
-    "Delivery unconfirmed. Use the reusable link above.",
+    "Delivery unconfirmed. Open the email-restricted recovery link.",
   );
+  const recoveryLink = leaguePage.document.querySelector(
+    "#organiser-invite-email-status .inline-recovery-link",
+  );
+  assert(recoveryLink instanceof leaguePage.window.HTMLAnchorElement);
+  assert.equal(recoveryLink.href, "http://localhost:3000/invites?code=UNKN2345");
   assert.equal(leaguePage.document.getElementById("organiser-email-invite-code"), null);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-link"), null);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result"), null);
   assert.equal(
     apiState.storage.has("threefc-idempotency:organiser-invite:autumn-league-coach%40example.com"),
     false,
