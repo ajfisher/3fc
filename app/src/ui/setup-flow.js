@@ -3345,7 +3345,7 @@
             <div data-ui="goal-event-main">
               <div data-ui="goal-primary-row">
                 <strong data-ui="goal-time">${escapeHtml(displayTime)}</strong>
-                <span data-ui="goal-scorer">${escapeHtml(scorer)}</span>
+                <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${escapeHtml(scorer)}</span>
                 ${scoringContext}
                 <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
                 ${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
@@ -3597,9 +3597,9 @@
         active ? "true" : "false"
       }" data-state="${
         active ? "active" : "idle"
-      }"${teamSwatchStyle(team)}${disabled}><span>${escapeHtml(team.name)}</span>${
-        active ? renderClientIcon("circle-check") : ""
-      }</button>`;
+      }"${teamSwatchStyle(team)}${disabled}><span data-ui="team-chip-visual"><span>${escapeHtml(
+        team.name,
+      )}</span>${active ? renderClientIcon("circle-check") : ""}</span></button>`;
     }
 
     function assignmentButtons(playerId, currentTeamId = null) {

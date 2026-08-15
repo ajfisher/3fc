@@ -3409,6 +3409,7 @@ test("game page quick-creates and assigns roster players", async () => {
   assert.equal(activeRedChip.getAttribute("data-context"), "assign");
   assert.equal(activeRedChip.getAttribute("aria-pressed"), "true");
   assert.match(activeRedChip.getAttribute("style") ?? "", /--team-color: #d83b36/);
+  assert(activeRedChip.querySelector('[data-ui="team-chip-visual"]'));
   assert(activeRedChip.querySelector('[data-icon="circle-check"]'));
   const idleBlueChip = playerPool.querySelector(
     `[data-ui="team-chip"][data-player-id="${createdPlayer.playerId}"][data-team-id="blue"]`,
@@ -3416,6 +3417,7 @@ test("game page quick-creates and assigns roster players", async () => {
   assert(idleBlueChip instanceof gamePage.window.HTMLButtonElement);
   assert.equal(idleBlueChip.getAttribute("data-context"), "assign");
   assert.equal(idleBlueChip.getAttribute("aria-pressed"), "false");
+  assert(idleBlueChip.querySelector('[data-ui="team-chip-visual"]'));
   assert.equal(idleBlueChip.querySelector('[data-icon="circle-check"]'), null);
   assert.equal(scoringTeamInput.value, "");
   assert.equal(concedingTeamInput.value, "");
@@ -6540,6 +6542,7 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert.equal(assistsElement.querySelectorAll('input[type="checkbox"]:checked').length, 0);
   const firstGoal = timeline.querySelector('[data-ui="goal-event"][data-event-id="goal-1"]');
   assert(firstGoal instanceof gamePage.window.HTMLElement);
+  assert.equal(firstGoal.querySelector('[data-ui="goal-scorer"]')?.getAttribute("title"), "Ari");
   assert(
     firstGoal.querySelector(
       '[data-ui="goal-team-chip"][role="img"][data-team-id="red"][aria-label="Scoring team: Red"]',

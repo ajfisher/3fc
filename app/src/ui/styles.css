@@ -1360,21 +1360,32 @@ body {
 [data-ui="team-chip"] {
   --team-color: #8db8a9;
   display: inline-flex;
-  min-height: 2.2rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
   align-items: center;
   justify-content: center;
-  gap: 0.3rem;
-  border: 1px solid color-mix(in srgb, var(--team-color) 32%, #c5d3cf);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--team-color) 7%, white);
+  border: 0;
+  background: transparent;
   color: var(--ink-strong);
-  padding: 0.25rem 0.55rem;
+  padding: 0.275rem 0;
   font: inherit;
   font-size: 0.82rem;
   font-weight: 800;
   cursor: pointer;
 
-  &[data-state="active"] {
+  > [data-ui="team-chip-visual"] {
+    display: inline-flex;
+    min-height: 2.2rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    border: 1px solid color-mix(in srgb, var(--team-color) 32%, #c5d3cf);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--team-color) 7%, white);
+    padding: 0.25rem 0.55rem;
+  }
+
+  &[data-state="active"] > [data-ui="team-chip-visual"] {
     border-color: var(--team-color);
     background: color-mix(in srgb, var(--team-color) 24%, white);
     box-shadow: inset 0 0 0 1px var(--team-color), inset 0 0 0 2px #ffffff9c;
@@ -1538,10 +1549,35 @@ body {
       font-size: 0.78rem;
     }
 
+    [data-ui="goal-time"],
+    [data-ui="goal-team-arrow"],
+    [data-ui="own-goal-marker"],
+    [data-ui="third-indicator"] {
+      flex-shrink: 0;
+    }
+
+    [data-ui="goal-scorer"] {
+      min-width: 0;
+      max-width: 4.5rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     [data-ui="goal-team-chip"] {
+      min-width: 0;
+      max-width: 4.25rem;
+      flex: 0 1 auto;
       gap: 0.18rem;
       padding: 0.12rem 0.3rem;
       font-size: 0.7rem;
+
+      > span:last-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
       [data-ui="team-swatch"] {
         width: 0.5rem;
