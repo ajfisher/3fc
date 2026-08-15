@@ -1528,6 +1528,34 @@ body {
   }
 }
 
+@media (max-width: 359px) {
+  [data-ui="goal-primary-row"] {
+    flex-wrap: nowrap;
+    gap: 0.12rem;
+
+    [data-ui="goal-time"],
+    [data-ui="goal-scorer"] {
+      font-size: 0.78rem;
+    }
+
+    [data-ui="goal-team-chip"] {
+      gap: 0.18rem;
+      padding: 0.12rem 0.3rem;
+      font-size: 0.7rem;
+
+      [data-ui="team-swatch"] {
+        width: 0.5rem;
+        height: 0.5rem;
+      }
+    }
+
+    [data-ui="third-indicator"] {
+      width: 1.15rem;
+      height: 1.15rem;
+    }
+  }
+}
+
 [data-ui="goal-team-chip"] {
   --team-color: #8db8a9;
   display: inline-flex;
