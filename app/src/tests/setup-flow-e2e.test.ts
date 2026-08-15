@@ -2157,6 +2157,7 @@ test("populated dashboard keeps league creation disclosed on demand and handles 
   assert(leagueRow.children[0]?.querySelector('a[href="/leagues/autumn-league"]'));
   assert(leagueRow.children[1]?.querySelector('[aria-label="View Autumn League"]'));
   assert(leagueRow.children[1]?.querySelector('[aria-label="Delete Autumn League"]'));
+  assert.doesNotMatch(leagueRow.textContent ?? "", /autumn-league|friendly/i);
 
   dispatchClick(toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
@@ -2316,6 +2317,9 @@ test("league page loads reusable organiser share invites and sends direct email 
     ["Season name", "Dates", "Actions"],
   );
   assert(seasonRow.querySelector('a[href="/leagues/autumn-league/seasons/autumn-2026"]'));
+  assert(seasonRow.querySelector('[aria-label="View Autumn 2026"] [data-icon="eye"]'));
+  assert(seasonRow.querySelector('[aria-label="Delete Autumn 2026"] [data-icon="trash-2"]'));
+  assert.doesNotMatch(seasonRow.textContent ?? "", /autumn-2026|friendly/i);
 
   assert.equal(apiState.lastOrganiserInviteRequest, null);
   assert.equal(inviteRegion.hidden, true);

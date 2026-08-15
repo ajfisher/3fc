@@ -166,6 +166,14 @@ test("league page includes season create form and seasons table", () => {
   );
   assert.match(html, /data-testid="create-season"/);
   assert.match(html, /data-testid="delete-league"/);
+  assert.match(html, /data-icon="calendar-plus"/);
+  assert.match(html, /data-icon="user-round-plus"/);
+  assert.match(html, /data-icon="trash-2"/);
+  assert.doesNotMatch(html, /League page ready/);
+  assert.equal((html.match(/friendly URL/gi) ?? []).length, 1);
+  assert.ok(html.indexOf('id="season-name"') < html.indexOf('id="season-start"'));
+  assert.ok(html.indexOf('id="season-start"') < html.indexOf('id="season-end"'));
+  assert.ok(html.indexOf('id="season-end"') < html.indexOf('id="season-friendly-url"'));
 });
 
 test("season page includes game create form and games table", () => {
@@ -189,6 +197,7 @@ test("season page includes game create form and games table", () => {
   );
   assert.match(html, /data-testid="create-game"/);
   assert.match(html, /data-testid="delete-season"/);
+  assert.doesNotMatch(html, /Season page ready|friendly URL/i);
 });
 
 test("component showcase page includes navigation, players, tables, validation, row actions, and modal", () => {
