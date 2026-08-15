@@ -4373,7 +4373,8 @@
             return;
           }
 
-          if (isGameFinished()) {
+          const finishedCorrection = isGameFinished();
+          if (finishedCorrection) {
             finishedResultUnavailable = true;
           }
           applyGoalMutationResult(result);
@@ -4384,16 +4385,28 @@
           }
           resetGoalForm();
 
-          if (eventId) {
-            const goalsLoaded = await loadGameGoals();
-            if (!goalsLoaded) {
-              showError("Goal update was saved, but the latest goal state could not be loaded.");
-              setStatus("Goal updated; timeline refresh failed.", "success");
-              return;
-            }
-          }
+          const goalsLoaded = eventId ? await loadGameGoals() : true;
 
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!goalsLoaded) {
+            if (!gameRefreshed) {
+              showError(
+                "Goal update was saved, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+              );
+              setStatus("Goal updated; timeline and result refresh failed.", "error");
+            } else if (finishedCorrection) {
+              showError("Goal details could not be loaded. Reload to try again.");
+              setStatus(
+                "Goal updated. Match Summary refreshed; goal timeline unavailable.",
+                "default",
+              );
+            } else {
+              showError("Goal update was saved, but the latest goal state could not be loaded.");
+              setStatus("Goal updated; timeline refresh failed.", "default");
+            }
+            return;
+          }
+
           if (!gameRefreshed) {
             showError(
               eventId
