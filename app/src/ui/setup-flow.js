@@ -841,6 +841,15 @@
     return error instanceof Error && (error.statusCode === 404 || error.statusCode === 405);
   }
 
+  function isDefinitiveRequestRejection(error) {
+    return (
+      error instanceof Error &&
+      Number.isInteger(error.statusCode) &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
+    );
+  }
+
   async function requestJsonOrThrowWithFallback(primaryPath, fallbackPath, init = {}, validateFallback = null) {
     try {
       return await requestJsonOrThrow(primaryPath, init);
@@ -4380,6 +4389,8 @@
 
         const eventId = editingGoalId;
         const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
+        const previousScoreboardState = scoreboardState;
+        const previousFinishedResultState = finishedResultState;
         setStatus(`${actionLabel}…`, "default");
         goalMutationInFlight = true;
         scoreboardState = "refreshing";
@@ -4404,11 +4415,22 @@
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : "Could not save goal.";
+            showError(message);
+            if (isDefinitiveRequestRejection(error)) {
+              scoreboardState = previousScoreboardState;
+              finishedResultState = previousFinishedResultState;
+              if (eventId) {
+                clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
+              } else {
+                pendingCreateGoalIdempotency = null;
+              }
+              setStatus("Goal was not saved. Review the error and try again.", "error");
+              return;
+            }
             scoreboardState = "uncertain";
             if (isGameFinished()) {
               finishedResultState = "uncertain";
             }
-            showError(message);
             setStatus(
               "Could not confirm whether the goal was saved. Retry with the same details.",
               "error",
@@ -4496,6 +4518,8 @@
           return;
         }
 
+        const previousScoreboardState = scoreboardState;
+        const previousFinishedResultState = finishedResultState;
         goalMutationInFlight = true;
         scoreboardState = "refreshing";
         if (isGameFinished()) {
@@ -4505,8 +4529,8 @@
         setStatus("Undoing latest goal…", "default");
         renderLiveScoring();
 
+        const stablePart = `${gameId}-${latest.eventId}`;
         try {
-          const stablePart = `${gameId}-${latest.eventId}`;
           const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
             method: "POST",
             headers: {
@@ -4558,11 +4582,18 @@
           setStatus("Latest goal undone.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not undo latest goal.";
+          showError(message);
+          if (isDefinitiveRequestRejection(error)) {
+            scoreboardState = previousScoreboardState;
+            finishedResultState = previousFinishedResultState;
+            clearGoalMutationIdempotency("undo-goal", stablePart);
+            setStatus("The latest goal was not undone. Review the error and try again.", "error");
+            return;
+          }
           scoreboardState = "uncertain";
           if (isGameFinished()) {
             finishedResultState = "uncertain";
           }
-          showError(message);
           setStatus("Could not confirm the undo. Retry the same action.", "error");
         } finally {
           goalMutationInFlight = false;
@@ -4607,6 +4638,8 @@
           return;
         }
 
+        const previousScoreboardState = scoreboardState;
+        const previousFinishedResultState = finishedResultState;
         goalMutationInFlight = true;
         scoreboardState = "refreshing";
         if (isGameFinished()) {
@@ -4616,8 +4649,8 @@
         setStatus("Deleting goal…", "default");
         renderLiveScoring();
 
+        const stablePart = `${gameId}-${eventId}`;
         try {
-          const stablePart = `${gameId}-${eventId}`;
           const result = await requestJsonOrThrow(
             `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
             {
@@ -4662,11 +4695,18 @@
           setStatus("Goal deleted.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete goal.";
+          showError(message);
+          if (isDefinitiveRequestRejection(error)) {
+            scoreboardState = previousScoreboardState;
+            finishedResultState = previousFinishedResultState;
+            clearGoalMutationIdempotency("delete-goal", stablePart);
+            setStatus("The goal was not deleted. Review the error and try again.", "error");
+            return;
+          }
           scoreboardState = "uncertain";
           if (isGameFinished()) {
             finishedResultState = "uncertain";
           }
-          showError(message);
           setStatus("Could not confirm the deletion. Retry the same action.", "error");
         } finally {
           goalMutationInFlight = false;
