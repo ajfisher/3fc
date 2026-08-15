@@ -3742,7 +3742,7 @@
         : [];
       rosterAssignments = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : [];
       rosterPlayers = Array.isArray(playersPayload?.players) ? playersPayload.players : [];
-      if (scoreboardTeams.length === 0 || goalTimeline.length === 0) {
+      if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
       }
       renderRosterSetup();
@@ -3789,6 +3789,9 @@
 
       currentGame = game;
       finishedResultUnavailable = false;
+      if (game.status === "finished" && Array.isArray(game.result?.teams)) {
+        scoreboardTeams = normalizeScoreboardTeams(game.result.teams);
+      }
       currentLeagueId = game.leagueId;
       currentSeasonId = game.seasonId;
 
@@ -4397,7 +4400,7 @@
             } else if (finishedCorrection) {
               showError("Goal details could not be loaded. Reload to try again.");
               setStatus(
-                "Goal updated. Match Summary refreshed; goal timeline unavailable.",
+                "Goal updated. Scores refreshed; goal timeline unavailable.",
                 "default",
               );
             } else {

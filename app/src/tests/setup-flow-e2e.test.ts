@@ -4412,6 +4412,22 @@ test("game page remains usable when goal timeline load fails", async () => {
         ? new URL(String(input))
         : new URL(input.url);
     const method = (init.method ?? "GET").toUpperCase();
+    if (method === "GET" && target.pathname === "/v1/games/game-goals-fail/roster") {
+      const response = await defaultFetch(input, init);
+      const payload = (await response.json()) as {
+        teams?: Array<Record<string, unknown>>;
+        roster?: unknown[];
+      };
+      return createJsonResponse(200, {
+        ...payload,
+        teams: (payload.teams ?? []).map((team) => ({
+          ...team,
+          conceded: 0,
+          scored: 0,
+        })),
+      });
+    }
+
     if (method === "GET" && target.pathname === "/v1/games/game-goals-fail/goals") {
       return createJsonResponse(503, {
         error: "unavailable",
@@ -4454,6 +4470,22 @@ test("game page remains usable when goal timeline load fails", async () => {
   assert.match(resultSummary.textContent ?? "", /Red win/);
   assert.match(resultSummary.textContent ?? "", /Goal summaries unavailable/);
   assert.doesNotMatch(resultSummary.textContent ?? "", /No goals recorded|No scorers recorded/);
+  const initialRedScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  const initialBlueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  assert(initialRedScoreCard instanceof page.window.HTMLElement);
+  assert(initialBlueScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...initialRedScoreCard.querySelectorAll("dl div")].map((row) =>
+      row.textContent?.replace(/\s/g, ""),
+    ),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...initialBlueScoreCard.querySelectorAll("dl div")].map((row) =>
+      row.textContent?.replace(/\s/g, ""),
+    ),
+    ["Conceded1", "Scored0"],
+  );
   assert.equal(page.document.querySelector('[data-testid="final-full-goal-log"]'), null);
   assert.equal(quickCreateButton.disabled, false);
 });
@@ -5215,6 +5247,10 @@ test("game page refreshes the finished result when a committed edit timeline rel
   const seededGame = apiState.games.get("game-finished-timeline-refresh-fail");
   assert(seededGame);
   refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+  const originalGoal = apiState.goalEvents.get("goal-1");
+  assert(originalGoal);
+  const staleReplayGoal = { ...originalGoal };
+  const staleReplayScoreboard = recomputeMockScoreboard(apiState, seededGame);
 
   const defaultFetch = createMockFetch(apiState);
   let correctionCommitted = false;
@@ -5232,9 +5268,15 @@ test("game page refreshes the finished result when a committed edit timeline rel
       method === "PATCH" &&
       target.pathname === "/v1/games/game-finished-timeline-refresh-fail/goals/goal-1"
     ) {
-      const response = await defaultFetch(input, init);
+      await defaultFetch(input, init);
       correctionCommitted = true;
-      return response;
+      return createJsonResponse(200, {
+        goal: staleReplayGoal,
+        scoreboard: {
+          teams: staleReplayScoreboard,
+        },
+        timeline: [staleReplayGoal],
+      });
     }
 
     if (
@@ -5314,6 +5356,26 @@ test("game page refreshes the finished result when a committed edit timeline rel
   assert.equal(successfulGameRefreshes, 1);
   assert(resolveGameRefresh);
   assert.equal(saveGoalButton.disabled, true);
+  const pendingBlueScoreCard = page.document.querySelector(
+    '[data-ui="score-team"][data-team-id="blue"]',
+  );
+  const pendingRedScoreCard = page.document.querySelector(
+    '[data-ui="score-team"][data-team-id="red"]',
+  );
+  assert(pendingBlueScoreCard instanceof page.window.HTMLElement);
+  assert(pendingRedScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...pendingBlueScoreCard.querySelectorAll("dl div")].map((row) =>
+      row.textContent?.replace(/\s/g, ""),
+    ),
+    ["Conceded1", "Scored0"],
+  );
+  assert.deepEqual(
+    [...pendingRedScoreCard.querySelectorAll("dl div")].map((row) =>
+      row.textContent?.replace(/\s/g, ""),
+    ),
+    ["Conceded0", "Scored1"],
+  );
 
   const refreshedGame = apiState.games.get("game-finished-timeline-refresh-fail");
   assert(refreshedGame);
@@ -5322,7 +5384,7 @@ test("game page refreshes the finished result when a committed edit timeline rel
 
   assert.equal(failedGoalRefreshes, 1);
   assert.equal(successfulGameRefreshes, 1);
-  assert.match(status.textContent ?? "", /Goal updated\. Match Summary refreshed; goal timeline unavailable/);
+  assert.match(status.textContent ?? "", /Goal updated\. Scores refreshed; goal timeline unavailable/);
   assert.match(error.textContent ?? "", /Goal details could not be loaded\. Reload to try again/);
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.equal(resultSummary.hidden, false);
@@ -5341,6 +5403,18 @@ test("game page refreshes the finished result when a committed edit timeline rel
   );
   assert.deepEqual(
     [...redTeam.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
+  const blueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  const redScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  assert(blueScoreCard instanceof page.window.HTMLElement);
+  assert(redScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
     ["Conceded1", "Scored0"],
   );
   assert(resultSummary.querySelector('[data-testid="final-team-log-unavailable-blue"]'));
