@@ -1124,7 +1124,11 @@
       return;
     }
 
+    let createLeagueDisclosureTouched = false;
     attachSlugAutoFill(leagueNameInput, leagueFriendlyUrlInput, leagueIdDisplay, "league");
+    toggleCreateLeagueButton.addEventListener("click", () => {
+      createLeagueDisclosureTouched = true;
+    });
     attachDisclosure(toggleCreateLeagueButton, createLeagueRegion);
     if (welcomeHeading instanceof HTMLElement) {
       welcomeHeading.textContent = `Welcome ${dashboardNameFromSession(session)}`;
@@ -1148,7 +1152,9 @@
         if (leaguesEmpty instanceof HTMLElement) {
           leaguesEmpty.hidden = false;
         }
-        setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true);
+        if (!createLeagueDisclosureTouched) {
+          setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true, { focus: false });
+        }
         setStatus("");
         return;
       }

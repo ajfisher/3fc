@@ -2026,7 +2026,7 @@ test("setup flow shows inline validation for blank required fields", async () =>
   assert.equal(dashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome Organizer");
   assert.equal(createLeagueToggle.getAttribute("aria-expanded"), "true");
   assert.equal(createLeagueRegion.hidden, false);
-  assert.equal(dashboard.document.activeElement?.id, "league-name");
+  assert.notEqual(dashboard.document.activeElement?.id, "league-name");
   dispatchClick(createLeagueButton);
   await flushAsync();
   assert.equal(leagueNameNotice.textContent, "League name is required.");
@@ -2156,6 +2156,59 @@ test("populated dashboard keeps league creation disclosed on demand and handles 
 
   assert.equal(confirmations, 1);
   assert.equal(apiState.leagues.has("autumn-league"), false);
+});
+
+test("empty dashboard does not reopen creation after a slow response overrides user choice", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  const defaultFetch = createMockFetch(apiState);
+  let resolveLeagues: ((response: Response) => void) | undefined;
+  const delayedFetch: typeof fetch = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    if ((init.method ?? "GET").toUpperCase() === "GET" && target.pathname === "/v1/leagues") {
+      return new Promise<Response>((resolve) => {
+        resolveLeagues = resolve;
+      });
+    }
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: delayedFetch,
+    flushOnBoot: false,
+  });
+  await flushAsync();
+
+  const toggle = page.document.querySelector('[data-testid="toggle-create-league"]');
+  const region = page.document.getElementById("dashboard-create-league-region");
+  assert(toggle instanceof page.window.HTMLButtonElement);
+  assert(region instanceof page.window.HTMLElement);
+  dispatchClick(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  dispatchClick(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(page.document.activeElement, toggle);
+
+  assert(resolveLeagues);
+  resolveLeagues(createJsonResponse(200, { leagues: [] }));
+  await flushAsync();
+
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(region.hidden, true);
+  assert.equal(page.document.activeElement, toggle);
 });
 
 test("dashboard greeting falls back to the full email when no local-part token exists", async () => {
