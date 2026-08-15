@@ -1066,14 +1066,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip">
     <div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
   </div>`;
-  const livePanel = `<section data-ui="run-scoring-panel" data-testid="panel-game-live" aria-labelledby="run-scoring-heading">
-    <header data-ui="section-heading">
-      <h2 id="run-scoring-heading">Run game</h2>
-      <p>Record goals first; review corrections when needed.</p>
-    </header>
+  const livePanel = `<div data-ui="run-scoring-panel" data-testid="panel-game-live">
     <section data-ui="run-primary-scoring" data-testid="run-primary-scoring" aria-labelledby="run-goal-form-heading">
       <header>
-        <h3 id="run-goal-form-heading">Record goal</h3>
+        <h2 id="run-goal-form-heading">Record goal</h2>
       </header>
       <div data-ui="run-goal-form">
         <div data-ui="field">
@@ -1116,19 +1112,17 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         })}
       </div>
     </section>
-  </section>`;
+  </div>`;
   const latestGoalsPanel = `<details data-ui="run-latest-goals" data-testid="run-latest-goals" open>
       <summary>Latest goals</summary>
       <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>
     </details>`;
   const finalPanel = renderPanel(
-    "Finalisation",
-    "Finish the match and review the summary.",
+    "Match Summary",
+    "Review the final result and player statistics.",
     `<div data-ui="finalisation-board" data-testid="finalisation-board">
-      <dl data-ui="id-preview" data-testid="finalisation-context">
-        <div><dt>Game</dt><dd id="final-game-id-value">${gameHeading}</dd></div>
+      <dl data-ui="final-summary-status" data-testid="finalisation-context">
         <div><dt>Status</dt><dd id="final-game-status">Loading…</dd></div>
-        <div><dt>Timeline</dt><dd id="final-game-readiness">Loading…</dd></div>
       </dl>
       <div data-ui="game-result-summary" id="game-result-summary" data-testid="game-result-summary" hidden></div>
     </div>`,
@@ -1213,7 +1207,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               ${latestGoalsPanel}
             </div>
           </section>
-          <section data-ui="game-mode-panel" id="game-mode-final" aria-label="Finalisation" data-game-mode="final" data-testid="game-mode-final" hidden>
+          <section data-ui="game-mode-panel" id="game-mode-final" aria-label="Match summary" data-game-mode="final" data-testid="game-mode-final" hidden>
             ${finalPanel}
           </section>
         </section>

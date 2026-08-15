@@ -1036,10 +1036,19 @@ test.describe("M2 local-stack smoke", () => {
       await page.locator(`#goal-assists input[value="${beaPlayerId}"]`).check();
       await page.getByTestId("add-goal").click();
 
-      await expect(page.getByTestId("goal-timeline")).toContainText(`${ariNickname} for Red`);
+      await expect(page.getByTestId("goal-timeline")).toContainText(ariNickname);
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="red"]')).toContainText("Red");
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="blue"]')).toContainText("Blue");
       await expect(page.getByTestId("goal-timeline")).toContainText(`Assists: ${beaNickname}`);
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
+      await expect(page.locator("#goal-scoring-team")).toHaveValue("");
+      await expect(page.locator("#goal-conceding-team")).toHaveValue("");
+      await expect(page.locator("#goal-scorer")).toHaveValue("");
       await expect(page.locator('[data-ui="score-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(page.locator('[data-ui="score-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
+      expect(
+        await page.locator('[data-ui="score-team"][data-team-id="red"] dt').allTextContents(),
+      ).toEqual(["Conceded", "Scored"]);
 
       await finishThird(page, 1);
       await startThird(page, 2);
@@ -1052,7 +1061,11 @@ test.describe("M2 local-stack smoke", () => {
       await page.getByTestId("finish-game").click();
 
       await expect(page.getByTestId("game-result-summary")).toBeVisible();
+      await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match Summary" })).toBeVisible();
+      await expect(page.getByTestId("finalisation-context").locator("dt")).toHaveText("Status");
+      await expect(page.getByTestId("finalisation-context")).not.toContainText(/Game|Timeline/);
       await expect(page.getByTestId("game-result-outcome")).toHaveText("Red win");
+      await expect(page.getByTestId("game-result-summary")).not.toContainText("Computed");
       const resultTeams = page.getByTestId("game-result-teams");
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Conceded\s*0/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
@@ -1062,6 +1075,8 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("final-scorer-stats").locator("li").filter({ hasText: ariNickname })).toContainText("1");
       await expect(page.getByTestId("final-assist-stats").locator("li").filter({ hasText: beaNickname })).toContainText("1");
       await expect(page.getByTestId("final-full-goal-log")).toContainText(ariNickname);
+      await expect(page.getByTestId("final-full-goal-log").locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
+      await expect(page.getByTestId("final-full-goal-log")).not.toContainText("Third 1");
       await expect(page.locator("#game-edit-status")).toHaveValue("finished");
       await expect(page.getByTestId("finish-game")).toBeDisabled();
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
@@ -1071,7 +1086,7 @@ test.describe("M2 local-stack smoke", () => {
       await expectAllEnabled(page.locator('[data-action="assign-player"]'));
       await selectGameMode(page, "run");
       await expect(page.getByTestId("add-goal")).toBeEnabled();
-      await expect(page.locator("#goal-form-note")).toContainText("final whistle");
+      await expect(page.locator("#goal-form-note")).not.toContainText("final whistle");
       await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
       await expect(page.locator('[data-action="delete-goal"]').first()).toBeEnabled();
       await expect(page.getByTestId("undo-last-goal")).toBeEnabled();

@@ -271,6 +271,9 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="run-console"/);
   assert.match(html, /data-testid="run-score-strip"/);
   assert.match(html, /data-testid="run-primary-scoring"/);
+  assert.match(html, /<div data-ui="run-scoring-panel" data-testid="panel-game-live">/);
+  assert.match(html, /data-testid="run-primary-scoring" aria-labelledby="run-goal-form-heading"/);
+  assert.doesNotMatch(html, /aria-labelledby="run-scoring-heading"/);
   assert.match(html, /data-testid="run-timer-bar"/);
   assert.match(html, /data-testid="run-third-history"/);
   assert.match(html, /data-testid="run-latest-goals"/);
@@ -283,6 +286,11 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-result-summary"/);
   assert.match(html, /data-testid="panel-game-final"/);
   assert.match(html, /data-testid="finalisation-board"/);
+  assert.match(html, />Match Summary</);
+  assert.doesNotMatch(html, />Run game</);
+  assert.doesNotMatch(html, /Record goals first/);
+  assert.doesNotMatch(html, />Finalisation</);
+  assert.doesNotMatch(html, /final-game-id-value|final-game-readiness/);
   assert.match(html, /data-testid="game-edit-third-length"/);
   assert.ok(
     html.indexOf('data-testid="game-mode-structure"') < html.indexOf('data-testid="game-mode-players"'),

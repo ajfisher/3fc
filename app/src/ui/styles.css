@@ -765,6 +765,7 @@ body {
     display: grid;
     gap: 0.1rem;
 
+    h2,
     h3 {
       margin: 0;
       font-size: 1rem;
@@ -1022,6 +1023,10 @@ body {
   border-radius: 8px;
   background: #ffffff;
 
+  &[data-has-third="true"] {
+    grid-template-columns: 3rem minmax(0, 1fr) auto;
+  }
+
   [data-ui="goal-time"] {
     border-radius: 999px;
     background: #edf6f2;
@@ -1046,6 +1051,27 @@ body {
   small {
     color: var(--ink-soft);
     font-size: 0.76rem;
+  }
+}
+
+[data-ui="final-summary-status"] {
+  margin: 0;
+
+  div {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+
+  dt {
+    color: var(--ink-soft);
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+
+  dd {
+    margin: 0;
+    font-weight: 850;
   }
 }
 
@@ -1460,14 +1486,103 @@ body {
   }
 }
 
-[data-ui="latest-flag"] {
-  align-self: center;
+[data-ui="goal-primary-row"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+
+  [data-ui="goal-time"],
+  [data-ui="goal-scorer"] {
+    font-weight: 850;
+  }
+
+  [data-ui="third-indicator"] {
+    margin-left: auto;
+  }
+}
+
+[data-ui="goal-team-chip"] {
+  --team-color: #8db8a9;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  border: 1px solid var(--team-color);
   border-radius: 999px;
-  padding: 0.22rem 0.5rem;
-  background: #ffffff;
-  color: var(--accent-strong);
-  font-size: 0.72rem;
+  padding: 0.18rem 0.48rem;
+  background: color-mix(in srgb, var(--team-color) 15%, white);
+  color: var(--ink-strong);
+  font-size: 0.76rem;
   font-weight: 850;
+
+  [data-ui="team-swatch"] {
+    width: 0.62rem;
+    height: 0.62rem;
+    border-radius: 999px;
+    background: var(--team-color);
+    box-shadow: inset 0 0 0 1px rgba(29, 42, 47, 0.2);
+  }
+}
+
+[data-ui="goal-team-arrow"] {
+  color: var(--ink-soft);
+  font-weight: 900;
+}
+
+[data-ui="own-goal-marker"] {
+  border: 1px solid #b7c7c2;
+  border-radius: 999px;
+  padding: 0.14rem 0.42rem;
+  background: #eef2f1;
+  color: #4b5f5b;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+[data-ui="third-indicator"] {
+  --third-active: #0b7867;
+  --third-idle: #d8e5e1;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 1px solid #9fb9b1;
+  border-radius: 999px;
+  background:
+    conic-gradient(
+      from -90deg,
+      transparent 0deg 118deg,
+      #fff 118deg 122deg,
+      transparent 122deg 238deg,
+      #fff 238deg 242deg,
+      transparent 242deg 358deg,
+      #fff 358deg 360deg
+    ),
+    conic-gradient(
+      from -90deg,
+      var(--third-one) 0deg 120deg,
+      var(--third-two) 120deg 240deg,
+      var(--third-three) 240deg 360deg
+    );
+
+  &[data-third="1"] {
+    --third-one: var(--third-active);
+    --third-two: var(--third-idle);
+    --third-three: var(--third-idle);
+  }
+
+  &[data-third="2"] {
+    --third-one: var(--third-idle);
+    --third-two: var(--third-active);
+    --third-three: var(--third-idle);
+  }
+
+  &[data-third="3"] {
+    --third-one: var(--third-idle);
+    --third-two: var(--third-idle);
+    --third-three: var(--third-active);
+  }
 }
 
 [data-ui="table-wrap"] {

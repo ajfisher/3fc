@@ -2034,9 +2034,7 @@
     const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
     const finishGameButton = root.querySelector('[data-action="finish-game"]');
     const gameResultSummaryElement = document.getElementById("game-result-summary");
-    const finalGameIdValue = document.getElementById("final-game-id-value");
     const finalGameStatus = document.getElementById("final-game-status");
-    const finalGameReadiness = document.getElementById("final-game-readiness");
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerSearchInput = document.getElementById("player-search");
@@ -2080,6 +2078,7 @@
     let scoreboardTeams = [];
     let goalTimeline = [];
     let goalTimelineLoaded = false;
+    let finishedResultUnavailable = false;
     let editingGoalId = null;
     let currentLeagueRole = null;
     let manualGameModeSelected = false;
@@ -2291,14 +2290,6 @@
       const hasStarted = timer ? timer.thirds.some((third) => third.startedAt !== null) : false;
       const complete = timer?.status === "complete";
       const finished = isGameFinished();
-      const finalReadiness = finished
-        ? "Summary posted"
-        : complete
-          ? "Ready to finish"
-          : hasStarted
-            ? humanTimerStatus(timer.status)
-            : "Not started";
-
       setModeMeta("structure", humanGameStatus(currentGame?.status));
       setModeMeta("players", `${rosteredCount} assigned`);
       setModeMeta("run", timer ? humanTimerStatus(timer.status) : "Timer");
@@ -2310,14 +2301,8 @@
         gameStateTab.setAttribute("data-game-state", gameState.state);
       }
 
-      if (finalGameIdValue instanceof HTMLElement && currentGame?.gameId) {
-        finalGameIdValue.textContent = currentGame.gameId;
-      }
       if (finalGameStatus instanceof HTMLElement) {
         finalGameStatus.textContent = humanGameStatus(currentGame?.status);
-      }
-      if (finalGameReadiness instanceof HTMLElement) {
-        finalGameReadiness.textContent = finalReadiness;
       }
     }
 
@@ -2544,11 +2529,21 @@
     }
 
     function playerNickname(playerId) {
-      return playerById(playerId)?.nickname ?? playerId;
+      const nickname = playerById(playerId)?.nickname;
+      if (typeof nickname === "string" && nickname.length > 0) {
+        return nickname;
+      }
+
+      return String(playerId ?? "Unknown player");
     }
 
     function teamName(teamId) {
-      return teamById(teamId)?.name ?? teamId;
+      const name = teamById(teamId)?.name;
+      if (typeof name === "string" && name.length > 0) {
+        return name;
+      }
+
+      return String(teamId ?? "Unknown team");
     }
 
     function assignmentByPlayerId(playerId) {
@@ -2591,7 +2586,10 @@
       return teams.map((team) => ({
         gameId: team.gameId ?? gameId,
         teamId: team.teamId,
-        name: team.name ?? team.teamId,
+        name:
+          typeof team.name === "string" && team.name.length > 0
+            ? team.name
+            : String(team.teamId ?? "Unknown team"),
         color: typeof team.color === "string" ? team.color : null,
         scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
         conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
@@ -2672,6 +2670,19 @@
         return;
       }
 
+      if (isGameFinished() && finishedResultUnavailable) {
+        gameResultSummaryElement.hidden = false;
+        gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-state="unavailable">
+          <header>
+            <span>Final result</span>
+            <strong>Result refresh required</strong>
+          </header>
+          <p data-ui="empty-note">The goal change was saved, but the updated match result could not be loaded.</p>
+        </section>`;
+        syncGameModeState();
+        return;
+      }
+
       const result = currentGame?.result;
       const teams = resultTeams();
       if (!isGameFinished() || !result || teams.length === 0) {
@@ -2684,15 +2695,12 @@
       const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
       const outcomeText = winner ? `${winner.name} win` : "Draw";
       const resultOutcome = result.outcome === "win" ? "win" : "draw";
-      const computedAt = typeof result.computedAt === "string" ? formatLocalTimestamp(result.computedAt) : "";
-
       const goalLogsLoaded = goalTimelineLoaded;
       gameResultSummaryElement.hidden = false;
       gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
         <header>
           <span>Final result</span>
           <strong data-testid="game-result-outcome">${escapeHtml(outcomeText)}</strong>
-          ${computedAt ? `<small>Computed ${escapeHtml(computedAt)}</small>` : ""}
         </header>
         <div data-ui="result-team-list" data-testid="game-result-teams">
           ${teams
@@ -2727,13 +2735,25 @@
       syncGameModeState();
     }
 
-    function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select", missingSelectedLabel = null) {
+    function renderSelectOptions(
+      selectElement,
+      options,
+      selectedValue,
+      emptyLabel = "Select",
+      missingSelectedLabel = null,
+      includePlaceholder = false,
+    ) {
       const selectedExists = options.some((option) => option.value === selectedValue);
       const preservesMissingSelection =
         !selectedExists && Boolean(selectedValue) && typeof missingSelectedLabel === "string";
       const safeSelected = selectedExists || preservesMissingSelection
         ? selectedValue
-        : (options[0]?.value ?? "");
+        : includePlaceholder
+          ? ""
+          : (options[0]?.value ?? "");
+      const placeholderOption = includePlaceholder
+        ? `<option value=""${safeSelected === "" ? " selected" : ""}>${escapeHtml(emptyLabel)}</option>`
+        : "";
       const preservedOption = preservesMissingSelection
         ? `<option value="${escapeHtml(selectedValue)}" selected>${escapeHtml(missingSelectedLabel)}</option>`
         : "";
@@ -2748,7 +2768,7 @@
 
       selectElement.innerHTML =
         options.length > 0 || preservesMissingSelection
-          ? `${preservedOption}${renderedOptions}`
+          ? `${placeholderOption}${preservedOption}${renderedOptions}`
           : `<option value="">${escapeHtml(emptyLabel)}</option>`;
       selectElement.value = safeSelected;
       selectElement.disabled = options.length === 0 && !preservesMissingSelection;
@@ -2773,8 +2793,8 @@
               <strong>${escapeHtml(team.name)}</strong>
             </header>
             <dl>
-              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
               <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
             </dl>
           </article>`,
         )
@@ -2839,14 +2859,24 @@
         goalScoringTeamInput.value = "";
         goalScoringTeamInput.disabled = true;
       } else {
-        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "No teams");
+        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "Choose scoring team", null, true);
       }
 
       const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
       const concedingOptions = ownGoal
         ? teamOptions
         : teamOptions.filter((team) => team.value !== scoringTeamId);
-      renderSelectOptions(goalConcedingTeamInput, concedingOptions, previousConcedingTeamId, "No conceding teams");
+      renderSelectOptions(
+        goalConcedingTeamInput,
+        concedingOptions,
+        previousConcedingTeamId,
+        "Choose conceding team",
+        null,
+        true,
+      );
+      if (!ownGoal && !scoringTeamId) {
+        goalConcedingTeamInput.disabled = true;
+      }
 
       const concedingTeamId = goalConcedingTeamInput.value;
       const scorerPool = ownGoal
@@ -2875,7 +2905,11 @@
         selectedScorerId,
         "Assign players first",
         selectedScorerLabel,
+        true,
       );
+      if (!concedingTeamId || (!ownGoal && !scoringTeamId)) {
+        goalScorerInput.disabled = true;
+      }
       renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
 
       const activeThird = activeThirdNumber();
@@ -2934,6 +2968,18 @@
         return;
       }
 
+      if (!goalOwnGoalInput.checked && !goalScoringTeamInput.value) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Choose a scoring team before adding a goal.";
+        return;
+      }
+
+      if (!goalConcedingTeamInput.value) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Choose a conceding team before adding a goal.";
+        return;
+      }
+
       if (!goalScorerInput.value) {
         saveGoalButton.disabled = true;
         goalFormNote.textContent = "Choose a scorer before adding a goal.";
@@ -2951,7 +2997,7 @@
       if (!activeThird) {
         saveGoalButton.disabled = !creatingFinishedCorrection;
         goalFormNote.textContent = creatingFinishedCorrection
-          ? "Finished-game correction will be recorded at final whistle."
+          ? "Choose the goal details to correct the finished result."
           : "Start a third before adding goals.";
         return;
       }
@@ -2960,13 +3006,23 @@
       goalFormNote.textContent = `Goal will be added to third ${activeThird}.`;
     }
 
-    function timelineGoalLabel(goal) {
-      const scorer = playerNickname(goal.scorerPlayerId);
-      if (goal.ownGoal) {
-        return `${scorer} own goal against ${teamName(goal.concedingTeamId)}`;
+    function renderThirdIndicator(third) {
+      const safeThird = Number.isInteger(third) && third >= 1 && third <= 3 ? third : null;
+      if (!safeThird) {
+        return "";
       }
 
-      return `${scorer} for ${teamName(goal.scoringTeamId)}`;
+      return `<span data-ui="third-indicator" data-third="${safeThird}" role="img" aria-label="Third ${safeThird} of 3"></span>`;
+    }
+
+    function renderGoalTeamChip(teamId) {
+      const team = teamById(teamId);
+      const name = typeof team?.name === "string" && team.name.length > 0
+        ? team.name
+        : String(teamId ?? "Unknown team");
+      return `<span data-ui="goal-team-chip" data-team-id="${escapeHtml(String(teamId ?? ""))}"${
+        team ? teamSwatchStyle(team) : ""
+      }><span data-ui="team-swatch" aria-hidden="true"></span><span>${escapeHtml(name)}</span></span>`;
     }
 
     function goalDisplayTime(goal) {
@@ -3070,28 +3126,29 @@
       return goals
         .map((goal) => {
           const detail = finalTeamGoalDetail(goal);
-          const rowDetail =
-            options.includeThird === true && Number.isInteger(goal.third)
-              ? `Third ${goal.third} · ${detail}`
-              : detail;
-          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}">
+          const includesThird = options.includeThird === true && Number.isInteger(goal.third);
+          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}"${
+            includesThird ? ' data-has-third="true"' : ""
+          }>
             <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
             <div>
               <strong>${escapeHtml(finalTeamGoalLabel(goal))}</strong>
-              <small>${escapeHtml(rowDetail)}</small>
+              <small>${escapeHtml(detail)}</small>
             </div>
+            ${includesThird ? renderThirdIndicator(goal.third) : ""}
           </li>`;
         })
         .join("");
     }
 
     function incrementPlayerStat(stats, playerId) {
-      if (typeof playerId !== "string" || playerId.length === 0) {
+      const normalizedPlayerId = String(playerId ?? "");
+      if (normalizedPlayerId.length === 0) {
         return;
       }
 
-      const existing = stats.get(playerId) ?? 0;
-      stats.set(playerId, existing + 1);
+      const existing = stats.get(normalizedPlayerId) ?? 0;
+      stats.set(normalizedPlayerId, existing + 1);
     }
 
     function sortedPlayerStats(stats) {
@@ -3209,23 +3266,38 @@
               ? goal.assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")
               : "None";
           const latest = goal.eventId === latestEventId;
-          return `<li data-ui="goal-event" data-event-id="${escapeHtml(goal.eventId)}"${
+          const displayTime = goalDisplayTime(goal);
+          const scorer = String(playerNickname(goal.scorerPlayerId));
+          const eventId = String(goal.eventId ?? "");
+          const scoringContext = goal.ownGoal
+            ? `<span data-ui="own-goal-marker" aria-label="Own goal">OG</span>`
+            : renderGoalTeamChip(goal.scoringTeamId);
+          return `<li data-ui="goal-event" data-event-id="${escapeHtml(eventId)}"${
             latest ? ' data-state="latest"' : ""
           }>
             <div data-ui="goal-event-main">
-              <strong>${escapeHtml(goalDisplayTime(goal))} · Third ${escapeHtml(String(goal.third))}</strong>
-              <span>${escapeHtml(timelineGoalLabel(goal))}</span>
+              <div data-ui="goal-primary-row">
+                <strong data-ui="goal-time">${escapeHtml(displayTime)}</strong>
+                <span data-ui="goal-scorer">${escapeHtml(scorer)}</span>
+                ${scoringContext}
+                <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
+                ${renderGoalTeamChip(goal.concedingTeamId)}
+                ${renderThirdIndicator(goal.third)}
+              </div>
               <small>Assists: ${escapeHtml(assists)}</small>
               ${goal.ownGoal ? `<small>Own goal: conceding tally only</small>` : ""}
             </div>
             <div data-ui="row-action-buttons">
-              ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
-              <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
-                goal.eventId,
-              )}"${disabledAttribute}>Edit</button>
-              <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
-                goal.eventId,
-              )}"${disabledAttribute}>Delete</button>
+              <button data-ui="icon-button" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
+                eventId,
+              )}" aria-label="Edit ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Edit goal"${
+                disabledAttribute
+              }>${renderClientIcon("pencil")}</button>
+              <button data-ui="icon-button" data-variant="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
+                eventId,
+              )}" aria-label="Delete ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Delete goal"${
+                disabledAttribute
+              }>${renderClientIcon("trash-2")}</button>
             </div>
           </li>`;
         })
@@ -3271,7 +3343,27 @@
       if (goalOwnGoalInput instanceof HTMLInputElement) {
         goalOwnGoalInput.checked = false;
       }
-      renderLiveScoring();
+      if (goalScoringTeamInput instanceof HTMLSelectElement) {
+        goalScoringTeamInput.value = "";
+      }
+      if (goalConcedingTeamInput instanceof HTMLSelectElement) {
+        goalConcedingTeamInput.value = "";
+      }
+      if (goalScorerInput instanceof HTMLSelectElement) {
+        goalScorerInput.value = "";
+      }
+      for (const input of goalAssistsElement?.querySelectorAll('input[type="checkbox"]') ?? []) {
+        if (input instanceof HTMLInputElement) {
+          input.checked = false;
+        }
+      }
+      renderLiveScoring({
+        ownGoal: false,
+        scoringTeamId: "",
+        concedingTeamId: "",
+        scorerPlayerId: "",
+        assistPlayerIds: [],
+      });
     }
 
     function populateGoalForm(goal) {
@@ -3607,7 +3699,15 @@
         }),
       ]);
 
-      rosterTeams = Array.isArray(rosterPayload?.teams) ? rosterPayload.teams : [];
+      rosterTeams = Array.isArray(rosterPayload?.teams)
+        ? rosterPayload.teams.map((team) => ({
+            ...team,
+            name:
+              typeof team.name === "string" && team.name.length > 0
+                ? team.name
+                : String(team.teamId ?? "Unknown team"),
+          }))
+        : [];
       rosterAssignments = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : [];
       rosterPlayers = Array.isArray(playersPayload?.players) ? playersPayload.players : [];
       if (scoreboardTeams.length === 0 || goalTimeline.length === 0) {
@@ -3656,6 +3756,7 @@
       });
 
       currentGame = game;
+      finishedResultUnavailable = false;
       currentLeagueId = game.leagueId;
       currentSeasonId = game.seasonId;
 
@@ -3669,9 +3770,6 @@
 
       if (gameIdValue) {
         gameIdValue.textContent = game.gameId;
-      }
-      if (finalGameIdValue) {
-        finalGameIdValue.textContent = game.gameId;
       }
       if (gameJoinCodeValue) {
         gameJoinCodeValue.textContent = typeof game.joinCode === "string" && game.joinCode.length > 0
@@ -4221,11 +4319,12 @@
         const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
         setStatus(`${actionLabel}…`, "default");
 
+        let result;
         try {
           const path = eventId
             ? `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`
             : `/v1/games/${encodeURIComponent(gameId)}/goals`;
-          const result = await requestJsonOrThrow(path, {
+          result = await requestJsonOrThrow(path, {
             method: eventId ? "PATCH" : "POST",
             headers: {
               "Content-Type": "application/json",
@@ -4233,37 +4332,53 @@
             },
             body: JSON.stringify(draft.payload),
           });
-
-          if (!eventId) {
-            applyGoalMutationResult(result);
-            pendingCreateGoalIdempotency = null;
-            const gameRefreshed = await refreshGameAfterFinishedCorrection();
-            if (!gameRefreshed) {
-              showError("Goal was added, but the finished result could not be refreshed.");
-              setStatus("Goal added; result refresh failed.", "success");
-              return;
-            }
-          } else {
-            const goalsLoaded = await loadGameGoals();
-            if (!goalsLoaded) {
-              throw new Error("Goal update was saved, but the latest goal state could not be loaded.");
-            }
-            const gameRefreshed = await refreshGameAfterFinishedCorrection();
-            if (!gameRefreshed) {
-              throw new Error("Goal update was saved, but the finished result could not be refreshed.");
-            }
-            editingGoalId = null;
-            clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
-          }
-          setStatus(eventId ? "Goal updated." : "Goal added.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not save goal.";
           showError(message);
           setStatus("Goal save failed.", "error");
-        } finally {
           saveGoalButton.disabled = false;
           renderLiveScoring();
+          return;
         }
+
+        if (isGameFinished()) {
+          finishedResultUnavailable = true;
+        }
+        applyGoalMutationResult(result);
+        if (eventId) {
+          clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
+        } else {
+          pendingCreateGoalIdempotency = null;
+        }
+        resetGoalForm();
+
+        if (eventId) {
+          const goalsLoaded = await loadGameGoals();
+          if (!goalsLoaded) {
+            showError("Goal update was saved, but the latest goal state could not be loaded.");
+            setStatus("Goal updated; timeline refresh failed.", "success");
+            saveGoalButton.disabled = false;
+            renderLiveScoring();
+            return;
+          }
+        }
+
+        const gameRefreshed = await refreshGameAfterFinishedCorrection();
+        if (!gameRefreshed) {
+          showError(
+            eventId
+              ? "Goal was updated, but the finished result could not be refreshed."
+              : "Goal was added, but the finished result could not be refreshed.",
+          );
+          setStatus(eventId ? "Goal updated; result refresh failed." : "Goal added; result refresh failed.", "success");
+          saveGoalButton.disabled = false;
+          renderLiveScoring();
+          return;
+        }
+
+        setStatus(eventId ? "Goal updated." : "Goal added.", "success");
+        saveGoalButton.disabled = false;
+        renderLiveScoring();
       });
 
       cancelGoalEditButton.addEventListener("click", () => {
@@ -4299,6 +4414,9 @@
             }),
           });
 
+          if (isGameFinished()) {
+            finishedResultUnavailable = true;
+          }
           applyGoalMutationResult(result, { deletedEventId: latest.eventId });
           clearGoalMutationIdempotency("undo-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
@@ -4371,6 +4489,9 @@
             },
           );
 
+          if (isGameFinished()) {
+            finishedResultUnavailable = true;
+          }
           applyGoalMutationResult(result, { deletedEventId: eventId });
           clearGoalMutationIdempotency("delete-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
