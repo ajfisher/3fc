@@ -1,3 +1,5 @@
+import { isIconName, type IconName } from "./icon-names.js";
+
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
 export interface StepChipInput {
@@ -94,6 +96,62 @@ export function renderButton(
     .join(" ");
 
   return `<button ${htmlAttributes}>${escapeHtml(label)}</button>`;
+}
+
+export function renderIcon(name: IconName): string {
+  if (!isIconName(name)) {
+    throw new Error(`Unsupported icon: ${name}`);
+  }
+
+  return `<span data-ui="icon" data-icon="${escapeHtml(name)}" aria-hidden="true"></span>`;
+}
+
+export function renderIconButton(input: {
+  icon: IconName;
+  label: string;
+  variant?: ButtonVariant;
+  text?: string;
+  attributes?: Record<string, string>;
+}): string {
+  const variant = input.variant ?? "secondary";
+  const attributes = {
+    ...(input.attributes ?? {}),
+    type: "button",
+    "aria-label": input.label,
+    title: input.label,
+    "data-ui": "icon-button",
+    "data-variant": variant,
+  };
+  const htmlAttributes = Object.entries(attributes)
+    .map(([name, value]) => `${name}="${escapeHtml(value)}"`)
+    .join(" ");
+  const text = input.text ? `<span data-ui="button-text">${escapeHtml(input.text)}</span>` : "";
+
+  return `<button ${htmlAttributes}>${renderIcon(input.icon)}${text}</button>`;
+}
+
+export function renderIconLink(input: {
+  href: string;
+  icon: IconName;
+  label: string;
+  text?: string;
+  variant?: "secondary" | "ghost";
+  attributes?: Record<string, string>;
+}): string {
+  const attributes = {
+    ...(input.attributes ?? {}),
+    href: input.href,
+    "aria-label": input.label,
+    title: input.label,
+    "data-ui": "icon-link",
+    "data-variant": input.variant ?? "secondary",
+  };
+  const htmlAttributes = Object.entries(attributes)
+    .map(([name, value]) => `${name}="${escapeHtml(value)}"`)
+    .join(" ");
+  const text = input.text ? `<span data-ui="button-text">${escapeHtml(input.text)}</span>` : "";
+
+  return `<a ${htmlAttributes}>${renderIcon(input.icon)}${text}</a>`;
 }
 
 export function renderStepChip(input: StepChipInput): string {

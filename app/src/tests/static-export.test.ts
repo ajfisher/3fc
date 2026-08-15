@@ -44,6 +44,7 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(existsSync(resolve(outputDir, "join/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "invites/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/styles.css")), true);
+    assert.equal(existsSync(resolve(outputDir, "ui/icons.css")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/setup-flow.js")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/auth-flow.js")), true);
 

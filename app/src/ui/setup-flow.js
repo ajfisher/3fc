@@ -84,6 +84,7 @@
     }
 
     statusElement.textContent = text;
+    statusElement.hidden = text.length === 0;
     if (state === "default") {
       statusElement.removeAttribute("data-state");
       return;
@@ -257,6 +258,82 @@
     return `<button data-ui="button" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${escapeHtml(label)}</button>`;
   }
 
+  function renderClientIcon(name) {
+    return `<span data-ui="icon" data-icon="${escapeHtml(name)}" aria-hidden="true"></span>`;
+  }
+
+  function renderClientIconButton({ icon, label, variant = "secondary", attributes = {} }) {
+    const renderedAttributes = Object.entries({
+      ...attributes,
+      type: "button",
+      "aria-label": label,
+      title: label,
+    })
+      .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
+      .join(" ");
+    return `<button data-ui="icon-button" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${renderClientIcon(icon)}</button>`;
+  }
+
+  function renderClientIconLink({ href, icon, label, attributes = {} }) {
+    const renderedAttributes = Object.entries({
+      ...attributes,
+      href,
+      "aria-label": label,
+      title: label,
+    })
+      .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
+      .join(" ");
+    return `<a data-ui="icon-link" data-variant="secondary" ${renderedAttributes}>${renderClientIcon(icon)}</a>`;
+  }
+
+  function setDisclosureState(trigger, panel, open, options = {}) {
+    if (!(trigger instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) {
+      return;
+    }
+
+    const focusWasInside = panel.contains(document.activeElement);
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
+    panel.hidden = !open;
+    if (open && options.focus !== false) {
+      const focusTarget = panel.querySelector("input, select, button, [tabindex]");
+      if (focusTarget instanceof HTMLElement) {
+        focusTarget.focus();
+      }
+      return;
+    }
+    if (!open && options.restoreFocus !== false && focusWasInside) {
+      trigger.focus();
+    }
+  }
+
+  function closeOtherDisclosures(activeTrigger) {
+    for (const trigger of document.querySelectorAll('button[aria-controls][aria-expanded="true"]')) {
+      if (!(trigger instanceof HTMLButtonElement) || trigger === activeTrigger) {
+        continue;
+      }
+      const panelId = trigger.getAttribute("aria-controls");
+      const panel = panelId ? document.getElementById(panelId) : null;
+      setDisclosureState(trigger, panel, false, { restoreFocus: false });
+    }
+  }
+
+  function attachDisclosure(trigger, panel, options = {}) {
+    if (!(trigger instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) {
+      return;
+    }
+
+    trigger.addEventListener("click", () => {
+      const open = trigger.getAttribute("aria-expanded") !== "true";
+      if (open) {
+        closeOtherDisclosures(trigger);
+      }
+      setDisclosureState(trigger, panel, open);
+      if (open && typeof options.onOpen === "function") {
+        options.onOpen();
+      }
+    });
+  }
+
   function renderClientTableShell({ tableTestId, bodyId, emptyId, emptyText, headers }) {
     return `<div data-ui="table-wrap" data-testid="${escapeHtml(tableTestId)}" hidden>
       <table>
@@ -304,7 +381,7 @@
           <option value="30">30 minutes</option>
         </select>
       </div>
-      <dl data-ui="id-preview"><div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div></dl>`,
+      `,
       `<div data-ui="button-row">${renderClientButton("Create game", "primary", {
         type: "button",
         "data-action": "create-game",
@@ -320,7 +397,7 @@
         bodyId: "season-games-body",
         emptyId: "season-games-empty",
         emptyText: "No games yet. Create your first game.",
-        headers: ["Game", "Kickoff", "Status", "Actions"],
+        headers: ["Kickoff", "Status", "Actions"],
       }),
       "",
       "panel-season-games",
@@ -331,20 +408,40 @@
     document.body.innerHTML = `<main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
-        <h1 id="season-title">${safeSeasonId || "Season"}</h1>
-        <p data-ui="hero-copy" id="season-subtitle">Loading season details...</p>
-        <div data-ui="button-row">${renderClientButton("Delete season", "danger", {
-          type: "button",
-          "data-action": "delete-season",
-          "data-testid": "delete-season",
-        })}</div>
+        <div data-ui="hero-title-row">
+          <h1 id="season-title">${safeSeasonId || "Season"}</h1>
+          <small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading..."}</small>
+        </div>
+        <div data-ui="header-actions" role="toolbar" aria-label="Season actions">
+          ${renderClientIconButton({
+            icon: "calendar-plus",
+            label: "Create game",
+            attributes: {
+              "data-action": "toggle-create-game",
+              "data-testid": "toggle-create-game",
+              "aria-controls": "season-create-game-region",
+              "aria-expanded": "false",
+            },
+          })}
+          ${renderClientIconButton({
+            icon: "trash-2",
+            label: "Delete season",
+            variant: "danger",
+            attributes: {
+              "data-action": "delete-season",
+              "data-testid": "delete-season",
+            },
+          })}
+        </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
-        <p data-ui="status-note" id="setup-status">Loading season data...</p>
-        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
-        <section data-ui="panel-grid" data-testid="season-grid">
-          ${createGamePanel}
+        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Loading season data...</p>
+        <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
+        <section data-ui="panel-stack" data-testid="season-grid">
           ${gamesPanel}
+          <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
+            ${createGamePanel}
+          </section>
         </section>
       </section>
     </main>`;
@@ -992,11 +1089,25 @@
     updateDerivedId();
   }
 
-  async function initDashboardPage() {
+  function dashboardNameFromSession(session) {
+    const email = typeof session?.email === "string" ? session.email.trim() : "";
+    const localPart = email.split("@")[0] ?? "";
+    const token = localPart.split(/[._-]+/).find((part) => part.length > 0) ?? "";
+    if (!token) {
+      return email || "there";
+    }
+
+    return `${token.charAt(0).toUpperCase()}${token.slice(1).toLowerCase()}`;
+  }
+
+  async function initDashboardPage(session) {
     const leagueNameInput = document.getElementById("league-name");
     const leagueFriendlyUrlInput = document.getElementById("league-friendly-url");
     const leagueIdDisplay = document.getElementById("league-id-display");
     const createLeagueButton = root.querySelector('[data-action="create-league"]');
+    const toggleCreateLeagueButton = root.querySelector('[data-action="toggle-create-league"]');
+    const createLeagueRegion = document.getElementById("dashboard-create-league-region");
+    const welcomeHeading = document.getElementById("dashboard-welcome");
 
     const leaguesBody = document.getElementById("dashboard-leagues-body");
     const leaguesTableWrap = document.querySelector('[data-testid="dashboard-leagues-table"]');
@@ -1006,12 +1117,18 @@
       !(leagueNameInput instanceof HTMLInputElement) ||
       !(leagueFriendlyUrlInput instanceof HTMLInputElement) ||
       !(createLeagueButton instanceof HTMLButtonElement) ||
+      !(toggleCreateLeagueButton instanceof HTMLButtonElement) ||
+      !(createLeagueRegion instanceof HTMLElement) ||
       !(leaguesBody instanceof HTMLElement)
     ) {
       return;
     }
 
     attachSlugAutoFill(leagueNameInput, leagueFriendlyUrlInput, leagueIdDisplay, "league");
+    attachDisclosure(toggleCreateLeagueButton, createLeagueRegion);
+    if (welcomeHeading instanceof HTMLElement) {
+      welcomeHeading.textContent = `Welcome ${dashboardNameFromSession(session)}`;
+    }
     leagueNameInput.addEventListener("input", () => {
       setFieldMessage("league-name");
     });
@@ -1031,20 +1148,31 @@
         if (leaguesEmpty instanceof HTMLElement) {
           leaguesEmpty.hidden = false;
         }
-        setStatus("No leagues found. Create your first league.", "default");
+        setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true);
+        setStatus("");
         return;
       }
 
       const rows = leagues
         .map((league) => {
-          const friendlyUrl = league.slug ?? "-";
           return `<tr>
-            <td><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td>
-            <td><code>${escapeHtml(friendlyUrl)}</code></td>
-            <td>
+            <td data-label="League"><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td>
+            <td data-label="Actions">
               <div data-ui="row-action-buttons">
-                <a href="/leagues/${encodeURIComponent(league.leagueId)}" data-ui="button-link" data-variant="secondary">View</a>
-                <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-league" data-league-id="${escapeHtml(league.leagueId)}">Delete</button>
+                ${renderClientIconLink({
+                  href: `/leagues/${encodeURIComponent(league.leagueId)}`,
+                  icon: "eye",
+                  label: `View ${league.name}`,
+                })}
+                ${renderClientIconButton({
+                  icon: "trash-2",
+                  label: `Delete ${league.name}`,
+                  variant: "danger",
+                  attributes: {
+                    "data-action": "delete-league",
+                    "data-league-id": league.leagueId,
+                  },
+                })}
               </div>
             </td>
           </tr>`;
@@ -1058,7 +1186,7 @@
       if (leaguesEmpty instanceof HTMLElement) {
         leaguesEmpty.hidden = true;
       }
-      setStatus(`Loaded ${leagues.length} league${leagues.length === 1 ? "" : "s"}.`, "success");
+      setStatus("");
     }
 
     createLeagueButton.addEventListener("click", async () => {
@@ -1104,12 +1232,9 @@
     });
 
     leaguesBody.addEventListener("click", async (event) => {
-      const target = event.target;
+      const eventTarget = event.target;
+      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-league"]') : null;
       if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      if (target.getAttribute("data-action") !== "delete-league") {
         return;
       }
 
@@ -1150,8 +1275,12 @@
     }
 
     const title = document.getElementById("league-title");
-    const subtitle = document.getElementById("league-subtitle");
+    const leagueReference = document.getElementById("league-reference");
     const deleteLeagueButton = document.querySelector('[data-testid="delete-league"]');
+    const toggleCreateSeasonButton = document.querySelector('[data-action="toggle-create-season"]');
+    const toggleOrganiserInviteButton = document.querySelector('[data-action="toggle-organiser-invite"]');
+    const createSeasonRegion = document.getElementById("league-create-season-region");
+    const organiserInviteRegion = document.getElementById("league-organiser-invite-region");
 
     const seasonNameInput = document.getElementById("season-name");
     const seasonFriendlyUrlInput = document.getElementById("season-friendly-url");
@@ -1163,9 +1292,6 @@
     const organiserShareInviteResult = document.getElementById("organiser-share-invite-result");
     const organiserShareInviteCode = document.getElementById("organiser-share-invite-code");
     const organiserShareInviteLink = document.getElementById("organiser-share-invite-link");
-    const organiserEmailInviteResult = document.getElementById("organiser-email-invite-result");
-    const organiserEmailInviteCode = document.getElementById("organiser-email-invite-code");
-    const organiserEmailInviteLink = document.getElementById("organiser-email-invite-link");
     const organiserInviteEmailStatus = document.getElementById("organiser-invite-email-status");
 
     const seasonsBody = document.getElementById("league-seasons-body");
@@ -1176,6 +1302,10 @@
       !(seasonNameInput instanceof HTMLInputElement) ||
       !(seasonFriendlyUrlInput instanceof HTMLInputElement) ||
       !(createSeasonButton instanceof HTMLButtonElement) ||
+      !(toggleCreateSeasonButton instanceof HTMLButtonElement) ||
+      !(toggleOrganiserInviteButton instanceof HTMLButtonElement) ||
+      !(createSeasonRegion instanceof HTMLElement) ||
+      !(organiserInviteRegion instanceof HTMLElement) ||
       !(organiserInviteEmailInput instanceof HTMLInputElement) ||
       !(createOrganiserInviteButton instanceof HTMLButtonElement) ||
       !(seasonsBody instanceof HTMLElement)
@@ -1194,12 +1324,30 @@
       setFieldMessage("organiser-invite-email");
     });
 
+    let shareInviteLoaded = false;
+    let shareInvitePromise = null;
+    attachDisclosure(toggleCreateSeasonButton, createSeasonRegion);
+    attachDisclosure(toggleOrganiserInviteButton, organiserInviteRegion, {
+      onOpen: () => {
+        if (!shareInviteLoaded && !shareInvitePromise) {
+          shareInvitePromise = ensureShareInvite()
+            .then((loaded) => {
+              shareInviteLoaded = loaded;
+            })
+            .finally(() => {
+              shareInvitePromise = null;
+            });
+        }
+      },
+    });
+
     function setLocalStatus(element, text, state = "default") {
       if (!(element instanceof HTMLElement)) {
         return;
       }
 
       element.textContent = text;
+      element.hidden = text.length === 0;
       if (state === "default") {
         element.removeAttribute("data-state");
         return;
@@ -1264,7 +1412,8 @@
           organiserShareInviteLink,
           payload,
         );
-        setLocalStatus(organiserShareInviteStatus, "Share invite ready.", "success");
+        setLocalStatus(organiserShareInviteStatus, "", "default");
+        return true;
       } catch {
         if (organiserShareInviteCode instanceof HTMLElement) {
           organiserShareInviteCode.textContent = "Unavailable";
@@ -1273,7 +1422,8 @@
           organiserShareInviteLink.removeAttribute("href");
           organiserShareInviteLink.textContent = "Unavailable";
         }
-        setLocalStatus(organiserShareInviteStatus, "Share invite unavailable. Reload to try again.", "error");
+        setLocalStatus(organiserShareInviteStatus, "Share invite unavailable. Close and reopen to try again.", "error");
+        return false;
       }
     }
 
@@ -1286,10 +1436,8 @@
         title.textContent = league.name;
       }
 
-      if (subtitle) {
-        subtitle.innerHTML = `League ID: <code>${escapeHtml(league.leagueId)}</code> | Friendly URL: <code>${escapeHtml(
-          league.slug ?? "-",
-        )}</code>`;
+      if (leagueReference) {
+        leagueReference.textContent = `League ID: ${league.leagueId}`;
       }
     }
 
@@ -1316,13 +1464,17 @@
           const dateRange = `${season.startsOn ?? "-"} to ${season.endsOn ?? "-"}`;
           const seasonPath = buildLeagueSeasonPath(leagueId, season.seasonId);
           return `<tr>
-            <td><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
-            <td>${escapeHtml(dateRange)}</td>
-            <td><code>${escapeHtml(season.slug ?? "-")}</code></td>
-            <td>
+            <td data-label="Season"><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
+            <td data-label="Dates">${escapeHtml(dateRange)}</td>
+            <td data-label="Actions">
               <div data-ui="row-action-buttons">
-                <a href="${seasonPath}" data-ui="button-link" data-variant="secondary">View</a>
-                <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-season" data-season-id="${escapeHtml(season.seasonId)}">Delete</button>
+                ${renderClientIconLink({ href: seasonPath, icon: "eye", label: `View ${season.name}` })}
+                ${renderClientIconButton({
+                  icon: "trash-2",
+                  label: `Delete ${season.name}`,
+                  variant: "danger",
+                  attributes: { "data-action": "delete-season", "data-season-id": season.seasonId },
+                })}
               </div>
             </td>
           </tr>`;
@@ -1398,6 +1550,7 @@
 
       setFieldMessage("organiser-invite-email");
       createOrganiserInviteButton.disabled = true;
+      setLocalStatus(organiserInviteEmailStatus, "Sending invite…", "default");
       setStatus("Sending organiser invite…", "default");
       const idempotencyKey = idempotencyKeyForOrganiserInvite(leagueId, rawEmail);
 
@@ -1416,20 +1569,16 @@
           },
         );
 
-        renderInviteCodeLink(
-          organiserEmailInviteResult,
-          organiserEmailInviteCode,
-          organiserEmailInviteLink,
-          payload,
-        );
-        if (organiserInviteEmailStatus instanceof HTMLElement) {
-          if (payload.emailDelivery?.status === "sent") {
-            organiserInviteEmailStatus.textContent = `Sent to ${payload.emailDelivery.email}.`;
-          } else if (payload.emailDelivery?.status === "unknown") {
-            organiserInviteEmailStatus.textContent = "Delivery unconfirmed. Share the invite link manually.";
-          } else {
-            organiserInviteEmailStatus.textContent = "";
-          }
+        if (payload.emailDelivery?.status === "sent") {
+          setLocalStatus(organiserInviteEmailStatus, `Sent to ${payload.emailDelivery.email}.`, "success");
+        } else if (payload.emailDelivery?.status === "unknown") {
+          setLocalStatus(
+            organiserInviteEmailStatus,
+            "Delivery unconfirmed. Use the reusable link above.",
+            "error",
+          );
+        } else {
+          setLocalStatus(organiserInviteEmailStatus, "Invite created.", "success");
         }
 
         organiserInviteEmailInput.value = "";
@@ -1442,6 +1591,7 @@
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create organiser invite.";
+        setLocalStatus(organiserInviteEmailStatus, `Invite failed: ${message}`, "error");
         showError(message);
         setStatus("Organiser invite failed.", "error");
       } finally {
@@ -1450,12 +1600,9 @@
     });
 
     seasonsBody.addEventListener("click", async (event) => {
-      const target = event.target;
+      const eventTarget = event.target;
+      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-season"]') : null;
       if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      if (target.getAttribute("data-action") !== "delete-season") {
         return;
       }
 
@@ -1513,8 +1660,8 @@
     }
 
     await loadLeague();
-    await Promise.all([renderSeasons(), ensureShareInvite()]);
-    setStatus("League page ready.", "success");
+    await renderSeasons();
+    setStatus("");
   }
 
   async function initSeasonPage() {
@@ -1525,14 +1672,15 @@
     const routeLeagueId = resolveRouteEntityId("data-league-id", "leagues");
 
     const seasonTitle = document.getElementById("season-title");
-    const seasonSubtitle = document.getElementById("season-subtitle");
+    const seasonReference = document.getElementById("season-reference");
     const seasonLeagueLink = document.getElementById("season-league-link");
 
     const gameDateInput = document.getElementById("game-date");
     const gameKickoffInput = document.getElementById("game-kickoff");
     const gameThirdLengthInput = document.getElementById("game-third-length");
-    const gameIdDisplay = document.getElementById("game-id-display");
     const createGameButton = root.querySelector('[data-action="create-game"]');
+    const toggleCreateGameButton = document.querySelector('[data-action="toggle-create-game"]');
+    const createGameRegion = document.getElementById("season-create-game-region");
 
     const deleteSeasonButton = document.querySelector('[data-testid="delete-season"]');
 
@@ -1545,6 +1693,8 @@
       !(gameKickoffInput instanceof HTMLInputElement) ||
       !(gameThirdLengthInput instanceof HTMLSelectElement) ||
       !(createGameButton instanceof HTMLButtonElement) ||
+      !(toggleCreateGameButton instanceof HTMLButtonElement) ||
+      !(createGameRegion instanceof HTMLElement) ||
       !(gamesBody instanceof HTMLElement)
     ) {
       return;
@@ -1552,14 +1702,15 @@
 
     let leagueId = routeLeagueId ?? "";
     let gameIdNonce = randomSuffix(4);
+    let derivedGameId = "";
+
+    attachDisclosure(toggleCreateGameButton, createGameRegion);
 
     function updateDerivedGameId() {
       const sessionId = gameDateInput.value.trim() ? gameDateInput.value.trim().replaceAll("-", "") : `session-${randomSuffix(6)}`;
       const kickoff = gameKickoffInput.value.trim();
       const kickoffPart = kickoff.includes("T") ? kickoff.split("T")[1].replace(":", "") : "0000";
-      if (gameIdDisplay) {
-        gameIdDisplay.textContent = `game-${sessionId}-${kickoffPart}-${gameIdNonce}`;
-      }
+      derivedGameId = `game-${sessionId}-${kickoffPart}-${gameIdNonce}`;
     }
 
     gameDateInput.addEventListener("change", () => {
@@ -1604,10 +1755,8 @@
         seasonTitle.textContent = season.name;
       }
 
-      if (seasonSubtitle) {
-        seasonSubtitle.innerHTML = `Season ID: <code>${escapeHtml(season.seasonId)}</code> | Friendly URL: <code>${escapeHtml(
-          season.slug ?? "-",
-        )}</code>`;
+      if (seasonReference) {
+        seasonReference.textContent = `Season ID: ${season.seasonId}`;
       }
 
       if (seasonLeagueLink instanceof HTMLAnchorElement) {
@@ -1641,17 +1790,27 @@
       }
 
       gamesBody.innerHTML = games
-        .map((game) => `<tr>
-          <td><a href="/games/${encodeURIComponent(game.gameId)}">${escapeHtml(game.gameId)}</a></td>
-          <td>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</td>
-          <td>${escapeHtml(game.status)}</td>
-          <td>
+        .map((game) => {
+          const status = ["scheduled", "live", "finished"].includes(game.status) ? game.status : "scheduled";
+          const statusIcon = status === "live" ? "activity" : status === "finished" ? "circle-check" : "calendar-clock";
+          const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+          const gamePath = `/games/${encodeURIComponent(game.gameId)}`;
+          return `<tr>
+          <td data-label="Kickoff"><a href="${gamePath}">${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</a></td>
+          <td data-label="Status"><span data-ui="status-chip" data-status="${escapeHtml(status)}">${renderClientIcon(statusIcon)}<span>${escapeHtml(statusLabel)}</span></span></td>
+          <td data-label="Actions">
             <div data-ui="row-action-buttons">
-              <a href="/games/${encodeURIComponent(game.gameId)}" data-ui="button-link" data-variant="secondary">View</a>
-              <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-game" data-game-id="${escapeHtml(game.gameId)}">Delete</button>
+              ${renderClientIconLink({ href: gamePath, icon: "eye", label: `View game at ${formatLocalTimestamp(game.gameStartTs)}` })}
+              ${renderClientIconButton({
+                icon: "trash-2",
+                label: `Delete game at ${formatLocalTimestamp(game.gameStartTs)}`,
+                variant: "danger",
+                attributes: { "data-action": "delete-game", "data-game-id": game.gameId },
+              })}
             </div>
           </td>
-        </tr>`)
+        </tr>`;
+        })
         .join("");
 
       if (gamesTableWrap instanceof HTMLElement) {
@@ -1683,7 +1842,7 @@
       setFieldMessage("game-kickoff");
 
       const sessionId = gameDate.replaceAll("-", "");
-      const gameId = (gameIdDisplay?.textContent ?? "").trim() || `game-${sessionId}-${randomSuffix(6)}`;
+      const gameId = derivedGameId || `game-${sessionId}-${randomSuffix(6)}`;
 
       createGameButton.disabled = true;
       setStatus("Creating game…", "default");
@@ -1732,12 +1891,9 @@
     });
 
     gamesBody.addEventListener("click", async (event) => {
-      const target = event.target;
+      const eventTarget = event.target;
+      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-game"]') : null;
       if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      if (target.getAttribute("data-action") !== "delete-game") {
         return;
       }
 
@@ -1799,7 +1955,10 @@
 
     await loadSeason();
     await renderGames();
-    setStatus("Season page ready.", "success");
+    if (window.location.hash === "#create-game") {
+      setDisclosureState(toggleCreateGameButton, createGameRegion, true);
+    }
+    setStatus("");
   }
 
   async function initGamePage() {
@@ -3446,7 +3605,7 @@
         gameSeasonLink.href = buildLeagueSeasonPath(game.leagueId, game.seasonId);
       }
       if (createAnotherLink instanceof HTMLAnchorElement) {
-        createAnotherLink.href = buildLeagueSeasonPath(game.leagueId, game.seasonId);
+        createAnotherLink.href = `${buildLeagueSeasonPath(game.leagueId, game.seasonId)}#create-game`;
       }
     }
 
@@ -3741,7 +3900,8 @@
       });
 
       root.addEventListener("click", async (event) => {
-        const target = event.target;
+        const eventTarget = event.target;
+        const target = eventTarget instanceof Element ? eventTarget.closest("button[data-action]") : null;
         if (!(target instanceof HTMLButtonElement)) {
           return;
         }
@@ -3978,7 +4138,8 @@
       });
 
       root.addEventListener("click", async (event) => {
-        const target = event.target;
+        const eventTarget = event.target;
+        const target = eventTarget instanceof Element ? eventTarget.closest("button[data-action]") : null;
         if (!(target instanceof HTMLButtonElement)) {
           return;
         }
@@ -4449,8 +4610,9 @@
       return;
     }
 
+    let authenticatedSession = null;
     try {
-      await ensureAuthenticatedSession();
+      authenticatedSession = await ensureAuthenticatedSession();
     } catch (error) {
       if (error instanceof Error && error.message === "redirecting_to_sign_in") {
         return;
@@ -4463,7 +4625,7 @@
 
     try {
       if (page === "dashboard") {
-        await initDashboardPage();
+        await initDashboardPage(authenticatedSession);
         return;
       }
 
