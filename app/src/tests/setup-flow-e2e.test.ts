@@ -4612,6 +4612,491 @@ test("game page reuses create goal idempotency key for unchanged retry", async (
   assert.equal(concedingTeamInput.disabled, true);
   assert.equal(scorerInput.disabled, true);
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  const repeatedBeaAssist = page.document.querySelector('#goal-assists input[value="player-bea"]');
+  assert(repeatedBeaAssist instanceof page.window.HTMLInputElement);
+  repeatedBeaAssist.checked = true;
+  repeatedBeaAssist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 2);
+  assert.equal(createGoalIdempotencyKeys.length, 3);
+  assert.ok(createGoalIdempotencyKeys[2]);
+  assert.notEqual(createGoalIdempotencyKeys[1], createGoalIdempotencyKeys[2]);
+});
+
+test("game page reconciles authoritative goals after replayed create, delete, and undo responses", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-goal-replay-reconcile",
+    status: "live",
+    thirds,
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const createKeys: Array<string | null> = [];
+  const deleteKeys: Array<string | null> = [];
+  const undoKeys: Array<string | null> = [];
+  let createAttempts = 0;
+  let deleteAttempts = 0;
+  let undoAttempts = 0;
+  let authoritativeGoalGets = 0;
+  let createReplay: unknown = null;
+  let deleteReplay: unknown = null;
+  let undoReplay: unknown = null;
+
+  const externalGoal = (
+    eventId: string,
+    createdAt: string,
+    scoringTeamId: TeamId,
+    concedingTeamId: TeamId,
+    scorerPlayerId: string,
+  ): MockGoalEvent => ({
+    gameId: "game-goal-replay-reconcile",
+    eventId,
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 45,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId,
+    concedingTeamId,
+    scorerPlayerId,
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt,
+    updatedAt: createdAt,
+  });
+
+  const replayingFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const goalsPath = "/v1/games/game-goal-replay-reconcile/goals";
+
+    if (method === "POST" && target.pathname === goalsPath) {
+      createAttempts += 1;
+      createKeys.push(readInitHeader(init, "idempotency-key"));
+      if (createAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        createReplay = await committed.json();
+        apiState.goalEvents.set(
+          "goal-external-create",
+          externalGoal(
+            "goal-external-create",
+            "2026-03-28T11:01:02.000Z",
+            "blue",
+            "red",
+            "player-cy",
+          ),
+        );
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Goal response was lost after commit.",
+        });
+      }
+      return createJsonResponse(201, createReplay);
+    }
+
+    if (
+      method === "DELETE" &&
+      target.pathname === "/v1/games/game-goal-replay-reconcile/goals/goal-1"
+    ) {
+      deleteAttempts += 1;
+      deleteKeys.push(readInitHeader(init, "idempotency-key"));
+      if (deleteAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        deleteReplay = await committed.json();
+        apiState.goalEvents.set(
+          "goal-external-delete",
+          externalGoal(
+            "goal-external-delete",
+            "2026-03-28T11:01:03.000Z",
+            "yellow",
+            "blue",
+            "player-bea",
+          ),
+        );
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Delete response was lost after commit.",
+        });
+      }
+      return createJsonResponse(200, deleteReplay);
+    }
+
+    if (
+      method === "POST" &&
+      target.pathname === "/v1/games/game-goal-replay-reconcile/goals/undo-last"
+    ) {
+      undoAttempts += 1;
+      undoKeys.push(readInitHeader(init, "idempotency-key"));
+      if (undoAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        undoReplay = await committed.json();
+        apiState.goalEvents.set(
+          "goal-external-undo",
+          externalGoal(
+            "goal-external-undo",
+            "2026-03-28T11:01:04.000Z",
+            "red",
+            "yellow",
+            "player-ari",
+          ),
+        );
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Undo response was lost after commit.",
+        });
+      }
+      return createJsonResponse(200, undoReplay);
+    }
+
+    if (method === "GET" && target.pathname === goalsPath) {
+      authoritativeGoalGets += 1;
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-goal-replay-reconcile" }),
+    url: "http://localhost:3000/games/game-goal-replay-reconcile",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: replayingFetch,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+  authoritativeGoalGets = 0;
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(createAttempts, 2);
+  assert.ok(createKeys[0]);
+  assert.equal(createKeys[0], createKeys[1]);
+  assert(page.document.querySelector('[data-event-id="goal-external-create"]'));
+  assert.equal(authoritativeGoalGets, 1);
+
+  const deleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  const retryDeleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(retryDeleteGoalButton);
+  await flushAsync();
+
+  assert.equal(deleteAttempts, 2);
+  assert.ok(deleteKeys[0]);
+  assert.equal(deleteKeys[0], deleteKeys[1]);
+  assert.equal(page.document.querySelector('[data-event-id="goal-1"]'), null);
+  assert(page.document.querySelector('[data-event-id="goal-external-delete"]'));
+  assert.equal(authoritativeGoalGets, 2);
+
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+
+  assert.equal(undoAttempts, 2);
+  assert.ok(undoKeys[0]);
+  assert.equal(undoKeys[0], undoKeys[1]);
+  assert.equal(page.document.querySelector('[data-event-id="goal-external-delete"]'), null);
+  assert(page.document.querySelector('[data-event-id="goal-external-undo"]'));
+  assert.equal(authoritativeGoalGets, 3);
+});
+
+test("game page hides finished scores until a lost correction response is replayed", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-finished-lost-correction",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-finished-lost-correction",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  const seededGame = apiState.games.get("game-finished-lost-correction");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+
+  const defaultFetch = createMockFetch(apiState);
+  const updateKeys: Array<string | null> = [];
+  let updateAttempts = 0;
+  let replayBody: unknown = null;
+  const lostResponseFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (
+      method === "PATCH" &&
+      target.pathname === "/v1/games/game-finished-lost-correction/goals/goal-1"
+    ) {
+      updateAttempts += 1;
+      updateKeys.push(readInitHeader(init, "idempotency-key"));
+      if (updateAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        replayBody = await committed.json();
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Goal update response was lost after commit.",
+        });
+      }
+      return createJsonResponse(200, replayBody);
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-finished-lost-correction" }),
+    url: "http://localhost:3000/games/game-finished-lost-correction",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: lostResponseFetch,
+  });
+
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const status = page.document.getElementById("setup-status");
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert.match(resultSummary.textContent ?? "", /Red win/);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateAttempts, 1);
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "blue");
+  assert.equal(apiState.games.get("game-finished-lost-correction")?.result?.winnerTeamId, "blue");
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
+  assert.match(resultSummary.textContent ?? "", /Result may have changed/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Red win|Blue win|Draw/);
+  assert.match(status.textContent ?? "", /Retry with the same details/);
+  assert.equal(scoringTeamInput.value, "blue");
+  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(scorerInput.value, "player-cy");
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateAttempts, 2);
+  assert.ok(updateKeys[0]);
+  assert.equal(updateKeys[0], updateKeys[1]);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.match(resultSummary.textContent ?? "", /Blue win/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Result may have changed|Result refresh required/);
+  const blueScoreCard = scoreboard.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  const redScoreCard = scoreboard.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  assert(blueScoreCard instanceof page.window.HTMLElement);
+  assert(redScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
+});
+
+test("game page clears an open edit draft after a committed delete or undo", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-edit-draft-mutation",
+    status: "live",
+    thirds,
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-edit-draft-mutation",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: ["player-bea"],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-2", {
+    gameId: "game-edit-draft-mutation",
+    eventId: "goal-2",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 40,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-edit-draft-mutation" }),
+    url: "http://localhost:3000/games/game-edit-draft-mutation",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+
+  const editGoalOne = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const deleteGoalOne = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(editGoalOne instanceof page.window.HTMLButtonElement);
+  assert(deleteGoalOne instanceof page.window.HTMLButtonElement);
+  dispatchClick(editGoalOne);
+  await flushAsync();
+  assert.equal(scoringTeamInput.value, "red");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 1);
+
+  const refreshedDeleteGoalOne = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(refreshedDeleteGoalOne instanceof page.window.HTMLButtonElement);
+  dispatchClick(refreshedDeleteGoalOne);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.has("goal-1"), false);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
+  assert.match(saveGoalButton.textContent ?? "", /Add goal/);
+
+  const editGoalTwo = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-2"]');
+  assert(editGoalTwo instanceof page.window.HTMLButtonElement);
+  dispatchClick(editGoalTwo);
+  await flushAsync();
+  assert.equal(scoringTeamInput.value, "blue");
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.has("goal-2"), false);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.match(saveGoalButton.textContent ?? "", /Add goal/);
 });
 
 test("game page treats later created same-second goals as latest", async () => {
@@ -5183,6 +5668,7 @@ test("game page invalidates current goals when correction replay refresh fails",
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
   const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
   const timeline = page.document.getElementById("goal-timeline");
+  const scoreboard = page.document.getElementById("live-scoreboard");
   const status = page.document.getElementById("setup-status");
   const scoringTeamInput = page.document.getElementById("goal-scoring-team");
   const concedingTeamInput = page.document.getElementById("goal-conceding-team");
@@ -5191,6 +5677,7 @@ test("game page invalidates current goals when correction replay refresh fails",
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
   assert(timeline instanceof page.window.HTMLElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
   assert(status instanceof page.window.HTMLElement);
   assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
   assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
@@ -5203,9 +5690,12 @@ test("game page invalidates current goals when correction replay refresh fails",
   await flushAsync();
   await flushAsync();
 
-  assert.match(status.textContent ?? "", /Goal updated; timeline refresh failed/);
+  assert.match(status.textContent ?? "", /Goal updated; scores and timeline unavailable/);
+  assert.equal(status.hasAttribute("data-state"), false);
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.doesNotMatch(timeline.textContent ?? "", /Cy\s*Blue\s*→\s*Red/);
+  assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
+  assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
   assert.equal(scoringTeamInput.value, "");
   assert.equal(concedingTeamInput.value, "");
   assert.equal(scorerInput.value, "");
@@ -5356,26 +5846,8 @@ test("game page refreshes the finished result when a committed edit timeline rel
   assert.equal(successfulGameRefreshes, 1);
   assert(resolveGameRefresh);
   assert.equal(saveGoalButton.disabled, true);
-  const pendingBlueScoreCard = page.document.querySelector(
-    '[data-ui="score-team"][data-team-id="blue"]',
-  );
-  const pendingRedScoreCard = page.document.querySelector(
-    '[data-ui="score-team"][data-team-id="red"]',
-  );
-  assert(pendingBlueScoreCard instanceof page.window.HTMLElement);
-  assert(pendingRedScoreCard instanceof page.window.HTMLElement);
-  assert.deepEqual(
-    [...pendingBlueScoreCard.querySelectorAll("dl div")].map((row) =>
-      row.textContent?.replace(/\s/g, ""),
-    ),
-    ["Conceded1", "Scored0"],
-  );
-  assert.deepEqual(
-    [...pendingRedScoreCard.querySelectorAll("dl div")].map((row) =>
-      row.textContent?.replace(/\s/g, ""),
-    ),
-    ["Conceded0", "Scored1"],
-  );
+  assert.match(page.document.getElementById("live-scoreboard")?.textContent ?? "", /Refreshing scores/);
+  assert.equal(page.document.querySelector('[data-ui="score-team"]'), null);
 
   const refreshedGame = apiState.games.get("game-finished-timeline-refresh-fail");
   assert(refreshedGame);
@@ -6445,7 +6917,7 @@ test("game page serializes goal corrections through the finished-result refresh"
   assert.equal(page.document.getElementById("setup-status")?.textContent, "Goal added.");
 });
 
-test("game page clears a committed finished-goal draft when result refresh fails", async () => {
+test("game page clears a committed finished-goal draft when timeline and result refresh fail", async () => {
   const apiState = createMockApiState();
   const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
     ...third,
@@ -6464,6 +6936,7 @@ test("game page clears a committed finished-goal draft when result refresh fails
   refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:00:12.000Z");
 
   const defaultFetch = createMockFetch(apiState);
+  let failNextGoalRefresh = false;
   let failNextGameRefresh = false;
   const staleResultFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
     const target =
@@ -6474,8 +6947,21 @@ test("game page clears a committed finished-goal draft when result refresh fails
 
     if (method === "POST" && target.pathname === "/v1/games/game-create-refresh-fail/goals") {
       const response = await defaultFetch(input, init);
+      failNextGoalRefresh = true;
       failNextGameRefresh = true;
       return response;
+    }
+
+    if (
+      method === "GET" &&
+      target.pathname === "/v1/games/game-create-refresh-fail/goals" &&
+      failNextGoalRefresh
+    ) {
+      failNextGoalRefresh = false;
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Goal refresh unavailable.",
+      });
     }
 
     if (method === "GET" && target.pathname === "/v1/games/game-create-refresh-fail" && failNextGameRefresh) {
@@ -6505,6 +6991,8 @@ test("game page clears a committed finished-goal draft when result refresh fails
   const status = page.document.getElementById("setup-status");
   const error = page.document.getElementById("setup-error");
   const resultSummary = page.document.getElementById("game-result-summary");
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const timeline = page.document.getElementById("goal-timeline");
   assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
   assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
@@ -6513,6 +7001,8 @@ test("game page clears a committed finished-goal draft when result refresh fails
   assert(status instanceof page.window.HTMLElement);
   assert(error instanceof page.window.HTMLElement);
   assert(resultSummary instanceof page.window.HTMLElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(timeline instanceof page.window.HTMLElement);
 
   scoringTeamInput.value = "red";
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -6524,8 +7014,12 @@ test("game page clears a committed finished-goal draft when result refresh fails
   await flushAsync();
 
   assert.equal(apiState.goalEvents.size, 1);
-  assert.match(status.textContent ?? "", /Goal added; result refresh failed/);
-  assert.match(error.textContent ?? "", /finished result could not be refreshed/);
+  assert.match(status.textContent ?? "", /Goal added; timeline and result refresh failed/);
+  assert.equal(status.getAttribute("data-state"), "error");
+  assert.match(error.textContent ?? "", /neither the latest goal state nor the finished result/);
+  assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
+  assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
+  assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /Result refresh required/);
   assert.match(resultSummary.textContent ?? "", /goal change was saved/);
@@ -6643,8 +7137,21 @@ test("game page treats committed undo as success when finished result refresh fa
   assert.equal(apiState.games.get("game-undo-refresh-fail")?.result?.winnerTeamId, "red");
   assert.match(timeline.textContent ?? "", /Ari\s*Red\s*→\s*Blue/);
   assert.doesNotMatch(timeline.textContent ?? "", /Cy\s*Blue\s*→\s*Red/);
-  assert.match(status.textContent ?? "", /Latest goal undone; result refresh failed/);
+  assert.match(status.textContent ?? "", /Latest goal undone\. Run scores refreshed; Match Summary unavailable/);
+  assert.equal(status.hasAttribute("data-state"), false);
   assert.match(error.textContent ?? "", /finished result could not be refreshed/);
+  const redScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  const blueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  assert(redScoreCard instanceof page.window.HTMLElement);
+  assert(blueScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
   assert.match(resultSummary.textContent ?? "", /Result refresh required/);
   assert.doesNotMatch(resultSummary.textContent ?? "", /Red win|Blue win|Draw/);
 });

@@ -2076,9 +2076,10 @@
     let rosterSearchTimer = 0;
     let openTransferPlayerId = null;
     let scoreboardTeams = [];
+    let scoreboardState = "loading";
     let goalTimeline = [];
     let goalTimelineLoaded = false;
-    let finishedResultUnavailable = false;
+    let finishedResultState = "authoritative";
     let editingGoalId = null;
     let goalMutationInFlight = false;
     let currentLeagueRole = null;
@@ -2677,14 +2678,26 @@
         return;
       }
 
-      if (isGameFinished() && finishedResultUnavailable) {
+      if (isGameFinished() && finishedResultState !== "authoritative") {
+        const resultPending = finishedResultState === "refreshing";
+        const resultUncertain = finishedResultState === "uncertain";
+        const heading = resultPending
+          ? "Refreshing result"
+          : resultUncertain
+            ? "Result may have changed"
+            : "Result refresh required";
+        const message = resultPending
+          ? "Checking the latest match result…"
+          : resultUncertain
+            ? "The correction outcome could not be confirmed. Retry the same action."
+            : "The goal change was saved, but the updated match result could not be loaded.";
         gameResultSummaryElement.hidden = false;
         gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-state="unavailable">
           <header>
             <span>Final result</span>
-            <strong>Result refresh required</strong>
+            <strong>${heading}</strong>
           </header>
-          <p data-ui="empty-note">The goal change was saved, but the updated match result could not be loaded.</p>
+          <p data-ui="empty-note">${message}</p>
         </section>`;
         syncGameModeState();
         return;
@@ -2783,6 +2796,18 @@
 
     function renderLiveScoreboard() {
       if (!(liveScoreboardElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (scoreboardState !== "authoritative") {
+        const message = scoreboardState === "unavailable"
+          ? "Scores unavailable. Reload to try again."
+          : scoreboardState === "uncertain"
+            ? "Scores may have changed. Retry the same action."
+          : scoreboardState === "refreshing"
+            ? "Refreshing scores…"
+            : "Loading scores…";
+        liveScoreboardElement.innerHTML = `<p data-ui="empty-note" data-testid="live-scoreboard-${escapeHtml(scoreboardState)}">${message}</p>`;
         return;
       }
 
@@ -3349,6 +3374,7 @@
     }
 
     function applyGoalMutationResult(result, fallback = {}) {
+      scoreboardState = "refreshing";
       if (Array.isArray(result?.scoreboard?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(result.scoreboard.teams);
       }
@@ -3775,6 +3801,7 @@
       goalTimelineLoaded = true;
       if (Array.isArray(payload?.scoreboard?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
+        scoreboardState = "authoritative";
       }
 
       goalTimeline = Array.isArray(payload?.timeline) ? sortGoalTimeline(payload.timeline) : [];
@@ -3788,9 +3815,10 @@
       });
 
       currentGame = game;
-      finishedResultUnavailable = false;
+      finishedResultState = "authoritative";
       if (game.status === "finished" && Array.isArray(game.result?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(game.result.teams);
+        scoreboardState = "authoritative";
       }
       currentLeagueId = game.leagueId;
       currentSeasonId = game.seasonId;
@@ -4038,6 +4066,7 @@
         });
         if (Array.isArray(currentGame?.result?.teams)) {
           scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
+          scoreboardState = "authoritative";
         }
         if (isGameFinished()) {
           await loadLeagueAccess();
@@ -4353,6 +4382,10 @@
         const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
         setStatus(`${actionLabel}…`, "default");
         goalMutationInFlight = true;
+        scoreboardState = "refreshing";
+        if (isGameFinished()) {
+          finishedResultState = "refreshing";
+        }
         renderLiveScoring();
 
         try {
@@ -4371,41 +4404,53 @@
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : "Could not save goal.";
+            scoreboardState = "uncertain";
+            if (isGameFinished()) {
+              finishedResultState = "uncertain";
+            }
             showError(message);
-            setStatus("Goal save failed.", "error");
+            setStatus(
+              "Could not confirm whether the goal was saved. Retry with the same details.",
+              "error",
+            );
             return;
           }
 
           const finishedCorrection = isGameFinished();
           if (finishedCorrection) {
-            finishedResultUnavailable = true;
+            finishedResultState = "saved-unavailable";
           }
           applyGoalMutationResult(result);
+          resetGoalForm();
+
+          const goalsLoaded = await loadGameGoals();
           if (eventId) {
             clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
           } else {
             pendingCreateGoalIdempotency = null;
           }
-          resetGoalForm();
-
-          const goalsLoaded = eventId ? await loadGameGoals() : true;
 
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
           if (!goalsLoaded) {
+            if (scoreboardState !== "authoritative") {
+              scoreboardState = "unavailable";
+            }
+            const savedLabel = eventId ? "Goal update" : "Goal addition";
+            const savedStatus = eventId ? "Goal updated" : "Goal added";
             if (!gameRefreshed) {
               showError(
-                "Goal update was saved, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+                `${savedLabel} was saved, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.`,
               );
-              setStatus("Goal updated; timeline and result refresh failed.", "error");
+              setStatus(`${savedStatus}; timeline and result refresh failed.`, "error");
             } else if (finishedCorrection) {
               showError("Goal details could not be loaded. Reload to try again.");
               setStatus(
-                "Goal updated. Scores refreshed; goal timeline unavailable.",
+                `${savedStatus}. Scores refreshed; goal timeline unavailable.`,
                 "default",
               );
             } else {
-              showError("Goal update was saved, but the latest goal state could not be loaded.");
-              setStatus("Goal updated; timeline refresh failed.", "default");
+              showError(`${savedLabel} was saved, but the latest scores and goal timeline could not be loaded.`);
+              setStatus(`${savedStatus}; scores and timeline unavailable.`, "default");
             }
             return;
           }
@@ -4417,8 +4462,10 @@
                 : "Goal was added, but the finished result could not be refreshed.",
             );
             setStatus(
-              eventId ? "Goal updated; result refresh failed." : "Goal added; result refresh failed.",
-              "success",
+              eventId
+                ? "Goal updated. Run scores refreshed; Match Summary unavailable."
+                : "Goal added. Run scores refreshed; Match Summary unavailable.",
+              "default",
             );
             return;
           }
@@ -4450,6 +4497,10 @@
         }
 
         goalMutationInFlight = true;
+        scoreboardState = "refreshing";
+        if (isGameFinished()) {
+          finishedResultState = "refreshing";
+        }
         clearError();
         setStatus("Undoing latest goal…", "default");
         renderLiveScoring();
@@ -4468,21 +4519,51 @@
           });
 
           if (isGameFinished()) {
-            finishedResultUnavailable = true;
+            finishedResultState = "saved-unavailable";
           }
           applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          resetGoalForm();
+          const goalsLoaded = await loadGameGoals();
           clearGoalMutationIdempotency("undo-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!goalsLoaded) {
+            if (scoreboardState !== "authoritative") {
+              scoreboardState = "unavailable";
+            }
+            if (!gameRefreshed) {
+              showError(
+                "The latest goal was undone, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+              );
+              setStatus("Latest goal undone; timeline and result refresh failed.", "error");
+            } else if (isGameFinished()) {
+              showError("Goal details could not be loaded. Reload to try again.");
+              setStatus(
+                "Latest goal undone. Scores refreshed; goal timeline unavailable.",
+                "default",
+              );
+            } else {
+              showError("The latest goal was undone, but the latest scores and goal timeline could not be loaded.");
+              setStatus("Latest goal undone; scores and timeline unavailable.", "default");
+            }
+            return;
+          }
           if (!gameRefreshed) {
             showError("Latest goal was undone, but the finished result could not be refreshed.");
-            setStatus("Latest goal undone; result refresh failed.", "success");
+            setStatus(
+              "Latest goal undone. Run scores refreshed; Match Summary unavailable.",
+              "default",
+            );
             return;
           }
           setStatus("Latest goal undone.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not undo latest goal.";
+          scoreboardState = "uncertain";
+          if (isGameFinished()) {
+            finishedResultState = "uncertain";
+          }
           showError(message);
-          setStatus("Goal undo failed.", "error");
+          setStatus("Could not confirm the undo. Retry the same action.", "error");
         } finally {
           goalMutationInFlight = false;
           renderLiveScoring();
@@ -4527,6 +4608,10 @@
         }
 
         goalMutationInFlight = true;
+        scoreboardState = "refreshing";
+        if (isGameFinished()) {
+          finishedResultState = "refreshing";
+        }
         clearError();
         setStatus("Deleting goal…", "default");
         renderLiveScoring();
@@ -4544,21 +4629,45 @@
           );
 
           if (isGameFinished()) {
-            finishedResultUnavailable = true;
+            finishedResultState = "saved-unavailable";
           }
           applyGoalMutationResult(result, { deletedEventId: eventId });
+          resetGoalForm();
+          const goalsLoaded = await loadGameGoals();
           clearGoalMutationIdempotency("delete-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!goalsLoaded) {
+            if (scoreboardState !== "authoritative") {
+              scoreboardState = "unavailable";
+            }
+            if (!gameRefreshed) {
+              showError(
+                "The goal was deleted, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+              );
+              setStatus("Goal deleted; timeline and result refresh failed.", "error");
+            } else if (isGameFinished()) {
+              showError("Goal details could not be loaded. Reload to try again.");
+              setStatus("Goal deleted. Scores refreshed; goal timeline unavailable.", "default");
+            } else {
+              showError("The goal was deleted, but the latest scores and goal timeline could not be loaded.");
+              setStatus("Goal deleted; scores and timeline unavailable.", "default");
+            }
+            return;
+          }
           if (!gameRefreshed) {
             showError("Goal was deleted, but the finished result could not be refreshed.");
-            setStatus("Goal deleted; result refresh failed.", "success");
+            setStatus("Goal deleted. Run scores refreshed; Match Summary unavailable.", "default");
             return;
           }
           setStatus("Goal deleted.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete goal.";
+          scoreboardState = "uncertain";
+          if (isGameFinished()) {
+            finishedResultState = "uncertain";
+          }
           showError(message);
-          setStatus("Goal deletion failed.", "error");
+          setStatus("Could not confirm the deletion. Retry the same action.", "error");
         } finally {
           goalMutationInFlight = false;
           renderLiveScoring();
@@ -4571,6 +4680,10 @@
     await loadLeagueAccess();
     await loadRosterSetup({ updateStatus: false });
     const goalsLoaded = await loadGameGoals();
+    if (!goalsLoaded && scoreboardState !== "authoritative") {
+      scoreboardState = "unavailable";
+      renderLiveScoring();
+    }
     if (!manualGameModeSelected) {
       setGameMode(preferredInitialGameMode());
     }
