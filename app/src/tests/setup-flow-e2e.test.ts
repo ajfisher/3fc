@@ -2149,6 +2149,14 @@ test("populated dashboard keeps league creation disclosed on demand and handles 
   assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome Aj");
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(region.hidden, true);
+  const leagueRow = page.document.querySelector("#dashboard-leagues-body tr");
+  assert(leagueRow instanceof page.window.HTMLTableRowElement);
+  assert.equal(leagueRow.children.length, 2);
+  assert.equal(leagueRow.children[0]?.getAttribute("data-label"), "League");
+  assert.equal(leagueRow.children[1]?.getAttribute("data-label"), "Actions");
+  assert(leagueRow.children[0]?.querySelector('a[href="/leagues/autumn-league"]'));
+  assert(leagueRow.children[1]?.querySelector('[aria-label="View Autumn League"]'));
+  assert(leagueRow.children[1]?.querySelector('[aria-label="Delete Autumn League"]'));
 
   dispatchClick(toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
@@ -2264,6 +2272,16 @@ test("league page loads reusable organiser share invites and sends direct email 
     createdAt: "2026-03-28T11:00:00.000Z",
     updatedAt: "2026-03-28T11:00:00.000Z",
   });
+  apiState.seasons.set("autumn-2026", {
+    leagueId: "autumn-league",
+    seasonId: "autumn-2026",
+    name: "Autumn 2026",
+    slug: "autumn-2026",
+    startsOn: "2026-03-01",
+    endsOn: "2026-05-31",
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
   grantMockLeagueAccess(apiState, "autumn-league", "organizer@3fc.football", "admin");
 
   const leaguePage = await bootPage({
@@ -2285,6 +2303,19 @@ test("league page loads reusable organiser share invites and sends direct email 
   assert(inviteToggle instanceof leaguePage.window.HTMLButtonElement);
   assert(inviteRegion instanceof leaguePage.window.HTMLElement);
   assert(inviteEmailInput instanceof leaguePage.window.HTMLInputElement);
+  const seasonsTable = leaguePage.document.querySelector('[data-testid="league-seasons-table"] table');
+  const seasonRow = leaguePage.document.querySelector("#league-seasons-body tr");
+  assert(seasonsTable instanceof leaguePage.window.HTMLTableElement);
+  assert.deepEqual(
+    [...seasonsTable.querySelectorAll("thead th")].map((heading) => heading.textContent),
+    ["Season name", "Dates", "Actions"],
+  );
+  assert(seasonRow instanceof leaguePage.window.HTMLTableRowElement);
+  assert.deepEqual(
+    [...seasonRow.children].map((cell) => cell.getAttribute("data-label")),
+    ["Season name", "Dates", "Actions"],
+  );
+  assert(seasonRow.querySelector('a[href="/leagues/autumn-league/seasons/autumn-2026"]'));
 
   assert.equal(apiState.lastOrganiserInviteRequest, null);
   assert.equal(inviteRegion.hidden, true);
@@ -2797,7 +2828,22 @@ test("league static shell remounts nested league season routes as scoped season 
   assert.equal(root?.getAttribute("data-season-id"), "autumn-cup");
   assert.equal(page.document.getElementById("season-title")?.textContent, "Autumn Cup");
   assert(gamesBody instanceof page.window.HTMLElement);
+  const gamesTable = page.document.querySelector('[data-testid="season-games-table"] table');
+  assert(gamesTable instanceof page.window.HTMLTableElement);
+  assert.equal(gamesTable.getAttribute("data-ui"), "data-table");
+  assert.deepEqual(
+    [...gamesTable.querySelectorAll("thead th")].map((heading) => ({
+      text: heading.textContent,
+      scope: heading.getAttribute("scope"),
+    })),
+    [
+      { text: "Date", scope: "col" },
+      { text: "Status", scope: "col" },
+      { text: "Actions", scope: "col" },
+    ],
+  );
   assert(gamesBody.querySelector('a[href="/games/game-season-static-fallback"]'));
+  assert.equal(gamesBody.querySelector("td")?.getAttribute("data-label"), "Date");
   assert.doesNotMatch(gamesBody.textContent ?? "", /game-season-static-fallback/);
 });
 
@@ -3276,6 +3322,7 @@ test("game page quick-creates and assigns roster players", async () => {
 
   const nicknameInput = gamePage.document.getElementById("player-nickname");
   const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
+  const playerCreateActions = gamePage.document.querySelector('[data-ui="inline-input-actions"]');
   const playerPool = gamePage.document.getElementById("player-pool");
   const rosterTeams = gamePage.document.getElementById("roster-teams");
   const scoringTeamInput = gamePage.document.getElementById("goal-scoring-team");
@@ -3292,6 +3339,9 @@ test("game page quick-creates and assigns roster players", async () => {
   const finishedStatusOption = statusInput?.querySelector('option[value="finished"]');
   assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
   assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
+  assert(playerCreateActions instanceof gamePage.window.HTMLElement);
+  assert.equal(nicknameInput.parentElement, playerCreateActions);
+  assert.equal(quickCreateButton.parentElement, playerCreateActions);
   assert(playerPool instanceof gamePage.window.HTMLElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
   assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
@@ -3352,9 +3402,17 @@ test("game page quick-creates and assigns roster players", async () => {
     `[data-ui="team-chip"][data-player-id="${createdPlayer.playerId}"][data-team-id="red"]`,
   );
   assert(activeRedChip instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(activeRedChip.getAttribute("data-context"), "assign");
   assert.equal(activeRedChip.getAttribute("aria-pressed"), "true");
   assert.match(activeRedChip.getAttribute("style") ?? "", /--team-color: #d83b36/);
   assert(activeRedChip.querySelector('[data-icon="circle-check"]'));
+  const idleBlueChip = playerPool.querySelector(
+    `[data-ui="team-chip"][data-player-id="${createdPlayer.playerId}"][data-team-id="blue"]`,
+  );
+  assert(idleBlueChip instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(idleBlueChip.getAttribute("data-context"), "assign");
+  assert.equal(idleBlueChip.getAttribute("aria-pressed"), "false");
+  assert.equal(idleBlueChip.querySelector('[data-icon="circle-check"]'), null);
   assert.equal(scoringTeamInput.value, "");
   assert.equal(concedingTeamInput.value, "");
   assert.equal(concedingTeamInput.disabled, true);
@@ -3370,6 +3428,8 @@ test("game page quick-creates and assigns roster players", async () => {
   );
   assert(transferButton instanceof gamePage.window.HTMLButtonElement);
   assert.equal(transferButton.getAttribute("aria-label"), "Transfer Ari");
+  assert.equal(transferButton.getAttribute("title"), "Transfer Ari");
+  assert.equal(transferButton.textContent, "");
   const transferIcon = transferButton.querySelector('[data-icon="arrow-left-right"]');
   assert(transferIcon instanceof gamePage.window.HTMLElement);
   dispatchClick(transferIcon);
@@ -3384,6 +3444,7 @@ test("game page quick-creates and assigns roster players", async () => {
     transferMenu.querySelector('[data-team-id="blue"]')?.getAttribute("aria-label"),
     "Transfer Ari to Blue",
   );
+  assert.equal(transferMenu.querySelector('[data-team-id="blue"]')?.getAttribute("data-context"), "transfer");
   assert.equal(gamePage.document.activeElement?.getAttribute("data-team-id"), "blue");
 
   transferMenu.dispatchEvent(
@@ -6707,6 +6768,7 @@ test("setup smoke completes live game through finish", async () => {
   const joinCodeValue = gamePage.document.getElementById("game-join-code-value");
   const joinLink = gamePage.document.getElementById("game-join-link");
   const joinQr = gamePage.document.getElementById("game-join-qr");
+  const gameDetailsActions = gamePage.document.querySelector('[data-ui="game-details-actions"]');
   const scoreboard = gamePage.document.getElementById("live-scoreboard");
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
   const resultSummary = gamePage.document.getElementById("game-result-summary");
@@ -6726,6 +6788,10 @@ test("setup smoke completes live game through finish", async () => {
   assert(joinCodeValue instanceof gamePage.window.HTMLElement);
   assert(joinLink instanceof gamePage.window.HTMLAnchorElement);
   assert(joinQr instanceof gamePage.window.HTMLElement);
+  assert(gameDetailsActions instanceof gamePage.window.HTMLElement);
+  assert.equal(gameDetailsActions.children.length, 2);
+  assert.equal(gameDetailsActions.children[0]?.getAttribute("data-testid"), "save-game");
+  assert.equal(gameDetailsActions.children[1]?.getAttribute("data-testid"), "game-mode-next-players");
   assert(scoreboard instanceof gamePage.window.HTMLElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
   assert(resultSummary instanceof gamePage.window.HTMLElement);
@@ -6736,6 +6802,14 @@ test("setup smoke completes live game through finish", async () => {
   assert.equal(joinCodeValue.textContent, "SMOKE123");
   assert.equal(joinLink.getAttribute("href"), "http://localhost:3000/join?code=SMOKE123");
   assert.equal(joinLink.textContent, "http://localhost:3000/join?code=SMOKE123");
+  const joinDetails = gamePage.document.querySelector('[data-testid="game-join-details"]');
+  assert(joinDetails instanceof gamePage.window.HTMLElement);
+  assert.equal(joinDetails.getAttribute("aria-label"), "Join game details");
+  assert.equal(joinDetails.children[0]?.getAttribute("data-ui"), "join-qr-block");
+  assert.equal(joinDetails.children[1]?.getAttribute("data-ui"), "join-copy");
+  assert.equal(joinDetails.querySelectorAll("#game-join-code-value").length, 1);
+  assert.equal(joinDetails.querySelectorAll("#game-join-link").length, 1);
+  assert.equal(joinDetails.querySelectorAll("#game-join-qr").length, 1);
   const joinQrSvg = joinQr.querySelector("svg");
   assert(joinQrSvg instanceof gamePage.window.SVGElement);
   assert.equal(joinQrSvg.getAttribute("aria-label"), "Join QR code for http://localhost:3000/join?code=SMOKE123");

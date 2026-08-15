@@ -241,10 +241,11 @@
   }
 
   function renderClientPanel(title, description, body, footer, testId) {
+    const descriptionHtml = description ? `<p>${escapeHtml(description)}</p>` : "";
     return `<article data-ui="panel" data-testid="${escapeHtml(testId)}">
       <div data-ui="panel-heading">
         <h2>${escapeHtml(title)}</h2>
-        <p>${escapeHtml(description)}</p>
+        ${descriptionHtml}
       </div>
       <div data-ui="panel-body">${body}</div>
       ${footer ? `<div data-ui="panel-footer">${footer}</div>` : ""}
@@ -336,9 +337,9 @@
 
   function renderClientTableShell({ tableTestId, bodyId, emptyId, emptyText, headers }) {
     return `<div data-ui="table-wrap" data-testid="${escapeHtml(tableTestId)}" hidden>
-      <table>
+      <table data-ui="data-table">
         <thead>
-          <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
+          <tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr>
         </thead>
         <tbody id="${escapeHtml(bodyId)}"></tbody>
       </table>
@@ -397,7 +398,7 @@
         bodyId: "season-games-body",
         emptyId: "season-games-empty",
         emptyText: "No games yet. Create your first game.",
-        headers: ["Kickoff", "Status", "Actions"],
+        headers: ["Date", "Status", "Actions"],
       }),
       "",
       "panel-season-games",
@@ -1505,7 +1506,7 @@
           const dateRange = `${season.startsOn ?? "-"} to ${season.endsOn ?? "-"}`;
           const seasonPath = buildLeagueSeasonPath(leagueId, season.seasonId);
           return `<tr>
-            <td data-label="Season"><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
+            <td data-label="Season name"><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
             <td data-label="Dates">${escapeHtml(dateRange)}</td>
             <td data-label="Actions">
               <div data-ui="row-action-buttons">
@@ -1841,7 +1842,7 @@
           const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
           const gamePath = `/games/${encodeURIComponent(game.gameId)}`;
           return `<tr>
-          <td data-label="Kickoff"><a href="${gamePath}">${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</a></td>
+          <td data-label="Date"><a href="${gamePath}">${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</a></td>
           <td data-label="Status"><span data-ui="status-chip" data-status="${escapeHtml(status)}">${renderClientIcon(statusIcon)}<span>${escapeHtml(statusLabel)}</span></span></td>
           <td data-label="Actions">
             <div data-ui="row-action-buttons">
@@ -3590,7 +3591,7 @@
           : active
             ? `${nickname} assigned to ${team.name}`
             : `Assign ${nickname} to ${team.name}`;
-      return `<button data-ui="team-chip" type="button" data-action="assign-player" data-player-id="${escapeHtml(
+      return `<button data-ui="team-chip" data-context="${escapeHtml(context)}" type="button" data-action="assign-player" data-player-id="${escapeHtml(
         playerId,
       )}" data-team-id="${escapeHtml(team.teamId)}" aria-label="${escapeHtml(label)}" aria-pressed="${
         active ? "true" : "false"
@@ -3642,7 +3643,7 @@
           `Transfer ${nickname}`,
         )}" aria-expanded="${
           open ? "true" : "false"
-        }" aria-controls="${menuId}"${disabled}>${renderClientIcon("arrow-left-right")}<span>Transfer</span></button>
+        }" aria-controls="${menuId}" title="${escapeHtml(`Transfer ${nickname}`)}"${disabled}>${renderClientIcon("arrow-left-right")}</button>
         <div id="${menuId}" data-ui="transfer-menu"${open ? "" : " hidden"}>
           ${alternatives}
         </div>

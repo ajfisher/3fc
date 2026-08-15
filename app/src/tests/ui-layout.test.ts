@@ -160,6 +160,10 @@ test("league page includes season create form and seasons table", () => {
   assert.match(html, /Share the link or code below or send an invite via email/);
   assert.doesNotMatch(html, /Share invite ready/);
   assert.match(html, /league-seasons-body/);
+  assert.match(
+    html,
+    /<th scope="col">Season name<\/th><th scope="col">Dates<\/th><th scope="col">Actions<\/th>/,
+  );
   assert.match(html, /data-testid="create-season"/);
   assert.match(html, /data-testid="delete-league"/);
 });
@@ -179,6 +183,10 @@ test("season page includes game create form and games table", () => {
   assert.match(html, /Game date/);
   assert.match(html, /data-testid="game-third-length"/);
   assert.match(html, /season-games-body/);
+  assert.match(
+    html,
+    /<th scope="col">Date<\/th><th scope="col">Status<\/th><th scope="col">Actions<\/th>/,
+  );
   assert.match(html, /data-testid="create-game"/);
   assert.match(html, /data-testid="delete-season"/);
 });
@@ -235,11 +243,18 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-join-code-value"/);
   assert.match(html, /data-testid="game-join-link"/);
   assert.match(html, /data-testid="game-join-qr"/);
+  assert.match(html, /data-ui="join-details" data-testid="game-join-details" aria-label="Join game details"/);
+  assert.ok(html.indexOf('data-ui="join-qr-block"') < html.indexOf('data-ui="join-copy"'));
+  assert.doesNotMatch(html, /Edit core game metadata/);
   assert.match(html, /data-testid="game-reference-ids"/);
   assert.match(html, /<summary>Reference IDs<\/summary>/);
   assert.match(html, /data-testid="save-game"/);
   assert.match(html, /data-icon="save"/);
   assert.match(html, />Save<\/span>/);
+  assert.match(
+    html,
+    /data-ui="game-details-actions">[\s\S]*data-testid="save-game"[\s\S]*data-testid="game-mode-next-players"[\s\S]*<\/div>/,
+  );
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="delete-game"[^>]*disabled="disabled"/);
   assert.match(html, /id="game-delete-lock-reason" hidden/);
@@ -248,6 +263,8 @@ test("game page renders editable game metadata view", () => {
   assert.ok(html.indexOf('aria-label="Game actions"') < html.indexOf('data-testid="setup-flow-root"'));
   assert.equal((html.match(/data-action="delete-game"/g) ?? []).length, 1);
   assert.match(html, /data-testid="player-create-row"/);
+  assert.match(html, /data-ui="inline-input-actions"/);
+  assert.match(html, /id="player-nickname"[\s\S]*data-testid="quick-create-player"/);
   assert.match(html, /aria-label="Create player"/);
   assert.match(html, /aria-label="Add players"/);
   assert.match(html, /data-testid="game-mode-nav"/);

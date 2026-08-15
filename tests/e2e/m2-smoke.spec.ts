@@ -955,6 +955,10 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.locator("#league-title")).toHaveText(leagueName);
 
+      const createSeasonToggle = page.getByTestId("toggle-create-season");
+      await createSeasonToggle.click();
+      await expect(createSeasonToggle).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator("#season-name")).toBeFocused();
       await page.locator("#season-name").fill(seasonName);
       await page.locator("#season-friendly-url").fill(seasonSlug);
       await Promise.all([
@@ -963,6 +967,10 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.locator("#season-title")).toHaveText(seasonName);
 
+      const createGameToggle = page.getByTestId("toggle-create-game");
+      await createGameToggle.click();
+      await expect(createGameToggle).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator("#game-date")).toBeFocused();
       await page.locator("#game-date").fill(schedule.gameDate);
       await page.locator("#game-date").dispatchEvent("change");
       await page.locator("#game-kickoff").fill(schedule.kickoff);

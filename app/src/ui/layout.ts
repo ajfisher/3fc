@@ -282,7 +282,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
       bodyId: "league-seasons-body",
       emptyId: "league-seasons-empty",
       emptyText: "No seasons yet. Create one to add games.",
-      headers: ["Season", "Dates", "Actions"],
+      headers: ["Season name", "Dates", "Actions"],
     }),
     "",
     "panel-league-seasons",
@@ -492,7 +492,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
       bodyId: "season-games-body",
       emptyId: "season-games-empty",
       emptyText: "No games yet. Create your first game.",
-      headers: ["Kickoff", "Status", "Actions"],
+      headers: ["Date", "Status", "Actions"],
     }),
     "",
     "panel-season-games",
@@ -914,12 +914,17 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   const gameHeading = "Game";
   const gameDetailsPanel = renderPanel(
     "Game details",
-    "Edit core game metadata.",
-    `<dl data-ui="join-details" data-testid="game-join-details">
-      <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
-      <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
-      <div data-ui="join-qr-row"><dt>Join QR</dt><dd id="game-join-qr" data-ui="join-qr" data-testid="game-join-qr">Loading…</dd></div>
-    </dl>
+    "",
+    `<section data-ui="join-details" data-testid="game-join-details" aria-label="Join game details">
+      <div data-ui="join-qr-block">
+        <h3>Join QR</h3>
+        <div id="game-join-qr" data-ui="join-qr" data-testid="game-join-qr">Loading…</div>
+      </div>
+      <dl data-ui="join-copy">
+        <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
+        <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
+      </dl>
+    </section>
     <details data-ui="reference-ids" data-testid="game-reference-ids">
       <summary>Reference IDs</summary>
       <dl data-ui="id-preview" data-testid="game-context-details">
@@ -952,7 +957,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       </select>
     </div>
     </div>`,
-    `<div data-ui="button-row">
+    `<div data-ui="game-details-actions">
       ${renderIconButton({
         icon: "save",
         label: "Save game",
@@ -963,8 +968,6 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           "data-testid": "save-game",
         },
       })}
-    </div>
-    <div data-ui="mode-actions">
       ${renderIconButton({
         icon: "users",
         label: "Add players",
@@ -1018,20 +1021,22 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     "Roster setup",
     "Create players and assign them to game teams.",
     `<div data-ui="inline-create" data-testid="player-create-row">
-      ${renderValidatedField({
-        id: "player-nickname",
-        label: "Player nickname",
-        placeholder: "Ari",
-      })}
-      ${renderIconButton({
-        icon: "circle-plus",
-        label: "Create player",
-        variant: "primary",
-        attributes: {
-          "data-action": "quick-create-player",
-          "data-testid": "quick-create-player",
-        },
-      })}
+      <div data-ui="field" data-validated="true">
+        <label for="player-nickname">Player nickname</label>
+        <div data-ui="inline-input-actions">
+          <input data-ui="input" data-state="default" id="player-nickname" name="player-nickname" type="text" placeholder="Ari" aria-describedby="player-nickname-notice" />
+          ${renderIconButton({
+            icon: "circle-plus",
+            label: "Create player",
+            variant: "primary",
+            attributes: {
+              "data-action": "quick-create-player",
+              "data-testid": "quick-create-player",
+            },
+          })}
+        </div>
+        <div data-ui="field-message"><p data-ui="field-hint" id="player-nickname-notice" data-default-message="" data-default-kind="empty"></p></div>
+      </div>
     </div>
     <div data-ui="field">
       <label for="player-search">Search players</label>

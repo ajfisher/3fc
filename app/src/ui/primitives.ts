@@ -233,10 +233,11 @@ export function renderPanel(
   panelId?: string,
 ): string {
   const idAttribute = panelId ? ` data-testid="${escapeHtml(panelId)}"` : "";
+  const descriptionHtml = description ? `<p>${escapeHtml(description)}</p>` : "";
   return `<article data-ui="panel"${idAttribute}>
   <header>
     <h2>${escapeHtml(title)}</h2>
-    <p>${escapeHtml(description)}</p>
+    ${descriptionHtml}
   </header>
   <section>
     ${bodyHtml}
