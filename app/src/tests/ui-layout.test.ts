@@ -102,7 +102,10 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /data-testid="panel-dashboard-create-league"/);
   assert.match(html, /data-testid="panel-dashboard-leagues"/);
   assert.match(html, /id="dashboard-welcome">Welcome</);
-  assert.match(html, /id="setup-status" role="status" aria-live="polite"/);
+  assert.match(html, /data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading"/);
+  assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
+  assert.match(html, /data-ui="activity-message" class="sr-only">Checking sign-in state…/);
+  assert.doesNotMatch(html, /data-ui="status-note" id="setup-status"/);
   assert.match(html, /id="setup-error" role="status" aria-live="polite" hidden/);
   assert.doesNotMatch(html, /API target/);
   assert.doesNotMatch(html, /3FC ORGANIZER/i);
@@ -120,6 +123,23 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /data-testid="setup-shell"/);
   assert.match(html, /<script src="\/ui\/setup-flow\.js" defer><\/script>/);
   assert.match(html, /https:\/\/qa-api\.3fc\.football/);
+});
+
+test("management pages render routine progress as a quiet activity indicator", () => {
+  const pages = [
+    renderSetupHomePage("https://qa-api.3fc.football"),
+    renderLeaguePage("https://qa-api.3fc.football", "league-1"),
+    renderSeasonPage("https://qa-api.3fc.football", "season-1", "league-1"),
+    renderGamePage("https://qa-api.3fc.football", { gameId: "game-1" }),
+  ];
+
+  for (const html of pages) {
+    assert.match(html, /data-ui="activity-status" id="setup-status"/);
+    assert.match(html, /data-activity="loading"/);
+    assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
+    assert.match(html, /data-ui="activity-message" class="sr-only"/);
+    assert.doesNotMatch(html, /data-ui="status-note" id="setup-status"/);
+  }
 });
 
 test("setup pages can version UI asset URLs for deployments", () => {

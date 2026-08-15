@@ -83,8 +83,24 @@
       return;
     }
 
-    statusElement.textContent = text;
+    let messageElement = statusElement.querySelector('[data-ui="activity-message"]');
+    if (!(messageElement instanceof HTMLElement)) {
+      const initialMessage = statusElement.textContent?.trim() ?? "";
+      statusElement.textContent = "";
+      statusElement.insertAdjacentHTML("afterbegin", renderClientIcon("loader-circle"));
+      messageElement = document.createElement("span");
+      messageElement.setAttribute("data-ui", "activity-message");
+      messageElement.classList.add("sr-only");
+      messageElement.textContent = initialMessage;
+      statusElement.append(messageElement);
+      statusElement.setAttribute("data-ui", "activity-status");
+    }
+
+    const isLoading = state === "default" && /(?:…|\.{3})$/.test(text.trim());
+    messageElement.textContent = text;
+    messageElement.classList.toggle("sr-only", state !== "error");
     statusElement.hidden = text.length === 0;
+    statusElement.setAttribute("data-activity", isLoading ? "loading" : "message");
     if (state === "default") {
       statusElement.removeAttribute("data-state");
       return;
@@ -436,7 +452,7 @@
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Loading season data...</p>
+        <div data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading">${renderClientIcon("loader-circle")}<span data-ui="activity-message" class="sr-only">Loading season data…</span></div>
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="season-grid">
           ${gamesPanel}
@@ -1087,12 +1103,7 @@
       throw new Error("redirecting_to_sign_in");
     }
 
-    const email = result.body?.session?.email;
-    if (typeof email === "string" && email.length > 0) {
-      setStatus(`Signed in as ${email}.`, "success");
-    } else {
-      setStatus("Session active.", "success");
-    }
+    setStatus("Loading page…", "default");
 
     return result.body?.session ?? null;
   }
@@ -5031,7 +5042,7 @@
       }
     });
 
-    setStatus("Join page ready.", "success");
+    setStatus("");
   }
 
   async function initInvitePage() {
@@ -5156,11 +5167,11 @@
           codeInput.focus();
         }
       }
-      setStatus("Invite page ready.", "success");
+      setStatus("");
       return;
     }
 
-    setStatus("Invite page ready.", "success");
+    setStatus("");
   }
 
   async function initialize() {

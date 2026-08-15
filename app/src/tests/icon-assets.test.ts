@@ -31,6 +31,9 @@ test("client icon validation rejects names outside the generated allow-list", as
     validateClientIconNames: (source: string, names: readonly string[]) => string[];
   };
 
+  const clientSource = readFileSync(resolve(process.cwd(), "src/ui/setup-flow.js"), "utf8");
+  assert(validateClientIconNames(clientSource, ICON_NAMES).includes("loader-circle"));
+
   assert.deepEqual(
     validateClientIconNames('renderClientIconButton({ icon: "eye", label: "View" });', ICON_NAMES),
     ["eye"],

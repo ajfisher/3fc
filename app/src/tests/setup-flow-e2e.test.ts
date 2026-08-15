@@ -2219,8 +2219,17 @@ test("empty dashboard does not reopen creation after a slow response overrides u
 
   const toggle = page.document.querySelector('[data-testid="toggle-create-league"]');
   const region = page.document.getElementById("dashboard-create-league-region");
+  const activityStatus = page.document.getElementById("setup-status");
   assert(toggle instanceof page.window.HTMLButtonElement);
   assert(region instanceof page.window.HTMLElement);
+  assert(activityStatus instanceof page.window.HTMLElement);
+  assert.equal(activityStatus.getAttribute("data-ui"), "activity-status");
+  assert.equal(activityStatus.getAttribute("data-activity"), "loading");
+  assert.equal(activityStatus.getAttribute("data-state"), null);
+  assert.equal(activityStatus.textContent, "Loading page…");
+  assert(activityStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
+  assert(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
+  assert.doesNotMatch(activityStatus.textContent ?? "", /Signed in as|Session active/);
   dispatchClick(toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
   dispatchClick(toggle);
@@ -2234,6 +2243,8 @@ test("empty dashboard does not reopen creation after a slow response overrides u
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(region.hidden, true);
   assert.equal(page.document.activeElement, toggle);
+  assert.equal(activityStatus.hidden, true);
+  assert.equal(activityStatus.textContent, "");
 });
 
 test("dashboard greeting falls back to the full email when no local-part token exists", async () => {
@@ -2690,10 +2701,8 @@ test("invite page accepts organiser codes after confirmation and grants league a
 
   assert.equal(apiState.leagueAccess.get(leagueAccessKey("autumn-league", "coach@example.com")), undefined);
   assert.equal(apiState.leagueInvites.get("ABCD2345")?.acceptedByUserId, null);
-  assert.equal(
-    invitePage.document.getElementById("setup-status")?.textContent,
-    "Invite page ready.",
-  );
+  assert.equal(invitePage.document.getElementById("setup-status")?.textContent, "");
+  assert.equal(invitePage.document.getElementById("setup-status")?.hidden, true);
   assert.equal(invitePage.document.getElementById("organiser-invite-code-form")?.hidden, true);
   assert.equal(invitePage.document.getElementById("organiser-invite-accept-code")?.textContent, "ABCD2345");
 
@@ -2825,8 +2834,10 @@ test("league static shell remounts nested league season routes as scoped season 
   const root = page.document.getElementById("setup-flow-root");
   const shell = page.document.querySelector('[data-testid="season-shell"]');
   const gamesBody = page.document.getElementById("season-games-body");
+  const activityStatus = page.document.getElementById("setup-status");
 
   assert(shell instanceof page.window.HTMLElement);
+  assert(activityStatus instanceof page.window.HTMLElement);
   assert.equal(root?.getAttribute("data-page"), "season");
   assert.equal(root?.getAttribute("data-league-id"), "three-sided-football-club");
   assert.equal(root?.getAttribute("data-season-id"), "autumn-cup");
@@ -2849,6 +2860,13 @@ test("league static shell remounts nested league season routes as scoped season 
   assert(gamesBody.querySelector('a[href="/games/game-season-static-fallback"]'));
   assert.equal(gamesBody.querySelector("td")?.getAttribute("data-label"), "Date");
   assert.doesNotMatch(gamesBody.textContent ?? "", /game-season-static-fallback/);
+  assert.equal(activityStatus.getAttribute("data-ui"), "activity-status");
+  assert.equal(activityStatus.getAttribute("role"), "status");
+  assert.equal(activityStatus.getAttribute("aria-live"), "polite");
+  assert(activityStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
+  assert(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
+  assert.equal(activityStatus.hidden, true);
+  assert.equal(activityStatus.textContent, "");
 });
 
 test("season page falls back to legacy season APIs during site-first scoped rollout", async () => {
@@ -4529,6 +4547,12 @@ test("game page remains usable when goal timeline load fails", async () => {
   assert(goalSummaryUnavailable instanceof page.window.HTMLElement);
   assert(quickCreateButton instanceof page.window.HTMLButtonElement);
   assert.equal(status.textContent, "Could not load goal timeline.");
+  assert.equal(status.getAttribute("data-state"), "error");
+  assert.equal(status.getAttribute("data-activity"), "message");
+  assert.equal(
+    status.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"),
+    false,
+  );
   assert.equal(error.hidden, false);
   assert.equal(error.textContent, "Goal feed unavailable.");
   assert.match(rosterTeams.textContent ?? "", /Red/);
@@ -7205,6 +7229,15 @@ test("game page serializes goal corrections through the finished-result refresh"
   assert.equal(scorerInput.disabled, true);
   assert.equal(saveGoalButton.disabled, true);
   assert.match(page.document.getElementById("goal-form-note")?.textContent ?? "", /Saving goal change/);
+  const pendingStatus = page.document.getElementById("setup-status");
+  assert(pendingStatus instanceof page.window.HTMLElement);
+  assert.equal(pendingStatus.getAttribute("role"), "status");
+  assert.equal(pendingStatus.getAttribute("aria-live"), "polite");
+  assert.equal(pendingStatus.getAttribute("data-activity"), "loading");
+  assert.equal(pendingStatus.getAttribute("data-state"), null);
+  assert.equal(pendingStatus.textContent, "Adding goal…");
+  assert(pendingStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
+  assert(pendingStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
 
   const pendingUndo = page.document.querySelector('[data-action="undo-last-goal"]');
   const pendingEdit = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
@@ -7238,7 +7271,15 @@ test("game page serializes goal corrections through the finished-result refresh"
   assert.equal(restoredUndo.disabled, false);
   assert.equal(restoredEdit.disabled, false);
   assert.equal(restoredDelete.disabled, false);
-  assert.equal(page.document.getElementById("setup-status")?.textContent, "Goal added.");
+  const completedStatus = page.document.getElementById("setup-status");
+  assert(completedStatus instanceof page.window.HTMLElement);
+  assert.equal(completedStatus.textContent, "Goal added.");
+  assert.equal(completedStatus.getAttribute("data-state"), "success");
+  assert.equal(completedStatus.getAttribute("data-activity"), "message");
+  assert.equal(
+    completedStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"),
+    true,
+  );
 });
 
 test("game page clears a committed finished-goal draft when timeline and result refresh fail", async () => {
@@ -7578,6 +7619,8 @@ test("join page registers a player without organizer authentication", async () =
 
   assert.equal(joinPage.navigations.length, 0);
   assert.equal(joinPage.document.getElementById("join-code-value")?.textContent, "JOIN0001");
+  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "");
+  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, true);
 
   const nicknameInput = joinPage.document.getElementById("join-player-nickname");
   const form = joinPage.document.getElementById("join-game-form");

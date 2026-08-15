@@ -2,6 +2,7 @@ import {
   renderButton,
   renderDataTable,
   renderInputField,
+  renderIcon,
   renderIconButton,
   renderIconLink,
   renderModalPrompt,
@@ -41,6 +42,11 @@ function renderModalScriptTag(): string {
 
 function renderSetupScriptTag(): string {
   return `<script src="${escapeHtml(renderAssetPath("/ui/setup-flow.js"))}" defer></script>`;
+}
+
+function renderActivityStatus(message: string, loading = true): string {
+  const hidden = message ? "" : " hidden";
+  return `<div data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="${loading ? "loading" : "message"}"${hidden}>${renderIcon("loader-circle")}<span data-ui="activity-message" class="sr-only">${escapeHtml(message)}</span></div>`;
 }
 
 function renderAuthScriptTag(): string {
@@ -212,7 +218,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
     <main data-ui="app-shell" data-testid="setup-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       ${renderDashboardHero()}
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="dashboard" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Checking sign-in state…</p>
+        ${renderActivityStatus("Checking sign-in state…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="dashboard-grid">
           ${leaguesPanel}
@@ -367,7 +373,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="league" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-league-id="${safeLeagueId}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Loading league data…</p>
+        ${renderActivityStatus("Loading league data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="league-grid">
           ${seasonsPanel}
@@ -406,7 +412,7 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
         <p data-ui="hero-copy">Code <code>${inviteHeading}</code></p>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="invite" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-invite-code="${safeInviteCode}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Checking sign-in state…</p>
+        ${renderActivityStatus("Checking sign-in state…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-grid" data-testid="invite-grid">
           ${renderPanel(
@@ -537,7 +543,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Loading season data…</p>
+        ${renderActivityStatus("Loading season data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="season-grid">
           ${gamesPanel}
@@ -836,7 +842,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
         <p data-ui="hero-copy">Code <code>${joinHeading}</code></p>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="join" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-join-code="${safeJoinCode}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Ready.</p>
+        ${renderActivityStatus("", false)}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-grid" data-testid="join-grid">
           ${renderPanel(
@@ -1187,7 +1193,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
-        <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Loading game data…</p>
+        ${renderActivityStatus("Loading game data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game workflow">
           <div data-ui="game-mode-tabs" aria-label="Game workflow modes">
