@@ -110,6 +110,8 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /aria-controls="dashboard-create-league-region"/);
   assert.match(html, /id="dashboard-create-league-region" data-ui="disclosure-panel" hidden/);
   assert.ok(html.indexOf('data-testid="panel-dashboard-leagues"') < html.indexOf('data-testid="panel-dashboard-create-league"'));
+  assert.ok(html.indexOf('data-testid="panel-dashboard-leagues"') < html.indexOf('data-testid="toggle-create-league"'));
+  assert.ok(html.indexOf('data-testid="toggle-create-league"') < html.indexOf('data-testid="panel-dashboard-create-league"'));
   assert.match(html, /dashboard-leagues-body/);
   assert.match(html, /data-testid="create-league"/);
   assert.match(html, /id="league-id-display"/);

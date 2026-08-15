@@ -211,24 +211,24 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
     <main data-ui="app-shell" data-testid="setup-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       ${renderDashboardHero()}
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="dashboard" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-        <div data-ui="page-toolbar" role="toolbar" aria-label="Dashboard actions">
-          ${renderIconButton({
-            icon: "circle-plus",
-            label: "Create a new league",
-            text: "Create a new league",
-            variant: "primary",
-            attributes: {
-              "data-action": "toggle-create-league",
-              "data-testid": "toggle-create-league",
-              "aria-controls": "dashboard-create-league-region",
-              "aria-expanded": "false",
-            },
-          })}
-        </div>
         <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Checking sign-in state…</p>
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="dashboard-grid">
           ${leaguesPanel}
+          <div data-ui="page-toolbar" role="toolbar" aria-label="Dashboard actions">
+            ${renderIconButton({
+              icon: "circle-plus",
+              label: "Create a new league",
+              text: "Create a new league",
+              variant: "primary",
+              attributes: {
+                "data-action": "toggle-create-league",
+                "data-testid": "toggle-create-league",
+                "aria-controls": "dashboard-create-league-region",
+                "aria-expanded": "false",
+              },
+            })}
+          </div>
           <section id="dashboard-create-league-region" data-ui="disclosure-panel" hidden>
             ${createLeaguePanel}
           </section>
