@@ -3,6 +3,7 @@ import {
   renderDataTable,
   renderInputField,
   renderIconButton,
+  renderIconLink,
   renderModalPrompt,
   renderNavigation,
   renderPanel,
@@ -910,19 +911,25 @@ function renderGameModeTab(input: {
 
 export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput): string {
   const gameId = escapeHtml(input.gameId);
-  const gameHeading = gameId.length > 0 ? gameId : "Game";
+  const gameHeading = "Game";
   const gameDetailsPanel = renderPanel(
     "Game details",
     "Edit core game metadata.",
-    `<dl data-ui="id-preview" data-testid="game-context-details">
-      <div><dt>Game ID</dt><dd id="game-id-value">${gameHeading}</dd></div>
+    `<dl data-ui="join-details" data-testid="game-join-details">
       <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
       <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
       <div data-ui="join-qr-row"><dt>Join QR</dt><dd id="game-join-qr" data-ui="join-qr" data-testid="game-join-qr">Loading…</dd></div>
-      <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
-      <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
     </dl>
-    ${renderValidatedField({
+    <details data-ui="reference-ids" data-testid="game-reference-ids">
+      <summary>Reference IDs</summary>
+      <dl data-ui="id-preview" data-testid="game-context-details">
+        <div><dt>Game ID</dt><dd id="game-id-value">${gameId || "Loading…"}</dd></div>
+        <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
+        <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
+      </dl>
+    </details>
+    <div data-ui="game-fields">
+      ${renderValidatedField({
       id: "game-edit-kickoff",
       label: "Kickoff time",
       type: "datetime-local",
@@ -943,26 +950,30 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <option value="25">25 minutes</option>
         <option value="30">30 minutes</option>
       </select>
+    </div>
     </div>`,
     `<div data-ui="button-row">
-      ${renderButton("Save changes", "primary", {
-        type: "button",
-        "data-action": "save-game",
-        "data-testid": "save-game",
+      ${renderIconButton({
+        icon: "save",
+        label: "Save game",
+        text: "Save",
+        variant: "primary",
+        attributes: {
+          "data-action": "save-game",
+          "data-testid": "save-game",
+        },
       })}
-      ${renderButton("Delete game", "danger", {
-        type: "button",
-        "data-action": "delete-game",
-        "data-testid": "delete-game",
-      })}
-      <a id="create-another-game-link" href="/setup" data-ui="button-link" data-variant="secondary" data-testid="create-another-game">Create another game</a>
     </div>
     <div data-ui="mode-actions">
-      ${renderButton("Players", "secondary", {
-        type: "button",
-        "data-action": "select-game-mode",
-        "data-game-mode": "players",
-        "data-testid": "game-mode-next-players",
+      ${renderIconButton({
+        icon: "users",
+        label: "Add players",
+        text: "Add players",
+        attributes: {
+          "data-action": "select-game-mode",
+          "data-game-mode": "players",
+          "data-testid": "game-mode-next-players",
+        },
       })}
     </div>`,
     "panel-game-details",
@@ -1006,16 +1017,20 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   const rosterPanel = renderPanel(
     "Roster setup",
     "Create players and assign them to game teams.",
-    `${renderValidatedField({
-      id: "player-nickname",
-      label: "Player nickname",
-      placeholder: "Ari",
-    })}
-    <div data-ui="button-row">
-      ${renderButton("Create player", "primary", {
-        type: "button",
-        "data-action": "quick-create-player",
-        "data-testid": "quick-create-player",
+    `<div data-ui="inline-create" data-testid="player-create-row">
+      ${renderValidatedField({
+        id: "player-nickname",
+        label: "Player nickname",
+        placeholder: "Ari",
+      })}
+      ${renderIconButton({
+        icon: "circle-plus",
+        label: "Create player",
+        variant: "primary",
+        attributes: {
+          "data-action": "quick-create-player",
+          "data-testid": "quick-create-player",
+        },
       })}
     </div>
     <div data-ui="field">
@@ -1149,6 +1164,28 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="game-league-link" href="/setup">League</a> / <a id="game-season-link" href="/setup">Season</a> / Game</span>
         <h1 id="game-title">${gameHeading}</h1>
         <p data-ui="hero-copy" id="game-subtitle">Loading game details…</p>
+        <div data-ui="header-actions" role="toolbar" aria-label="Game actions">
+          ${renderIconLink({
+            href: "/setup",
+            icon: "calendar-plus",
+            label: "Create another game",
+            attributes: {
+              id: "create-another-game-link",
+              "data-testid": "create-another-game",
+            },
+          })}
+          ${renderIconButton({
+            icon: "trash-2",
+            label: "Delete game",
+            variant: "danger",
+            attributes: {
+              "data-action": "delete-game",
+              "data-testid": "delete-game",
+              disabled: "disabled",
+            },
+          })}
+          <span class="sr-only" id="game-delete-lock-reason" hidden>Finished games cannot be deleted.</span>
+        </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
         <p data-ui="status-note" id="setup-status" role="status" aria-live="polite">Loading game data…</p>
@@ -1161,7 +1198,6 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             ${renderGameModeTab({ mode: "final", label: "Final", meta: "Summary" })}
           </div>
         </nav>
-        <p data-ui="game-mode-status" id="game-mode-status" data-testid="game-mode-status">Game setup</p>
         <section data-ui="game-mode-panels" data-testid="game-grid">
           <section data-ui="game-mode-panel" id="game-mode-structure" aria-labelledby="game-mode-tab-structure" data-game-mode="structure" data-testid="game-mode-structure">
             ${gameDetailsPanel}

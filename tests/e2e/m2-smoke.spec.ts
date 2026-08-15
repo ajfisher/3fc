@@ -961,15 +961,13 @@ test.describe("M2 local-stack smoke", () => {
       await page.locator("#game-date").dispatchEvent("change");
       await page.locator("#game-kickoff").fill(schedule.kickoff);
       await page.locator("#game-kickoff").dispatchEvent("change");
-      gameId = (await page.locator("#game-id-display").innerText()).trim();
-      expect(gameId).toMatch(/^game-/);
 
-      await Promise.all([
-        page.waitForURL(`**/games/${gameId}`),
-        page.getByTestId("create-game").click(),
-      ]);
+      await Promise.all([page.waitForURL(/\/games\/[^/]+$/), page.getByTestId("create-game").click()]);
+      gameId = decodeURIComponent(new URL(page.url()).pathname.split("/").filter(Boolean).at(-1) ?? "");
+      expect(gameId).toMatch(/^game-/);
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
+      await expect(page.locator("#game-title")).not.toHaveText(gameId);
       await expect(page.getByTestId("game-mode-structure")).toBeVisible();
       await expect(page.getByTestId("game-mode-players")).toBeHidden();
       const joinCodeValue = page.getByTestId("game-join-code-value");

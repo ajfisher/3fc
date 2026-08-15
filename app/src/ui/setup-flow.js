@@ -891,6 +891,32 @@
     return localValue ? localValue.replace("T", " ") : String(isoTimestamp ?? "");
   }
 
+  function formatLocalDateHeading(isoTimestamp) {
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return "Game";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }).format(parsed);
+  }
+
+  function formatLocalKickoffTime(isoTimestamp) {
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return "Kickoff time unavailable";
+    }
+
+    return `Kickoff at ${new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(parsed)}`;
+  }
+
   function todayDate() {
     const now = new Date();
     const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
@@ -1993,7 +2019,8 @@
     const statusInput = document.getElementById("game-edit-status");
     const thirdLengthInput = document.getElementById("game-edit-third-length");
     const saveButton = root.querySelector('[data-action="save-game"]');
-    const deleteButton = root.querySelector('[data-action="delete-game"]');
+    const deleteButton = document.querySelector('[data-action="delete-game"]');
+    const deleteLockReason = document.getElementById("game-delete-lock-reason");
     const createAnotherLink = document.getElementById("create-another-game-link");
     const timerThirdLabel = document.getElementById("timer-third-label");
     const timerDisplayValue = document.getElementById("timer-display-value");
@@ -2049,6 +2076,7 @@
     let rosterPlayers = [];
     let rosterAssignments = [];
     let rosterSearchTimer = 0;
+    let openTransferPlayerId = null;
     let scoreboardTeams = [];
     let goalTimeline = [];
     let goalTimelineLoaded = false;
@@ -2058,16 +2086,9 @@
     let pendingCreateGoalIdempotency = null;
     const pendingGoalMutationIdempotency = new Map();
     const gameModes = ["structure", "players", "run", "final"];
-    const gameModeLabels = {
-      structure: "Game setup",
-      players: "Players",
-      run: "Run game",
-      final: "Finalisation",
-    };
     const gameModeTabs = [...root.querySelectorAll('[data-ui="game-mode-tab"][data-game-mode]')];
     const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
     const gameModePanels = [...root.querySelectorAll('[data-ui="game-mode-panel"][data-game-mode]')];
-    const gameModeStatus = document.getElementById("game-mode-status");
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -2151,10 +2172,6 @@
         if (trigger instanceof HTMLElement) {
           trigger.setAttribute("data-current", trigger.getAttribute("data-game-mode") === mode ? "true" : "false");
         }
-      }
-
-      if (gameModeStatus instanceof HTMLElement) {
-        gameModeStatus.textContent = gameModeLabels[mode] ?? "Game setup";
       }
 
       if (options.focusPanel === true) {
@@ -2392,7 +2409,24 @@
       kickoffInput.disabled = gameFinished;
       statusInput.disabled = gameFinished;
       saveButton.disabled = gameFinished;
-      deleteButton.disabled = gameFinished;
+      deleteButton.disabled = false;
+      if (gameFinished) {
+        deleteButton.setAttribute("aria-disabled", "true");
+        deleteButton.setAttribute("aria-describedby", "game-delete-lock-reason");
+        deleteButton.setAttribute("aria-label", "Delete game unavailable: game is finished");
+        deleteButton.title = "Finished games cannot be deleted";
+        if (deleteLockReason instanceof HTMLElement) {
+          deleteLockReason.hidden = false;
+        }
+      } else {
+        deleteButton.removeAttribute("aria-disabled");
+        deleteButton.removeAttribute("aria-describedby");
+        deleteButton.setAttribute("aria-label", "Delete game");
+        deleteButton.title = "Delete game";
+        if (deleteLockReason instanceof HTMLElement) {
+          deleteLockReason.hidden = true;
+        }
+      }
       syncStatusOptions(hasStarted);
 
       if (timerThirdLabel) {
@@ -2496,12 +2530,17 @@
     }
 
     function playerById(playerId) {
-      const rosterPlayer = rosterAssignments.find((assignment) => assignment.playerId === playerId)?.player;
-      if (rosterPlayer) {
-        return rosterPlayer;
+      const enrichedPlayer = rosterPlayers.find((player) => player.playerId === playerId);
+      if (enrichedPlayer) {
+        return enrichedPlayer;
       }
 
-      return rosterPlayers.find((player) => player.playerId === playerId) ?? null;
+      const assignedPlayer = rosterAssignments.find((assignment) => assignment.playerId === playerId)?.player;
+      if (assignedPlayer) {
+        return assignedPlayer;
+      }
+
+      return null;
     }
 
     function playerNickname(playerId) {
@@ -2602,7 +2641,7 @@
 
     function teamSwatchStyle(team) {
       const color = typeof team.color === "string" && team.color.length > 0 ? team.color : "#d9f0e8";
-      if (!/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+      if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
         return "";
       }
 
@@ -3369,16 +3408,73 @@
       return pendingCreateGoalIdempotency.key;
     }
 
-    function assignmentButtons(playerId, currentTeamId = null) {
+    function assignmentButton(playerId, team, currentTeamId = null, context = "assign") {
       const disabled = finishedRosterControlsLocked() ? " disabled" : "";
-      return rosterTeams
-        .map((team) => {
-          const active = currentTeamId === team.teamId ? ' data-state="active" aria-pressed="true"' : "";
-          return `<button data-ui="row-action" type="button" data-action="assign-player" data-player-id="${escapeHtml(
-            playerId,
-          )}" data-team-id="${escapeHtml(team.teamId)}"${active}${disabled}>${escapeHtml(team.name)}</button>`;
-        })
+      const active = currentTeamId === team.teamId;
+      const nickname = playerNickname(playerId);
+      const label =
+        context === "transfer"
+          ? `Transfer ${nickname} to ${team.name}`
+          : active
+            ? `${nickname} assigned to ${team.name}`
+            : `Assign ${nickname} to ${team.name}`;
+      return `<button data-ui="team-chip" type="button" data-action="assign-player" data-player-id="${escapeHtml(
+        playerId,
+      )}" data-team-id="${escapeHtml(team.teamId)}" aria-label="${escapeHtml(label)}" aria-pressed="${
+        active ? "true" : "false"
+      }" data-state="${
+        active ? "active" : "idle"
+      }"${teamSwatchStyle(team)}${disabled}><span>${escapeHtml(team.name)}</span>${
+        active ? renderClientIcon("circle-check") : ""
+      }</button>`;
+    }
+
+    function assignmentButtons(playerId, currentTeamId = null) {
+      return rosterTeams.map((team) => assignmentButton(playerId, team, currentTeamId)).join("");
+    }
+
+    function transferMenuId(playerId) {
+      let safeSegment;
+      try {
+        safeSegment = encodeURIComponent(String(playerId));
+      } catch {
+        safeSegment = Array.from(String(playerId))
+          .map((character) => character.codePointAt(0).toString(16))
+          .join("-");
+      }
+      return `transfer-options-${safeSegment}`;
+    }
+
+    function focusTransferTrigger(playerId) {
+      const trigger = [...root.querySelectorAll('button[data-action="toggle-transfer"]')].find(
+        (candidate) => candidate.getAttribute("data-player-id") === playerId,
+      );
+      if (trigger instanceof HTMLButtonElement) {
+        trigger.focus();
+      }
+    }
+
+    function transferControl(playerId, currentTeamId) {
+      const safePlayerId = escapeHtml(playerId);
+      const menuId = transferMenuId(playerId);
+      const open = openTransferPlayerId === playerId;
+      const disabled = finishedRosterControlsLocked() ? " disabled" : "";
+      const nickname = playerNickname(playerId);
+      const alternatives = rosterTeams
+        .filter((team) => team.teamId !== currentTeamId)
+        .map((team) => assignmentButton(playerId, team, null, "transfer"))
         .join("");
+
+      return `<div data-ui="transfer-control">
+        <button data-ui="transfer-toggle" type="button" data-action="toggle-transfer" data-player-id="${safePlayerId}" aria-label="${escapeHtml(
+          `Transfer ${nickname}`,
+        )}" aria-expanded="${
+          open ? "true" : "false"
+        }" aria-controls="${menuId}"${disabled}>${renderClientIcon("arrow-left-right")}<span>Transfer</span></button>
+        <div id="${menuId}" data-ui="transfer-menu"${open ? "" : " hidden"}>
+          ${alternatives}
+        </div>
+      </div>`;
     }
 
     function playerAccessPanel(player) {
@@ -3388,8 +3484,10 @@
 
       const access = player?.access;
       if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
-        return `<div data-ui="player-access" data-testid="player-access">
-          <small>Not claimed</small>
+        return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
+          <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
+            "circle-user-round",
+          )}</span>
         </div>`;
       }
 
@@ -3399,14 +3497,16 @@
       const scorerDisabled = role === "scorekeeper" || role === "admin" ? " disabled" : "";
       const adminDisabled = role === "admin" ? " disabled" : "";
 
-      return `<div data-ui="player-access" data-testid="player-access">
-        <small>${escapeHtml(roleLabel)} · ${escapeHtml(access.userId)}</small>
+      return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
+        <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="${escapeHtml(
+          roleLabel,
+        )}" title="${escapeHtml(roleLabel)}">${renderClientIcon("user-round-check")}</span>
         <div data-ui="access-actions">
-          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
-            access.userId,
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(
+            player.playerId,
           )}" data-role="scorekeeper"${scorerDisabled}>Make scorer</button>
-          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
-            access.userId,
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(
+            player.playerId,
           )}" data-role="admin"${adminDisabled}>Make co-organiser</button>
         </div>
       </div>`;
@@ -3425,18 +3525,15 @@
       playerPoolElement.innerHTML = rosterPlayers
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
-          const assignedTeam = assignment ? teamById(assignment.teamId) : null;
-	          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
-	          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
-	            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
-	            <div data-ui="roster-player-main">
-	              <strong>${escapeHtml(player.nickname)}</strong>
-	              <span>${escapeHtml(statusText)}</span>
-	              ${playerAccessPanel(player)}
-	            </div>
-	            <div data-ui="row-action-buttons">
-	              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
-	            </div>
+          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
+            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
+            <div data-ui="roster-player-main">
+              <strong>${escapeHtml(player.nickname)}</strong>
+              ${playerAccessPanel(player)}
+            </div>
+            <div data-ui="row-action-buttons">
+              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
+            </div>
           </article>`;
         })
         .join("");
@@ -3461,9 +3558,7 @@
               const nickname = player?.nickname ?? assignment.playerId;
               return `<li data-ui="roster-member">
                 <span>${escapeHtml(nickname)}</span>
-                <div data-ui="row-action-buttons">
-                  ${assignmentButtons(assignment.playerId, team.teamId)}
-                </div>
+                ${transferControl(assignment.playerId, team.teamId)}
               </li>`;
             })
             .join("");
@@ -3484,6 +3579,9 @@
 
     function renderRosterSetup() {
       const rosterLocked = finishedRosterControlsLocked();
+      if (rosterLocked) {
+        openTransferPlayerId = null;
+      }
       if (quickCreatePlayerButton instanceof HTMLButtonElement) {
         quickCreatePlayerButton.disabled = rosterLocked;
       }
@@ -3562,11 +3660,11 @@
       currentSeasonId = game.seasonId;
 
       if (title) {
-        title.textContent = game.gameId;
+        title.textContent = formatLocalDateHeading(game.gameStartTs);
       }
 
       if (subtitle) {
-        subtitle.innerHTML = `Kickoff: <code>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</code>`;
+        subtitle.textContent = formatLocalKickoffTime(game.gameStartTs);
       }
 
       if (gameIdValue) {
@@ -3848,6 +3946,17 @@
     });
 
     if (rosterControlsAvailable()) {
+      root.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !openTransferPlayerId) {
+          return;
+        }
+
+        const playerId = openTransferPlayerId;
+        openTransferPlayerId = null;
+        renderRosterTeams();
+        focusTransferTrigger(playerId);
+      });
+
       playerNicknameInput.addEventListener("input", () => {
         setFieldMessage("player-nickname");
       });
@@ -3917,12 +4026,38 @@
         }
 
         const action = target.getAttribute("data-action");
+        if (action === "toggle-transfer") {
+          if (finishedRosterControlsLocked()) {
+            return;
+          }
+
+          const playerId = target.getAttribute("data-player-id");
+          if (!playerId) {
+            return;
+          }
+
+          const opening = openTransferPlayerId !== playerId;
+          openTransferPlayerId = opening ? playerId : null;
+          renderRosterTeams();
+          if (opening) {
+            const menu = document.getElementById(transferMenuId(playerId));
+            const firstOption = menu?.querySelector('button[data-action="assign-player"]');
+            if (firstOption instanceof HTMLButtonElement) {
+              firstOption.focus();
+            }
+          } else {
+            focusTransferTrigger(playerId);
+          }
+          return;
+        }
+
         if (action === "grant-player-access") {
           if (currentLeagueRole !== "admin") {
             return;
           }
 
-          const userId = target.getAttribute("data-user-id");
+          const playerId = target.getAttribute("data-player-id");
+          const userId = playerId ? playerById(playerId)?.access?.userId : null;
           const role = target.getAttribute("data-role");
           if (!currentLeagueId || !userId || (role !== "scorekeeper" && role !== "admin")) {
             return;
@@ -3976,11 +4111,13 @@
         }
 
         target.disabled = true;
+        const isTransferAssignment = target.closest('[data-ui="transfer-menu"]') !== null;
         clearError();
         setStatus("Assigning player…", "default");
 
+        let committedAssignment;
         try {
-          await requestJsonOrThrow(
+          committedAssignment = await requestJsonOrThrow(
             `/v1/games/${encodeURIComponent(gameId)}/roster/${encodeURIComponent(playerId)}`,
             {
               method: "PUT",
@@ -3992,21 +4129,55 @@
               }),
             },
           );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not assign player.";
+          showError(message);
+          setStatus("Roster assignment failed.", "error");
+          target.disabled = false;
+          if (target.isConnected) {
+            target.focus();
+          }
+          return;
+        }
 
+        if (isTransferAssignment) {
+          openTransferPlayerId = null;
+        }
+        const existingAssignment = assignmentByPlayerId(playerId);
+        rosterAssignments = [
+          ...rosterAssignments.filter((assignment) => assignment.playerId !== playerId),
+          {
+            ...(existingAssignment ?? {}),
+            ...(committedAssignment && typeof committedAssignment === "object" ? committedAssignment : {}),
+            gameId,
+            playerId,
+            teamId,
+          },
+        ];
+        renderRosterSetup();
+        focusTransferTrigger(playerId);
+
+        let refreshFailed = false;
+        try {
           await loadRosterSetup({ updateStatus: false });
+        } catch (error) {
+          refreshFailed = true;
+          const message = error instanceof Error ? error.message : "Could not refresh the roster.";
+          showError(`Assignment was saved, but the latest roster could not be loaded. ${message}`);
+          setStatus("Roster assignment saved; roster refresh failed.", "error");
+        }
+
+        focusTransferTrigger(playerId);
+
+        if (!refreshFailed) {
           const player = playerById(playerId);
           const team = teamById(teamId);
           setStatus(
             `${player?.nickname ?? "Player"} assigned to ${team?.name ?? teamId}.`,
             "success",
           );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Could not assign player.";
-          showError(message);
-          setStatus("Roster assignment failed.", "error");
-        } finally {
-          target.disabled = false;
         }
+        target.disabled = false;
       });
     }
 
@@ -4248,7 +4419,7 @@
     }
 
     if (goalsLoaded) {
-      setStatus("Game page ready.", "success");
+      setStatus("");
     }
   }
 
