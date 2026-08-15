@@ -3519,6 +3519,7 @@
         const next = {
           fingerprint,
           key: createIdempotencyKey(prefix, stablePart),
+          uncertain: false,
         };
         pendingGoalMutationIdempotency.set(cacheKey, next);
         return next.key;
@@ -3529,6 +3530,17 @@
 
     function clearGoalMutationIdempotency(prefix, stablePart) {
       pendingGoalMutationIdempotency.delete(`${prefix}:${stablePart}`);
+    }
+
+    function isGoalMutationIdempotencyUncertain(prefix, stablePart) {
+      return pendingGoalMutationIdempotency.get(`${prefix}:${stablePart}`)?.uncertain === true;
+    }
+
+    function markGoalMutationIdempotencyUncertain(prefix, stablePart) {
+      const entry = pendingGoalMutationIdempotency.get(`${prefix}:${stablePart}`);
+      if (entry) {
+        entry.uncertain = true;
+      }
     }
 
     async function refreshGameAfterFinishedCorrection() {
@@ -3561,6 +3573,7 @@
         pendingCreateGoalIdempotency = {
           fingerprint,
           key: createIdempotencyKey("create-goal", `${gameId}-new`),
+          uncertain: false,
         };
       }
 
@@ -4391,6 +4404,11 @@
         const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
         const previousScoreboardState = scoreboardState;
         const previousFinishedResultState = finishedResultState;
+        const saveStablePart = eventId ? `${gameId}-${eventId}` : null;
+        const saveIdempotencyKey = idempotencyKeyForGoalSave(eventId, draft.payload);
+        const wasUncertainRetry = eventId
+          ? isGoalMutationIdempotencyUncertain("update-goal", saveStablePart)
+          : pendingCreateGoalIdempotency?.uncertain === true;
         setStatus(`${actionLabel}…`, "default");
         goalMutationInFlight = true;
         scoreboardState = "refreshing";
@@ -4409,7 +4427,7 @@
               method: eventId ? "PATCH" : "POST",
               headers: {
                 "Content-Type": "application/json",
-                "Idempotency-Key": idempotencyKeyForGoalSave(eventId, draft.payload),
+                "Idempotency-Key": saveIdempotencyKey,
               },
               body: JSON.stringify(draft.payload),
             });
@@ -4419,13 +4437,25 @@
             if (isDefinitiveRequestRejection(error)) {
               scoreboardState = previousScoreboardState;
               finishedResultState = previousFinishedResultState;
-              if (eventId) {
-                clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
-              } else {
-                pendingCreateGoalIdempotency = null;
+              if (!wasUncertainRetry) {
+                if (eventId) {
+                  clearGoalMutationIdempotency("update-goal", saveStablePart);
+                } else {
+                  pendingCreateGoalIdempotency = null;
+                }
               }
-              setStatus("Goal was not saved. Review the error and try again.", "error");
+              setStatus(
+                wasUncertainRetry
+                  ? "The retry was rejected, but the earlier goal save is still unconfirmed. Restore access and retry the same details."
+                  : "Goal was not saved. Review the error and try again.",
+                "error",
+              );
               return;
+            }
+            if (eventId) {
+              markGoalMutationIdempotencyUncertain("update-goal", saveStablePart);
+            } else if (pendingCreateGoalIdempotency) {
+              pendingCreateGoalIdempotency.uncertain = true;
             }
             scoreboardState = "uncertain";
             if (isGameFinished()) {
@@ -4530,12 +4560,18 @@
         renderLiveScoring();
 
         const stablePart = `${gameId}-${latest.eventId}`;
+        const undoIdempotencyKey = idempotencyKeyForGoalMutation(
+          "undo-goal",
+          stablePart,
+          latest.eventId,
+        );
+        const wasUncertainRetry = isGoalMutationIdempotencyUncertain("undo-goal", stablePart);
         try {
           const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Idempotency-Key": idempotencyKeyForGoalMutation("undo-goal", stablePart, latest.eventId),
+              "Idempotency-Key": undoIdempotencyKey,
             },
             body: JSON.stringify({
               expectedEventId: latest.eventId,
@@ -4586,10 +4622,18 @@
           if (isDefinitiveRequestRejection(error)) {
             scoreboardState = previousScoreboardState;
             finishedResultState = previousFinishedResultState;
-            clearGoalMutationIdempotency("undo-goal", stablePart);
-            setStatus("The latest goal was not undone. Review the error and try again.", "error");
+            if (!wasUncertainRetry) {
+              clearGoalMutationIdempotency("undo-goal", stablePart);
+            }
+            setStatus(
+              wasUncertainRetry
+                ? "The retry was rejected, but the earlier undo is still unconfirmed. Restore access and retry the same action."
+                : "The latest goal was not undone. Review the error and try again.",
+              "error",
+            );
             return;
           }
+          markGoalMutationIdempotencyUncertain("undo-goal", stablePart);
           scoreboardState = "uncertain";
           if (isGameFinished()) {
             finishedResultState = "uncertain";
@@ -4650,13 +4694,19 @@
         renderLiveScoring();
 
         const stablePart = `${gameId}-${eventId}`;
+        const deleteIdempotencyKey = idempotencyKeyForGoalMutation(
+          "delete-goal",
+          stablePart,
+          eventId,
+        );
+        const wasUncertainRetry = isGoalMutationIdempotencyUncertain("delete-goal", stablePart);
         try {
           const result = await requestJsonOrThrow(
             `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
             {
               method: "DELETE",
               headers: {
-                "Idempotency-Key": idempotencyKeyForGoalMutation("delete-goal", stablePart, eventId),
+                "Idempotency-Key": deleteIdempotencyKey,
               },
             },
           );
@@ -4699,10 +4749,18 @@
           if (isDefinitiveRequestRejection(error)) {
             scoreboardState = previousScoreboardState;
             finishedResultState = previousFinishedResultState;
-            clearGoalMutationIdempotency("delete-goal", stablePart);
-            setStatus("The goal was not deleted. Review the error and try again.", "error");
+            if (!wasUncertainRetry) {
+              clearGoalMutationIdempotency("delete-goal", stablePart);
+            }
+            setStatus(
+              wasUncertainRetry
+                ? "The retry was rejected, but the earlier deletion is still unconfirmed. Restore access and retry the same action."
+                : "The goal was not deleted. Review the error and try again.",
+              "error",
+            );
             return;
           }
+          markGoalMutationIdempotencyUncertain("delete-goal", stablePart);
           scoreboardState = "uncertain";
           if (isGameFinished()) {
             finishedResultState = "uncertain";

@@ -4898,6 +4898,12 @@ test("game page reconciles authoritative goals after replayed create, delete, an
           message: "Goal response was lost after commit.",
         });
       }
+      if (createAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before replay.",
+        });
+      }
       return createJsonResponse(201, createReplay);
     }
 
@@ -4923,6 +4929,12 @@ test("game page reconciles authoritative goals after replayed create, delete, an
         return createJsonResponse(503, {
           error: "response_lost",
           message: "Delete response was lost after commit.",
+        });
+      }
+      if (deleteAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before delete replay.",
         });
       }
       return createJsonResponse(200, deleteReplay);
@@ -4952,6 +4964,12 @@ test("game page reconciles authoritative goals after replayed create, delete, an
           message: "Undo response was lost after commit.",
         });
       }
+      if (undoAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before undo replay.",
+        });
+      }
       return createJsonResponse(200, undoReplay);
     }
 
@@ -4979,11 +4997,13 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   const concedingTeamInput = page.document.getElementById("goal-conceding-team");
   const scorerInput = page.document.getElementById("goal-scorer");
   const scoreboard = page.document.getElementById("live-scoreboard");
+  const status = page.document.getElementById("setup-status");
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
   assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
   assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(scoreboard instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
 
   scoringTeamInput.value = "red";
@@ -4998,10 +5018,15 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   dispatchClick(saveGoalButton);
   await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(status.textContent ?? "", /earlier goal save is still unconfirmed/);
+  dispatchClick(saveGoalButton);
+  await flushAsync();
 
-  assert.equal(createAttempts, 2);
+  assert.equal(createAttempts, 3);
   assert.ok(createKeys[0]);
   assert.equal(createKeys[0], createKeys[1]);
+  assert.equal(createKeys[1], createKeys[2]);
   assert(page.document.querySelector('[data-event-id="goal-external-create"]'));
   assert.equal(authoritativeGoalGets, 1);
 
@@ -5018,10 +5043,19 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
   dispatchClick(retryDeleteGoalButton);
   await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(status.textContent ?? "", /earlier deletion is still unconfirmed/);
+  const replayDeleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(replayDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(replayDeleteGoalButton);
+  await flushAsync();
 
-  assert.equal(deleteAttempts, 2);
+  assert.equal(deleteAttempts, 3);
   assert.ok(deleteKeys[0]);
   assert.equal(deleteKeys[0], deleteKeys[1]);
+  assert.equal(deleteKeys[1], deleteKeys[2]);
   assert.equal(page.document.querySelector('[data-event-id="goal-1"]'), null);
   assert(page.document.querySelector('[data-event-id="goal-external-delete"]'));
   assert.equal(authoritativeGoalGets, 2);
@@ -5033,10 +5067,15 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   dispatchClick(undoLastGoalButton);
   await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(status.textContent ?? "", /earlier undo is still unconfirmed/);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
 
-  assert.equal(undoAttempts, 2);
+  assert.equal(undoAttempts, 3);
   assert.ok(undoKeys[0]);
   assert.equal(undoKeys[0], undoKeys[1]);
+  assert.equal(undoKeys[1], undoKeys[2]);
   assert.equal(page.document.querySelector('[data-event-id="goal-external-delete"]'), null);
   assert(page.document.querySelector('[data-event-id="goal-external-undo"]'));
   assert.equal(authoritativeGoalGets, 3);
@@ -5101,6 +5140,12 @@ test("game page hides finished scores until a lost correction response is replay
           message: "Goal update response was lost after commit.",
         });
       }
+      if (updateAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before correction replay.",
+        });
+      }
       return createJsonResponse(200, replayBody);
     }
 
@@ -5160,8 +5205,18 @@ test("game page hides finished scores until a lost correction response is replay
   await flushAsync();
 
   assert.equal(updateAttempts, 2);
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(resultSummary.textContent ?? "", /Result may have changed/);
+  assert.equal(scoringTeamInput.value, "blue");
+  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(scorerInput.value, "player-cy");
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateAttempts, 3);
   assert.ok(updateKeys[0]);
   assert.equal(updateKeys[0], updateKeys[1]);
+  assert.equal(updateKeys[1], updateKeys[2]);
   assert.equal(scoringTeamInput.value, "");
   assert.equal(concedingTeamInput.value, "");
   assert.equal(scorerInput.value, "");
