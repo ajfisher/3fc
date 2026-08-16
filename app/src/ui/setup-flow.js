@@ -2751,6 +2751,89 @@
       return ` style="--team-color: ${escapeHtml(color)}"`;
     }
 
+    function goalTeamDotStyle(teamId) {
+      const availableTeams = rosterTeams.length > 0 ? rosterTeams : scoreboardTeams;
+      const teamsById = new Map();
+      for (const team of availableTeams) {
+        if (team && typeof team.teamId === "string" && team.teamId.length > 0) {
+          teamsById.set(team.teamId, team);
+        }
+      }
+      for (const goal of goalTimeline) {
+        for (const id of [goal?.scoringTeamId, goal?.concedingTeamId]) {
+          const normalizedId = id === null || id === undefined ? "" : String(id);
+          if (normalizedId.length > 0 && !teamsById.has(normalizedId)) {
+            teamsById.set(normalizedId, { teamId: normalizedId, color: null });
+          }
+        }
+      }
+      if (!teamsById.has(teamId)) {
+        teamsById.set(teamId, teamById(teamId) ?? { teamId, color: null });
+      }
+
+      const opaqueColor = (value) => {
+        if (typeof value !== "string") {
+          return null;
+        }
+        const match = value.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+        if (!match) {
+          return null;
+        }
+        const hex = match[1].toLowerCase();
+        return hex.length === 3
+          ? `#${[...hex].map((character) => `${character}${character}`).join("")}`
+          : `#${hex}`;
+      };
+      const colorCounts = new Map();
+      for (const team of teamsById.values()) {
+        const color = opaqueColor(team.color);
+        if (color) {
+          colorCounts.set(color, (colorCounts.get(color) ?? 0) + 1);
+        }
+      }
+
+      const colors = new Map();
+      const usedColors = new Set();
+      for (const [id, team] of teamsById) {
+        const color = opaqueColor(team.color);
+        if (color && colorCounts.get(color) === 1) {
+          colors.set(id, color);
+          usedColors.add(color);
+        }
+      }
+
+      const fallbackPalette = [
+        "#d64545",
+        "#2f6fcb",
+        "#d4a800",
+        "#477a70",
+        "#8a5b9b",
+        "#b5663d",
+        "#387c94",
+        "#7a7139",
+      ];
+      for (const id of teamsById.keys()) {
+        if (colors.has(id)) {
+          continue;
+        }
+        const preferredColor = fallbackTeamColor(id);
+        let color = [preferredColor, ...fallbackPalette].find((candidate) => !usedColors.has(candidate));
+        if (!color) {
+          const base = [...String(id || "unknown")]
+            .reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 0);
+          let attempt = 0;
+          do {
+            color = `#${((base + (attempt * 2654435761)) & 0xffffff).toString(16).padStart(6, "0")}`;
+            attempt += 1;
+          } while (usedColors.has(color));
+        }
+        colors.set(id, color);
+        usedColors.add(color);
+      }
+
+      return ` style="--team-color: ${escapeHtml(colors.get(teamId) ?? fallbackTeamColor(teamId))}"`;
+    }
+
     function resultTeams() {
       const teams = currentGame?.result?.teams;
       if (!Array.isArray(teams)) {
@@ -3186,7 +3269,7 @@
         : String(teamId ?? "Unknown team");
       const accessibleName = relationship ? `${relationship}: ${name}` : name;
       return `<span data-ui="goal-team-chip" data-display="dot" role="img" data-team-id="${escapeHtml(String(teamId ?? ""))}"${
-        teamSwatchStyle(team, String(teamId ?? "Unknown team"))
+        goalTeamDotStyle(String(teamId ?? "Unknown team"))
       } aria-label="${escapeHtml(accessibleName)}" title="${escapeHtml(accessibleName)}"><span data-ui="team-swatch" aria-hidden="true"></span></span>`;
     }
 

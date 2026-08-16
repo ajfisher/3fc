@@ -6493,12 +6493,18 @@ test("game page renders malformed goal identity values without crashing", async 
   const malformedRedTeam = apiState.gameTeams.get("game-malformed-goal:red");
   assert(malformedRedTeam);
   malformedRedTeam.name = 123 as unknown as string;
-  malformedRedTeam.color = "javascript:alert(1)";
+  malformedRedTeam.color = "#123";
+  const malformedBlueTeam = apiState.gameTeams.get("game-malformed-goal:blue");
+  assert(malformedBlueTeam);
+  malformedBlueTeam.color = "#112233";
+  const malformedYellowTeam = apiState.gameTeams.get("game-malformed-goal:yellow");
+  assert(malformedYellowTeam);
+  malformedYellowTeam.color = "javascript:alert(1)";
   apiState.gameTeams.set("game-malformed-goal:constructor", {
     ...malformedRedTeam,
     teamId: "constructor" as TeamId,
     name: "Constructor",
-    color: null,
+    color: "#0000",
   });
   for (const player of [
     { playerId: "99", nickname: "Valid 99" },
@@ -6561,6 +6567,40 @@ test("game page renders malformed goal identity values without crashing", async 
     });
   }
   refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+  apiState.goalEvents.set("unsafe-color-goal", {
+    gameId: "game-malformed-goal",
+    eventId: "unsafe-color-goal",
+    third: 1,
+    thirdMinute: 4,
+    gameMinute: 4,
+    elapsedSeconds: 120,
+    stoppageMinute: null,
+    displayTime: "4'",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "unsafe-player",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:04.000Z",
+    updatedAt: "2026-03-28T11:01:04.000Z",
+  });
+  apiState.goalEvents.set("unknown-color-goal", {
+    gameId: "game-malformed-goal",
+    eventId: "unknown-color-goal",
+    third: 1,
+    thirdMinute: 5,
+    gameMinute: 5,
+    elapsedSeconds: 150,
+    stoppageMinute: null,
+    displayTime: "5'",
+    scoringTeamId: 1 as unknown as TeamId,
+    concedingTeamId: 6 as unknown as TeamId,
+    scorerPlayerId: "unknown-color-player",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:05.000Z",
+    updatedAt: "2026-03-28T11:01:05.000Z",
+  });
 
   const page = await bootPage({
     html: renderGamePage("http://localhost:3001", { gameId: "game-malformed-goal" }),
@@ -6588,6 +6628,26 @@ test("game page renders malformed goal identity values without crashing", async 
   assert.match(malformedScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.match(malformedConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.notEqual(malformedScoringDotStyle, malformedConcedingDotStyle);
+  assert.doesNotMatch(malformedConcedingDotStyle ?? "", /#0000/i);
+  const duplicateColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="valid-goal-1"]');
+  assert(duplicateColorGoal instanceof page.window.HTMLElement);
+  const duplicateScoringDotStyle = duplicateColorGoal.querySelector('[data-team-id="red"]')?.getAttribute("style");
+  const duplicateConcedingDotStyle = duplicateColorGoal.querySelector('[data-team-id="blue"]')?.getAttribute("style");
+  assert.match(duplicateScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.match(duplicateConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.notEqual(duplicateScoringDotStyle, duplicateConcedingDotStyle);
+  const unsafeColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unsafe-color-goal"]');
+  assert(unsafeColorGoal instanceof page.window.HTMLElement);
+  const unsafeDotStyle = unsafeColorGoal.querySelector('[data-team-id="yellow"]')?.getAttribute("style");
+  assert.match(unsafeDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.doesNotMatch(unsafeColorGoal.innerHTML, /javascript:/i);
+  const unknownColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unknown-color-goal"]');
+  assert(unknownColorGoal instanceof page.window.HTMLElement);
+  const unknownScoringDotStyle = unknownColorGoal.querySelector('[data-team-id="1"]')?.getAttribute("style");
+  const unknownConcedingDotStyle = unknownColorGoal.querySelector('[data-team-id="6"]')?.getAttribute("style");
+  assert.match(unknownScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.match(unknownConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.notEqual(unknownScoringDotStyle, unknownConcedingDotStyle);
   assert.doesNotMatch(goal.innerHTML, /javascript:/i);
   assert.doesNotMatch(goal.innerHTML, /undefined|null/);
   assert.match(fullGoalLog.textContent ?? "", /Unknown player \(invalid ID: 99\)/);
