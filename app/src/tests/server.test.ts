@@ -100,6 +100,14 @@ test("stylesheet route serves external UI css", () => {
   assert.match(response.body, /\[data-testid="league-seasons-table"\]/);
   assert.match(response.body, /\[data-testid="season-upcoming-games-table"\]/);
   assert.match(response.body, /\[data-testid="season-completed-games-table"\]/);
+  assert.match(
+    response.body,
+    /\[data-ui="assist-summary"\]\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/s,
+  );
+  assert.doesNotMatch(
+    response.body,
+    /\[data-ui="assist-summary"\]\s*\{[^}]*text-overflow:\s*ellipsis;/s,
+  );
   assert.match(response.body, /&:hover/);
 });
 

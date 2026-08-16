@@ -879,7 +879,7 @@ body {
 
   > summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 0.65rem;
     min-height: 2.75rem;
@@ -907,10 +907,9 @@ body {
 
 [data-ui="assist-summary"] {
   min-width: 0;
-  max-width: 65%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-align: right;
+  white-space: normal;
   color: var(--ink-soft);
   font-size: 0.78rem;
   font-weight: 700;
