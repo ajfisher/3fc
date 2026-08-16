@@ -6661,11 +6661,25 @@ test("game page renders malformed goal identity values without crashing", async 
   assert.notEqual(duplicateScoringDotStyle, duplicateConcedingDotStyle);
   assert.notEqual(duplicateScoringDotStyle, "--team-color: #112233");
   assert.notEqual(duplicateConcedingDotStyle, "--team-color: #112233");
+  const liveScoreboard = page.document.getElementById("live-scoreboard");
+  assert(liveScoreboard instanceof page.window.HTMLElement);
+  assert.equal(
+    liveScoreboard.querySelector('[data-ui="score-team"][data-team-id="red"]')?.getAttribute("style"),
+    duplicateScoringDotStyle,
+  );
+  assert.equal(
+    liveScoreboard.querySelector('[data-ui="score-team"][data-team-id="blue"]')?.getAttribute("style"),
+    duplicateConcedingDotStyle,
+  );
   const unsafeColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unsafe-color-goal"]');
   assert(unsafeColorGoal instanceof page.window.HTMLElement);
   const unsafeDotStyle = unsafeColorGoal.querySelector('[data-team-id="yellow"]')?.getAttribute("style");
   assert.match(unsafeDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.doesNotMatch(unsafeColorGoal.innerHTML, /javascript:/i);
+  assert.equal(
+    liveScoreboard.querySelector('[data-ui="score-team"][data-team-id="yellow"]')?.getAttribute("style"),
+    unsafeDotStyle,
+  );
   const unknownColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unknown-color-goal"]');
   assert(unknownColorGoal instanceof page.window.HTMLElement);
   const unknownScoringDotStyle = unknownColorGoal.querySelector('[data-team-id="1"]')?.getAttribute("style");

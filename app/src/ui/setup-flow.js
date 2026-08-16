@@ -2739,19 +2739,7 @@
       return palette[hash % palette.length];
     }
 
-    function teamSwatchStyle(team, fallbackTeamId = "") {
-      const teamId = typeof team?.teamId === "string" && team.teamId.length > 0
-        ? team.teamId
-        : String(fallbackTeamId || "unknown");
-      const requestedColor = typeof team?.color === "string" ? team.color : "";
-      const color = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(requestedColor)
-        ? requestedColor
-        : fallbackTeamColor(teamId);
-
-      return ` style="--team-color: ${escapeHtml(color)}"`;
-    }
-
-    function goalTeamDotStyle(teamId) {
+    function resolvedTeamColors(extraTeam = null, fallbackTeamId = "") {
       const availableTeams = rosterTeams.length > 0 ? rosterTeams : scoreboardTeams;
       const teamsById = new Map();
       for (const team of availableTeams) {
@@ -2767,8 +2755,11 @@
           }
         }
       }
-      if (!teamsById.has(teamId)) {
-        teamsById.set(teamId, teamById(teamId) ?? { teamId, color: null });
+      const extraTeamId = typeof extraTeam?.teamId === "string" && extraTeam.teamId.length > 0
+        ? extraTeam.teamId
+        : String(fallbackTeamId || "");
+      if (extraTeamId.length > 0 && !teamsById.has(extraTeamId)) {
+        teamsById.set(extraTeamId, extraTeam ?? teamById(extraTeamId) ?? { teamId: extraTeamId, color: null });
       }
 
       const opaqueColor = (value) => {
@@ -2839,7 +2830,23 @@
         usedColors.add(color);
       }
 
-      return ` style="--team-color: ${escapeHtml(colors.get(teamId) ?? fallbackTeamColor(teamId))}"`;
+      return colors;
+    }
+
+    function teamSwatchStyle(team, fallbackTeamId = "") {
+      const teamId = typeof team?.teamId === "string" && team.teamId.length > 0
+        ? team.teamId
+        : String(fallbackTeamId || "unknown");
+      const color = resolvedTeamColors(team, teamId).get(teamId) ?? fallbackTeamColor(teamId);
+      return ` style="--team-color: ${escapeHtml(color)}"`;
+    }
+
+    function goalTeamDotStyle(teamId) {
+      const normalizedTeamId = String(teamId ?? "Unknown team");
+      const team = teamById(normalizedTeamId) ?? { teamId: normalizedTeamId, color: null };
+      const color = resolvedTeamColors(team, normalizedTeamId).get(normalizedTeamId)
+        ?? fallbackTeamColor(normalizedTeamId);
+      return ` style="--team-color: ${escapeHtml(color)}"`;
     }
 
     function resultTeams() {
