@@ -98,7 +98,8 @@ test("stylesheet route serves external UI css", () => {
   assert.match(response.body, /\[data-ui="nav"]/);
   assert.match(response.body, /\[data-testid="dashboard-leagues-table"\]/);
   assert.match(response.body, /\[data-testid="league-seasons-table"\]/);
-  assert.match(response.body, /\[data-testid="season-games-table"\]/);
+  assert.match(response.body, /\[data-testid="season-upcoming-games-table"\]/);
+  assert.match(response.body, /\[data-testid="season-completed-games-table"\]/);
   assert.match(response.body, /&:hover/);
 });
 

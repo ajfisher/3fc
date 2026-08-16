@@ -351,16 +351,25 @@
     });
   }
 
-  function renderClientTableShell({ tableTestId, bodyId, emptyId, emptyText, headers }) {
+  function renderClientTableShell({
+    tableTestId,
+    bodyId,
+    emptyId,
+    emptyText,
+    headers,
+    tableLabel = "",
+    emptyInitiallyHidden = false,
+  }) {
+    const tableLabelAttribute = tableLabel ? ` aria-label="${escapeHtml(tableLabel)}"` : "";
     return `<div data-ui="table-wrap" data-testid="${escapeHtml(tableTestId)}" hidden>
-      <table data-ui="data-table">
+      <table data-ui="data-table"${tableLabelAttribute}>
         <thead>
           <tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr>
         </thead>
         <tbody id="${escapeHtml(bodyId)}"></tbody>
       </table>
     </div>
-    <p data-ui="empty-state" id="${escapeHtml(emptyId)}">${escapeHtml(emptyText)}</p>`;
+    <p data-ui="empty-state" id="${escapeHtml(emptyId)}"${emptyInitiallyHidden ? " hidden" : ""}>${escapeHtml(emptyText)}</p>`;
   }
 
   function mountSeasonShellForNestedLeagueRoute() {
@@ -406,18 +415,35 @@
       })}</div>`,
       "panel-season-create-game",
     );
-    const gamesPanel = renderClientPanel(
-      "Games",
-      "Manage scheduled games for this season.",
+    const upcomingGamesPanel = renderClientPanel(
+      "Upcoming games",
+      "Scheduled and live games, ordered by kickoff.",
       renderClientTableShell({
-        tableTestId: "season-games-table",
-        bodyId: "season-games-body",
-        emptyId: "season-games-empty",
-        emptyText: "No games yet. Create your first game.",
+        tableTestId: "season-upcoming-games-table",
+        bodyId: "season-upcoming-games-body",
+        emptyId: "season-upcoming-games-empty",
+        emptyText: "No upcoming games.",
         headers: ["Date", "Status", "Actions"],
+        tableLabel: "Upcoming games",
+        emptyInitiallyHidden: true,
       }),
       "",
-      "panel-season-games",
+      "panel-season-upcoming-games",
+    );
+    const completedGamesPanel = renderClientPanel(
+      "Completed games",
+      "Finished games, with the most recent first.",
+      renderClientTableShell({
+        tableTestId: "season-completed-games-table",
+        bodyId: "season-completed-games-body",
+        emptyId: "season-completed-games-empty",
+        emptyText: "No completed games.",
+        headers: ["Date", "Status", "Actions"],
+        tableLabel: "Completed games",
+        emptyInitiallyHidden: true,
+      }),
+      "",
+      "panel-season-completed-games",
     );
 
     document.title = "3FC Season";
@@ -455,7 +481,8 @@
         <div data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading">${renderClientIcon("loader-circle")}<span data-ui="activity-message" class="sr-only">Loading season data…</span></div>
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="season-grid">
-          ${gamesPanel}
+          ${upcomingGamesPanel}
+          ${completedGamesPanel}
           <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
             ${createGamePanel}
           </section>
@@ -1741,9 +1768,12 @@
 
     const deleteSeasonButton = document.querySelector('[data-testid="delete-season"]');
 
-    const gamesBody = document.getElementById("season-games-body");
-    const gamesTableWrap = document.querySelector('[data-testid="season-games-table"]');
-    const gamesEmpty = document.getElementById("season-games-empty");
+    const upcomingGamesBody = document.getElementById("season-upcoming-games-body");
+    const upcomingGamesTableWrap = document.querySelector('[data-testid="season-upcoming-games-table"]');
+    const upcomingGamesEmpty = document.getElementById("season-upcoming-games-empty");
+    const completedGamesBody = document.getElementById("season-completed-games-body");
+    const completedGamesTableWrap = document.querySelector('[data-testid="season-completed-games-table"]');
+    const completedGamesEmpty = document.getElementById("season-completed-games-empty");
 
     if (
       !(gameDateInput instanceof HTMLInputElement) ||
@@ -1752,7 +1782,8 @@
       !(createGameButton instanceof HTMLButtonElement) ||
       !(toggleCreateGameButton instanceof HTMLButtonElement) ||
       !(createGameRegion instanceof HTMLElement) ||
-      !(gamesBody instanceof HTMLElement)
+      !(upcomingGamesBody instanceof HTMLElement) ||
+      !(completedGamesBody instanceof HTMLElement)
     ) {
       return;
     }
@@ -1835,18 +1866,22 @@
       const games = (Array.isArray(payload?.games) ? payload.games : []).filter(
         (game) => !leagueId || (game.leagueId === leagueId && game.seasonId === seasonId),
       );
-      if (games.length === 0) {
-        gamesBody.innerHTML = "";
-        if (gamesTableWrap instanceof HTMLElement) {
-          gamesTableWrap.hidden = true;
-        }
-        if (gamesEmpty instanceof HTMLElement) {
-          gamesEmpty.hidden = false;
-        }
-        return;
-      }
+      const kickoffTime = (game) => {
+        const parsed = Date.parse(game.gameStartTs);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const compareByKickoff = (direction) => (left, right) => {
+        const timestampDifference = (kickoffTime(left) - kickoffTime(right)) * direction;
+        return timestampDifference || String(left.gameId).localeCompare(String(right.gameId));
+      };
+      const upcomingGames = games
+        .filter((game) => game.status !== "finished")
+        .sort(compareByKickoff(1));
+      const completedGames = games
+        .filter((game) => game.status === "finished")
+        .sort(compareByKickoff(-1));
 
-      gamesBody.innerHTML = games
+      const renderRows = (gamesForPanel) => gamesForPanel
         .map((game) => {
           const status = ["scheduled", "live", "finished"].includes(game.status) ? game.status : "scheduled";
           const statusIcon = status === "live" ? "activity" : status === "finished" ? "circle-check" : "calendar-clock";
@@ -1870,12 +1905,18 @@
         })
         .join("");
 
-      if (gamesTableWrap instanceof HTMLElement) {
-        gamesTableWrap.hidden = false;
-      }
-      if (gamesEmpty instanceof HTMLElement) {
-        gamesEmpty.hidden = true;
-      }
+      const renderPanelGames = (panelGames, body, tableWrap, emptyState) => {
+        body.innerHTML = renderRows(panelGames);
+        if (tableWrap instanceof HTMLElement) {
+          tableWrap.hidden = panelGames.length === 0;
+        }
+        if (emptyState instanceof HTMLElement) {
+          emptyState.hidden = panelGames.length > 0;
+        }
+      };
+
+      renderPanelGames(upcomingGames, upcomingGamesBody, upcomingGamesTableWrap, upcomingGamesEmpty);
+      renderPanelGames(completedGames, completedGamesBody, completedGamesTableWrap, completedGamesEmpty);
     }
 
     createGameButton.addEventListener("click", async () => {
@@ -1947,7 +1988,7 @@
       }
     });
 
-    gamesBody.addEventListener("click", async (event) => {
+    const handleGameListClick = async (event) => {
       const eventTarget = event.target;
       const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-game"]') : null;
       if (!(target instanceof HTMLElement)) {
@@ -1980,7 +2021,9 @@
       } finally {
         target.removeAttribute("disabled");
       }
-    });
+    };
+    upcomingGamesBody.addEventListener("click", handleGameListClick);
+    completedGamesBody.addEventListener("click", handleGameListClick);
 
     if (deleteSeasonButton instanceof HTMLButtonElement) {
       deleteSeasonButton.addEventListener("click", async () => {

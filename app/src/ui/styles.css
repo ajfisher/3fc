@@ -1709,7 +1709,8 @@ body {
 :is(
   [data-testid="dashboard-leagues-table"],
   [data-testid="league-seasons-table"],
-  [data-testid="season-games-table"]
+  [data-testid="season-upcoming-games-table"],
+  [data-testid="season-completed-games-table"]
 ) {
   table {
     min-width: 0;
@@ -1736,7 +1737,8 @@ body {
   :is(
     [data-testid="dashboard-leagues-table"],
     [data-testid="league-seasons-table"],
-    [data-testid="season-games-table"]
+    [data-testid="season-upcoming-games-table"],
+    [data-testid="season-completed-games-table"]
   ) {
     th,
     td {

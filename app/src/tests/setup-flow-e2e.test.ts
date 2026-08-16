@@ -2743,6 +2743,12 @@ test("season page renders game kickoff times in the user local timezone", async 
     status: "finished",
     gameStartTs: "2026-03-28T10:10:00.000Z",
   });
+  apiState.games.set("game-season-finished-earlier", {
+    ...scheduledGame,
+    gameId: "game-season-finished-earlier",
+    status: "finished",
+    gameStartTs: "2026-03-28T09:30:00.000Z",
+  });
 
   const page = await bootPage({
     html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
@@ -2751,24 +2757,122 @@ test("season page renders game kickoff times in the user local timezone", async 
     apiState,
   });
 
-  const gamesBody = page.document.getElementById("season-games-body");
+  const upcomingGamesBody = page.document.getElementById("season-upcoming-games-body");
+  const completedGamesBody = page.document.getElementById("season-completed-games-body");
   const game = apiState.games.get("game-season-local-time");
-  assert(gamesBody instanceof page.window.HTMLElement);
+  assert(upcomingGamesBody instanceof page.window.HTMLElement);
+  assert(completedGamesBody instanceof page.window.HTMLElement);
   assert(game);
-  assert.match(gamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
-  assert.doesNotMatch(gamesBody.textContent ?? "", /game-season-local-time/);
-  assert.doesNotMatch(gamesBody.textContent ?? "", /Z\b|UTC/);
-  const kickoffLink = gamesBody.querySelector('a[href="/games/game-season-local-time"]');
+  assert.match(upcomingGamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-season-local-time/);
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /Z\b|UTC/);
+  const kickoffLink = upcomingGamesBody.querySelector('a[href="/games/game-season-local-time"]');
   assert(kickoffLink instanceof page.window.HTMLAnchorElement);
   assert.equal(kickoffLink.textContent, expectedLocalTimestamp(game.gameStartTs));
-  const statusChip = gamesBody.querySelector('[data-ui="status-chip"][data-status="scheduled"]');
+  const statusChip = upcomingGamesBody.querySelector('[data-ui="status-chip"][data-status="scheduled"]');
   assert(statusChip instanceof page.window.HTMLElement);
   assert.match(statusChip.textContent ?? "", /Scheduled/);
   assert(statusChip.querySelector('[data-icon="calendar-clock"]'));
-  assert(gamesBody.querySelector('[aria-label^="View game at"] [data-icon="eye"]'));
-  assert(gamesBody.querySelector('[aria-label^="Delete game at"] [data-icon="trash-2"]'));
-  assert(gamesBody.querySelector('[data-status="live"] [data-icon="activity"]'));
-  assert(gamesBody.querySelector('[data-status="finished"] [data-icon="circle-check"]'));
+  assert(upcomingGamesBody.querySelector('[aria-label^="View game at"] [data-icon="eye"]'));
+  assert(upcomingGamesBody.querySelector('[aria-label^="Delete game at"] [data-icon="trash-2"]'));
+  assert(upcomingGamesBody.querySelector('[data-status="live"] [data-icon="activity"]'));
+  assert.equal(upcomingGamesBody.querySelector('[data-status="finished"]'), null);
+  assert.equal(completedGamesBody.querySelector('[data-status="scheduled"]'), null);
+  assert.equal(completedGamesBody.querySelectorAll('[data-status="finished"] [data-icon="circle-check"]').length, 2);
+  assert.deepEqual(
+    [...upcomingGamesBody.querySelectorAll('a[href^="/games/"]')].filter((link) => !link.getAttribute("aria-label")).map((link) => link.getAttribute("href")),
+    ["/games/game-season-local-time", "/games/game-season-live"],
+  );
+  assert.deepEqual(
+    [...completedGamesBody.querySelectorAll('a[href^="/games/"]')].filter((link) => !link.getAttribute("aria-label")).map((link) => link.getAttribute("href")),
+    ["/games/game-season-finished", "/games/game-season-finished-earlier"],
+  );
+  const upcomingGamesWrap = page.document.querySelector('[data-testid="season-upcoming-games-table"]');
+  const completedGamesWrap = page.document.querySelector('[data-testid="season-completed-games-table"]');
+  assert(upcomingGamesWrap instanceof page.window.HTMLElement);
+  assert(completedGamesWrap instanceof page.window.HTMLElement);
+  assert.equal(upcomingGamesWrap.hidden, false);
+  assert.equal(page.document.getElementById("season-upcoming-games-empty")?.hidden, true);
+  assert.equal(completedGamesWrap.hidden, false);
+  assert.equal(page.document.getElementById("season-completed-games-empty")?.hidden, true);
+});
+
+test("season game groups expose accurate empty states and delete from either panel", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "game-delete-upcoming" });
+  const upcomingGame = apiState.games.get("game-delete-upcoming");
+  assert(upcomingGame);
+  apiState.games.set("game-delete-completed", {
+    ...upcomingGame,
+    gameId: "game-delete-completed",
+    status: "finished",
+    gameStartTs: "2026-03-28T09:00:00.000Z",
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const deleteFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const match = target.pathname.match(/^\/v1\/games\/([^/]+)$/);
+    if (method === "DELETE" && match) {
+      apiState.games.delete(decodeURIComponent(match[1]));
+      return createJsonResponse(200, {});
+    }
+    return defaultFetch(input, init);
+  };
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
+    url: "http://localhost:3000/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: deleteFetch,
+  });
+  let confirmations = 0;
+  Object.defineProperty(page.window, "confirm", {
+    value: () => {
+      confirmations += 1;
+      return true;
+    },
+    configurable: true,
+  });
+
+  const upcomingWrap = page.document.querySelector('[data-testid="season-upcoming-games-table"]');
+  const completedWrap = page.document.querySelector('[data-testid="season-completed-games-table"]');
+  const upcomingEmpty = page.document.getElementById("season-upcoming-games-empty");
+  const completedEmpty = page.document.getElementById("season-completed-games-empty");
+  assert(upcomingWrap instanceof page.window.HTMLElement);
+  assert(completedWrap instanceof page.window.HTMLElement);
+  assert(upcomingEmpty instanceof page.window.HTMLElement);
+  assert(completedEmpty instanceof page.window.HTMLElement);
+  assert.equal(upcomingWrap.hidden, false);
+  assert.equal(completedWrap.hidden, false);
+
+  const upcomingDeleteIcon = page.document.querySelector(
+    '#season-upcoming-games-body [data-game-id="game-delete-upcoming"] [data-icon="trash-2"]',
+  );
+  assert(upcomingDeleteIcon instanceof page.window.HTMLElement);
+  dispatchClick(upcomingDeleteIcon);
+  await flushAsync();
+  assert.equal(confirmations, 1);
+  assert.equal(apiState.games.has("game-delete-upcoming"), false);
+  assert.equal(upcomingWrap.hidden, true);
+  assert.equal(upcomingEmpty.hidden, false);
+  assert.equal(upcomingEmpty.textContent, "No upcoming games.");
+  assert.equal(completedWrap.hidden, false);
+  assert.equal(completedEmpty.hidden, true);
+  assert(page.document.querySelector('#season-completed-games-body a[href="/games/game-delete-completed"]'));
+
+  const completedDeleteIcon = page.document.querySelector(
+    '#season-completed-games-body [data-game-id="game-delete-completed"] [data-icon="trash-2"]',
+  );
+  assert(completedDeleteIcon instanceof page.window.HTMLElement);
+  dispatchClick(completedDeleteIcon);
+  await flushAsync();
+  assert.equal(confirmations, 2);
+  assert.equal(apiState.games.has("game-delete-completed"), false);
+  assert.equal(completedWrap.hidden, true);
+  assert.equal(completedEmpty.hidden, false);
+  assert.equal(completedEmpty.textContent, "No completed games.");
 });
 
 test("season kickoff links use the next local calendar date across a UTC boundary", async () => {
@@ -2823,6 +2927,14 @@ test("league static shell remounts nested league season routes as scoped season 
     gameId: "game-season-static-fallback",
     role: "admin",
   });
+  const nestedUpcomingGame = apiState.games.get("game-season-static-fallback");
+  assert(nestedUpcomingGame);
+  apiState.games.set("game-season-static-finished", {
+    ...nestedUpcomingGame,
+    gameId: "game-season-static-finished",
+    status: "finished",
+    gameStartTs: "2026-03-27T10:00:00.000Z",
+  });
 
   const page = await bootPage({
     html: renderLeaguePage("http://localhost:3001", ""),
@@ -2833,7 +2945,8 @@ test("league static shell remounts nested league season routes as scoped season 
 
   const root = page.document.getElementById("setup-flow-root");
   const shell = page.document.querySelector('[data-testid="season-shell"]');
-  const gamesBody = page.document.getElementById("season-games-body");
+  const upcomingGamesBody = page.document.getElementById("season-upcoming-games-body");
+  const completedGamesBody = page.document.getElementById("season-completed-games-body");
   const activityStatus = page.document.getElementById("setup-status");
 
   assert(shell instanceof page.window.HTMLElement);
@@ -2842,24 +2955,29 @@ test("league static shell remounts nested league season routes as scoped season 
   assert.equal(root?.getAttribute("data-league-id"), "three-sided-football-club");
   assert.equal(root?.getAttribute("data-season-id"), "autumn-cup");
   assert.equal(page.document.getElementById("season-title")?.textContent, "Autumn Cup");
-  assert(gamesBody instanceof page.window.HTMLElement);
-  const gamesTable = page.document.querySelector('[data-testid="season-games-table"] table');
-  assert(gamesTable instanceof page.window.HTMLTableElement);
-  assert.equal(gamesTable.getAttribute("data-ui"), "data-table");
-  assert.deepEqual(
-    [...gamesTable.querySelectorAll("thead th")].map((heading) => ({
-      text: heading.textContent,
-      scope: heading.getAttribute("scope"),
-    })),
-    [
-      { text: "Date", scope: "col" },
-      { text: "Status", scope: "col" },
-      { text: "Actions", scope: "col" },
-    ],
-  );
-  assert(gamesBody.querySelector('a[href="/games/game-season-static-fallback"]'));
-  assert.equal(gamesBody.querySelector("td")?.getAttribute("data-label"), "Date");
-  assert.doesNotMatch(gamesBody.textContent ?? "", /game-season-static-fallback/);
+  assert(upcomingGamesBody instanceof page.window.HTMLElement);
+  assert(completedGamesBody instanceof page.window.HTMLElement);
+  for (const testId of ["season-upcoming-games-table", "season-completed-games-table"]) {
+    const gamesTable = page.document.querySelector(`[data-testid="${testId}"] table`);
+    assert(gamesTable instanceof page.window.HTMLTableElement);
+    assert.equal(gamesTable.getAttribute("data-ui"), "data-table");
+    assert.equal(gamesTable.getAttribute("aria-label"), testId === "season-upcoming-games-table" ? "Upcoming games" : "Completed games");
+    assert.deepEqual(
+      [...gamesTable.querySelectorAll("thead th")].map((heading) => ({
+        text: heading.textContent,
+        scope: heading.getAttribute("scope"),
+      })),
+      [
+        { text: "Date", scope: "col" },
+        { text: "Status", scope: "col" },
+        { text: "Actions", scope: "col" },
+      ],
+    );
+  }
+  assert(upcomingGamesBody.querySelector('a[href="/games/game-season-static-fallback"]'));
+  assert(completedGamesBody.querySelector('a[href="/games/game-season-static-finished"]'));
+  assert.equal(upcomingGamesBody.querySelector("td")?.getAttribute("data-label"), "Date");
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-season-static-fallback/);
   assert.equal(activityStatus.getAttribute("data-ui"), "activity-status");
   assert.equal(activityStatus.getAttribute("role"), "status");
   assert.equal(activityStatus.getAttribute("aria-live"), "polite");
@@ -2927,6 +3045,22 @@ test("season page falls back to legacy season APIs during site-first scoped roll
     createdAt: "2026-03-28T11:00:04.000Z",
     updatedAt: "2026-03-28T11:00:04.000Z",
   });
+  const visibleGame = apiState.games.get("game-visible");
+  const foreignGame = apiState.games.get("game-foreign");
+  assert(visibleGame);
+  assert(foreignGame);
+  apiState.games.set("game-visible-finished", {
+    ...visibleGame,
+    gameId: "game-visible-finished",
+    status: "finished",
+    gameStartTs: "2026-06-20T10:00:00.000Z",
+  });
+  apiState.games.set("game-foreign-finished", {
+    ...foreignGame,
+    gameId: "game-foreign-finished",
+    status: "finished",
+    gameStartTs: "2026-06-20T10:05:00.000Z",
+  });
 
   const page = await bootPage({
     html: renderSeasonPage("http://localhost:3001", "winter-2026", "league-a"),
@@ -2935,12 +3069,17 @@ test("season page falls back to legacy season APIs during site-first scoped roll
     apiState,
   });
 
-  const gamesBody = page.document.getElementById("season-games-body");
-  assert(gamesBody instanceof page.window.HTMLElement);
+  const upcomingGamesBody = page.document.getElementById("season-upcoming-games-body");
+  const completedGamesBody = page.document.getElementById("season-completed-games-body");
+  assert(upcomingGamesBody instanceof page.window.HTMLElement);
+  assert(completedGamesBody instanceof page.window.HTMLElement);
   assert.equal(page.document.getElementById("season-title")?.textContent, "Winter 2026");
-  assert(gamesBody.querySelector('a[href="/games/game-visible"]'));
-  assert.equal(gamesBody.querySelector('a[href="/games/game-foreign"]'), null);
-  assert.doesNotMatch(gamesBody.textContent ?? "", /game-visible|game-foreign/);
+  assert(upcomingGamesBody.querySelector('a[href="/games/game-visible"]'));
+  assert.equal(upcomingGamesBody.querySelector('a[href="/games/game-foreign"]'), null);
+  assert(completedGamesBody.querySelector('a[href="/games/game-visible-finished"]'));
+  assert.equal(completedGamesBody.querySelector('a[href="/games/game-foreign-finished"]'), null);
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-visible|game-foreign/);
+  assert.doesNotMatch(completedGamesBody.textContent ?? "", /game-visible-finished|game-foreign-finished/);
 });
 
 test("setup happy path runs from sign-in to created game context", async () => {

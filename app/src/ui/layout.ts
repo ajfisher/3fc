@@ -150,12 +150,16 @@ function renderTableShell(input: {
   emptyId: string;
   emptyText: string;
   headers: string[];
+  tableLabel?: string;
+  emptyInitiallyHidden?: boolean;
 }): string {
   const headers = input.headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("");
+  const tableLabel = input.tableLabel ? ` aria-label="${escapeHtml(input.tableLabel)}"` : "";
+  const emptyHidden = input.emptyInitiallyHidden ? " hidden" : "";
 
-  return `<p data-ui="status-note" id="${escapeHtml(input.emptyId)}">${escapeHtml(input.emptyText)}</p>
+  return `<p data-ui="status-note" id="${escapeHtml(input.emptyId)}"${emptyHidden}>${escapeHtml(input.emptyText)}</p>
   <div data-ui="table-wrap" data-testid="${escapeHtml(input.tableTestId)}" hidden>
-    <table data-ui="data-table">
+    <table data-ui="data-table"${tableLabel}>
       <thead><tr>${headers}</tr></thead>
       <tbody id="${escapeHtml(input.bodyId)}"></tbody>
     </table>
@@ -489,18 +493,36 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
     "panel-season-create-game",
   );
 
-  const gamesPanel = renderPanel(
-    "Games",
-    "Manage scheduled games for this season.",
+  const upcomingGamesPanel = renderPanel(
+    "Upcoming games",
+    "Scheduled and live games, ordered by kickoff.",
     renderTableShell({
-      tableTestId: "season-games-table",
-      bodyId: "season-games-body",
-      emptyId: "season-games-empty",
-      emptyText: "No games yet. Create your first game.",
+      tableTestId: "season-upcoming-games-table",
+      bodyId: "season-upcoming-games-body",
+      emptyId: "season-upcoming-games-empty",
+      emptyText: "No upcoming games.",
       headers: ["Date", "Status", "Actions"],
+      tableLabel: "Upcoming games",
+      emptyInitiallyHidden: true,
     }),
     "",
-    "panel-season-games",
+    "panel-season-upcoming-games",
+  );
+
+  const completedGamesPanel = renderPanel(
+    "Completed games",
+    "Finished games, with the most recent first.",
+    renderTableShell({
+      tableTestId: "season-completed-games-table",
+      bodyId: "season-completed-games-body",
+      emptyId: "season-completed-games-empty",
+      emptyText: "No completed games.",
+      headers: ["Date", "Status", "Actions"],
+      tableLabel: "Completed games",
+      emptyInitiallyHidden: true,
+    }),
+    "",
+    "panel-season-completed-games",
   );
 
   return `<!doctype html>
@@ -545,7 +567,8 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
         ${renderActivityStatus("Loading season data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="season-grid">
-          ${gamesPanel}
+          ${upcomingGamesPanel}
+          ${completedGamesPanel}
           <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
             ${createGamePanel}
           </section>

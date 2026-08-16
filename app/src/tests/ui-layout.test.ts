@@ -210,10 +210,26 @@ test("season page includes game create form and games table", () => {
   assert.doesNotMatch(html, /game-id-display/);
   assert.match(html, /Game date/);
   assert.match(html, /data-testid="game-third-length"/);
-  assert.match(html, /season-games-body/);
-  assert.match(
-    html,
-    /<th scope="col">Date<\/th><th scope="col">Status<\/th><th scope="col">Actions<\/th>/,
+  assert.match(html, /data-testid="panel-season-upcoming-games"/);
+  assert.match(html, /id="season-upcoming-games-body"/);
+  assert.match(html, /data-testid="season-upcoming-games-table"/);
+  assert.match(html, /<table data-ui="data-table" aria-label="Upcoming games">/);
+  assert.match(html, /id="season-upcoming-games-empty" hidden>No upcoming games\.<\/p>/);
+  assert.match(html, /data-testid="panel-season-completed-games"/);
+  assert.match(html, /id="season-completed-games-body"/);
+  assert.match(html, /data-testid="season-completed-games-table"/);
+  assert.match(html, /<table data-ui="data-table" aria-label="Completed games">/);
+  assert.match(html, /id="season-completed-games-empty" hidden>No completed games\.<\/p>/);
+  assert.equal(
+    (html.match(/<th scope="col">Date<\/th><th scope="col">Status<\/th><th scope="col">Actions<\/th>/g) ?? []).length,
+    2,
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-season-upcoming-games"') <
+      html.indexOf('data-testid="panel-season-completed-games"'),
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-season-completed-games"') < html.indexOf('id="season-create-game-region"'),
   );
   assert.match(html, /data-testid="create-game"/);
   assert.match(html, /data-testid="delete-season"/);
