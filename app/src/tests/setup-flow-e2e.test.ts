@@ -1323,6 +1323,23 @@ function createMockFetch(state: MockApiState) {
       return createJsonResponse(200, updated);
     }
 
+    if (method === "DELETE" && gameMatch) {
+      const gameId = decodeURIComponent(gameMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+      if (game.status === "finished") {
+        return createJsonResponse(409, {
+          error: "conflict",
+          code: "finished_game_locked",
+          message: `Finished game ${gameId} cannot be deleted.`,
+        });
+      }
+      state.games.delete(gameId);
+      return new Response(null, { status: 204 });
+    }
+
     const startThirdMatch = path.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]+)\/start$/);
     if (method === "POST" && startThirdMatch) {
       const gameId = decodeURIComponent(startThirdMatch[1]);
@@ -2779,6 +2796,8 @@ test("season page renders game kickoff times in the user local timezone", async 
   assert.equal(upcomingGamesBody.querySelector('[data-status="finished"]'), null);
   assert.equal(completedGamesBody.querySelector('[data-status="scheduled"]'), null);
   assert.equal(completedGamesBody.querySelectorAll('[data-status="finished"] [data-icon="circle-check"]').length, 2);
+  assert.equal(completedGamesBody.querySelectorAll('button[disabled][aria-label^="Delete game unavailable:"]').length, 2);
+  assert.equal(completedGamesBody.querySelector('[data-action="delete-game"]'), null);
   assert.deepEqual(
     [...upcomingGamesBody.querySelectorAll('a[href^="/games/"]')].filter((link) => !link.getAttribute("aria-label")).map((link) => link.getAttribute("href")),
     ["/games/game-season-local-time", "/games/game-season-live"],
@@ -2797,9 +2816,9 @@ test("season page renders game kickoff times in the user local timezone", async 
   assert.equal(page.document.getElementById("season-completed-games-empty")?.hidden, true);
 });
 
-test("season game groups expose accurate empty states and delete from either panel", async () => {
+test("season game groups expose accurate empty states and preserve finished-game delete locking", async () => {
   const apiState = createMockApiState();
-  seedGoalScoringGame(apiState, { gameId: "game-delete-upcoming" });
+  seedGoalScoringGame(apiState, { gameId: "game-delete-upcoming", status: "scheduled" });
   const upcomingGame = apiState.games.get("game-delete-upcoming");
   assert(upcomingGame);
   apiState.games.set("game-delete-completed", {
@@ -2809,23 +2828,11 @@ test("season game groups expose accurate empty states and delete from either pan
     gameStartTs: "2026-03-28T09:00:00.000Z",
   });
 
-  const defaultFetch = createMockFetch(apiState);
-  const deleteFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
-    const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
-    const method = (init.method ?? "GET").toUpperCase();
-    const match = target.pathname.match(/^\/v1\/games\/([^/]+)$/);
-    if (method === "DELETE" && match) {
-      apiState.games.delete(decodeURIComponent(match[1]));
-      return createJsonResponse(200, {});
-    }
-    return defaultFetch(input, init);
-  };
   const page = await bootPage({
     html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
     url: "http://localhost:3000/seasons/autumn-cup",
     scriptFile: "setup-flow.js",
     apiState,
-    fetch: deleteFetch,
   });
   let confirmations = 0;
   Object.defineProperty(page.window, "confirm", {
@@ -2862,17 +2869,19 @@ test("season game groups expose accurate empty states and delete from either pan
   assert.equal(completedEmpty.hidden, true);
   assert(page.document.querySelector('#season-completed-games-body a[href="/games/game-delete-completed"]'));
 
-  const completedDeleteIcon = page.document.querySelector(
-    '#season-completed-games-body [data-game-id="game-delete-completed"] [data-icon="trash-2"]',
+  const completedDeleteButton = page.document.querySelector(
+    '#season-completed-games-body button[disabled][aria-label^="Delete game unavailable:"]',
   );
+  assert(completedDeleteButton instanceof page.window.HTMLButtonElement);
+  assert.equal(completedDeleteButton.hasAttribute("data-action"), false);
+  const completedDeleteIcon = completedDeleteButton.querySelector('[data-icon="trash-2"]');
   assert(completedDeleteIcon instanceof page.window.HTMLElement);
   dispatchClick(completedDeleteIcon);
   await flushAsync();
-  assert.equal(confirmations, 2);
-  assert.equal(apiState.games.has("game-delete-completed"), false);
-  assert.equal(completedWrap.hidden, true);
-  assert.equal(completedEmpty.hidden, false);
-  assert.equal(completedEmpty.textContent, "No completed games.");
+  assert.equal(confirmations, 1);
+  assert.equal(apiState.games.has("game-delete-completed"), true);
+  assert.equal(completedWrap.hidden, false);
+  assert.equal(completedEmpty.hidden, true);
 });
 
 test("season kickoff links use the next local calendar date across a UTC boundary", async () => {

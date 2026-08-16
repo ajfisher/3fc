@@ -1887,18 +1887,27 @@
           const statusIcon = status === "live" ? "activity" : status === "finished" ? "circle-check" : "calendar-clock";
           const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
           const gamePath = `/games/${encodeURIComponent(game.gameId)}`;
+          const kickoffLabel = formatLocalTimestamp(game.gameStartTs);
+          const deleteAction = status === "finished"
+            ? renderClientIconButton({
+              icon: "trash-2",
+              label: `Delete game unavailable: game at ${kickoffLabel} is finished`,
+              variant: "danger",
+              attributes: { disabled: "" },
+            })
+            : renderClientIconButton({
+              icon: "trash-2",
+              label: `Delete game at ${kickoffLabel}`,
+              variant: "danger",
+              attributes: { "data-action": "delete-game", "data-game-id": game.gameId },
+            });
           return `<tr>
-          <td data-label="Date"><a href="${gamePath}">${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</a></td>
+          <td data-label="Date"><a href="${gamePath}">${escapeHtml(kickoffLabel)}</a></td>
           <td data-label="Status"><span data-ui="status-chip" data-status="${escapeHtml(status)}">${renderClientIcon(statusIcon)}<span>${escapeHtml(statusLabel)}</span></span></td>
           <td data-label="Actions">
             <div data-ui="row-action-buttons">
-              ${renderClientIconLink({ href: gamePath, icon: "eye", label: `View game at ${formatLocalTimestamp(game.gameStartTs)}` })}
-              ${renderClientIconButton({
-                icon: "trash-2",
-                label: `Delete game at ${formatLocalTimestamp(game.gameStartTs)}`,
-                variant: "danger",
-                attributes: { "data-action": "delete-game", "data-game-id": game.gameId },
-              })}
+              ${renderClientIconLink({ href: gamePath, icon: "eye", label: `View game at ${kickoffLabel}` })}
+              ${deleteAction}
             </div>
           </td>
         </tr>`;
