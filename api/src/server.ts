@@ -3016,7 +3016,7 @@ async function handleMagicLinkComplete(
         "Set-Cookie": buildSessionCookie(
           SESSION_COOKIE_NAME,
           session.sessionId,
-          session.maxAgeSeconds,
+          session.expiresAt,
           SESSION_COOKIE_SECURE,
         ),
       },

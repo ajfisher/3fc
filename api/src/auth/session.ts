@@ -14,15 +14,21 @@ export function resolveSessionCookieSecureFlag(
 export function buildSessionCookie(
   cookieName: string,
   sessionId: string,
-  maxAgeSeconds: number,
+  expiresAt: string,
   secure: boolean,
 ): string {
+  const expiresAtDate = new Date(expiresAt);
+
+  if (Number.isNaN(expiresAtDate.getTime())) {
+    throw new Error("Session cookie expiry must be a valid date.");
+  }
+
   const parts = [
     `${cookieName}=${encodeURIComponent(sessionId)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    `Max-Age=${maxAgeSeconds}`,
+    `Expires=${expiresAtDate.toUTCString()}`,
   ];
 
   if (secure) {

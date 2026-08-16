@@ -171,10 +171,13 @@ function extractTokenFromBody(body: string): string {
   return decodeURIComponent(match[1]);
 }
 
-function createHarness(sessionTtlSeconds = 3600) {
+function createHarness(
+  sessionTtlSeconds = 3600,
+  initialTime = "2026-02-22T00:00:00.000Z",
+) {
   const client = new InMemoryMagicDynamoClient();
   const sentMessages: Array<{ to: string; subject: string; body: string }> = [];
-  const clock = new MutableClock(new Date("2026-02-22T00:00:00.000Z"));
+  const clock = new MutableClock(new Date(initialTime));
   const randomProvider = new DeterministicRandomProvider();
 
   const service = new MagicLinkService(
@@ -293,6 +296,29 @@ test("eight-day sessions persist matching expiry and reject at the configured bo
   clock.advanceSeconds(1);
   assert.equal(await service.getSession("session-1"), null);
   assert(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+});
+
+test("fractional-second issuance preserves a full eight days at one absolute boundary", async () => {
+  const { client, service, sentMessages, clock } = createHarness(
+    DEFAULT_SESSION_TTL_SECONDS,
+    "2026-02-22T00:00:00.750Z",
+  );
+
+  await service.start("fractional@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const completion = await service.complete(token);
+
+  assert.equal(completion.createdAt, "2026-02-22T00:00:00.750Z");
+  assert.equal(completion.expiresAt, "2026-03-02T00:00:01.000Z");
+  assert.equal(
+    client.getItem("AUTH_SESSION#session-1", "METADATA")?.expiresAtEpoch?.N,
+    "1772409601",
+  );
+
+  clock.advanceSeconds(DEFAULT_SESSION_TTL_SECONDS);
+  assert(await service.getSession("session-1"));
+  clock.advanceSeconds(0.25);
+  assert.equal(await service.getSession("session-1"), null);
 });
 
 test("extending the configured lifetime does not rewrite an existing session", async () => {

@@ -2815,7 +2815,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               "set-cookie": buildSessionCookie(
                 dependencies.sessionCookieName,
                 completed.sessionId,
-                completed.maxAgeSeconds,
+                completed.expiresAt,
                 dependencies.sessionCookieSecure,
               ),
             },

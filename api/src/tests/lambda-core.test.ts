@@ -2395,7 +2395,11 @@ test("core lambda completes magic-link auth and returns a session cookie", async
   assert.match(response.headers["set-cookie"] ?? "", /Path=\//);
   assert.match(response.headers["set-cookie"] ?? "", /HttpOnly/);
   assert.match(response.headers["set-cookie"] ?? "", /SameSite=Lax/);
-  assert.match(response.headers["set-cookie"] ?? "", /Max-Age=691200/);
+  assert.match(
+    response.headers["set-cookie"] ?? "",
+    /Expires=Tue, 03 Mar 2026 00:00:00 GMT/,
+  );
+  assert.equal((response.headers["set-cookie"] ?? "").includes("Max-Age"), false);
   assert.match(response.headers["set-cookie"] ?? "", /Secure/);
 
   assert.deepEqual(JSON.parse(response.body), {
