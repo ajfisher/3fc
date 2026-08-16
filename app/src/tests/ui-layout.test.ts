@@ -385,6 +385,10 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="goal-own-goal"/);
   assert.match(html, /data-testid="goal-scorer"/);
   assert.match(html, /data-testid="goal-assists"/);
+  assert.match(html, /id="goal-assists-dropdown"[^>]*data-testid="goal-assists-dropdown"/);
+  assert.doesNotMatch(html, /id="goal-assists-dropdown"[^>]*\sopen(?:\s|>)/);
+  assert.match(html, /id="goal-assists-summary"[^>]*>Choose assists<\/span>/);
+  assert.match(html, /data-icon="chevron-down"/);
   assert.match(html, /data-testid="add-goal"/);
   assert.match(html, /data-testid="undo-last-goal"/);
   assert.match(html, /data-testid="goal-timeline"/);

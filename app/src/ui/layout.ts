@@ -1121,8 +1121,8 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
           <span>Own goal</span>
         </label>
-        <details data-ui="run-secondary-scoring" open>
-          <summary>Assists</summary>
+        <details id="goal-assists-dropdown" data-ui="run-secondary-scoring" data-testid="goal-assists-dropdown">
+          <summary><span>Assists</span><span id="goal-assists-summary" data-ui="assist-summary">Choose assists</span>${renderIcon("chevron-down")}</summary>
           <div id="goal-assists" data-ui="assist-list" data-testid="goal-assists"></div>
         </details>
       </div>

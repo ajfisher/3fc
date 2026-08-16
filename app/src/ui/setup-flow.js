@@ -2118,6 +2118,8 @@
     const goalConcedingTeamInput = document.getElementById("goal-conceding-team");
     const goalOwnGoalInput = document.getElementById("goal-own-goal");
     const goalScorerInput = document.getElementById("goal-scorer");
+    const goalAssistsDropdown = document.getElementById("goal-assists-dropdown");
+    const goalAssistsSummaryElement = document.getElementById("goal-assists-summary");
     const goalAssistsElement = document.getElementById("goal-assists");
     const goalFormNote = document.getElementById("goal-form-note");
     const saveGoalButton = root.querySelector('[data-action="save-goal"]');
@@ -2576,6 +2578,8 @@
         goalConcedingTeamInput instanceof HTMLSelectElement &&
         goalOwnGoalInput instanceof HTMLInputElement &&
         goalScorerInput instanceof HTMLSelectElement &&
+        goalAssistsDropdown instanceof HTMLDetailsElement &&
+        goalAssistsSummaryElement instanceof HTMLElement &&
         goalAssistsElement instanceof HTMLElement &&
         goalFormNote instanceof HTMLElement &&
         saveGoalButton instanceof HTMLButtonElement &&
@@ -2718,11 +2722,31 @@
       });
     }
 
-    function teamSwatchStyle(team) {
-      const color = typeof team.color === "string" && team.color.length > 0 ? team.color : "#d9f0e8";
-      if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
-        return "";
+    function fallbackTeamColor(teamId) {
+      const knownColors = new Map([
+        ["red", "#d64545"],
+        ["blue", "#2f6fcb"],
+        ["yellow", "#d4a800"],
+      ]);
+      const knownColor = knownColors.get(teamId);
+      if (knownColor) {
+        return knownColor;
       }
+
+      const palette = ["#477a70", "#8a5b9b", "#b5663d", "#387c94", "#7a7139"];
+      const hash = [...String(teamId || "unknown")]
+        .reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 0);
+      return palette[hash % palette.length];
+    }
+
+    function teamSwatchStyle(team, fallbackTeamId = "") {
+      const teamId = typeof team?.teamId === "string" && team.teamId.length > 0
+        ? team.teamId
+        : String(fallbackTeamId || "unknown");
+      const requestedColor = typeof team?.color === "string" ? team.color : "";
+      const color = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(requestedColor)
+        ? requestedColor
+        : fallbackTeamColor(teamId);
 
       return ` style="--team-color: ${escapeHtml(color)}"`;
     }
@@ -2918,7 +2942,7 @@
     }
 
     function renderGoalAssistChoices(scorerPlayerId, seedAssistPlayerIds = null) {
-      if (!(goalAssistsElement instanceof HTMLElement)) {
+      if (!(goalAssistsElement instanceof HTMLElement) || !(goalAssistsSummaryElement instanceof HTMLElement)) {
         return;
       }
 
@@ -2928,7 +2952,23 @@
 
       if (rostered.length === 0) {
         goalAssistsElement.innerHTML = `<p data-ui="empty-note">No assist options yet.</p>`;
+        goalAssistsSummaryElement.textContent = "No options";
+        goalAssistsSummaryElement.removeAttribute("title");
         return;
+      }
+
+      const selectedNames = rostered
+        .filter((player) => selected.has(player.playerId))
+        .map((player) => player.nickname);
+      goalAssistsSummaryElement.textContent = selectedNames.length === 0
+        ? "Choose assists"
+        : selectedNames.length <= 2
+          ? selectedNames.join(", ")
+          : `${selectedNames.length} selected`;
+      if (selectedNames.length > 0) {
+        goalAssistsSummaryElement.title = selectedNames.join(", ");
+      } else {
+        goalAssistsSummaryElement.removeAttribute("title");
       }
 
       goalAssistsElement.innerHTML = rostered
@@ -2964,7 +3004,7 @@
         goalScoringTeamInput.value = "";
         goalScoringTeamInput.disabled = true;
       } else {
-        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "Choose scoring team", null, true);
+        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "Choose Team", null, true);
       }
 
       const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
@@ -2975,7 +3015,7 @@
         goalConcedingTeamInput,
         concedingOptions,
         previousConcedingTeamId,
-        "Choose conceding team",
+        "Choose Team",
         null,
         true,
       );
@@ -3144,9 +3184,10 @@
       const name = typeof team?.name === "string" && team.name.length > 0
         ? team.name
         : String(teamId ?? "Unknown team");
-      return `<span data-ui="goal-team-chip" role="img" data-team-id="${escapeHtml(String(teamId ?? ""))}"${
-        team ? teamSwatchStyle(team) : ""
-      }${relationship ? ` aria-label="${escapeHtml(`${relationship}: ${name}`)}"` : ""}><span data-ui="team-swatch" aria-hidden="true"></span><span>${escapeHtml(name)}</span></span>`;
+      const accessibleName = relationship ? `${relationship}: ${name}` : name;
+      return `<span data-ui="goal-team-chip" data-display="dot" role="img" data-team-id="${escapeHtml(String(teamId ?? ""))}"${
+        teamSwatchStyle(team, String(teamId ?? "Unknown team"))
+      } aria-label="${escapeHtml(accessibleName)}" title="${escapeHtml(accessibleName)}"><span data-ui="team-swatch" aria-hidden="true"></span></span>`;
     }
 
     function goalDisplayTime(goal) {
@@ -3487,6 +3528,9 @@
         if (input instanceof HTMLInputElement) {
           input.checked = false;
         }
+      }
+      if (goalAssistsDropdown instanceof HTMLDetailsElement) {
+        goalAssistsDropdown.open = false;
       }
       renderLiveScoring({
         ownGoal: false,
@@ -4446,8 +4490,26 @@
         renderLiveScoring();
       });
 
-      goalAssistsElement.addEventListener("change", () => {
+      goalAssistsElement.addEventListener("change", (event) => {
+        const changedInput = event.target instanceof HTMLInputElement ? event.target : null;
+        const changedValue = changedInput?.value ?? "";
         renderGoalAssistChoices(goalScorerInput.value);
+        const replacement = changedValue
+          ? [...goalAssistsElement.querySelectorAll('input[type="checkbox"]')]
+              .find((input) => input instanceof HTMLInputElement && input.value === changedValue)
+          : null;
+        if (replacement instanceof HTMLInputElement) {
+          replacement.focus();
+        }
+      });
+
+      goalAssistsDropdown.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !goalAssistsDropdown.open) {
+          return;
+        }
+        event.preventDefault();
+        goalAssistsDropdown.open = false;
+        goalAssistsDropdown.querySelector("summary")?.focus();
       });
 
       saveGoalButton.addEventListener("click", async () => {
