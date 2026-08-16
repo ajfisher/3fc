@@ -1,3 +1,5 @@
+export const DEFAULT_SESSION_TTL_SECONDS = 8 * 24 * 60 * 60;
+
 export function resolveSessionCookieSecureFlag(
   explicitValue: string | undefined,
   appBaseUrl: string,

@@ -384,7 +384,7 @@ export class MagicLinkService {
     const nowEpoch = Math.floor(this.clock.now().getTime() / 1000);
     const expiresAtEpoch = readNumber(item.expiresAtEpoch, "expiresAtEpoch");
 
-    if (expiresAtEpoch < nowEpoch) {
+    if (expiresAtEpoch <= nowEpoch) {
       return null;
     }
 

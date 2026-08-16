@@ -36,6 +36,7 @@ import {
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
+  DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
 } from "./auth/session.js";
@@ -2549,7 +2550,7 @@ function createDefaultDependencies(): CoreHandlerDependencies {
   const callbackPath = process.env.MAGIC_LINK_CALLBACK_PATH ?? "/auth/callback";
   const tokenTtlSeconds = Number.parseInt(process.env.MAGIC_LINK_TOKEN_TTL_SECONDS ?? "900", 10);
   const sessionTtlSeconds = Number.parseInt(
-    process.env.MAGIC_LINK_SESSION_TTL_SECONDS ?? "86400",
+    process.env.MAGIC_LINK_SESSION_TTL_SECONDS ?? String(DEFAULT_SESSION_TTL_SECONDS),
     10,
   );
 

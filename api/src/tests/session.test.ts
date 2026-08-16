@@ -3,9 +3,14 @@ import test from "node:test";
 
 import {
   buildSessionCookie,
+  DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
 } from "../auth/session.js";
+
+test("default session lifetime spans eight days", () => {
+  assert.equal(DEFAULT_SESSION_TTL_SECONDS, 691_200);
+});
 
 test("resolveSessionCookieSecureFlag honours explicit env overrides", () => {
   assert.equal(resolveSessionCookieSecureFlag("true", "http://localhost:3000"), true);

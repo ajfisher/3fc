@@ -46,6 +46,7 @@ import {
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
+  DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
 } from "./auth/session.js";
@@ -101,7 +102,7 @@ const MAGIC_LINK_TOKEN_TTL_SECONDS = Number.parseInt(
   10,
 );
 const MAGIC_LINK_SESSION_TTL_SECONDS = Number.parseInt(
-  process.env.MAGIC_LINK_SESSION_TTL_SECONDS ?? "86400",
+  process.env.MAGIC_LINK_SESSION_TTL_SECONDS ?? String(DEFAULT_SESSION_TTL_SECONDS),
   10,
 );
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME ?? "threefc_session";
