@@ -2775,11 +2775,19 @@
         if (typeof value !== "string") {
           return null;
         }
-        const match = value.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+        const match = value.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
         if (!match) {
           return null;
         }
         const hex = match[1].toLowerCase();
+        if (hex.length === 4) {
+          return hex[3] === "f"
+            ? `#${[...hex.slice(0, 3)].map((character) => `${character}${character}`).join("")}`
+            : null;
+        }
+        if (hex.length === 8) {
+          return hex.endsWith("ff") ? `#${hex.slice(0, 6)}` : null;
+        }
         return hex.length === 3
           ? `#${[...hex].map((character) => `${character}${character}`).join("")}`
           : `#${hex}`;
@@ -3045,9 +3053,7 @@
         .map((player) => player.nickname);
       goalAssistsSummaryElement.textContent = selectedNames.length === 0
         ? "Choose assists"
-        : selectedNames.length <= 2
-          ? selectedNames.join(", ")
-          : `${selectedNames.length} selected`;
+        : selectedNames.join(", ");
       if (selectedNames.length > 0) {
         goalAssistsSummaryElement.title = selectedNames.join(", ");
       } else {

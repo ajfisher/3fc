@@ -6496,7 +6496,7 @@ test("game page renders malformed goal identity values without crashing", async 
   malformedRedTeam.color = "#123";
   const malformedBlueTeam = apiState.gameTeams.get("game-malformed-goal:blue");
   assert(malformedBlueTeam);
-  malformedBlueTeam.color = "#112233";
+  malformedBlueTeam.color = "#123f";
   const malformedYellowTeam = apiState.gameTeams.get("game-malformed-goal:yellow");
   assert(malformedYellowTeam);
   malformedYellowTeam.color = "javascript:alert(1)";
@@ -6504,7 +6504,13 @@ test("game page renders malformed goal identity values without crashing", async 
     ...malformedRedTeam,
     teamId: "constructor" as TeamId,
     name: "Constructor",
-    color: "#0000",
+    color: "#00000080",
+  });
+  apiState.gameTeams.set("game-malformed-goal:opaque-alpha", {
+    ...malformedRedTeam,
+    teamId: "opaque-alpha" as TeamId,
+    name: "Opaque Alpha",
+    color: "#1a2b3cff",
   });
   for (const player of [
     { playerId: "99", nickname: "Valid 99" },
@@ -6601,6 +6607,23 @@ test("game page renders malformed goal identity values without crashing", async 
     createdAt: "2026-03-28T11:01:05.000Z",
     updatedAt: "2026-03-28T11:01:05.000Z",
   });
+  apiState.goalEvents.set("opaque-alpha-goal", {
+    gameId: "game-malformed-goal",
+    eventId: "opaque-alpha-goal",
+    third: 1,
+    thirdMinute: 6,
+    gameMinute: 6,
+    elapsedSeconds: 180,
+    stoppageMinute: null,
+    displayTime: "6'",
+    scoringTeamId: "opaque-alpha" as TeamId,
+    concedingTeamId: "red",
+    scorerPlayerId: "opaque-alpha-player",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:06.000Z",
+    updatedAt: "2026-03-28T11:01:06.000Z",
+  });
 
   const page = await bootPage({
     html: renderGamePage("http://localhost:3001", { gameId: "game-malformed-goal" }),
@@ -6628,7 +6651,7 @@ test("game page renders malformed goal identity values without crashing", async 
   assert.match(malformedScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.match(malformedConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.notEqual(malformedScoringDotStyle, malformedConcedingDotStyle);
-  assert.doesNotMatch(malformedConcedingDotStyle ?? "", /#0000/i);
+  assert.doesNotMatch(malformedConcedingDotStyle ?? "", /#00000080/i);
   const duplicateColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="valid-goal-1"]');
   assert(duplicateColorGoal instanceof page.window.HTMLElement);
   const duplicateScoringDotStyle = duplicateColorGoal.querySelector('[data-team-id="red"]')?.getAttribute("style");
@@ -6636,6 +6659,8 @@ test("game page renders malformed goal identity values without crashing", async 
   assert.match(duplicateScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.match(duplicateConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.notEqual(duplicateScoringDotStyle, duplicateConcedingDotStyle);
+  assert.notEqual(duplicateScoringDotStyle, "--team-color: #112233");
+  assert.notEqual(duplicateConcedingDotStyle, "--team-color: #112233");
   const unsafeColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unsafe-color-goal"]');
   assert(unsafeColorGoal instanceof page.window.HTMLElement);
   const unsafeDotStyle = unsafeColorGoal.querySelector('[data-team-id="yellow"]')?.getAttribute("style");
@@ -6648,6 +6673,12 @@ test("game page renders malformed goal identity values without crashing", async 
   assert.match(unknownScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.match(unknownConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
   assert.notEqual(unknownScoringDotStyle, unknownConcedingDotStyle);
+  const opaqueAlphaGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="opaque-alpha-goal"]');
+  assert(opaqueAlphaGoal instanceof page.window.HTMLElement);
+  assert.equal(
+    opaqueAlphaGoal.querySelector('[data-team-id="opaque-alpha"]')?.getAttribute("style"),
+    "--team-color: #1a2b3c",
+  );
   assert.doesNotMatch(goal.innerHTML, /javascript:/i);
   assert.doesNotMatch(goal.innerHTML, /undefined|null/);
   assert.match(fullGoalLog.textContent ?? "", /Unknown player \(invalid ID: 99\)/);
@@ -6801,7 +6832,7 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert(daxAssist instanceof gamePage.window.HTMLInputElement);
   daxAssist.checked = true;
   daxAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  assert.equal(assistsSummary.textContent, "3 selected");
+  assert.equal(assistsSummary.textContent, "Bea, Cy, Dax");
   assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy, Dax");
   const eveAssist = assistsElement.querySelector('input[value="player-eve"]');
   assert(eveAssist instanceof gamePage.window.HTMLInputElement);
