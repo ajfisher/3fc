@@ -325,7 +325,7 @@ export class MagicLinkService {
     const email = readString(updatedToken.Attributes?.email, "email");
     const subject = magicLinkSubjectForEmail(email);
     const sessionId = this.randomProvider.sessionId();
-    const expiresAtEpoch = nowEpoch + this.options.sessionTtlSeconds;
+    const expiresAtEpoch = Math.ceil(now.getTime() / 1000) + this.options.sessionTtlSeconds;
     const expiresAtIso = new Date(expiresAtEpoch * 1000).toISOString();
 
     await this.client.send(
@@ -384,7 +384,7 @@ export class MagicLinkService {
     const nowEpoch = Math.floor(this.clock.now().getTime() / 1000);
     const expiresAtEpoch = readNumber(item.expiresAtEpoch, "expiresAtEpoch");
 
-    if (expiresAtEpoch < nowEpoch) {
+    if (expiresAtEpoch <= nowEpoch) {
       return null;
     }
 

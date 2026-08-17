@@ -938,7 +938,13 @@ test.describe("M2 local-stack smoke", () => {
 
       const magicLink = await waitForMagicLink(email);
       await page.goto(magicLink);
-      await page.waitForURL("**/setup");
+      await expect(page.getByTestId("auth-callback-shell")).toBeVisible();
+      const completeMagicLinkButton = page.getByTestId("complete-magic-link");
+      await expect(completeMagicLinkButton).toBeVisible();
+      await Promise.all([
+        page.waitForURL("**/setup"),
+        completeMagicLinkButton.click(),
+      ]);
       await expect(page.getByTestId("setup-shell")).toBeVisible();
 
       await page.locator("#league-name").fill(leagueName);
@@ -949,6 +955,10 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.locator("#league-title")).toHaveText(leagueName);
 
+      const createSeasonToggle = page.getByTestId("toggle-create-season");
+      await createSeasonToggle.click();
+      await expect(createSeasonToggle).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator("#season-name")).toBeFocused();
       await page.locator("#season-name").fill(seasonName);
       await page.locator("#season-friendly-url").fill(seasonSlug);
       await Promise.all([
@@ -957,19 +967,21 @@ test.describe("M2 local-stack smoke", () => {
       ]);
       await expect(page.locator("#season-title")).toHaveText(seasonName);
 
+      const createGameToggle = page.getByTestId("toggle-create-game");
+      await createGameToggle.click();
+      await expect(createGameToggle).toHaveAttribute("aria-expanded", "true");
+      await expect(page.locator("#game-date")).toBeFocused();
       await page.locator("#game-date").fill(schedule.gameDate);
       await page.locator("#game-date").dispatchEvent("change");
       await page.locator("#game-kickoff").fill(schedule.kickoff);
       await page.locator("#game-kickoff").dispatchEvent("change");
-      gameId = (await page.locator("#game-id-display").innerText()).trim();
-      expect(gameId).toMatch(/^game-/);
 
-      await Promise.all([
-        page.waitForURL(`**/games/${gameId}`),
-        page.getByTestId("create-game").click(),
-      ]);
+      await Promise.all([page.waitForURL(/\/games\/[^/]+$/), page.getByTestId("create-game").click()]);
+      gameId = decodeURIComponent(new URL(page.url()).pathname.split("/").filter(Boolean).at(-1) ?? "");
+      expect(gameId).toMatch(/^game-/);
       await expect(page.getByTestId("game-shell")).toBeVisible();
       await expect(page.locator("#game-id-value")).toHaveText(gameId);
+      await expect(page.locator("#game-title")).not.toHaveText(gameId);
       await expect(page.getByTestId("game-mode-structure")).toBeVisible();
       await expect(page.getByTestId("game-mode-players")).toBeHidden();
       const joinCodeValue = page.getByTestId("game-join-code-value");
@@ -1038,10 +1050,19 @@ test.describe("M2 local-stack smoke", () => {
       await page.locator(`#goal-assists input[value="${beaPlayerId}"]`).check();
       await page.getByTestId("add-goal").click();
 
-      await expect(page.getByTestId("goal-timeline")).toContainText(`${ariNickname} for Red`);
+      await expect(page.getByTestId("goal-timeline")).toContainText(ariNickname);
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="red"]')).toContainText("Red");
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="blue"]')).toContainText("Blue");
       await expect(page.getByTestId("goal-timeline")).toContainText(`Assists: ${beaNickname}`);
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
+      await expect(page.locator("#goal-scoring-team")).toHaveValue("");
+      await expect(page.locator("#goal-conceding-team")).toHaveValue("");
+      await expect(page.locator("#goal-scorer")).toHaveValue("");
       await expect(page.locator('[data-ui="score-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(page.locator('[data-ui="score-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
+      expect(
+        await page.locator('[data-ui="score-team"][data-team-id="red"] dt').allTextContents(),
+      ).toEqual(["Conceded", "Scored"]);
 
       await finishThird(page, 1);
       await startThird(page, 2);
@@ -1054,7 +1075,11 @@ test.describe("M2 local-stack smoke", () => {
       await page.getByTestId("finish-game").click();
 
       await expect(page.getByTestId("game-result-summary")).toBeVisible();
+      await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match Summary" })).toBeVisible();
+      await expect(page.getByTestId("finalisation-context").locator("dt")).toHaveText("Status");
+      await expect(page.getByTestId("finalisation-context")).not.toContainText(/Game|Timeline/);
       await expect(page.getByTestId("game-result-outcome")).toHaveText("Red win");
+      await expect(page.getByTestId("game-result-summary")).not.toContainText("Computed");
       const resultTeams = page.getByTestId("game-result-teams");
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Conceded\s*0/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
@@ -1063,7 +1088,12 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("final-team-log-red")).toContainText(ariNickname);
       await expect(page.getByTestId("final-scorer-stats").locator("li").filter({ hasText: ariNickname })).toContainText("1");
       await expect(page.getByTestId("final-assist-stats").locator("li").filter({ hasText: beaNickname })).toContainText("1");
-      await expect(page.getByTestId("final-full-goal-log")).toContainText(ariNickname);
+      const fullGoalLog = page.getByTestId("final-full-goal-log");
+      await expect(fullGoalLog).toContainText(ariNickname);
+      await fullGoalLog.locator("summary").click();
+      await expect(fullGoalLog).toHaveAttribute("open", "");
+      await expect(fullGoalLog.locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
+      await expect(fullGoalLog).not.toContainText("Third 1");
       await expect(page.locator("#game-edit-status")).toHaveValue("finished");
       await expect(page.getByTestId("finish-game")).toBeDisabled();
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
@@ -1072,8 +1102,15 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("quick-create-player")).toBeEnabled();
       await expectAllEnabled(page.locator('[data-action="assign-player"]'));
       await selectGameMode(page, "run");
+      await expect(page.locator("#goal-scoring-team")).toHaveValue("");
+      await expect(page.locator("#goal-conceding-team")).toBeDisabled();
+      await expect(page.locator("#goal-scorer")).toBeDisabled();
+      await expect(page.getByTestId("add-goal")).toBeDisabled();
+      await page.locator("#goal-scoring-team").selectOption("red");
+      await page.locator("#goal-conceding-team").selectOption("blue");
+      await page.locator("#goal-scorer").selectOption(ariPlayerId);
       await expect(page.getByTestId("add-goal")).toBeEnabled();
-      await expect(page.locator("#goal-form-note")).toContainText("final whistle");
+      await expect(page.locator("#goal-form-note")).not.toContainText("final whistle");
       await expect(page.locator('[data-action="edit-goal"]').first()).toBeEnabled();
       await expect(page.locator('[data-action="delete-goal"]').first()).toBeEnabled();
       await expect(page.getByTestId("undo-last-goal")).toBeEnabled();

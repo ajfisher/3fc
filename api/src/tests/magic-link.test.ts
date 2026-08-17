@@ -13,6 +13,7 @@ import {
   MagicLinkAuthError,
   MagicLinkService,
 } from "../auth/magic-link.js";
+import { DEFAULT_SESSION_TTL_SECONDS } from "../auth/session.js";
 
 type Item = Record<string, AttributeValue>;
 
@@ -170,10 +171,13 @@ function extractTokenFromBody(body: string): string {
   return decodeURIComponent(match[1]);
 }
 
-function createHarness() {
+function createHarness(
+  sessionTtlSeconds = 3600,
+  initialTime = "2026-02-22T00:00:00.000Z",
+) {
   const client = new InMemoryMagicDynamoClient();
   const sentMessages: Array<{ to: string; subject: string; body: string }> = [];
-  const clock = new MutableClock(new Date("2026-02-22T00:00:00.000Z"));
+  const clock = new MutableClock(new Date(initialTime));
   const randomProvider = new DeterministicRandomProvider();
 
   const service = new MagicLinkService(
@@ -189,13 +193,13 @@ function createHarness() {
       appBaseUrl: "http://localhost:3000",
       callbackPath: "/auth/callback",
       tokenTtlSeconds: 300,
-      sessionTtlSeconds: 3600,
+      sessionTtlSeconds,
     },
     clock,
     randomProvider,
   );
 
-  return { client, service, sentMessages, clock };
+  return { client, service, sentMessages, clock, randomProvider };
 }
 
 test("magic start stores TTL token and sends callback link email", async () => {
@@ -269,6 +273,97 @@ test("magic complete consumes token once and creates a session", async () => {
       return true;
     },
   );
+});
+
+test("eight-day sessions persist matching expiry and reject at the configured boundary", async () => {
+  const { client, service, sentMessages, clock } = createHarness(DEFAULT_SESSION_TTL_SECONDS);
+
+  await service.start("weekly@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const completion = await service.complete(token);
+
+  assert.equal(completion.maxAgeSeconds, 691_200);
+  assert.equal(completion.createdAt, "2026-02-22T00:00:00.000Z");
+  assert.equal(completion.expiresAt, "2026-03-02T00:00:00.000Z");
+
+  const sessionItem = client.getItem("AUTH_SESSION#session-1", "METADATA");
+  assert(sessionItem);
+  assert.equal(sessionItem.expiresAtEpoch?.N, "1772409600");
+  assert.equal(sessionItem.ttlEpoch?.N, sessionItem.expiresAtEpoch?.N);
+
+  clock.advanceSeconds(DEFAULT_SESSION_TTL_SECONDS - 1);
+  assert(await service.getSession("session-1"));
+  clock.advanceSeconds(1);
+  assert.equal(await service.getSession("session-1"), null);
+  assert(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+});
+
+test("fractional-second issuance preserves a full eight days at one absolute boundary", async () => {
+  const { client, service, sentMessages, clock } = createHarness(
+    DEFAULT_SESSION_TTL_SECONDS,
+    "2026-02-22T00:00:00.750Z",
+  );
+
+  await service.start("fractional@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const completion = await service.complete(token);
+
+  assert.equal(completion.createdAt, "2026-02-22T00:00:00.750Z");
+  assert.equal(completion.expiresAt, "2026-03-02T00:00:01.000Z");
+  assert.equal(
+    client.getItem("AUTH_SESSION#session-1", "METADATA")?.expiresAtEpoch?.N,
+    "1772409601",
+  );
+
+  clock.advanceSeconds(DEFAULT_SESSION_TTL_SECONDS);
+  assert(await service.getSession("session-1"));
+  clock.advanceSeconds(0.25);
+  assert.equal(await service.getSession("session-1"), null);
+});
+
+test("extending the configured lifetime does not rewrite an existing session", async () => {
+  const harness = createHarness(86_400);
+  await harness.service.start("existing@example.com");
+  const existingToken = extractTokenFromBody(harness.sentMessages[0].body);
+  const existingCompletion = await harness.service.complete(existingToken);
+  assert.equal(existingCompletion.maxAgeSeconds, 86_400);
+  assert.equal(existingCompletion.expiresAt, "2026-02-23T00:00:00.000Z");
+
+  const extendedService = new MagicLinkService(
+    harness.client,
+    {
+      async sendMagicLink(input) {
+        harness.sentMessages.push(input);
+        return { messageId: `msg-${harness.sentMessages.length}` };
+      },
+    },
+    {
+      tableName: "threefc_test",
+      appBaseUrl: "http://localhost:3000",
+      callbackPath: "/auth/callback",
+      tokenTtlSeconds: 300,
+      sessionTtlSeconds: DEFAULT_SESSION_TTL_SECONDS,
+    },
+    harness.clock,
+    harness.randomProvider,
+  );
+
+  assert(await extendedService.getSession("session-1"));
+  harness.clock.advanceSeconds(86_399);
+  assert(await extendedService.getSession("session-1"));
+  harness.clock.advanceSeconds(1);
+  assert.equal(await extendedService.getSession("session-1"), null);
+  assert.equal(
+    harness.client.getItem("AUTH_SESSION#session-1", "METADATA")?.expiresAtEpoch?.N,
+    "1771804800",
+  );
+
+  await extendedService.start("new@example.com");
+  const newToken = extractTokenFromBody(harness.sentMessages.at(-1)?.body ?? "");
+  const newCompletion = await extendedService.complete(newToken);
+  assert.equal(newCompletion.sessionId, "session-2");
+  assert.equal(newCompletion.maxAgeSeconds, 691_200);
+  assert.equal(newCompletion.expiresAt, "2026-03-03T00:00:00.000Z");
 });
 
 test("session lookup returns null when session is expired", async () => {

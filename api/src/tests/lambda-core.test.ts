@@ -7,6 +7,7 @@ import {
   type ApiGatewayHttpEvent,
 } from "../lambda-core.js";
 import type { RateLimitDecision } from "../auth/rate-limit.js";
+import { DEFAULT_SESSION_TTL_SECONDS } from "../auth/session.js";
 import { PUBLIC_JOIN_NICKNAME_MAX_LENGTH } from "../contracts/core-write.js";
 import {
   createDefaultThirdTimerSegments,
@@ -234,6 +235,7 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  sessionCookieSecure?: boolean;
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
   leagueInvites?: Record<string, MockLeagueInviteRecord>;
@@ -782,7 +784,7 @@ function createHarness(config: HarnessConfig = {}) {
 
   const handler = createLambdaCoreHandler({
     sessionCookieName: "threefc_session",
-    sessionCookieSecure: false,
+    sessionCookieSecure: config.sessionCookieSecure ?? false,
     corsAllowedOrigins: ["https://qa.3fc.football"],
     appBaseUrl: "https://qa.3fc.football",
     magicLinkService: {
@@ -809,8 +811,8 @@ function createHarness(config: HarnessConfig = {}) {
           sessionId: "new-session-1",
           email: "admin@example.com",
           createdAt: "2026-02-23T00:00:00.000Z",
-          expiresAt: "2026-02-24T00:00:00.000Z",
-          maxAgeSeconds: 86400,
+          expiresAt: "2026-03-03T00:00:00.000Z",
+          maxAgeSeconds: DEFAULT_SESSION_TTL_SECONDS,
         };
       },
     },
@@ -2375,7 +2377,7 @@ test("core lambda returns rate limit response before starting magic-link auth", 
 });
 
 test("core lambda completes magic-link auth and returns a session cookie", async () => {
-  const harness = createHarness();
+  const harness = createHarness({ sessionCookieSecure: true });
   const response = await harness.handler(
     createEvent({
       method: "POST",
@@ -2390,6 +2392,15 @@ test("core lambda completes magic-link auth and returns a session cookie", async
   assert.equal(harness.magicLinkCompletes.length, 1);
   assert.equal(harness.magicLinkCompletes[0], "tok_abc");
   assert.match(response.headers["set-cookie"] ?? "", /^threefc_session=new-session-1;/);
+  assert.match(response.headers["set-cookie"] ?? "", /Path=\//);
+  assert.match(response.headers["set-cookie"] ?? "", /HttpOnly/);
+  assert.match(response.headers["set-cookie"] ?? "", /SameSite=Lax/);
+  assert.match(
+    response.headers["set-cookie"] ?? "",
+    /Expires=Tue, 03 Mar 2026 00:00:00 GMT/,
+  );
+  assert.equal((response.headers["set-cookie"] ?? "").includes("Max-Age"), false);
+  assert.match(response.headers["set-cookie"] ?? "", /Secure/);
 
   assert.deepEqual(JSON.parse(response.body), {
     status: "authenticated",
@@ -2397,7 +2408,7 @@ test("core lambda completes magic-link auth and returns a session cookie", async
       sessionId: "new-session-1",
       email: "admin@example.com",
       createdAt: "2026-02-23T00:00:00.000Z",
-      expiresAt: "2026-02-24T00:00:00.000Z",
+      expiresAt: "2026-03-03T00:00:00.000Z",
     },
   });
 });

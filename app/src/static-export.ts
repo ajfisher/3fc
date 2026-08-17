@@ -31,6 +31,14 @@ interface StaticAsset {
 
 const STATIC_ASSETS: StaticAsset[] = [
   {
+    outputPath: "ui/icons.css",
+    candidateSources: [
+      fileURLToPath(new URL("./ui/icons.css", import.meta.url)),
+      resolve(process.cwd(), "dist/ui/icons.css"),
+      resolve(process.cwd(), "app/dist/ui/icons.css"),
+    ],
+  },
+  {
     outputPath: "ui/styles.css",
     candidateSources: [
       fileURLToPath(new URL("./ui/styles.css", import.meta.url)),

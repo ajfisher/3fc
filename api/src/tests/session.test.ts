@@ -3,9 +3,14 @@ import test from "node:test";
 
 import {
   buildSessionCookie,
+  DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
 } from "../auth/session.js";
+
+test("default session lifetime spans eight days", () => {
+  assert.equal(DEFAULT_SESSION_TTL_SECONDS, 691_200);
+});
 
 test("resolveSessionCookieSecureFlag honours explicit env overrides", () => {
   assert.equal(resolveSessionCookieSecureFlag("true", "http://localhost:3000"), true);
@@ -18,19 +23,37 @@ test("resolveSessionCookieSecureFlag defaults by app protocol", () => {
 });
 
 test("buildSessionCookie includes secure baseline attributes", () => {
-  const cookie = buildSessionCookie("threefc_session", "session-1", 3600, true);
+  const cookie = buildSessionCookie(
+    "threefc_session",
+    "session-1",
+    "2026-03-02T00:00:00.000Z",
+    true,
+  );
 
   assert.match(cookie, /^threefc_session=session-1;/);
   assert.match(cookie, /Path=\//);
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /SameSite=Lax/);
-  assert.match(cookie, /Max-Age=3600/);
+  assert.match(cookie, /Expires=Mon, 02 Mar 2026 00:00:00 GMT/);
+  assert.equal(cookie.includes("Max-Age"), false);
   assert.match(cookie, /Secure/);
 });
 
 test("buildSessionCookie omits Secure when disabled for local development", () => {
-  const cookie = buildSessionCookie("threefc_session", "session-1", 3600, false);
+  const cookie = buildSessionCookie(
+    "threefc_session",
+    "session-1",
+    "2026-03-02T00:00:00.000Z",
+    false,
+  );
   assert.equal(cookie.includes("Secure"), false);
+});
+
+test("buildSessionCookie rejects invalid absolute expiries", () => {
+  assert.throws(
+    () => buildSessionCookie("threefc_session", "session-1", "invalid", true),
+    /valid date/,
+  );
 });
 
 test("isAuthenticatedApiRoute marks protected routes only", () => {

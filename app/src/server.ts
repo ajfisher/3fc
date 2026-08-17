@@ -24,6 +24,11 @@ const UI_STYLESHEET_PATHS = [
   resolve(process.cwd(), "src/ui/styles.css"),
   resolve(process.cwd(), "app/src/ui/styles.css"),
 ];
+const UI_ICON_STYLESHEET_PATHS = [
+  fileURLToPath(new URL("./ui/icons.css", import.meta.url)),
+  resolve(process.cwd(), "dist/ui/icons.css"),
+  resolve(process.cwd(), "app/dist/ui/icons.css"),
+];
 const UI_MODAL_SCRIPT_PATHS = [
   fileURLToPath(new URL("./ui/modal.js", import.meta.url)),
   resolve(process.cwd(), "src/ui/modal.js"),
@@ -40,6 +45,7 @@ const UI_AUTH_FLOW_SCRIPT_PATHS = [
   resolve(process.cwd(), "app/src/ui/auth-flow.js"),
 ];
 const UI_STYLESHEET = loadUiStylesheet();
+const UI_ICON_STYLESHEET = loadUiIconStylesheet();
 const UI_MODAL_SCRIPT = loadUiModalScript();
 const UI_SETUP_FLOW_SCRIPT = loadUiSetupFlowScript();
 const UI_AUTH_FLOW_SCRIPT = loadUiAuthFlowScript();
@@ -54,6 +60,18 @@ function loadUiStylesheet(): string {
   }
 
   return "/* ui stylesheet unavailable */";
+}
+
+function loadUiIconStylesheet(): string {
+  for (const stylesheetPath of UI_ICON_STYLESHEET_PATHS) {
+    try {
+      return readFileSync(stylesheetPath, "utf8");
+    } catch {
+      // Continue until a readable generated icon stylesheet is found.
+    }
+  }
+
+  throw new Error("Generated Iconify stylesheet unavailable. Run the app build first.");
 }
 
 function loadUiModalScript(): string {
@@ -177,6 +195,11 @@ export function createAppRequestHandler(apiBaseUrl: string) {
 
     if (method === "GET" && route === "/ui/styles.css") {
       sendCss(response, securityHeaders, 200, UI_STYLESHEET);
+      return;
+    }
+
+    if (method === "GET" && route === "/ui/icons.css") {
+      sendCss(response, securityHeaders, 200, UI_ICON_STYLESHEET);
       return;
     }
 

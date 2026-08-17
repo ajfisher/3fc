@@ -96,7 +96,31 @@ test("stylesheet route serves external UI css", () => {
   assert.equal(response.headers["Content-Type"], "text/css; charset=utf-8");
   assert.match(response.body, /\[data-ui="button"]/);
   assert.match(response.body, /\[data-ui="nav"]/);
+  assert.match(response.body, /\[data-testid="dashboard-leagues-table"\]/);
+  assert.match(response.body, /\[data-testid="league-seasons-table"\]/);
+  assert.match(response.body, /\[data-testid="season-upcoming-games-table"\]/);
+  assert.match(response.body, /\[data-testid="season-completed-games-table"\]/);
+  assert.match(
+    response.body,
+    /\[data-ui="assist-summary"\]\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/s,
+  );
+  assert.doesNotMatch(
+    response.body,
+    /\[data-ui="assist-summary"\]\s*\{[^}]*text-overflow:\s*ellipsis;/s,
+  );
   assert.match(response.body, /&:hover/);
+});
+
+test("generated icon stylesheet is local, allow-listed, and CSP compatible", () => {
+  const response = executeRoute("GET", "/ui/icons.css");
+
+  assert.equal(response.statusCode, 200);
+  assertSecurityHeaders(response.headers);
+  assert.equal(response.headers["Content-Type"], "text/css; charset=utf-8");
+  assert.match(response.body, /Generated from @iconify-json\/lucide/);
+  assert.match(response.body, /\[data-icon="trash-2"\]/);
+  assert.match(response.body, /data:image\/svg\+xml/);
+  assert.doesNotMatch(response.body, /url\(["']?https?:\/\//);
 });
 
 test("modal behavior script route serves external javascript", () => {

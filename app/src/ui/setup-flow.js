@@ -83,7 +83,24 @@
       return;
     }
 
-    statusElement.textContent = text;
+    let messageElement = statusElement.querySelector('[data-ui="activity-message"]');
+    if (!(messageElement instanceof HTMLElement)) {
+      const initialMessage = statusElement.textContent?.trim() ?? "";
+      statusElement.textContent = "";
+      statusElement.insertAdjacentHTML("afterbegin", renderClientIcon("loader-circle"));
+      messageElement = document.createElement("span");
+      messageElement.setAttribute("data-ui", "activity-message");
+      messageElement.classList.add("sr-only");
+      messageElement.textContent = initialMessage;
+      statusElement.append(messageElement);
+      statusElement.setAttribute("data-ui", "activity-status");
+    }
+
+    const isLoading = state === "default" && /(?:…|\.{3})$/.test(text.trim());
+    messageElement.textContent = text;
+    messageElement.classList.toggle("sr-only", state !== "error");
+    statusElement.hidden = false;
+    statusElement.setAttribute("data-activity", isLoading ? "loading" : "message");
     if (state === "default") {
       statusElement.removeAttribute("data-state");
       return;
@@ -240,10 +257,11 @@
   }
 
   function renderClientPanel(title, description, body, footer, testId) {
+    const descriptionHtml = description ? `<p>${escapeHtml(description)}</p>` : "";
     return `<article data-ui="panel" data-testid="${escapeHtml(testId)}">
       <div data-ui="panel-heading">
         <h2>${escapeHtml(title)}</h2>
-        <p>${escapeHtml(description)}</p>
+        ${descriptionHtml}
       </div>
       <div data-ui="panel-body">${body}</div>
       ${footer ? `<div data-ui="panel-footer">${footer}</div>` : ""}
@@ -257,16 +275,101 @@
     return `<button data-ui="button" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${escapeHtml(label)}</button>`;
   }
 
-  function renderClientTableShell({ tableTestId, bodyId, emptyId, emptyText, headers }) {
+  function renderClientIcon(name) {
+    return `<span data-ui="icon" data-icon="${escapeHtml(name)}" aria-hidden="true"></span>`;
+  }
+
+  function renderClientIconButton({ icon, label, variant = "secondary", attributes = {} }) {
+    const renderedAttributes = Object.entries({
+      ...attributes,
+      type: "button",
+      "aria-label": label,
+      title: label,
+    })
+      .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
+      .join(" ");
+    return `<button data-ui="icon-button" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${renderClientIcon(icon)}</button>`;
+  }
+
+  function renderClientIconLink({ href, icon, label, attributes = {} }) {
+    const renderedAttributes = Object.entries({
+      ...attributes,
+      href,
+      "aria-label": label,
+      title: label,
+    })
+      .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
+      .join(" ");
+    return `<a data-ui="icon-link" data-variant="secondary" ${renderedAttributes}>${renderClientIcon(icon)}</a>`;
+  }
+
+  function setDisclosureState(trigger, panel, open, options = {}) {
+    if (!(trigger instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) {
+      return;
+    }
+
+    const focusWasInside = panel.contains(document.activeElement);
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
+    panel.hidden = !open;
+    if (open && options.focus !== false) {
+      const focusTarget = panel.querySelector("input, select, button, [tabindex]");
+      if (focusTarget instanceof HTMLElement) {
+        focusTarget.focus();
+      }
+      return;
+    }
+    if (!open && options.restoreFocus !== false && focusWasInside) {
+      trigger.focus();
+    }
+  }
+
+  function closeOtherDisclosures(activeTrigger) {
+    for (const trigger of document.querySelectorAll('button[aria-controls][aria-expanded="true"]')) {
+      if (!(trigger instanceof HTMLButtonElement) || trigger === activeTrigger) {
+        continue;
+      }
+      const panelId = trigger.getAttribute("aria-controls");
+      const panel = panelId ? document.getElementById(panelId) : null;
+      setDisclosureState(trigger, panel, false, { restoreFocus: false });
+    }
+  }
+
+  function attachDisclosure(trigger, panel, options = {}) {
+    if (!(trigger instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) {
+      return;
+    }
+
+    trigger.addEventListener("click", () => {
+      const open = trigger.getAttribute("aria-expanded") !== "true";
+      if (open) {
+        closeOtherDisclosures(trigger);
+      }
+      setDisclosureState(trigger, panel, open);
+      if (open && typeof options.onOpen === "function") {
+        options.onOpen();
+      }
+    });
+  }
+
+  function renderClientTableShell({
+    tableTestId,
+    bodyId,
+    emptyId,
+    emptyText,
+    headers,
+    tableLabel = "",
+    emptyInitiallyHidden = false,
+  }) {
+    const tableLabelAttribute = tableLabel ? ` aria-label="${escapeHtml(tableLabel)}"` : "";
     return `<div data-ui="table-wrap" data-testid="${escapeHtml(tableTestId)}" hidden>
-      <table>
+      <table data-ui="data-table"${tableLabelAttribute}>
         <thead>
-          <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
+          <tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr>
         </thead>
         <tbody id="${escapeHtml(bodyId)}"></tbody>
       </table>
     </div>
-    <p data-ui="empty-state" id="${escapeHtml(emptyId)}">${escapeHtml(emptyText)}</p>`;
+    <p data-ui="empty-state" id="${escapeHtml(emptyId)}"${emptyInitiallyHidden ? " hidden" : ""}>${escapeHtml(emptyText)}</p>`;
   }
 
   function mountSeasonShellForNestedLeagueRoute() {
@@ -304,7 +407,7 @@
           <option value="30">30 minutes</option>
         </select>
       </div>
-      <dl data-ui="id-preview"><div><dt>Game ID</dt><dd id="game-id-display">Not generated yet</dd></div></dl>`,
+      `,
       `<div data-ui="button-row">${renderClientButton("Create game", "primary", {
         type: "button",
         "data-action": "create-game",
@@ -312,18 +415,35 @@
       })}</div>`,
       "panel-season-create-game",
     );
-    const gamesPanel = renderClientPanel(
-      "Games",
-      "Manage scheduled games for this season.",
+    const upcomingGamesPanel = renderClientPanel(
+      "Upcoming games",
+      "Scheduled and live games, ordered by kickoff.",
       renderClientTableShell({
-        tableTestId: "season-games-table",
-        bodyId: "season-games-body",
-        emptyId: "season-games-empty",
-        emptyText: "No games yet. Create your first game.",
-        headers: ["Game", "Kickoff", "Status", "Actions"],
+        tableTestId: "season-upcoming-games-table",
+        bodyId: "season-upcoming-games-body",
+        emptyId: "season-upcoming-games-empty",
+        emptyText: "No upcoming games.",
+        headers: ["Date", "Status", "Actions"],
+        tableLabel: "Upcoming games",
+        emptyInitiallyHidden: true,
       }),
       "",
-      "panel-season-games",
+      "panel-season-upcoming-games",
+    );
+    const completedGamesPanel = renderClientPanel(
+      "Completed games",
+      "Finished games, with the most recent first.",
+      renderClientTableShell({
+        tableTestId: "season-completed-games-table",
+        bodyId: "season-completed-games-body",
+        emptyId: "season-completed-games-empty",
+        emptyText: "No completed games.",
+        headers: ["Date", "Status", "Actions"],
+        tableLabel: "Completed games",
+        emptyInitiallyHidden: true,
+      }),
+      "",
+      "panel-season-completed-games",
     );
 
     document.title = "3FC Season";
@@ -331,20 +451,41 @@
     document.body.innerHTML = `<main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
-        <h1 id="season-title">${safeSeasonId || "Season"}</h1>
-        <p data-ui="hero-copy" id="season-subtitle">Loading season details...</p>
-        <div data-ui="button-row">${renderClientButton("Delete season", "danger", {
-          type: "button",
-          "data-action": "delete-season",
-          "data-testid": "delete-season",
-        })}</div>
+        <div data-ui="hero-title-row">
+          <h1 id="season-title">${safeSeasonId || "Season"}</h1>
+          <small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading..."}</small>
+        </div>
+        <div data-ui="header-actions" role="toolbar" aria-label="Season actions">
+          ${renderClientIconButton({
+            icon: "calendar-plus",
+            label: "Create game",
+            attributes: {
+              "data-action": "toggle-create-game",
+              "data-testid": "toggle-create-game",
+              "aria-controls": "season-create-game-region",
+              "aria-expanded": "false",
+            },
+          })}
+          ${renderClientIconButton({
+            icon: "trash-2",
+            label: "Delete season",
+            variant: "danger",
+            attributes: {
+              "data-action": "delete-season",
+              "data-testid": "delete-season",
+            },
+          })}
+        </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
-        <p data-ui="status-note" id="setup-status">Loading season data...</p>
-        <p data-ui="status-note" data-state="error" id="setup-error" hidden></p>
-        <section data-ui="panel-grid" data-testid="season-grid">
-          ${createGamePanel}
-          ${gamesPanel}
+        <div data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading">${renderClientIcon("loader-circle")}<span data-ui="activity-message" class="sr-only">Loading season data…</span></div>
+        <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
+        <section data-ui="panel-stack" data-testid="season-grid">
+          ${upcomingGamesPanel}
+          ${completedGamesPanel}
+          <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
+            ${createGamePanel}
+          </section>
         </section>
       </section>
     </main>`;
@@ -744,6 +885,15 @@
     return error instanceof Error && (error.statusCode === 404 || error.statusCode === 405);
   }
 
+  function isDefinitiveRequestRejection(error) {
+    return (
+      error instanceof Error &&
+      Number.isInteger(error.statusCode) &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
+    );
+  }
+
   async function requestJsonOrThrowWithFallback(primaryPath, fallbackPath, init = {}, validateFallback = null) {
     try {
       return await requestJsonOrThrow(primaryPath, init);
@@ -792,6 +942,32 @@
   function formatLocalTimestamp(isoTimestamp) {
     const localValue = toLocalDateTimeInput(isoTimestamp);
     return localValue ? localValue.replace("T", " ") : String(isoTimestamp ?? "");
+  }
+
+  function formatLocalDateHeading(isoTimestamp) {
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return "Game";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }).format(parsed);
+  }
+
+  function formatLocalKickoffTime(isoTimestamp) {
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return "Kickoff time unavailable";
+    }
+
+    return `Kickoff at ${new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(parsed)}`;
   }
 
   function todayDate() {
@@ -954,12 +1130,7 @@
       throw new Error("redirecting_to_sign_in");
     }
 
-    const email = result.body?.session?.email;
-    if (typeof email === "string" && email.length > 0) {
-      setStatus(`Signed in as ${email}.`, "success");
-    } else {
-      setStatus("Session active.", "success");
-    }
+    setStatus("Loading page…", "default");
 
     return result.body?.session ?? null;
   }
@@ -992,11 +1163,25 @@
     updateDerivedId();
   }
 
-  async function initDashboardPage() {
+  function dashboardNameFromSession(session) {
+    const email = typeof session?.email === "string" ? session.email.trim() : "";
+    const localPart = email.split("@")[0] ?? "";
+    const token = localPart.split(/[._-]+/).find((part) => part.length > 0) ?? "";
+    if (!token) {
+      return email || "there";
+    }
+
+    return `${token.charAt(0).toUpperCase()}${token.slice(1).toLowerCase()}`;
+  }
+
+  async function initDashboardPage(session) {
     const leagueNameInput = document.getElementById("league-name");
     const leagueFriendlyUrlInput = document.getElementById("league-friendly-url");
     const leagueIdDisplay = document.getElementById("league-id-display");
     const createLeagueButton = root.querySelector('[data-action="create-league"]');
+    const toggleCreateLeagueButton = root.querySelector('[data-action="toggle-create-league"]');
+    const createLeagueRegion = document.getElementById("dashboard-create-league-region");
+    const welcomeHeading = document.getElementById("dashboard-welcome");
 
     const leaguesBody = document.getElementById("dashboard-leagues-body");
     const leaguesTableWrap = document.querySelector('[data-testid="dashboard-leagues-table"]');
@@ -1006,12 +1191,22 @@
       !(leagueNameInput instanceof HTMLInputElement) ||
       !(leagueFriendlyUrlInput instanceof HTMLInputElement) ||
       !(createLeagueButton instanceof HTMLButtonElement) ||
+      !(toggleCreateLeagueButton instanceof HTMLButtonElement) ||
+      !(createLeagueRegion instanceof HTMLElement) ||
       !(leaguesBody instanceof HTMLElement)
     ) {
       return;
     }
 
+    let createLeagueDisclosureTouched = false;
     attachSlugAutoFill(leagueNameInput, leagueFriendlyUrlInput, leagueIdDisplay, "league");
+    toggleCreateLeagueButton.addEventListener("click", () => {
+      createLeagueDisclosureTouched = true;
+    });
+    attachDisclosure(toggleCreateLeagueButton, createLeagueRegion);
+    if (welcomeHeading instanceof HTMLElement) {
+      welcomeHeading.textContent = `Welcome ${dashboardNameFromSession(session)}`;
+    }
     leagueNameInput.addEventListener("input", () => {
       setFieldMessage("league-name");
     });
@@ -1031,20 +1226,33 @@
         if (leaguesEmpty instanceof HTMLElement) {
           leaguesEmpty.hidden = false;
         }
-        setStatus("No leagues found. Create your first league.", "default");
+        if (!createLeagueDisclosureTouched) {
+          setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true, { focus: false });
+        }
+        setStatus("");
         return;
       }
 
       const rows = leagues
         .map((league) => {
-          const friendlyUrl = league.slug ?? "-";
           return `<tr>
-            <td><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td>
-            <td><code>${escapeHtml(friendlyUrl)}</code></td>
-            <td>
+            <td data-label="League"><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td>
+            <td data-label="Actions">
               <div data-ui="row-action-buttons">
-                <a href="/leagues/${encodeURIComponent(league.leagueId)}" data-ui="button-link" data-variant="secondary">View</a>
-                <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-league" data-league-id="${escapeHtml(league.leagueId)}">Delete</button>
+                ${renderClientIconLink({
+                  href: `/leagues/${encodeURIComponent(league.leagueId)}`,
+                  icon: "eye",
+                  label: `View ${league.name}`,
+                })}
+                ${renderClientIconButton({
+                  icon: "trash-2",
+                  label: `Delete ${league.name}`,
+                  variant: "danger",
+                  attributes: {
+                    "data-action": "delete-league",
+                    "data-league-id": league.leagueId,
+                  },
+                })}
               </div>
             </td>
           </tr>`;
@@ -1058,7 +1266,7 @@
       if (leaguesEmpty instanceof HTMLElement) {
         leaguesEmpty.hidden = true;
       }
-      setStatus(`Loaded ${leagues.length} league${leagues.length === 1 ? "" : "s"}.`, "success");
+      setStatus("");
     }
 
     createLeagueButton.addEventListener("click", async () => {
@@ -1104,12 +1312,9 @@
     });
 
     leaguesBody.addEventListener("click", async (event) => {
-      const target = event.target;
+      const eventTarget = event.target;
+      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-league"]') : null;
       if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      if (target.getAttribute("data-action") !== "delete-league") {
         return;
       }
 
@@ -1150,8 +1355,12 @@
     }
 
     const title = document.getElementById("league-title");
-    const subtitle = document.getElementById("league-subtitle");
+    const leagueReference = document.getElementById("league-reference");
     const deleteLeagueButton = document.querySelector('[data-testid="delete-league"]');
+    const toggleCreateSeasonButton = document.querySelector('[data-action="toggle-create-season"]');
+    const toggleOrganiserInviteButton = document.querySelector('[data-action="toggle-organiser-invite"]');
+    const createSeasonRegion = document.getElementById("league-create-season-region");
+    const organiserInviteRegion = document.getElementById("league-organiser-invite-region");
 
     const seasonNameInput = document.getElementById("season-name");
     const seasonFriendlyUrlInput = document.getElementById("season-friendly-url");
@@ -1163,9 +1372,6 @@
     const organiserShareInviteResult = document.getElementById("organiser-share-invite-result");
     const organiserShareInviteCode = document.getElementById("organiser-share-invite-code");
     const organiserShareInviteLink = document.getElementById("organiser-share-invite-link");
-    const organiserEmailInviteResult = document.getElementById("organiser-email-invite-result");
-    const organiserEmailInviteCode = document.getElementById("organiser-email-invite-code");
-    const organiserEmailInviteLink = document.getElementById("organiser-email-invite-link");
     const organiserInviteEmailStatus = document.getElementById("organiser-invite-email-status");
 
     const seasonsBody = document.getElementById("league-seasons-body");
@@ -1176,6 +1382,10 @@
       !(seasonNameInput instanceof HTMLInputElement) ||
       !(seasonFriendlyUrlInput instanceof HTMLInputElement) ||
       !(createSeasonButton instanceof HTMLButtonElement) ||
+      !(toggleCreateSeasonButton instanceof HTMLButtonElement) ||
+      !(toggleOrganiserInviteButton instanceof HTMLButtonElement) ||
+      !(createSeasonRegion instanceof HTMLElement) ||
+      !(organiserInviteRegion instanceof HTMLElement) ||
       !(organiserInviteEmailInput instanceof HTMLInputElement) ||
       !(createOrganiserInviteButton instanceof HTMLButtonElement) ||
       !(seasonsBody instanceof HTMLElement)
@@ -1194,12 +1404,30 @@
       setFieldMessage("organiser-invite-email");
     });
 
+    let shareInviteLoaded = false;
+    let shareInvitePromise = null;
+    attachDisclosure(toggleCreateSeasonButton, createSeasonRegion);
+    attachDisclosure(toggleOrganiserInviteButton, organiserInviteRegion, {
+      onOpen: () => {
+        if (!shareInviteLoaded && !shareInvitePromise) {
+          shareInvitePromise = ensureShareInvite()
+            .then((loaded) => {
+              shareInviteLoaded = loaded;
+            })
+            .finally(() => {
+              shareInvitePromise = null;
+            });
+        }
+      },
+    });
+
     function setLocalStatus(element, text, state = "default") {
       if (!(element instanceof HTMLElement)) {
         return;
       }
 
       element.textContent = text;
+      element.hidden = text.length === 0;
       if (state === "default") {
         element.removeAttribute("data-state");
         return;
@@ -1264,7 +1492,8 @@
           organiserShareInviteLink,
           payload,
         );
-        setLocalStatus(organiserShareInviteStatus, "Share invite ready.", "success");
+        setLocalStatus(organiserShareInviteStatus, "", "default");
+        return true;
       } catch {
         if (organiserShareInviteCode instanceof HTMLElement) {
           organiserShareInviteCode.textContent = "Unavailable";
@@ -1273,7 +1502,8 @@
           organiserShareInviteLink.removeAttribute("href");
           organiserShareInviteLink.textContent = "Unavailable";
         }
-        setLocalStatus(organiserShareInviteStatus, "Share invite unavailable. Reload to try again.", "error");
+        setLocalStatus(organiserShareInviteStatus, "Share invite unavailable. Close and reopen to try again.", "error");
+        return false;
       }
     }
 
@@ -1286,10 +1516,8 @@
         title.textContent = league.name;
       }
 
-      if (subtitle) {
-        subtitle.innerHTML = `League ID: <code>${escapeHtml(league.leagueId)}</code> | Friendly URL: <code>${escapeHtml(
-          league.slug ?? "-",
-        )}</code>`;
+      if (leagueReference) {
+        leagueReference.textContent = `League ID: ${league.leagueId}`;
       }
     }
 
@@ -1316,13 +1544,17 @@
           const dateRange = `${season.startsOn ?? "-"} to ${season.endsOn ?? "-"}`;
           const seasonPath = buildLeagueSeasonPath(leagueId, season.seasonId);
           return `<tr>
-            <td><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
-            <td>${escapeHtml(dateRange)}</td>
-            <td><code>${escapeHtml(season.slug ?? "-")}</code></td>
-            <td>
+            <td data-label="Season name"><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
+            <td data-label="Dates">${escapeHtml(dateRange)}</td>
+            <td data-label="Actions">
               <div data-ui="row-action-buttons">
-                <a href="${seasonPath}" data-ui="button-link" data-variant="secondary">View</a>
-                <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-season" data-season-id="${escapeHtml(season.seasonId)}">Delete</button>
+                ${renderClientIconLink({ href: seasonPath, icon: "eye", label: `View ${season.name}` })}
+                ${renderClientIconButton({
+                  icon: "trash-2",
+                  label: `Delete ${season.name}`,
+                  variant: "danger",
+                  attributes: { "data-action": "delete-season", "data-season-id": season.seasonId },
+                })}
               </div>
             </td>
           </tr>`;
@@ -1398,6 +1630,7 @@
 
       setFieldMessage("organiser-invite-email");
       createOrganiserInviteButton.disabled = true;
+      setLocalStatus(organiserInviteEmailStatus, "Sending invite…", "default");
       setStatus("Sending organiser invite…", "default");
       const idempotencyKey = idempotencyKeyForOrganiserInvite(leagueId, rawEmail);
 
@@ -1416,20 +1649,20 @@
           },
         );
 
-        renderInviteCodeLink(
-          organiserEmailInviteResult,
-          organiserEmailInviteCode,
-          organiserEmailInviteLink,
-          payload,
-        );
-        if (organiserInviteEmailStatus instanceof HTMLElement) {
-          if (payload.emailDelivery?.status === "sent") {
-            organiserInviteEmailStatus.textContent = `Sent to ${payload.emailDelivery.email}.`;
-          } else if (payload.emailDelivery?.status === "unknown") {
-            organiserInviteEmailStatus.textContent = "Delivery unconfirmed. Share the invite link manually.";
-          } else {
-            organiserInviteEmailStatus.textContent = "";
+        if (payload.emailDelivery?.status === "sent") {
+          setLocalStatus(organiserInviteEmailStatus, `Sent to ${payload.emailDelivery.email}.`, "success");
+        } else if (payload.emailDelivery?.status === "unknown") {
+          const recoveryLink = typeof payload.inviteLink === "string" ? payload.inviteLink : "";
+          setLocalStatus(organiserInviteEmailStatus, "Delivery unconfirmed.", "error");
+          if (recoveryLink) {
+            const recoveryAnchor = document.createElement("a");
+            recoveryAnchor.href = recoveryLink;
+            recoveryAnchor.textContent = "Open the email-restricted recovery link";
+            recoveryAnchor.className = "inline-recovery-link";
+            organiserInviteEmailStatus.append(" ", recoveryAnchor, ".");
           }
+        } else {
+          setLocalStatus(organiserInviteEmailStatus, "Invite created.", "success");
         }
 
         organiserInviteEmailInput.value = "";
@@ -1442,6 +1675,7 @@
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create organiser invite.";
+        setLocalStatus(organiserInviteEmailStatus, `Invite failed: ${message}`, "error");
         showError(message);
         setStatus("Organiser invite failed.", "error");
       } finally {
@@ -1450,12 +1684,9 @@
     });
 
     seasonsBody.addEventListener("click", async (event) => {
-      const target = event.target;
+      const eventTarget = event.target;
+      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-season"]') : null;
       if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      if (target.getAttribute("data-action") !== "delete-season") {
         return;
       }
 
@@ -1513,8 +1744,8 @@
     }
 
     await loadLeague();
-    await Promise.all([renderSeasons(), ensureShareInvite()]);
-    setStatus("League page ready.", "success");
+    await renderSeasons();
+    setStatus("");
   }
 
   async function initSeasonPage() {
@@ -1525,41 +1756,49 @@
     const routeLeagueId = resolveRouteEntityId("data-league-id", "leagues");
 
     const seasonTitle = document.getElementById("season-title");
-    const seasonSubtitle = document.getElementById("season-subtitle");
+    const seasonReference = document.getElementById("season-reference");
     const seasonLeagueLink = document.getElementById("season-league-link");
 
     const gameDateInput = document.getElementById("game-date");
     const gameKickoffInput = document.getElementById("game-kickoff");
     const gameThirdLengthInput = document.getElementById("game-third-length");
-    const gameIdDisplay = document.getElementById("game-id-display");
     const createGameButton = root.querySelector('[data-action="create-game"]');
+    const toggleCreateGameButton = document.querySelector('[data-action="toggle-create-game"]');
+    const createGameRegion = document.getElementById("season-create-game-region");
 
     const deleteSeasonButton = document.querySelector('[data-testid="delete-season"]');
 
-    const gamesBody = document.getElementById("season-games-body");
-    const gamesTableWrap = document.querySelector('[data-testid="season-games-table"]');
-    const gamesEmpty = document.getElementById("season-games-empty");
+    const upcomingGamesBody = document.getElementById("season-upcoming-games-body");
+    const upcomingGamesTableWrap = document.querySelector('[data-testid="season-upcoming-games-table"]');
+    const upcomingGamesEmpty = document.getElementById("season-upcoming-games-empty");
+    const completedGamesBody = document.getElementById("season-completed-games-body");
+    const completedGamesTableWrap = document.querySelector('[data-testid="season-completed-games-table"]');
+    const completedGamesEmpty = document.getElementById("season-completed-games-empty");
 
     if (
       !(gameDateInput instanceof HTMLInputElement) ||
       !(gameKickoffInput instanceof HTMLInputElement) ||
       !(gameThirdLengthInput instanceof HTMLSelectElement) ||
       !(createGameButton instanceof HTMLButtonElement) ||
-      !(gamesBody instanceof HTMLElement)
+      !(toggleCreateGameButton instanceof HTMLButtonElement) ||
+      !(createGameRegion instanceof HTMLElement) ||
+      !(upcomingGamesBody instanceof HTMLElement) ||
+      !(completedGamesBody instanceof HTMLElement)
     ) {
       return;
     }
 
     let leagueId = routeLeagueId ?? "";
     let gameIdNonce = randomSuffix(4);
+    let derivedGameId = "";
+
+    attachDisclosure(toggleCreateGameButton, createGameRegion);
 
     function updateDerivedGameId() {
       const sessionId = gameDateInput.value.trim() ? gameDateInput.value.trim().replaceAll("-", "") : `session-${randomSuffix(6)}`;
       const kickoff = gameKickoffInput.value.trim();
       const kickoffPart = kickoff.includes("T") ? kickoff.split("T")[1].replace(":", "") : "0000";
-      if (gameIdDisplay) {
-        gameIdDisplay.textContent = `game-${sessionId}-${kickoffPart}-${gameIdNonce}`;
-      }
+      derivedGameId = `game-${sessionId}-${kickoffPart}-${gameIdNonce}`;
     }
 
     gameDateInput.addEventListener("change", () => {
@@ -1604,10 +1843,8 @@
         seasonTitle.textContent = season.name;
       }
 
-      if (seasonSubtitle) {
-        seasonSubtitle.innerHTML = `Season ID: <code>${escapeHtml(season.seasonId)}</code> | Friendly URL: <code>${escapeHtml(
-          season.slug ?? "-",
-        )}</code>`;
+      if (seasonReference) {
+        seasonReference.textContent = `Season ID: ${season.seasonId}`;
       }
 
       if (seasonLeagueLink instanceof HTMLAnchorElement) {
@@ -1629,37 +1866,66 @@
       const games = (Array.isArray(payload?.games) ? payload.games : []).filter(
         (game) => !leagueId || (game.leagueId === leagueId && game.seasonId === seasonId),
       );
-      if (games.length === 0) {
-        gamesBody.innerHTML = "";
-        if (gamesTableWrap instanceof HTMLElement) {
-          gamesTableWrap.hidden = true;
-        }
-        if (gamesEmpty instanceof HTMLElement) {
-          gamesEmpty.hidden = false;
-        }
-        return;
-      }
+      const kickoffTime = (game) => {
+        const parsed = Date.parse(game.gameStartTs);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const compareByKickoff = (direction) => (left, right) => {
+        const timestampDifference = (kickoffTime(left) - kickoffTime(right)) * direction;
+        return timestampDifference || String(left.gameId).localeCompare(String(right.gameId));
+      };
+      const upcomingGames = games
+        .filter((game) => game.status !== "finished")
+        .sort(compareByKickoff(1));
+      const completedGames = games
+        .filter((game) => game.status === "finished")
+        .sort(compareByKickoff(-1));
 
-      gamesBody.innerHTML = games
-        .map((game) => `<tr>
-          <td><a href="/games/${encodeURIComponent(game.gameId)}">${escapeHtml(game.gameId)}</a></td>
-          <td>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</td>
-          <td>${escapeHtml(game.status)}</td>
-          <td>
+      const renderRows = (gamesForPanel) => gamesForPanel
+        .map((game) => {
+          const status = ["scheduled", "live", "finished"].includes(game.status) ? game.status : "scheduled";
+          const statusIcon = status === "live" ? "activity" : status === "finished" ? "circle-check" : "calendar-clock";
+          const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+          const gamePath = `/games/${encodeURIComponent(game.gameId)}`;
+          const kickoffLabel = formatLocalTimestamp(game.gameStartTs);
+          const deleteAction = status === "finished"
+            ? renderClientIconButton({
+              icon: "trash-2",
+              label: `Delete game unavailable: game at ${kickoffLabel} is finished`,
+              variant: "danger",
+              attributes: { disabled: "" },
+            })
+            : renderClientIconButton({
+              icon: "trash-2",
+              label: `Delete game at ${kickoffLabel}`,
+              variant: "danger",
+              attributes: { "data-action": "delete-game", "data-game-id": game.gameId },
+            });
+          return `<tr>
+          <td data-label="Date"><a href="${gamePath}">${escapeHtml(kickoffLabel)}</a></td>
+          <td data-label="Status"><span data-ui="status-chip" data-status="${escapeHtml(status)}">${renderClientIcon(statusIcon)}<span>${escapeHtml(statusLabel)}</span></span></td>
+          <td data-label="Actions">
             <div data-ui="row-action-buttons">
-              <a href="/games/${encodeURIComponent(game.gameId)}" data-ui="button-link" data-variant="secondary">View</a>
-              <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-game" data-game-id="${escapeHtml(game.gameId)}">Delete</button>
+              ${renderClientIconLink({ href: gamePath, icon: "eye", label: `View game at ${kickoffLabel}` })}
+              ${deleteAction}
             </div>
           </td>
-        </tr>`)
+        </tr>`;
+        })
         .join("");
 
-      if (gamesTableWrap instanceof HTMLElement) {
-        gamesTableWrap.hidden = false;
-      }
-      if (gamesEmpty instanceof HTMLElement) {
-        gamesEmpty.hidden = true;
-      }
+      const renderPanelGames = (panelGames, body, tableWrap, emptyState) => {
+        body.innerHTML = renderRows(panelGames);
+        if (tableWrap instanceof HTMLElement) {
+          tableWrap.hidden = panelGames.length === 0;
+        }
+        if (emptyState instanceof HTMLElement) {
+          emptyState.hidden = panelGames.length > 0;
+        }
+      };
+
+      renderPanelGames(upcomingGames, upcomingGamesBody, upcomingGamesTableWrap, upcomingGamesEmpty);
+      renderPanelGames(completedGames, completedGamesBody, completedGamesTableWrap, completedGamesEmpty);
     }
 
     createGameButton.addEventListener("click", async () => {
@@ -1683,7 +1949,7 @@
       setFieldMessage("game-kickoff");
 
       const sessionId = gameDate.replaceAll("-", "");
-      const gameId = (gameIdDisplay?.textContent ?? "").trim() || `game-${sessionId}-${randomSuffix(6)}`;
+      const gameId = derivedGameId || `game-${sessionId}-${randomSuffix(6)}`;
 
       createGameButton.disabled = true;
       setStatus("Creating game…", "default");
@@ -1731,13 +1997,10 @@
       }
     });
 
-    gamesBody.addEventListener("click", async (event) => {
-      const target = event.target;
+    const handleGameListClick = async (event) => {
+      const eventTarget = event.target;
+      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-game"]') : null;
       if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      if (target.getAttribute("data-action") !== "delete-game") {
         return;
       }
 
@@ -1767,7 +2030,9 @@
       } finally {
         target.removeAttribute("disabled");
       }
-    });
+    };
+    upcomingGamesBody.addEventListener("click", handleGameListClick);
+    completedGamesBody.addEventListener("click", handleGameListClick);
 
     if (deleteSeasonButton instanceof HTMLButtonElement) {
       deleteSeasonButton.addEventListener("click", async () => {
@@ -1799,7 +2064,10 @@
 
     await loadSeason();
     await renderGames();
-    setStatus("Season page ready.", "success");
+    if (window.location.hash === "#create-game") {
+      setDisclosureState(toggleCreateGameButton, createGameRegion, true);
+    }
+    setStatus("");
   }
 
   async function initGamePage() {
@@ -1824,7 +2092,8 @@
     const statusInput = document.getElementById("game-edit-status");
     const thirdLengthInput = document.getElementById("game-edit-third-length");
     const saveButton = root.querySelector('[data-action="save-game"]');
-    const deleteButton = root.querySelector('[data-action="delete-game"]');
+    const deleteButton = document.querySelector('[data-action="delete-game"]');
+    const deleteLockReason = document.getElementById("game-delete-lock-reason");
     const createAnotherLink = document.getElementById("create-another-game-link");
     const timerThirdLabel = document.getElementById("timer-third-label");
     const timerDisplayValue = document.getElementById("timer-display-value");
@@ -1838,9 +2107,7 @@
     const finishThirdButton = root.querySelector('[data-action="finish-active-third"]');
     const finishGameButton = root.querySelector('[data-action="finish-game"]');
     const gameResultSummaryElement = document.getElementById("game-result-summary");
-    const finalGameIdValue = document.getElementById("final-game-id-value");
     const finalGameStatus = document.getElementById("final-game-status");
-    const finalGameReadiness = document.getElementById("final-game-readiness");
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerSearchInput = document.getElementById("player-search");
@@ -1851,6 +2118,8 @@
     const goalConcedingTeamInput = document.getElementById("goal-conceding-team");
     const goalOwnGoalInput = document.getElementById("goal-own-goal");
     const goalScorerInput = document.getElementById("goal-scorer");
+    const goalAssistsDropdown = document.getElementById("goal-assists-dropdown");
+    const goalAssistsSummaryElement = document.getElementById("goal-assists-summary");
     const goalAssistsElement = document.getElementById("goal-assists");
     const goalFormNote = document.getElementById("goal-form-note");
     const saveGoalButton = root.querySelector('[data-action="save-goal"]');
@@ -1880,25 +2149,22 @@
     let rosterPlayers = [];
     let rosterAssignments = [];
     let rosterSearchTimer = 0;
+    let openTransferPlayerId = null;
     let scoreboardTeams = [];
+    let scoreboardState = "loading";
     let goalTimeline = [];
     let goalTimelineLoaded = false;
+    let finishedResultState = "authoritative";
     let editingGoalId = null;
+    let goalMutationInFlight = false;
     let currentLeagueRole = null;
     let manualGameModeSelected = false;
     let pendingCreateGoalIdempotency = null;
     const pendingGoalMutationIdempotency = new Map();
     const gameModes = ["structure", "players", "run", "final"];
-    const gameModeLabels = {
-      structure: "Game setup",
-      players: "Players",
-      run: "Run game",
-      final: "Finalisation",
-    };
     const gameModeTabs = [...root.querySelectorAll('[data-ui="game-mode-tab"][data-game-mode]')];
     const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
     const gameModePanels = [...root.querySelectorAll('[data-ui="game-mode-panel"][data-game-mode]')];
-    const gameModeStatus = document.getElementById("game-mode-status");
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -1982,10 +2248,6 @@
         if (trigger instanceof HTMLElement) {
           trigger.setAttribute("data-current", trigger.getAttribute("data-game-mode") === mode ? "true" : "false");
         }
-      }
-
-      if (gameModeStatus instanceof HTMLElement) {
-        gameModeStatus.textContent = gameModeLabels[mode] ?? "Game setup";
       }
 
       if (options.focusPanel === true) {
@@ -2105,14 +2367,6 @@
       const hasStarted = timer ? timer.thirds.some((third) => third.startedAt !== null) : false;
       const complete = timer?.status === "complete";
       const finished = isGameFinished();
-      const finalReadiness = finished
-        ? "Summary posted"
-        : complete
-          ? "Ready to finish"
-          : hasStarted
-            ? humanTimerStatus(timer.status)
-            : "Not started";
-
       setModeMeta("structure", humanGameStatus(currentGame?.status));
       setModeMeta("players", `${rosteredCount} assigned`);
       setModeMeta("run", timer ? humanTimerStatus(timer.status) : "Timer");
@@ -2124,14 +2378,8 @@
         gameStateTab.setAttribute("data-game-state", gameState.state);
       }
 
-      if (finalGameIdValue instanceof HTMLElement && currentGame?.gameId) {
-        finalGameIdValue.textContent = currentGame.gameId;
-      }
       if (finalGameStatus instanceof HTMLElement) {
         finalGameStatus.textContent = humanGameStatus(currentGame?.status);
-      }
-      if (finalGameReadiness instanceof HTMLElement) {
-        finalGameReadiness.textContent = finalReadiness;
       }
     }
 
@@ -2223,7 +2471,24 @@
       kickoffInput.disabled = gameFinished;
       statusInput.disabled = gameFinished;
       saveButton.disabled = gameFinished;
-      deleteButton.disabled = gameFinished;
+      deleteButton.disabled = false;
+      if (gameFinished) {
+        deleteButton.setAttribute("aria-disabled", "true");
+        deleteButton.setAttribute("aria-describedby", "game-delete-lock-reason");
+        deleteButton.setAttribute("aria-label", "Delete game unavailable: game is finished");
+        deleteButton.title = "Finished games cannot be deleted";
+        if (deleteLockReason instanceof HTMLElement) {
+          deleteLockReason.hidden = false;
+        }
+      } else {
+        deleteButton.removeAttribute("aria-disabled");
+        deleteButton.removeAttribute("aria-describedby");
+        deleteButton.setAttribute("aria-label", "Delete game");
+        deleteButton.title = "Delete game";
+        if (deleteLockReason instanceof HTMLElement) {
+          deleteLockReason.hidden = true;
+        }
+      }
       syncStatusOptions(hasStarted);
 
       if (timerThirdLabel) {
@@ -2313,6 +2578,8 @@
         goalConcedingTeamInput instanceof HTMLSelectElement &&
         goalOwnGoalInput instanceof HTMLInputElement &&
         goalScorerInput instanceof HTMLSelectElement &&
+        goalAssistsDropdown instanceof HTMLDetailsElement &&
+        goalAssistsSummaryElement instanceof HTMLElement &&
         goalAssistsElement instanceof HTMLElement &&
         goalFormNote instanceof HTMLElement &&
         saveGoalButton instanceof HTMLButtonElement &&
@@ -2327,20 +2594,41 @@
     }
 
     function playerById(playerId) {
-      const rosterPlayer = rosterAssignments.find((assignment) => assignment.playerId === playerId)?.player;
-      if (rosterPlayer) {
-        return rosterPlayer;
+      const enrichedPlayer = rosterPlayers.find((player) => player.playerId === playerId);
+      if (enrichedPlayer) {
+        return enrichedPlayer;
       }
 
-      return rosterPlayers.find((player) => player.playerId === playerId) ?? null;
+      const assignedPlayer = rosterAssignments.find((assignment) => assignment.playerId === playerId)?.player;
+      if (assignedPlayer) {
+        return assignedPlayer;
+      }
+
+      return null;
     }
 
     function playerNickname(playerId) {
-      return playerById(playerId)?.nickname ?? playerId;
+      if (typeof playerId !== "string" || playerId.length === 0) {
+        return typeof playerId === "number" && Number.isFinite(playerId)
+          ? `Unknown player (invalid ID: ${playerId})`
+          : "Unknown player (invalid ID)";
+      }
+
+      const nickname = playerById(playerId)?.nickname;
+      if (typeof nickname === "string" && nickname.length > 0) {
+        return nickname;
+      }
+
+      return String(playerId ?? "Unknown player");
     }
 
     function teamName(teamId) {
-      return teamById(teamId)?.name ?? teamId;
+      const name = teamById(teamId)?.name;
+      if (typeof name === "string" && name.length > 0) {
+        return name;
+      }
+
+      return String(teamId ?? "Unknown team");
     }
 
     function assignmentByPlayerId(playerId) {
@@ -2383,7 +2671,10 @@
       return teams.map((team) => ({
         gameId: team.gameId ?? gameId,
         teamId: team.teamId,
-        name: team.name ?? team.teamId,
+        name:
+          typeof team.name === "string" && team.name.length > 0
+            ? team.name
+            : String(team.teamId ?? "Unknown team"),
         color: typeof team.color === "string" ? team.color : null,
         scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
         conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
@@ -2431,12 +2722,130 @@
       });
     }
 
-    function teamSwatchStyle(team) {
-      const color = typeof team.color === "string" && team.color.length > 0 ? team.color : "#d9f0e8";
-      if (!/^#[0-9a-fA-F]{3,8}$/.test(color)) {
-        return "";
+    function fallbackTeamColor(teamId) {
+      const knownColors = new Map([
+        ["red", "#d64545"],
+        ["blue", "#2f6fcb"],
+        ["yellow", "#d4a800"],
+      ]);
+      const knownColor = knownColors.get(teamId);
+      if (knownColor) {
+        return knownColor;
       }
 
+      const palette = ["#477a70", "#8a5b9b", "#b5663d", "#387c94", "#7a7139"];
+      const hash = [...String(teamId || "unknown")]
+        .reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 0);
+      return palette[hash % palette.length];
+    }
+
+    function resolvedTeamColors(extraTeam = null, fallbackTeamId = "") {
+      const availableTeams = rosterTeams.length > 0 ? rosterTeams : scoreboardTeams;
+      const teamsById = new Map();
+      for (const team of availableTeams) {
+        if (team && typeof team.teamId === "string" && team.teamId.length > 0) {
+          teamsById.set(team.teamId, team);
+        }
+      }
+      for (const goal of goalTimeline) {
+        for (const id of [goal?.scoringTeamId, goal?.concedingTeamId]) {
+          const normalizedId = id === null || id === undefined ? "" : String(id);
+          if (normalizedId.length > 0 && !teamsById.has(normalizedId)) {
+            teamsById.set(normalizedId, { teamId: normalizedId, color: null });
+          }
+        }
+      }
+      const extraTeamId = typeof extraTeam?.teamId === "string" && extraTeam.teamId.length > 0
+        ? extraTeam.teamId
+        : String(fallbackTeamId || "");
+      if (extraTeamId.length > 0 && !teamsById.has(extraTeamId)) {
+        teamsById.set(extraTeamId, extraTeam ?? teamById(extraTeamId) ?? { teamId: extraTeamId, color: null });
+      }
+
+      const opaqueColor = (value) => {
+        if (typeof value !== "string") {
+          return null;
+        }
+        const match = value.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
+        if (!match) {
+          return null;
+        }
+        const hex = match[1].toLowerCase();
+        if (hex.length === 4) {
+          return hex[3] === "f"
+            ? `#${[...hex.slice(0, 3)].map((character) => `${character}${character}`).join("")}`
+            : null;
+        }
+        if (hex.length === 8) {
+          return hex.endsWith("ff") ? `#${hex.slice(0, 6)}` : null;
+        }
+        return hex.length === 3
+          ? `#${[...hex].map((character) => `${character}${character}`).join("")}`
+          : `#${hex}`;
+      };
+      const colorCounts = new Map();
+      for (const team of teamsById.values()) {
+        const color = opaqueColor(team.color);
+        if (color) {
+          colorCounts.set(color, (colorCounts.get(color) ?? 0) + 1);
+        }
+      }
+
+      const colors = new Map();
+      const usedColors = new Set();
+      for (const [id, team] of teamsById) {
+        const color = opaqueColor(team.color);
+        if (color && colorCounts.get(color) === 1) {
+          colors.set(id, color);
+          usedColors.add(color);
+        }
+      }
+
+      const fallbackPalette = [
+        "#d64545",
+        "#2f6fcb",
+        "#d4a800",
+        "#477a70",
+        "#8a5b9b",
+        "#b5663d",
+        "#387c94",
+        "#7a7139",
+      ];
+      for (const id of teamsById.keys()) {
+        if (colors.has(id)) {
+          continue;
+        }
+        const preferredColor = fallbackTeamColor(id);
+        let color = [preferredColor, ...fallbackPalette].find((candidate) => !usedColors.has(candidate));
+        if (!color) {
+          const base = [...String(id || "unknown")]
+            .reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 0);
+          let attempt = 0;
+          do {
+            color = `#${((base + (attempt * 2654435761)) & 0xffffff).toString(16).padStart(6, "0")}`;
+            attempt += 1;
+          } while (usedColors.has(color));
+        }
+        colors.set(id, color);
+        usedColors.add(color);
+      }
+
+      return colors;
+    }
+
+    function teamSwatchStyle(team, fallbackTeamId = "") {
+      const teamId = typeof team?.teamId === "string" && team.teamId.length > 0
+        ? team.teamId
+        : String(fallbackTeamId || "unknown");
+      const color = resolvedTeamColors(team, teamId).get(teamId) ?? fallbackTeamColor(teamId);
+      return ` style="--team-color: ${escapeHtml(color)}"`;
+    }
+
+    function goalTeamDotStyle(teamId) {
+      const normalizedTeamId = String(teamId ?? "Unknown team");
+      const team = teamById(normalizedTeamId) ?? { teamId: normalizedTeamId, color: null };
+      const color = resolvedTeamColors(team, normalizedTeamId).get(normalizedTeamId)
+        ?? fallbackTeamColor(normalizedTeamId);
       return ` style="--team-color: ${escapeHtml(color)}"`;
     }
 
@@ -2464,6 +2873,31 @@
         return;
       }
 
+      if (isGameFinished() && finishedResultState !== "authoritative") {
+        const resultPending = finishedResultState === "refreshing";
+        const resultUncertain = finishedResultState === "uncertain";
+        const heading = resultPending
+          ? "Refreshing result"
+          : resultUncertain
+            ? "Result may have changed"
+            : "Result refresh required";
+        const message = resultPending
+          ? "Checking the latest match result…"
+          : resultUncertain
+            ? "The correction outcome could not be confirmed. Retry the same action."
+            : "The goal change was saved, but the updated match result could not be loaded.";
+        gameResultSummaryElement.hidden = false;
+        gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-state="unavailable">
+          <header>
+            <span>Final result</span>
+            <strong>${heading}</strong>
+          </header>
+          <p data-ui="empty-note">${message}</p>
+        </section>`;
+        syncGameModeState();
+        return;
+      }
+
       const result = currentGame?.result;
       const teams = resultTeams();
       if (!isGameFinished() || !result || teams.length === 0) {
@@ -2476,15 +2910,12 @@
       const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
       const outcomeText = winner ? `${winner.name} win` : "Draw";
       const resultOutcome = result.outcome === "win" ? "win" : "draw";
-      const computedAt = typeof result.computedAt === "string" ? formatLocalTimestamp(result.computedAt) : "";
-
       const goalLogsLoaded = goalTimelineLoaded;
       gameResultSummaryElement.hidden = false;
       gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
         <header>
           <span>Final result</span>
           <strong data-testid="game-result-outcome">${escapeHtml(outcomeText)}</strong>
-          ${computedAt ? `<small>Computed ${escapeHtml(computedAt)}</small>` : ""}
         </header>
         <div data-ui="result-team-list" data-testid="game-result-teams">
           ${teams
@@ -2519,13 +2950,25 @@
       syncGameModeState();
     }
 
-    function renderSelectOptions(selectElement, options, selectedValue, emptyLabel = "Select", missingSelectedLabel = null) {
+    function renderSelectOptions(
+      selectElement,
+      options,
+      selectedValue,
+      emptyLabel = "Select",
+      missingSelectedLabel = null,
+      includePlaceholder = false,
+    ) {
       const selectedExists = options.some((option) => option.value === selectedValue);
       const preservesMissingSelection =
         !selectedExists && Boolean(selectedValue) && typeof missingSelectedLabel === "string";
       const safeSelected = selectedExists || preservesMissingSelection
         ? selectedValue
-        : (options[0]?.value ?? "");
+        : includePlaceholder
+          ? ""
+          : (options[0]?.value ?? "");
+      const placeholderOption = includePlaceholder
+        ? `<option value=""${safeSelected === "" ? " selected" : ""}>${escapeHtml(emptyLabel)}</option>`
+        : "";
       const preservedOption = preservesMissingSelection
         ? `<option value="${escapeHtml(selectedValue)}" selected>${escapeHtml(missingSelectedLabel)}</option>`
         : "";
@@ -2540,7 +2983,7 @@
 
       selectElement.innerHTML =
         options.length > 0 || preservesMissingSelection
-          ? `${preservedOption}${renderedOptions}`
+          ? `${placeholderOption}${preservedOption}${renderedOptions}`
           : `<option value="">${escapeHtml(emptyLabel)}</option>`;
       selectElement.value = safeSelected;
       selectElement.disabled = options.length === 0 && !preservesMissingSelection;
@@ -2548,6 +2991,18 @@
 
     function renderLiveScoreboard() {
       if (!(liveScoreboardElement instanceof HTMLElement)) {
+        return;
+      }
+
+      if (scoreboardState !== "authoritative") {
+        const message = scoreboardState === "unavailable"
+          ? "Scores unavailable. Reload to try again."
+          : scoreboardState === "uncertain"
+            ? "Scores may have changed. Retry the same action."
+          : scoreboardState === "refreshing"
+            ? "Refreshing scores…"
+            : "Loading scores…";
+        liveScoreboardElement.innerHTML = `<p data-ui="empty-note" data-testid="live-scoreboard-${escapeHtml(scoreboardState)}">${message}</p>`;
         return;
       }
 
@@ -2565,8 +3020,8 @@
               <strong>${escapeHtml(team.name)}</strong>
             </header>
             <dl>
-              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
               <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
             </dl>
           </article>`,
         )
@@ -2585,7 +3040,7 @@
     }
 
     function renderGoalAssistChoices(scorerPlayerId, seedAssistPlayerIds = null) {
-      if (!(goalAssistsElement instanceof HTMLElement)) {
+      if (!(goalAssistsElement instanceof HTMLElement) || !(goalAssistsSummaryElement instanceof HTMLElement)) {
         return;
       }
 
@@ -2595,7 +3050,21 @@
 
       if (rostered.length === 0) {
         goalAssistsElement.innerHTML = `<p data-ui="empty-note">No assist options yet.</p>`;
+        goalAssistsSummaryElement.textContent = "No options";
+        goalAssistsSummaryElement.removeAttribute("title");
         return;
+      }
+
+      const selectedNames = rostered
+        .filter((player) => selected.has(player.playerId))
+        .map((player) => player.nickname);
+      goalAssistsSummaryElement.textContent = selectedNames.length === 0
+        ? "Choose assists"
+        : selectedNames.join(", ");
+      if (selectedNames.length > 0) {
+        goalAssistsSummaryElement.title = selectedNames.join(", ");
+      } else {
+        goalAssistsSummaryElement.removeAttribute("title");
       }
 
       goalAssistsElement.innerHTML = rostered
@@ -2631,14 +3100,24 @@
         goalScoringTeamInput.value = "";
         goalScoringTeamInput.disabled = true;
       } else {
-        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "No teams");
+        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "Choose Team", null, true);
       }
 
       const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
       const concedingOptions = ownGoal
         ? teamOptions
         : teamOptions.filter((team) => team.value !== scoringTeamId);
-      renderSelectOptions(goalConcedingTeamInput, concedingOptions, previousConcedingTeamId, "No conceding teams");
+      renderSelectOptions(
+        goalConcedingTeamInput,
+        concedingOptions,
+        previousConcedingTeamId,
+        "Choose Team",
+        null,
+        true,
+      );
+      if (!ownGoal && !scoringTeamId) {
+        goalConcedingTeamInput.disabled = true;
+      }
 
       const concedingTeamId = goalConcedingTeamInput.value;
       const scorerPool = ownGoal
@@ -2667,7 +3146,11 @@
         selectedScorerId,
         "Assign players first",
         selectedScorerLabel,
+        true,
       );
+      if (!concedingTeamId || (!ownGoal && !scoringTeamId)) {
+        goalScorerInput.disabled = true;
+      }
       renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
 
       const activeThird = activeThirdNumber();
@@ -2678,8 +3161,27 @@
       cancelGoalEditButton.hidden = editingGoalId === null;
       cancelGoalEditButton.disabled = editingGoalId === null;
       undoLastGoalButton.disabled =
-        !goalTimelineLoaded || goalTimeline.length === 0 || (gameFinished && !finishedCorrectionsAllowed);
+        goalMutationInFlight ||
+        !goalTimelineLoaded ||
+        goalTimeline.length === 0 ||
+        (gameFinished && !finishedCorrectionsAllowed);
       undoLastGoalButton.textContent = "Undo last";
+
+      if (goalMutationInFlight) {
+        goalScoringTeamInput.disabled = true;
+        goalConcedingTeamInput.disabled = true;
+        goalOwnGoalInput.disabled = true;
+        goalScorerInput.disabled = true;
+        saveGoalButton.disabled = true;
+        cancelGoalEditButton.disabled = true;
+        for (const input of goalAssistsElement.querySelectorAll("input")) {
+          if (input instanceof HTMLInputElement) {
+            input.disabled = true;
+          }
+        }
+        goalFormNote.textContent = "Saving goal change…";
+        return;
+      }
 
       if (!goalTimelineLoaded) {
         goalScoringTeamInput.disabled = true;
@@ -2726,6 +3228,18 @@
         return;
       }
 
+      if (!goalOwnGoalInput.checked && !goalScoringTeamInput.value) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Choose a scoring team before adding a goal.";
+        return;
+      }
+
+      if (!goalConcedingTeamInput.value) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = "Choose a conceding team before adding a goal.";
+        return;
+      }
+
       if (!goalScorerInput.value) {
         saveGoalButton.disabled = true;
         goalFormNote.textContent = "Choose a scorer before adding a goal.";
@@ -2743,7 +3257,7 @@
       if (!activeThird) {
         saveGoalButton.disabled = !creatingFinishedCorrection;
         goalFormNote.textContent = creatingFinishedCorrection
-          ? "Finished-game correction will be recorded at final whistle."
+          ? "Choose the goal details to correct the finished result."
           : "Start a third before adding goals.";
         return;
       }
@@ -2752,13 +3266,24 @@
       goalFormNote.textContent = `Goal will be added to third ${activeThird}.`;
     }
 
-    function timelineGoalLabel(goal) {
-      const scorer = playerNickname(goal.scorerPlayerId);
-      if (goal.ownGoal) {
-        return `${scorer} own goal against ${teamName(goal.concedingTeamId)}`;
+    function renderThirdIndicator(third) {
+      const safeThird = Number.isInteger(third) && third >= 1 && third <= 3 ? third : null;
+      if (!safeThird) {
+        return "";
       }
 
-      return `${scorer} for ${teamName(goal.scoringTeamId)}`;
+      return `<span data-ui="third-indicator" data-third="${safeThird}" role="img" aria-label="Third ${safeThird} of 3"></span>`;
+    }
+
+    function renderGoalTeamChip(teamId, relationship = "") {
+      const team = teamById(teamId);
+      const name = typeof team?.name === "string" && team.name.length > 0
+        ? team.name
+        : String(teamId ?? "Unknown team");
+      const accessibleName = relationship ? `${relationship}: ${name}` : name;
+      return `<span data-ui="goal-team-chip" data-display="dot" role="img" data-team-id="${escapeHtml(String(teamId ?? ""))}"${
+        goalTeamDotStyle(String(teamId ?? "Unknown team"))
+      } aria-label="${escapeHtml(accessibleName)}" title="${escapeHtml(accessibleName)}"><span data-ui="team-swatch" aria-hidden="true"></span></span>`;
     }
 
     function goalDisplayTime(goal) {
@@ -2862,23 +3387,29 @@
       return goals
         .map((goal) => {
           const detail = finalTeamGoalDetail(goal);
-          const rowDetail =
-            options.includeThird === true && Number.isInteger(goal.third)
-              ? `Third ${goal.third} · ${detail}`
-              : detail;
-          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}">
+          const includesThird = options.includeThird === true && Number.isInteger(goal.third);
+          const goalTeamSemantics = options.includeThird === true
+            ? goal.ownGoal
+              ? `Own goal. No scoring team. Conceding team: ${teamName(goal.concedingTeamId)}.`
+              : `Scoring team: ${teamName(goal.scoringTeamId)}. Conceding team: ${teamName(goal.concedingTeamId)}.`
+            : "";
+          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}"${
+            includesThird ? ' data-has-third="true"' : ""
+          }>
             <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
             <div>
               <strong>${escapeHtml(finalTeamGoalLabel(goal))}</strong>
-              <small>${escapeHtml(rowDetail)}</small>
+              <small>${escapeHtml(detail)}</small>
+              ${goalTeamSemantics ? `<span class="sr-only" data-ui="goal-team-semantics">${escapeHtml(goalTeamSemantics)}</span>` : ""}
             </div>
+            ${includesThird ? renderThirdIndicator(goal.third) : ""}
           </li>`;
         })
         .join("");
     }
 
     function incrementPlayerStat(stats, playerId) {
-      if (typeof playerId !== "string" || playerId.length === 0) {
+      if (playerId === null || playerId === undefined || playerId === "") {
         return;
       }
 
@@ -2991,7 +3522,8 @@
       }
 
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
-      const finishedActionsDisabled = isGameFinished() && !canCorrectFinishedGoals();
+      const finishedActionsDisabled =
+        goalMutationInFlight || (isGameFinished() && !canCorrectFinishedGoals());
       const disabledAttribute = finishedActionsDisabled ? " disabled" : "";
       goalTimelineElement.innerHTML = [...goalTimeline]
         .reverse()
@@ -3001,23 +3533,38 @@
               ? goal.assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")
               : "None";
           const latest = goal.eventId === latestEventId;
-          return `<li data-ui="goal-event" data-event-id="${escapeHtml(goal.eventId)}"${
+          const displayTime = goalDisplayTime(goal);
+          const scorer = String(playerNickname(goal.scorerPlayerId));
+          const eventId = String(goal.eventId ?? "");
+          const scoringContext = goal.ownGoal
+            ? `<span data-ui="own-goal-marker" aria-label="Own goal">OG</span>`
+            : renderGoalTeamChip(goal.scoringTeamId, "Scoring team");
+          return `<li data-ui="goal-event" data-event-id="${escapeHtml(eventId)}"${
             latest ? ' data-state="latest"' : ""
           }>
             <div data-ui="goal-event-main">
-              <strong>${escapeHtml(goalDisplayTime(goal))} · Third ${escapeHtml(String(goal.third))}</strong>
-              <span>${escapeHtml(timelineGoalLabel(goal))}</span>
+              <div data-ui="goal-primary-row">
+                <strong data-ui="goal-time">${escapeHtml(displayTime)}</strong>
+                <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${escapeHtml(scorer)}</span>
+                ${scoringContext}
+                <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
+                ${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
+                ${renderThirdIndicator(goal.third)}
+              </div>
               <small>Assists: ${escapeHtml(assists)}</small>
               ${goal.ownGoal ? `<small>Own goal: conceding tally only</small>` : ""}
             </div>
             <div data-ui="row-action-buttons">
-              ${latest ? `<span data-ui="latest-flag">Latest</span>` : ""}
-              <button data-ui="row-action" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
-                goal.eventId,
-              )}"${disabledAttribute}>Edit</button>
-              <button data-ui="row-action" data-tone="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
-                goal.eventId,
-              )}"${disabledAttribute}>Delete</button>
+              <button data-ui="icon-button" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
+                eventId,
+              )}" aria-label="Edit ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Edit goal"${
+                disabledAttribute
+              }>${renderClientIcon("pencil")}</button>
+              <button data-ui="icon-button" data-variant="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
+                eventId,
+              )}" aria-label="Delete ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Delete goal"${
+                disabledAttribute
+              }>${renderClientIcon("trash-2")}</button>
             </div>
           </li>`;
         })
@@ -3037,6 +3584,7 @@
     }
 
     function applyGoalMutationResult(result, fallback = {}) {
+      scoreboardState = "refreshing";
       if (Array.isArray(result?.scoreboard?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(result.scoreboard.teams);
       }
@@ -3063,7 +3611,30 @@
       if (goalOwnGoalInput instanceof HTMLInputElement) {
         goalOwnGoalInput.checked = false;
       }
-      renderLiveScoring();
+      if (goalScoringTeamInput instanceof HTMLSelectElement) {
+        goalScoringTeamInput.value = "";
+      }
+      if (goalConcedingTeamInput instanceof HTMLSelectElement) {
+        goalConcedingTeamInput.value = "";
+      }
+      if (goalScorerInput instanceof HTMLSelectElement) {
+        goalScorerInput.value = "";
+      }
+      for (const input of goalAssistsElement?.querySelectorAll('input[type="checkbox"]') ?? []) {
+        if (input instanceof HTMLInputElement) {
+          input.checked = false;
+        }
+      }
+      if (goalAssistsDropdown instanceof HTMLDetailsElement) {
+        goalAssistsDropdown.open = false;
+      }
+      renderLiveScoring({
+        ownGoal: false,
+        scoringTeamId: "",
+        concedingTeamId: "",
+        scorerPlayerId: "",
+        assistPlayerIds: [],
+      });
     }
 
     function populateGoalForm(goal) {
@@ -3152,6 +3723,7 @@
         const next = {
           fingerprint,
           key: createIdempotencyKey(prefix, stablePart),
+          uncertain: false,
         };
         pendingGoalMutationIdempotency.set(cacheKey, next);
         return next.key;
@@ -3162,6 +3734,17 @@
 
     function clearGoalMutationIdempotency(prefix, stablePart) {
       pendingGoalMutationIdempotency.delete(`${prefix}:${stablePart}`);
+    }
+
+    function isGoalMutationIdempotencyUncertain(prefix, stablePart) {
+      return pendingGoalMutationIdempotency.get(`${prefix}:${stablePart}`)?.uncertain === true;
+    }
+
+    function markGoalMutationIdempotencyUncertain(prefix, stablePart) {
+      const entry = pendingGoalMutationIdempotency.get(`${prefix}:${stablePart}`);
+      if (entry) {
+        entry.uncertain = true;
+      }
     }
 
     async function refreshGameAfterFinishedCorrection() {
@@ -3194,22 +3777,80 @@
         pendingCreateGoalIdempotency = {
           fingerprint,
           key: createIdempotencyKey("create-goal", `${gameId}-new`),
+          uncertain: false,
         };
       }
 
       return pendingCreateGoalIdempotency.key;
     }
 
-    function assignmentButtons(playerId, currentTeamId = null) {
+    function assignmentButton(playerId, team, currentTeamId = null, context = "assign") {
       const disabled = finishedRosterControlsLocked() ? " disabled" : "";
-      return rosterTeams
-        .map((team) => {
-          const active = currentTeamId === team.teamId ? ' data-state="active" aria-pressed="true"' : "";
-          return `<button data-ui="row-action" type="button" data-action="assign-player" data-player-id="${escapeHtml(
-            playerId,
-          )}" data-team-id="${escapeHtml(team.teamId)}"${active}${disabled}>${escapeHtml(team.name)}</button>`;
-        })
+      const active = currentTeamId === team.teamId;
+      const nickname = playerNickname(playerId);
+      const label =
+        context === "transfer"
+          ? `Transfer ${nickname} to ${team.name}`
+          : active
+            ? `${nickname} assigned to ${team.name}`
+            : `Assign ${nickname} to ${team.name}`;
+      return `<button data-ui="team-chip" data-context="${escapeHtml(context)}" type="button" data-action="assign-player" data-player-id="${escapeHtml(
+        playerId,
+      )}" data-team-id="${escapeHtml(team.teamId)}" aria-label="${escapeHtml(label)}" aria-pressed="${
+        active ? "true" : "false"
+      }" data-state="${
+        active ? "active" : "idle"
+      }"${teamSwatchStyle(team)}${disabled}><span data-ui="team-chip-visual"><span>${escapeHtml(
+        team.name,
+      )}</span>${active ? renderClientIcon("circle-check") : ""}</span></button>`;
+    }
+
+    function assignmentButtons(playerId, currentTeamId = null) {
+      return rosterTeams.map((team) => assignmentButton(playerId, team, currentTeamId)).join("");
+    }
+
+    function transferMenuId(playerId) {
+      let safeSegment;
+      try {
+        safeSegment = encodeURIComponent(String(playerId));
+      } catch {
+        safeSegment = Array.from(String(playerId))
+          .map((character) => character.codePointAt(0).toString(16))
+          .join("-");
+      }
+      return `transfer-options-${safeSegment}`;
+    }
+
+    function focusTransferTrigger(playerId) {
+      const trigger = [...root.querySelectorAll('button[data-action="toggle-transfer"]')].find(
+        (candidate) => candidate.getAttribute("data-player-id") === playerId,
+      );
+      if (trigger instanceof HTMLButtonElement) {
+        trigger.focus();
+      }
+    }
+
+    function transferControl(playerId, currentTeamId) {
+      const safePlayerId = escapeHtml(playerId);
+      const menuId = transferMenuId(playerId);
+      const open = openTransferPlayerId === playerId;
+      const disabled = finishedRosterControlsLocked() ? " disabled" : "";
+      const nickname = playerNickname(playerId);
+      const alternatives = rosterTeams
+        .filter((team) => team.teamId !== currentTeamId)
+        .map((team) => assignmentButton(playerId, team, null, "transfer"))
         .join("");
+
+      return `<div data-ui="transfer-control">
+        <button data-ui="transfer-toggle" type="button" data-action="toggle-transfer" data-player-id="${safePlayerId}" aria-label="${escapeHtml(
+          `Transfer ${nickname}`,
+        )}" aria-expanded="${
+          open ? "true" : "false"
+        }" aria-controls="${menuId}" title="${escapeHtml(`Transfer ${nickname}`)}"${disabled}>${renderClientIcon("arrow-left-right")}</button>
+        <div id="${menuId}" data-ui="transfer-menu"${open ? "" : " hidden"}>
+          ${alternatives}
+        </div>
+      </div>`;
     }
 
     function playerAccessPanel(player) {
@@ -3219,8 +3860,10 @@
 
       const access = player?.access;
       if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
-        return `<div data-ui="player-access" data-testid="player-access">
-          <small>Not claimed</small>
+        return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
+          <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
+            "circle-user-round",
+          )}</span>
         </div>`;
       }
 
@@ -3230,14 +3873,16 @@
       const scorerDisabled = role === "scorekeeper" || role === "admin" ? " disabled" : "";
       const adminDisabled = role === "admin" ? " disabled" : "";
 
-      return `<div data-ui="player-access" data-testid="player-access">
-        <small>${escapeHtml(roleLabel)} · ${escapeHtml(access.userId)}</small>
+      return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
+        <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="${escapeHtml(
+          roleLabel,
+        )}" title="${escapeHtml(roleLabel)}">${renderClientIcon("user-round-check")}</span>
         <div data-ui="access-actions">
-          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
-            access.userId,
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(
+            player.playerId,
           )}" data-role="scorekeeper"${scorerDisabled}>Make scorer</button>
-          <button data-ui="row-action" type="button" data-action="grant-player-access" data-user-id="${escapeHtml(
-            access.userId,
+          <button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(
+            player.playerId,
           )}" data-role="admin"${adminDisabled}>Make co-organiser</button>
         </div>
       </div>`;
@@ -3256,18 +3901,15 @@
       playerPoolElement.innerHTML = rosterPlayers
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
-          const assignedTeam = assignment ? teamById(assignment.teamId) : null;
-	          const statusText = assignedTeam ? `Assigned to ${assignedTeam.name}` : "Unassigned";
-	          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
-	            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
-	            <div data-ui="roster-player-main">
-	              <strong>${escapeHtml(player.nickname)}</strong>
-	              <span>${escapeHtml(statusText)}</span>
-	              ${playerAccessPanel(player)}
-	            </div>
-	            <div data-ui="row-action-buttons">
-	              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
-	            </div>
+          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
+            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
+            <div data-ui="roster-player-main">
+              <strong>${escapeHtml(player.nickname)}</strong>
+              ${playerAccessPanel(player)}
+            </div>
+            <div data-ui="row-action-buttons">
+              ${assignmentButtons(player.playerId, assignment?.teamId ?? null)}
+            </div>
           </article>`;
         })
         .join("");
@@ -3292,9 +3934,7 @@
               const nickname = player?.nickname ?? assignment.playerId;
               return `<li data-ui="roster-member">
                 <span>${escapeHtml(nickname)}</span>
-                <div data-ui="row-action-buttons">
-                  ${assignmentButtons(assignment.playerId, team.teamId)}
-                </div>
+                ${transferControl(assignment.playerId, team.teamId)}
               </li>`;
             })
             .join("");
@@ -3315,6 +3955,9 @@
 
     function renderRosterSetup() {
       const rosterLocked = finishedRosterControlsLocked();
+      if (rosterLocked) {
+        openTransferPlayerId = null;
+      }
       if (quickCreatePlayerButton instanceof HTMLButtonElement) {
         quickCreatePlayerButton.disabled = rosterLocked;
       }
@@ -3340,10 +3983,18 @@
         }),
       ]);
 
-      rosterTeams = Array.isArray(rosterPayload?.teams) ? rosterPayload.teams : [];
+      rosterTeams = Array.isArray(rosterPayload?.teams)
+        ? rosterPayload.teams.map((team) => ({
+            ...team,
+            name:
+              typeof team.name === "string" && team.name.length > 0
+                ? team.name
+                : String(team.teamId ?? "Unknown team"),
+          }))
+        : [];
       rosterAssignments = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : [];
       rosterPlayers = Array.isArray(playersPayload?.players) ? playersPayload.players : [];
-      if (scoreboardTeams.length === 0 || goalTimeline.length === 0) {
+      if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
       }
       renderRosterSetup();
@@ -3376,6 +4027,7 @@
       goalTimelineLoaded = true;
       if (Array.isArray(payload?.scoreboard?.teams)) {
         scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
+        scoreboardState = "authoritative";
       }
 
       goalTimeline = Array.isArray(payload?.timeline) ? sortGoalTimeline(payload.timeline) : [];
@@ -3389,22 +4041,24 @@
       });
 
       currentGame = game;
+      finishedResultState = "authoritative";
+      if (game.status === "finished" && Array.isArray(game.result?.teams)) {
+        scoreboardTeams = normalizeScoreboardTeams(game.result.teams);
+        scoreboardState = "authoritative";
+      }
       currentLeagueId = game.leagueId;
       currentSeasonId = game.seasonId;
 
       if (title) {
-        title.textContent = game.gameId;
+        title.textContent = formatLocalDateHeading(game.gameStartTs);
       }
 
       if (subtitle) {
-        subtitle.innerHTML = `Kickoff: <code>${escapeHtml(formatLocalTimestamp(game.gameStartTs))}</code>`;
+        subtitle.textContent = formatLocalKickoffTime(game.gameStartTs);
       }
 
       if (gameIdValue) {
         gameIdValue.textContent = game.gameId;
-      }
-      if (finalGameIdValue) {
-        finalGameIdValue.textContent = game.gameId;
       }
       if (gameJoinCodeValue) {
         gameJoinCodeValue.textContent = typeof game.joinCode === "string" && game.joinCode.length > 0
@@ -3446,7 +4100,7 @@
         gameSeasonLink.href = buildLeagueSeasonPath(game.leagueId, game.seasonId);
       }
       if (createAnotherLink instanceof HTMLAnchorElement) {
-        createAnotherLink.href = buildLeagueSeasonPath(game.leagueId, game.seasonId);
+        createAnotherLink.href = `${buildLeagueSeasonPath(game.leagueId, game.seasonId)}#create-game`;
       }
     }
 
@@ -3638,6 +4292,7 @@
         });
         if (Array.isArray(currentGame?.result?.teams)) {
           scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
+          scoreboardState = "authoritative";
         }
         if (isGameFinished()) {
           await loadLeagueAccess();
@@ -3679,6 +4334,17 @@
     });
 
     if (rosterControlsAvailable()) {
+      root.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !openTransferPlayerId) {
+          return;
+        }
+
+        const playerId = openTransferPlayerId;
+        openTransferPlayerId = null;
+        renderRosterTeams();
+        focusTransferTrigger(playerId);
+      });
+
       playerNicknameInput.addEventListener("input", () => {
         setFieldMessage("player-nickname");
       });
@@ -3741,18 +4407,45 @@
       });
 
       root.addEventListener("click", async (event) => {
-        const target = event.target;
+        const eventTarget = event.target;
+        const target = eventTarget instanceof Element ? eventTarget.closest("button[data-action]") : null;
         if (!(target instanceof HTMLButtonElement)) {
           return;
         }
 
         const action = target.getAttribute("data-action");
+        if (action === "toggle-transfer") {
+          if (finishedRosterControlsLocked()) {
+            return;
+          }
+
+          const playerId = target.getAttribute("data-player-id");
+          if (!playerId) {
+            return;
+          }
+
+          const opening = openTransferPlayerId !== playerId;
+          openTransferPlayerId = opening ? playerId : null;
+          renderRosterTeams();
+          if (opening) {
+            const menu = document.getElementById(transferMenuId(playerId));
+            const firstOption = menu?.querySelector('button[data-action="assign-player"]');
+            if (firstOption instanceof HTMLButtonElement) {
+              firstOption.focus();
+            }
+          } else {
+            focusTransferTrigger(playerId);
+          }
+          return;
+        }
+
         if (action === "grant-player-access") {
           if (currentLeagueRole !== "admin") {
             return;
           }
 
-          const userId = target.getAttribute("data-user-id");
+          const playerId = target.getAttribute("data-player-id");
+          const userId = playerId ? playerById(playerId)?.access?.userId : null;
           const role = target.getAttribute("data-role");
           if (!currentLeagueId || !userId || (role !== "scorekeeper" && role !== "admin")) {
             return;
@@ -3806,11 +4499,13 @@
         }
 
         target.disabled = true;
+        const isTransferAssignment = target.closest('[data-ui="transfer-menu"]') !== null;
         clearError();
         setStatus("Assigning player…", "default");
 
+        let committedAssignment;
         try {
-          await requestJsonOrThrow(
+          committedAssignment = await requestJsonOrThrow(
             `/v1/games/${encodeURIComponent(gameId)}/roster/${encodeURIComponent(playerId)}`,
             {
               method: "PUT",
@@ -3822,21 +4517,55 @@
               }),
             },
           );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not assign player.";
+          showError(message);
+          setStatus("Roster assignment failed.", "error");
+          target.disabled = false;
+          if (target.isConnected) {
+            target.focus();
+          }
+          return;
+        }
 
+        if (isTransferAssignment) {
+          openTransferPlayerId = null;
+        }
+        const existingAssignment = assignmentByPlayerId(playerId);
+        rosterAssignments = [
+          ...rosterAssignments.filter((assignment) => assignment.playerId !== playerId),
+          {
+            ...(existingAssignment ?? {}),
+            ...(committedAssignment && typeof committedAssignment === "object" ? committedAssignment : {}),
+            gameId,
+            playerId,
+            teamId,
+          },
+        ];
+        renderRosterSetup();
+        focusTransferTrigger(playerId);
+
+        let refreshFailed = false;
+        try {
           await loadRosterSetup({ updateStatus: false });
+        } catch (error) {
+          refreshFailed = true;
+          const message = error instanceof Error ? error.message : "Could not refresh the roster.";
+          showError(`Assignment was saved, but the latest roster could not be loaded. ${message}`);
+          setStatus("Roster assignment saved; roster refresh failed.", "error");
+        }
+
+        focusTransferTrigger(playerId);
+
+        if (!refreshFailed) {
           const player = playerById(playerId);
           const team = teamById(teamId);
           setStatus(
             `${player?.nickname ?? "Player"} assigned to ${team?.name ?? teamId}.`,
             "success",
           );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Could not assign player.";
-          showError(message);
-          setStatus("Roster assignment failed.", "error");
-        } finally {
-          target.disabled = false;
         }
+        target.disabled = false;
       });
     }
 
@@ -3857,12 +4586,30 @@
         renderLiveScoring();
       });
 
-      goalAssistsElement.addEventListener("change", () => {
+      goalAssistsElement.addEventListener("change", (event) => {
+        const changedInput = event.target instanceof HTMLInputElement ? event.target : null;
+        const changedValue = changedInput?.value ?? "";
         renderGoalAssistChoices(goalScorerInput.value);
+        const replacement = changedValue
+          ? [...goalAssistsElement.querySelectorAll('input[type="checkbox"]')]
+              .find((input) => input instanceof HTMLInputElement && input.value === changedValue)
+          : null;
+        if (replacement instanceof HTMLInputElement) {
+          replacement.focus();
+        }
+      });
+
+      goalAssistsDropdown.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !goalAssistsDropdown.open) {
+          return;
+        }
+        event.preventDefault();
+        goalAssistsDropdown.open = false;
+        goalAssistsDropdown.querySelector("summary")?.focus();
       });
 
       saveGoalButton.addEventListener("click", async () => {
-        if (isGameFinished() && !canCorrectFinishedGoals()) {
+        if (goalMutationInFlight || (isGameFinished() && !canCorrectFinishedGoals())) {
           renderLiveScoring();
           return;
         }
@@ -3875,63 +4622,145 @@
           return;
         }
 
-        saveGoalButton.disabled = true;
         const eventId = editingGoalId;
         const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
+        const previousScoreboardState = scoreboardState;
+        const previousFinishedResultState = finishedResultState;
+        const saveStablePart = eventId ? `${gameId}-${eventId}` : null;
+        const saveIdempotencyKey = idempotencyKeyForGoalSave(eventId, draft.payload);
+        const wasUncertainRetry = eventId
+          ? isGoalMutationIdempotencyUncertain("update-goal", saveStablePart)
+          : pendingCreateGoalIdempotency?.uncertain === true;
         setStatus(`${actionLabel}…`, "default");
+        goalMutationInFlight = true;
+        scoreboardState = "refreshing";
+        if (isGameFinished()) {
+          finishedResultState = "refreshing";
+        }
+        renderLiveScoring();
 
         try {
           const path = eventId
             ? `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`
             : `/v1/games/${encodeURIComponent(gameId)}/goals`;
-          const result = await requestJsonOrThrow(path, {
-            method: eventId ? "PATCH" : "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Idempotency-Key": idempotencyKeyForGoalSave(eventId, draft.payload),
-            },
-            body: JSON.stringify(draft.payload),
-          });
-
-          if (!eventId) {
-            applyGoalMutationResult(result);
-            pendingCreateGoalIdempotency = null;
-            const gameRefreshed = await refreshGameAfterFinishedCorrection();
-            if (!gameRefreshed) {
-              showError("Goal was added, but the finished result could not be refreshed.");
-              setStatus("Goal added; result refresh failed.", "success");
+          let result;
+          try {
+            result = await requestJsonOrThrow(path, {
+              method: eventId ? "PATCH" : "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Idempotency-Key": saveIdempotencyKey,
+              },
+              body: JSON.stringify(draft.payload),
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Could not save goal.";
+            showError(message);
+            if (isDefinitiveRequestRejection(error)) {
+              scoreboardState = previousScoreboardState;
+              finishedResultState = previousFinishedResultState;
+              if (!wasUncertainRetry) {
+                if (eventId) {
+                  clearGoalMutationIdempotency("update-goal", saveStablePart);
+                } else {
+                  pendingCreateGoalIdempotency = null;
+                }
+              }
+              setStatus(
+                wasUncertainRetry
+                  ? "The retry was rejected, but the earlier goal save is still unconfirmed. Restore access and retry the same details."
+                  : "Goal was not saved. Review the error and try again.",
+                "error",
+              );
               return;
             }
-          } else {
-            const goalsLoaded = await loadGameGoals();
-            if (!goalsLoaded) {
-              throw new Error("Goal update was saved, but the latest goal state could not be loaded.");
+            if (eventId) {
+              markGoalMutationIdempotencyUncertain("update-goal", saveStablePart);
+            } else if (pendingCreateGoalIdempotency) {
+              pendingCreateGoalIdempotency.uncertain = true;
             }
-            const gameRefreshed = await refreshGameAfterFinishedCorrection();
-            if (!gameRefreshed) {
-              throw new Error("Goal update was saved, but the finished result could not be refreshed.");
+            scoreboardState = "uncertain";
+            if (isGameFinished()) {
+              finishedResultState = "uncertain";
             }
-            editingGoalId = null;
-            clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
+            setStatus(
+              "Could not confirm whether the goal was saved. Retry with the same details.",
+              "error",
+            );
+            return;
           }
+
+          const finishedCorrection = isGameFinished();
+          if (finishedCorrection) {
+            finishedResultState = "saved-unavailable";
+          }
+          applyGoalMutationResult(result);
+          resetGoalForm();
+
+          const goalsLoaded = await loadGameGoals();
+          if (eventId) {
+            clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
+          } else {
+            pendingCreateGoalIdempotency = null;
+          }
+
+          const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!goalsLoaded) {
+            if (scoreboardState !== "authoritative") {
+              scoreboardState = "unavailable";
+            }
+            const savedLabel = eventId ? "Goal update" : "Goal addition";
+            const savedStatus = eventId ? "Goal updated" : "Goal added";
+            if (!gameRefreshed) {
+              showError(
+                `${savedLabel} was saved, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.`,
+              );
+              setStatus(`${savedStatus}; timeline and result refresh failed.`, "error");
+            } else if (finishedCorrection) {
+              showError("Goal details could not be loaded. Reload to try again.");
+              setStatus(
+                `${savedStatus}. Scores refreshed; goal timeline unavailable.`,
+                "default",
+              );
+            } else {
+              showError(`${savedLabel} was saved, but the latest scores and goal timeline could not be loaded.`);
+              setStatus(`${savedStatus}; scores and timeline unavailable.`, "default");
+            }
+            return;
+          }
+
+          if (!gameRefreshed) {
+            showError(
+              eventId
+                ? "Goal was updated, but the finished result could not be refreshed."
+                : "Goal was added, but the finished result could not be refreshed.",
+            );
+            setStatus(
+              eventId
+                ? "Goal updated. Run scores refreshed; Match Summary unavailable."
+                : "Goal added. Run scores refreshed; Match Summary unavailable.",
+              "default",
+            );
+            return;
+          }
+
           setStatus(eventId ? "Goal updated." : "Goal added.", "success");
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Could not save goal.";
-          showError(message);
-          setStatus("Goal save failed.", "error");
         } finally {
-          saveGoalButton.disabled = false;
+          goalMutationInFlight = false;
           renderLiveScoring();
         }
       });
 
       cancelGoalEditButton.addEventListener("click", () => {
+        if (goalMutationInFlight) {
+          return;
+        }
         resetGoalForm();
         setStatus("Goal edit cancelled.", "default");
       });
 
       undoLastGoalButton.addEventListener("click", async () => {
-        if (isGameFinished() && !canCorrectFinishedGoals()) {
+        if (goalMutationInFlight || (isGameFinished() && !canCorrectFinishedGoals())) {
           renderLiveScoring();
           return;
         }
@@ -3941,44 +4770,106 @@
           return;
         }
 
-        undoLastGoalButton.disabled = true;
+        const previousScoreboardState = scoreboardState;
+        const previousFinishedResultState = finishedResultState;
+        goalMutationInFlight = true;
+        scoreboardState = "refreshing";
+        if (isGameFinished()) {
+          finishedResultState = "refreshing";
+        }
         clearError();
         setStatus("Undoing latest goal…", "default");
+        renderLiveScoring();
 
+        const stablePart = `${gameId}-${latest.eventId}`;
+        const undoIdempotencyKey = idempotencyKeyForGoalMutation(
+          "undo-goal",
+          stablePart,
+          latest.eventId,
+        );
+        const wasUncertainRetry = isGoalMutationIdempotencyUncertain("undo-goal", stablePart);
         try {
-          const stablePart = `${gameId}-${latest.eventId}`;
           const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Idempotency-Key": idempotencyKeyForGoalMutation("undo-goal", stablePart, latest.eventId),
+              "Idempotency-Key": undoIdempotencyKey,
             },
             body: JSON.stringify({
               expectedEventId: latest.eventId,
             }),
           });
 
+          if (isGameFinished()) {
+            finishedResultState = "saved-unavailable";
+          }
           applyGoalMutationResult(result, { deletedEventId: latest.eventId });
+          resetGoalForm();
+          const goalsLoaded = await loadGameGoals();
           clearGoalMutationIdempotency("undo-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!goalsLoaded) {
+            if (scoreboardState !== "authoritative") {
+              scoreboardState = "unavailable";
+            }
+            if (!gameRefreshed) {
+              showError(
+                "The latest goal was undone, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+              );
+              setStatus("Latest goal undone; timeline and result refresh failed.", "error");
+            } else if (isGameFinished()) {
+              showError("Goal details could not be loaded. Reload to try again.");
+              setStatus(
+                "Latest goal undone. Scores refreshed; goal timeline unavailable.",
+                "default",
+              );
+            } else {
+              showError("The latest goal was undone, but the latest scores and goal timeline could not be loaded.");
+              setStatus("Latest goal undone; scores and timeline unavailable.", "default");
+            }
+            return;
+          }
           if (!gameRefreshed) {
             showError("Latest goal was undone, but the finished result could not be refreshed.");
-            setStatus("Latest goal undone; result refresh failed.", "success");
+            setStatus(
+              "Latest goal undone. Run scores refreshed; Match Summary unavailable.",
+              "default",
+            );
             return;
           }
           setStatus("Latest goal undone.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not undo latest goal.";
           showError(message);
-          setStatus("Goal undo failed.", "error");
+          if (isDefinitiveRequestRejection(error)) {
+            scoreboardState = previousScoreboardState;
+            finishedResultState = previousFinishedResultState;
+            if (!wasUncertainRetry) {
+              clearGoalMutationIdempotency("undo-goal", stablePart);
+            }
+            setStatus(
+              wasUncertainRetry
+                ? "The retry was rejected, but the earlier undo is still unconfirmed. Restore access and retry the same action."
+                : "The latest goal was not undone. Review the error and try again.",
+              "error",
+            );
+            return;
+          }
+          markGoalMutationIdempotencyUncertain("undo-goal", stablePart);
+          scoreboardState = "uncertain";
+          if (isGameFinished()) {
+            finishedResultState = "uncertain";
+          }
+          setStatus("Could not confirm the undo. Retry the same action.", "error");
         } finally {
-          undoLastGoalButton.disabled = false;
+          goalMutationInFlight = false;
           renderLiveScoring();
         }
       });
 
       root.addEventListener("click", async (event) => {
-        const target = event.target;
+        const eventTarget = event.target;
+        const target = eventTarget instanceof Element ? eventTarget.closest("button[data-action]") : null;
         if (!(target instanceof HTMLButtonElement)) {
           return;
         }
@@ -3998,7 +4889,7 @@
           return;
         }
 
-        if (isGameFinished() && !canCorrectFinishedGoals()) {
+        if (goalMutationInFlight || (isGameFinished() && !canCorrectFinishedGoals())) {
           renderLiveScoring();
           return;
         }
@@ -4013,37 +4904,92 @@
           return;
         }
 
-        target.disabled = true;
+        const previousScoreboardState = scoreboardState;
+        const previousFinishedResultState = finishedResultState;
+        goalMutationInFlight = true;
+        scoreboardState = "refreshing";
+        if (isGameFinished()) {
+          finishedResultState = "refreshing";
+        }
         clearError();
         setStatus("Deleting goal…", "default");
+        renderLiveScoring();
 
+        const stablePart = `${gameId}-${eventId}`;
+        const deleteIdempotencyKey = idempotencyKeyForGoalMutation(
+          "delete-goal",
+          stablePart,
+          eventId,
+        );
+        const wasUncertainRetry = isGoalMutationIdempotencyUncertain("delete-goal", stablePart);
         try {
-          const stablePart = `${gameId}-${eventId}`;
           const result = await requestJsonOrThrow(
             `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
             {
               method: "DELETE",
               headers: {
-                "Idempotency-Key": idempotencyKeyForGoalMutation("delete-goal", stablePart, eventId),
+                "Idempotency-Key": deleteIdempotencyKey,
               },
             },
           );
 
+          if (isGameFinished()) {
+            finishedResultState = "saved-unavailable";
+          }
           applyGoalMutationResult(result, { deletedEventId: eventId });
+          resetGoalForm();
+          const goalsLoaded = await loadGameGoals();
           clearGoalMutationIdempotency("delete-goal", stablePart);
           const gameRefreshed = await refreshGameAfterFinishedCorrection();
+          if (!goalsLoaded) {
+            if (scoreboardState !== "authoritative") {
+              scoreboardState = "unavailable";
+            }
+            if (!gameRefreshed) {
+              showError(
+                "The goal was deleted, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+              );
+              setStatus("Goal deleted; timeline and result refresh failed.", "error");
+            } else if (isGameFinished()) {
+              showError("Goal details could not be loaded. Reload to try again.");
+              setStatus("Goal deleted. Scores refreshed; goal timeline unavailable.", "default");
+            } else {
+              showError("The goal was deleted, but the latest scores and goal timeline could not be loaded.");
+              setStatus("Goal deleted; scores and timeline unavailable.", "default");
+            }
+            return;
+          }
           if (!gameRefreshed) {
             showError("Goal was deleted, but the finished result could not be refreshed.");
-            setStatus("Goal deleted; result refresh failed.", "success");
+            setStatus("Goal deleted. Run scores refreshed; Match Summary unavailable.", "default");
             return;
           }
           setStatus("Goal deleted.", "success");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete goal.";
           showError(message);
-          setStatus("Goal deletion failed.", "error");
+          if (isDefinitiveRequestRejection(error)) {
+            scoreboardState = previousScoreboardState;
+            finishedResultState = previousFinishedResultState;
+            if (!wasUncertainRetry) {
+              clearGoalMutationIdempotency("delete-goal", stablePart);
+            }
+            setStatus(
+              wasUncertainRetry
+                ? "The retry was rejected, but the earlier deletion is still unconfirmed. Restore access and retry the same action."
+                : "The goal was not deleted. Review the error and try again.",
+              "error",
+            );
+            return;
+          }
+          markGoalMutationIdempotencyUncertain("delete-goal", stablePart);
+          scoreboardState = "uncertain";
+          if (isGameFinished()) {
+            finishedResultState = "uncertain";
+          }
+          setStatus("Could not confirm the deletion. Retry the same action.", "error");
         } finally {
-          target.disabled = false;
+          goalMutationInFlight = false;
           renderLiveScoring();
         }
       });
@@ -4054,6 +5000,10 @@
     await loadLeagueAccess();
     await loadRosterSetup({ updateStatus: false });
     const goalsLoaded = await loadGameGoals();
+    if (!goalsLoaded && scoreboardState !== "authoritative") {
+      scoreboardState = "unavailable";
+      renderLiveScoring();
+    }
     if (!manualGameModeSelected) {
       setGameMode(preferredInitialGameMode());
     }
@@ -4077,7 +5027,7 @@
     }
 
     if (goalsLoaded) {
-      setStatus("Game page ready.", "success");
+      setStatus("");
     }
   }
 
@@ -4302,7 +5252,7 @@
       }
     });
 
-    setStatus("Join page ready.", "success");
+    setStatus("");
   }
 
   async function initInvitePage() {
@@ -4427,11 +5377,11 @@
           codeInput.focus();
         }
       }
-      setStatus("Invite page ready.", "success");
+      setStatus("");
       return;
     }
 
-    setStatus("Invite page ready.", "success");
+    setStatus("");
   }
 
   async function initialize() {
@@ -4449,8 +5399,9 @@
       return;
     }
 
+    let authenticatedSession = null;
     try {
-      await ensureAuthenticatedSession();
+      authenticatedSession = await ensureAuthenticatedSession();
     } catch (error) {
       if (error instanceof Error && error.message === "redirecting_to_sign_in") {
         return;
@@ -4463,7 +5414,7 @@
 
     try {
       if (page === "dashboard") {
-        await initDashboardPage();
+        await initDashboardPage(authenticatedSession);
         return;
       }
 

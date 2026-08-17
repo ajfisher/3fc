@@ -1323,6 +1323,23 @@ function createMockFetch(state: MockApiState) {
       return createJsonResponse(200, updated);
     }
 
+    if (method === "DELETE" && gameMatch) {
+      const gameId = decodeURIComponent(gameMatch[1]);
+      const game = state.games.get(gameId);
+      if (!game) {
+        return createJsonResponse(404, { error: "not_found", message: "Game not found." });
+      }
+      if (game.status === "finished") {
+        return createJsonResponse(409, {
+          error: "conflict",
+          code: "finished_game_locked",
+          message: `Finished game ${gameId} cannot be deleted.`,
+        });
+      }
+      state.games.delete(gameId);
+      return new Response(null, { status: 204 });
+    }
+
     const startThirdMatch = path.match(/^\/v1\/games\/([^/]+)\/thirds\/([^/]+)\/start$/);
     if (method === "POST" && startThirdMatch) {
       const gameId = decodeURIComponent(startThirdMatch[1]);
@@ -1782,6 +1799,22 @@ function expectedLocalTimestamp(isoTimestamp: string): string {
   return local.toISOString().slice(0, 16).replace("T", " ");
 }
 
+function expectedLocalDateHeading(isoTimestamp: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(new Date(isoTimestamp));
+}
+
+function expectedLocalKickoffTime(isoTimestamp: string): string {
+  return `Kickoff at ${new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(isoTimestamp))}`;
+}
+
 async function bootPage(input: {
   html: string;
   url: string;
@@ -2016,9 +2049,17 @@ test("setup flow shows inline validation for blank required fields", async () =>
   });
 
   const createLeagueButton = dashboard.document.querySelector('[data-action="create-league"]');
+  const createLeagueToggle = dashboard.document.querySelector('[data-action="toggle-create-league"]');
+  const createLeagueRegion = dashboard.document.getElementById("dashboard-create-league-region");
   const leagueNameNotice = dashboard.document.getElementById("league-name-notice");
   assert(createLeagueButton instanceof dashboard.window.HTMLButtonElement);
+  assert(createLeagueToggle instanceof dashboard.window.HTMLButtonElement);
+  assert(createLeagueRegion instanceof dashboard.window.HTMLElement);
   assert(leagueNameNotice instanceof dashboard.window.HTMLElement);
+  assert.equal(dashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome Organizer");
+  assert.equal(createLeagueToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(createLeagueRegion.hidden, false);
+  assert.notEqual(dashboard.document.activeElement?.id, "league-name");
   dispatchClick(createLeagueButton);
   await flushAsync();
   assert.equal(leagueNameNotice.textContent, "League name is required.");
@@ -2092,6 +2133,157 @@ test("setup flow shows inline validation for blank required fields", async () =>
   assert.equal(gameKickoffNotice.textContent, "Kickoff time must be valid.");
 });
 
+test("populated dashboard keeps league creation disclosed on demand and handles icon-child actions", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "AJ.FISHER@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:00.000Z",
+    updatedAt: "2026-03-28T11:00:00.000Z",
+  });
+  grantMockLeagueAccess(apiState, "autumn-league", apiState.session.email, "admin");
+
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const toggle = page.document.querySelector('[data-testid="toggle-create-league"]');
+  const region = page.document.getElementById("dashboard-create-league-region");
+  assert(toggle instanceof page.window.HTMLButtonElement);
+  assert(region instanceof page.window.HTMLElement);
+  assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome Aj");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(region.hidden, true);
+  const leagueRow = page.document.querySelector("#dashboard-leagues-body tr");
+  assert(leagueRow instanceof page.window.HTMLTableRowElement);
+  assert.equal(leagueRow.children.length, 2);
+  assert.equal(leagueRow.children[0]?.getAttribute("data-label"), "League");
+  assert.equal(leagueRow.children[1]?.getAttribute("data-label"), "Actions");
+  assert(leagueRow.children[0]?.querySelector('a[href="/leagues/autumn-league"]'));
+  assert(leagueRow.children[1]?.querySelector('[aria-label="View Autumn League"]'));
+  assert(leagueRow.children[1]?.querySelector('[aria-label="Delete Autumn League"]'));
+  assert.doesNotMatch(leagueRow.textContent ?? "", /autumn-league|friendly/i);
+
+  dispatchClick(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(region.hidden, false);
+  assert.equal(page.document.activeElement?.id, "league-name");
+
+  let confirmations = 0;
+  Object.defineProperty(page.window, "confirm", {
+    value: () => {
+      confirmations += 1;
+      return true;
+    },
+    configurable: true,
+  });
+  const deleteIcon = page.document.querySelector(
+    '[data-action="delete-league"][data-league-id="autumn-league"] [data-icon="trash-2"]',
+  );
+  assert(deleteIcon instanceof page.window.HTMLElement);
+  dispatchClick(deleteIcon);
+  await flushAsync();
+
+  assert.equal(confirmations, 1);
+  assert.equal(apiState.leagues.has("autumn-league"), false);
+});
+
+test("empty dashboard does not reopen creation after a slow response overrides user choice", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  const defaultFetch = createMockFetch(apiState);
+  let resolveLeagues: ((response: Response) => void) | undefined;
+  const delayedFetch: typeof fetch = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    if ((init.method ?? "GET").toUpperCase() === "GET" && target.pathname === "/v1/leagues") {
+      return new Promise<Response>((resolve) => {
+        resolveLeagues = resolve;
+      });
+    }
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: delayedFetch,
+    flushOnBoot: false,
+  });
+  await flushAsync();
+
+  const toggle = page.document.querySelector('[data-testid="toggle-create-league"]');
+  const region = page.document.getElementById("dashboard-create-league-region");
+  const activityStatus = page.document.getElementById("setup-status");
+  assert(toggle instanceof page.window.HTMLButtonElement);
+  assert(region instanceof page.window.HTMLElement);
+  assert(activityStatus instanceof page.window.HTMLElement);
+  assert.equal(activityStatus.getAttribute("data-ui"), "activity-status");
+  assert.equal(activityStatus.getAttribute("data-activity"), "loading");
+  assert.equal(activityStatus.getAttribute("data-state"), null);
+  assert.equal(activityStatus.textContent, "Loading page…");
+  assert(activityStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
+  assert(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
+  assert.doesNotMatch(activityStatus.textContent ?? "", /Signed in as|Session active/);
+  dispatchClick(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  dispatchClick(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(page.document.activeElement, toggle);
+
+  assert(resolveLeagues);
+  resolveLeagues(createJsonResponse(200, { leagues: [] }));
+  await flushAsync();
+
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(region.hidden, true);
+  assert.equal(page.document.activeElement, toggle);
+  assert.equal(activityStatus.hidden, false);
+  assert.equal(activityStatus.textContent, "");
+});
+
+test("dashboard greeting falls back to the full email when no local-part token exists", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "...@example.com",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome ...@example.com");
+});
+
 test("league page loads reusable organiser share invites and sends direct email invites", async () => {
   const apiState = createMockApiState();
   apiState.session = {
@@ -2109,6 +2301,16 @@ test("league page loads reusable organiser share invites and sends direct email 
     createdAt: "2026-03-28T11:00:00.000Z",
     updatedAt: "2026-03-28T11:00:00.000Z",
   });
+  apiState.seasons.set("autumn-2026", {
+    leagueId: "autumn-league",
+    seasonId: "autumn-2026",
+    name: "Autumn 2026",
+    slug: "autumn-2026",
+    startsOn: "2026-03-01",
+    endsOn: "2026-05-31",
+    createdAt: "2026-03-28T11:00:01.000Z",
+    updatedAt: "2026-03-28T11:00:01.000Z",
+  });
   grantMockLeagueAccess(apiState, "autumn-league", "organizer@3fc.football", "admin");
 
   const leaguePage = await bootPage({
@@ -2119,29 +2321,73 @@ test("league page loads reusable organiser share invites and sends direct email 
   });
 
   const createInviteButton = leaguePage.document.querySelector('[data-testid="create-organiser-invite"]');
+  const createSeasonToggle = leaguePage.document.querySelector('[data-testid="toggle-create-season"]');
+  const createSeasonRegion = leaguePage.document.getElementById("league-create-season-region");
+  const inviteToggle = leaguePage.document.querySelector('[data-testid="toggle-organiser-invite"]');
+  const inviteRegion = leaguePage.document.getElementById("league-organiser-invite-region");
   const inviteEmailInput = leaguePage.document.getElementById("organiser-invite-email");
   assert(createInviteButton instanceof leaguePage.window.HTMLButtonElement);
+  assert(createSeasonToggle instanceof leaguePage.window.HTMLButtonElement);
+  assert(createSeasonRegion instanceof leaguePage.window.HTMLElement);
+  assert(inviteToggle instanceof leaguePage.window.HTMLButtonElement);
+  assert(inviteRegion instanceof leaguePage.window.HTMLElement);
   assert(inviteEmailInput instanceof leaguePage.window.HTMLInputElement);
+  const seasonsTable = leaguePage.document.querySelector('[data-testid="league-seasons-table"] table');
+  const seasonRow = leaguePage.document.querySelector("#league-seasons-body tr");
+  assert(seasonsTable instanceof leaguePage.window.HTMLTableElement);
+  assert.deepEqual(
+    [...seasonsTable.querySelectorAll("thead th")].map((heading) => heading.textContent),
+    ["Season name", "Dates", "Actions"],
+  );
+  assert(seasonRow instanceof leaguePage.window.HTMLTableRowElement);
+  assert.deepEqual(
+    [...seasonRow.children].map((cell) => cell.getAttribute("data-label")),
+    ["Season name", "Dates", "Actions"],
+  );
+  assert(seasonRow.querySelector('a[href="/leagues/autumn-league/seasons/autumn-2026"]'));
+  assert(seasonRow.querySelector('[aria-label="View Autumn 2026"] [data-icon="eye"]'));
+  assert(seasonRow.querySelector('[aria-label="Delete Autumn 2026"] [data-icon="trash-2"]'));
+  assert.doesNotMatch(seasonRow.textContent ?? "", /autumn-2026|friendly/i);
 
-  assert.equal(apiState.lastOrganiserInviteRequest?.leagueId, "autumn-league");
-  assert.deepEqual(apiState.lastOrganiserInviteRequest?.body, { email: null });
+  assert.equal(apiState.lastOrganiserInviteRequest, null);
+  assert.equal(inviteRegion.hidden, true);
+  dispatchClick(createSeasonToggle);
+  assert.equal(createSeasonRegion.hidden, false);
+  assert.equal(leaguePage.document.activeElement?.id, "season-name");
+  dispatchClick(inviteToggle);
+  await flushAsync();
+
+  assert.equal(inviteToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(inviteRegion.hidden, false);
+  assert.equal(createSeasonToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(createSeasonRegion.hidden, true);
+  assert.equal(leaguePage.document.activeElement, inviteEmailInput);
+  const shareRequest = apiState.lastOrganiserInviteRequest as unknown as Exclude<
+    MockApiState["lastOrganiserInviteRequest"],
+    null
+  >;
+  assert.equal(shareRequest.leagueId, "autumn-league");
+  assert.deepEqual(shareRequest.body, { email: null });
   assert.equal(
-    apiState.lastOrganiserInviteRequest?.idempotencyKey,
+    shareRequest.idempotencyKey,
     "organiser-share-invite-autumn-league",
   );
   assert.equal(
     apiState.storage.has("threefc-idempotency:organiser-invite:autumn-league-link"),
     false,
   );
-  assert.equal(
-    leaguePage.document.getElementById("organiser-share-invite-status")?.textContent,
-    "Share invite ready.",
-  );
+  assert.equal(leaguePage.document.getElementById("organiser-share-invite-status")?.textContent, "");
   assert.equal(leaguePage.document.getElementById("organiser-share-invite-code")?.textContent, "ABCD2345");
   const inviteLink = leaguePage.document.getElementById("organiser-share-invite-link");
   assert(inviteLink instanceof leaguePage.window.HTMLAnchorElement);
   assert.equal(inviteLink.href, "http://localhost:3000/invites?code=ABCD2345");
-  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result")?.hidden, true);
+  dispatchClick(inviteToggle);
+  assert.equal(inviteRegion.hidden, true);
+  assert.equal(leaguePage.document.activeElement, inviteToggle);
+  dispatchClick(inviteToggle);
+  await flushAsync();
+  assert.deepEqual(shareRequest.body, { email: null });
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result"), null);
   assert.equal(leaguePage.document.getElementById("organiser-invite-email-status")?.textContent, "");
 
   inviteEmailInput.value = "Coach@Example.COM";
@@ -2149,13 +2395,15 @@ test("league page loads reusable organiser share invites and sends direct email 
   dispatchClick(createInviteButton);
   await flushAsync();
 
-  assert.deepEqual(apiState.lastOrganiserInviteRequest?.body, { email: "Coach@Example.COM" });
+  const emailRequest = apiState.lastOrganiserInviteRequest as unknown as Exclude<
+    MockApiState["lastOrganiserInviteRequest"],
+    null
+  >;
+  assert.deepEqual(emailRequest.body, { email: "Coach@Example.COM" });
   assert.equal(leaguePage.document.getElementById("organiser-share-invite-code")?.textContent, "ABCD2345");
-  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result")?.hidden, false);
-  assert.equal(leaguePage.document.getElementById("organiser-email-invite-code")?.textContent, "EFGH2345");
-  const emailInviteLink = leaguePage.document.getElementById("organiser-email-invite-link");
-  assert(emailInviteLink instanceof leaguePage.window.HTMLAnchorElement);
-  assert.equal(emailInviteLink.href, "http://localhost:3000/invites?code=EFGH2345");
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result"), null);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-code"), null);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-link"), null);
   assert.equal(
     leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
     "Sent to coach@example.com.",
@@ -2234,6 +2482,10 @@ test("league page reuses organiser invite idempotency key until a retry succeeds
 
   assert.equal(leaguePage.document.getElementById("setup-status")?.textContent, "Organiser invite failed.");
   assert.equal(
+    leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
+    "Invite failed: Temporary failure.",
+  );
+  assert.equal(
     apiState.storage.get("threefc-idempotency:organiser-invite:autumn-league-coach%40example.com"),
     requestedKeys[0],
   );
@@ -2248,6 +2500,71 @@ test("league page reuses organiser invite idempotency key until a retry succeeds
     false,
   );
   assert.equal(leaguePage.document.getElementById("setup-status")?.textContent, "Organiser invite sent.");
+  assert.equal(
+    leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
+    "Sent to coach@example.com.",
+  );
+});
+
+test("league page retries a failed reusable invite when its disclosure is reopened", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-admin",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-admin";
+  apiState.leagues.set("autumn-league", {
+    leagueId: "autumn-league",
+    name: "Autumn League",
+    slug: "autumn-league",
+    createdByUserId: apiState.session.email,
+    createdAt: "2026-03-28T11:00:00.000Z",
+    updatedAt: "2026-03-28T11:00:00.000Z",
+  });
+  grantMockLeagueAccess(apiState, "autumn-league", apiState.session.email, "admin");
+
+  const defaultFetch = createMockFetch(apiState);
+  let shareAttempts = 0;
+  const retryFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "POST" && target.pathname === "/v1/leagues/autumn-league/organiser-invites") {
+      const body = typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+      if (body.email === null) {
+        shareAttempts += 1;
+        if (shareAttempts === 1) {
+          return createJsonResponse(503, { error: "temporary_failure", message: "Temporary failure." });
+        }
+      }
+    }
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "autumn-league"),
+    url: "http://localhost:3000/leagues/autumn-league",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: retryFetch,
+  });
+  const toggle = page.document.querySelector('[data-testid="toggle-organiser-invite"]');
+  assert(toggle instanceof page.window.HTMLButtonElement);
+
+  dispatchClick(toggle);
+  await flushAsync();
+  assert.equal(shareAttempts, 1);
+  assert.equal(
+    page.document.getElementById("organiser-share-invite-status")?.textContent,
+    "Share invite unavailable. Close and reopen to try again.",
+  );
+
+  dispatchClick(toggle);
+  dispatchClick(toggle);
+  await flushAsync();
+  assert.equal(shareAttempts, 2);
+  assert.equal(page.document.getElementById("organiser-share-invite-code")?.textContent, "ABCD2345");
 });
 
 test("league page shows manual invite link when organiser email delivery is unconfirmed", async () => {
@@ -2270,6 +2587,7 @@ test("league page shows manual invite link when organiser email delivery is unco
   grantMockLeagueAccess(apiState, "autumn-league", "organizer@3fc.football", "admin");
 
   const defaultFetch = createMockFetch(apiState);
+  const uncertainKeys: string[] = [];
   const uncertainFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
     const target =
       typeof input === "string" || input instanceof URL
@@ -2284,6 +2602,11 @@ test("league page shows manual invite link when organiser email delivery is unco
           : {};
       if (typeof body.email !== "string" || body.email.trim().length === 0) {
         return defaultFetch(input, init);
+      }
+
+      const idempotencyKey = readInitHeader(init, "idempotency-key");
+      if (idempotencyKey) {
+        uncertainKeys.push(idempotencyKey);
       }
 
       return createJsonResponse(202, {
@@ -2338,9 +2661,21 @@ test("league page shows manual invite link when organiser email delivery is unco
   );
   assert.equal(
     leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
-    "Delivery unconfirmed. Share the invite link manually.",
+    "Delivery unconfirmed. Open the email-restricted recovery link.",
   );
-  assert.equal(leaguePage.document.getElementById("organiser-email-invite-code")?.textContent, "UNKN2345");
+  const recoveryLink = leaguePage.document.querySelector(
+    "#organiser-invite-email-status .inline-recovery-link",
+  );
+  assert(recoveryLink instanceof leaguePage.window.HTMLAnchorElement);
+  assert.equal(recoveryLink.href, "http://localhost:3000/invites?code=UNKN2345");
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-code"), null);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-link"), null);
+  assert.equal(leaguePage.document.getElementById("organiser-email-invite-result"), null);
+  assert.equal(
+    apiState.storage.has("threefc-idempotency:organiser-invite:autumn-league-coach%40example.com"),
+    false,
+  );
+  assert.equal(uncertainKeys.length, 1);
 });
 
 test("invite page accepts organiser codes after confirmation and grants league admin access", async () => {
@@ -2383,10 +2718,8 @@ test("invite page accepts organiser codes after confirmation and grants league a
 
   assert.equal(apiState.leagueAccess.get(leagueAccessKey("autumn-league", "coach@example.com")), undefined);
   assert.equal(apiState.leagueInvites.get("ABCD2345")?.acceptedByUserId, null);
-  assert.equal(
-    invitePage.document.getElementById("setup-status")?.textContent,
-    "Invite page ready.",
-  );
+  assert.equal(invitePage.document.getElementById("setup-status")?.textContent, "");
+  assert.equal(invitePage.document.getElementById("setup-status")?.hidden, false);
   assert.equal(invitePage.document.getElementById("organiser-invite-code-form")?.hidden, true);
   assert.equal(invitePage.document.getElementById("organiser-invite-accept-code")?.textContent, "ABCD2345");
 
@@ -2413,6 +2746,26 @@ test("season page renders game kickoff times in the user local timezone", async 
   seedGoalScoringGame(apiState, {
     gameId: "game-season-local-time",
   });
+  const scheduledGame = apiState.games.get("game-season-local-time");
+  assert(scheduledGame);
+  apiState.games.set("game-season-live", {
+    ...scheduledGame,
+    gameId: "game-season-live",
+    status: "live",
+    gameStartTs: "2026-03-28T10:05:00.000Z",
+  });
+  apiState.games.set("game-season-finished", {
+    ...scheduledGame,
+    gameId: "game-season-finished",
+    status: "finished",
+    gameStartTs: "2026-03-28T10:10:00.000Z",
+  });
+  apiState.games.set("game-season-finished-earlier", {
+    ...scheduledGame,
+    gameId: "game-season-finished-earlier",
+    status: "finished",
+    gameStartTs: "2026-03-28T09:30:00.000Z",
+  });
 
   const page = await bootPage({
     html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
@@ -2421,12 +2774,160 @@ test("season page renders game kickoff times in the user local timezone", async 
     apiState,
   });
 
-  const gamesBody = page.document.getElementById("season-games-body");
+  const upcomingGamesBody = page.document.getElementById("season-upcoming-games-body");
+  const completedGamesBody = page.document.getElementById("season-completed-games-body");
   const game = apiState.games.get("game-season-local-time");
-  assert(gamesBody instanceof page.window.HTMLElement);
+  assert(upcomingGamesBody instanceof page.window.HTMLElement);
+  assert(completedGamesBody instanceof page.window.HTMLElement);
   assert(game);
-  assert.match(gamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
-  assert.doesNotMatch(gamesBody.textContent ?? "", /Z\b|UTC/);
+  assert.match(upcomingGamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-season-local-time/);
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /Z\b|UTC/);
+  const kickoffLink = upcomingGamesBody.querySelector('a[href="/games/game-season-local-time"]');
+  assert(kickoffLink instanceof page.window.HTMLAnchorElement);
+  assert.equal(kickoffLink.textContent, expectedLocalTimestamp(game.gameStartTs));
+  const statusChip = upcomingGamesBody.querySelector('[data-ui="status-chip"][data-status="scheduled"]');
+  assert(statusChip instanceof page.window.HTMLElement);
+  assert.match(statusChip.textContent ?? "", /Scheduled/);
+  assert(statusChip.querySelector('[data-icon="calendar-clock"]'));
+  assert(upcomingGamesBody.querySelector('[aria-label^="View game at"] [data-icon="eye"]'));
+  assert(upcomingGamesBody.querySelector('[aria-label^="Delete game at"] [data-icon="trash-2"]'));
+  assert(upcomingGamesBody.querySelector('[data-status="live"] [data-icon="activity"]'));
+  assert.equal(upcomingGamesBody.querySelector('[data-status="finished"]'), null);
+  assert.equal(completedGamesBody.querySelector('[data-status="scheduled"]'), null);
+  assert.equal(completedGamesBody.querySelectorAll('[data-status="finished"] [data-icon="circle-check"]').length, 2);
+  assert.equal(completedGamesBody.querySelectorAll('button[disabled][aria-label^="Delete game unavailable:"]').length, 2);
+  assert.equal(completedGamesBody.querySelector('[data-action="delete-game"]'), null);
+  assert.deepEqual(
+    [...upcomingGamesBody.querySelectorAll('a[href^="/games/"]')].filter((link) => !link.getAttribute("aria-label")).map((link) => link.getAttribute("href")),
+    ["/games/game-season-local-time", "/games/game-season-live"],
+  );
+  assert.deepEqual(
+    [...completedGamesBody.querySelectorAll('a[href^="/games/"]')].filter((link) => !link.getAttribute("aria-label")).map((link) => link.getAttribute("href")),
+    ["/games/game-season-finished", "/games/game-season-finished-earlier"],
+  );
+  const upcomingGamesWrap = page.document.querySelector('[data-testid="season-upcoming-games-table"]');
+  const completedGamesWrap = page.document.querySelector('[data-testid="season-completed-games-table"]');
+  assert(upcomingGamesWrap instanceof page.window.HTMLElement);
+  assert(completedGamesWrap instanceof page.window.HTMLElement);
+  assert.equal(upcomingGamesWrap.hidden, false);
+  assert.equal(page.document.getElementById("season-upcoming-games-empty")?.hidden, true);
+  assert.equal(completedGamesWrap.hidden, false);
+  assert.equal(page.document.getElementById("season-completed-games-empty")?.hidden, true);
+});
+
+test("season game groups expose accurate empty states and preserve finished-game delete locking", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "game-delete-upcoming", status: "scheduled" });
+  const upcomingGame = apiState.games.get("game-delete-upcoming");
+  assert(upcomingGame);
+  apiState.games.set("game-delete-completed", {
+    ...upcomingGame,
+    gameId: "game-delete-completed",
+    status: "finished",
+    gameStartTs: "2026-03-28T09:00:00.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
+    url: "http://localhost:3000/seasons/autumn-cup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  let confirmations = 0;
+  Object.defineProperty(page.window, "confirm", {
+    value: () => {
+      confirmations += 1;
+      return true;
+    },
+    configurable: true,
+  });
+
+  const upcomingWrap = page.document.querySelector('[data-testid="season-upcoming-games-table"]');
+  const completedWrap = page.document.querySelector('[data-testid="season-completed-games-table"]');
+  const upcomingEmpty = page.document.getElementById("season-upcoming-games-empty");
+  const completedEmpty = page.document.getElementById("season-completed-games-empty");
+  assert(upcomingWrap instanceof page.window.HTMLElement);
+  assert(completedWrap instanceof page.window.HTMLElement);
+  assert(upcomingEmpty instanceof page.window.HTMLElement);
+  assert(completedEmpty instanceof page.window.HTMLElement);
+  assert.equal(upcomingWrap.hidden, false);
+  assert.equal(completedWrap.hidden, false);
+
+  const upcomingDeleteIcon = page.document.querySelector(
+    '#season-upcoming-games-body [data-game-id="game-delete-upcoming"] [data-icon="trash-2"]',
+  );
+  assert(upcomingDeleteIcon instanceof page.window.HTMLElement);
+  dispatchClick(upcomingDeleteIcon);
+  await flushAsync();
+  assert.equal(confirmations, 1);
+  assert.equal(apiState.games.has("game-delete-upcoming"), false);
+  assert.equal(upcomingWrap.hidden, true);
+  assert.equal(upcomingEmpty.hidden, false);
+  assert.equal(upcomingEmpty.textContent, "No upcoming games.");
+  assert.equal(completedWrap.hidden, false);
+  assert.equal(completedEmpty.hidden, true);
+  assert(page.document.querySelector('#season-completed-games-body a[href="/games/game-delete-completed"]'));
+
+  const completedDeleteButton = page.document.querySelector(
+    '#season-completed-games-body button[disabled][aria-label^="Delete game unavailable:"]',
+  );
+  assert(completedDeleteButton instanceof page.window.HTMLButtonElement);
+  assert.equal(completedDeleteButton.hasAttribute("data-action"), false);
+  const completedDeleteIcon = completedDeleteButton.querySelector('[data-icon="trash-2"]');
+  assert(completedDeleteIcon instanceof page.window.HTMLElement);
+  dispatchClick(completedDeleteIcon);
+  await flushAsync();
+  assert.equal(confirmations, 1);
+  assert.equal(apiState.games.has("game-delete-completed"), true);
+  assert.equal(completedWrap.hidden, false);
+  assert.equal(completedEmpty.hidden, true);
+});
+
+test("season kickoff links use the next local calendar date across a UTC boundary", async () => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = "Australia/Melbourne";
+
+  try {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "game-date-boundary" });
+    const game = apiState.games.get("game-date-boundary");
+    assert(game);
+    game.gameStartTs = "2026-03-28T16:30:00.000Z";
+
+    const page = await bootPage({
+      html: renderSeasonPage("http://localhost:3001", "autumn-cup"),
+      url: "http://localhost:3000/seasons/autumn-cup",
+      scriptFile: "setup-flow.js",
+      apiState,
+    });
+
+    const kickoffLink = page.document.querySelector('a[href="/games/game-date-boundary"]');
+    assert(kickoffLink instanceof page.window.HTMLAnchorElement);
+    assert.equal(kickoffLink.textContent, "2026-03-29 03:30");
+
+    const gamePage = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "game-date-boundary" }),
+      url: "http://localhost:3000/games/game-date-boundary",
+      scriptFile: "setup-flow.js",
+      apiState,
+    });
+    assert.equal(
+      gamePage.document.getElementById("game-title")?.textContent,
+      expectedLocalDateHeading(game.gameStartTs),
+    );
+    assert.match(gamePage.document.getElementById("game-title")?.textContent ?? "", /29/);
+    assert.equal(
+      gamePage.document.getElementById("game-subtitle")?.textContent,
+      expectedLocalKickoffTime(game.gameStartTs),
+    );
+  } finally {
+    if (previousTimezone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = previousTimezone;
+    }
+  }
 });
 
 test("league static shell remounts nested league season routes as scoped season pages", async () => {
@@ -2434,6 +2935,14 @@ test("league static shell remounts nested league season routes as scoped season 
   seedGoalScoringGame(apiState, {
     gameId: "game-season-static-fallback",
     role: "admin",
+  });
+  const nestedUpcomingGame = apiState.games.get("game-season-static-fallback");
+  assert(nestedUpcomingGame);
+  apiState.games.set("game-season-static-finished", {
+    ...nestedUpcomingGame,
+    gameId: "game-season-static-finished",
+    status: "finished",
+    gameStartTs: "2026-03-27T10:00:00.000Z",
   });
 
   const page = await bootPage({
@@ -2445,15 +2954,46 @@ test("league static shell remounts nested league season routes as scoped season 
 
   const root = page.document.getElementById("setup-flow-root");
   const shell = page.document.querySelector('[data-testid="season-shell"]');
-  const gamesBody = page.document.getElementById("season-games-body");
+  const upcomingGamesBody = page.document.getElementById("season-upcoming-games-body");
+  const completedGamesBody = page.document.getElementById("season-completed-games-body");
+  const activityStatus = page.document.getElementById("setup-status");
 
   assert(shell instanceof page.window.HTMLElement);
+  assert(activityStatus instanceof page.window.HTMLElement);
   assert.equal(root?.getAttribute("data-page"), "season");
   assert.equal(root?.getAttribute("data-league-id"), "three-sided-football-club");
   assert.equal(root?.getAttribute("data-season-id"), "autumn-cup");
   assert.equal(page.document.getElementById("season-title")?.textContent, "Autumn Cup");
-  assert(gamesBody instanceof page.window.HTMLElement);
-  assert.match(gamesBody.textContent ?? "", /game-season-static-fallback/);
+  assert(upcomingGamesBody instanceof page.window.HTMLElement);
+  assert(completedGamesBody instanceof page.window.HTMLElement);
+  for (const testId of ["season-upcoming-games-table", "season-completed-games-table"]) {
+    const gamesTable = page.document.querySelector(`[data-testid="${testId}"] table`);
+    assert(gamesTable instanceof page.window.HTMLTableElement);
+    assert.equal(gamesTable.getAttribute("data-ui"), "data-table");
+    assert.equal(gamesTable.getAttribute("aria-label"), testId === "season-upcoming-games-table" ? "Upcoming games" : "Completed games");
+    assert.deepEqual(
+      [...gamesTable.querySelectorAll("thead th")].map((heading) => ({
+        text: heading.textContent,
+        scope: heading.getAttribute("scope"),
+      })),
+      [
+        { text: "Date", scope: "col" },
+        { text: "Status", scope: "col" },
+        { text: "Actions", scope: "col" },
+      ],
+    );
+  }
+  assert(upcomingGamesBody.querySelector('a[href="/games/game-season-static-fallback"]'));
+  assert(completedGamesBody.querySelector('a[href="/games/game-season-static-finished"]'));
+  assert.equal(upcomingGamesBody.querySelector("td")?.getAttribute("data-label"), "Date");
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-season-static-fallback/);
+  assert.equal(activityStatus.getAttribute("data-ui"), "activity-status");
+  assert.equal(activityStatus.getAttribute("role"), "status");
+  assert.equal(activityStatus.getAttribute("aria-live"), "polite");
+  assert(activityStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
+  assert(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
+  assert.equal(activityStatus.hidden, false);
+  assert.equal(activityStatus.textContent, "");
 });
 
 test("season page falls back to legacy season APIs during site-first scoped rollout", async () => {
@@ -2514,6 +3054,22 @@ test("season page falls back to legacy season APIs during site-first scoped roll
     createdAt: "2026-03-28T11:00:04.000Z",
     updatedAt: "2026-03-28T11:00:04.000Z",
   });
+  const visibleGame = apiState.games.get("game-visible");
+  const foreignGame = apiState.games.get("game-foreign");
+  assert(visibleGame);
+  assert(foreignGame);
+  apiState.games.set("game-visible-finished", {
+    ...visibleGame,
+    gameId: "game-visible-finished",
+    status: "finished",
+    gameStartTs: "2026-06-20T10:00:00.000Z",
+  });
+  apiState.games.set("game-foreign-finished", {
+    ...foreignGame,
+    gameId: "game-foreign-finished",
+    status: "finished",
+    gameStartTs: "2026-06-20T10:05:00.000Z",
+  });
 
   const page = await bootPage({
     html: renderSeasonPage("http://localhost:3001", "winter-2026", "league-a"),
@@ -2522,11 +3078,17 @@ test("season page falls back to legacy season APIs during site-first scoped roll
     apiState,
   });
 
-  const gamesBody = page.document.getElementById("season-games-body");
-  assert(gamesBody instanceof page.window.HTMLElement);
+  const upcomingGamesBody = page.document.getElementById("season-upcoming-games-body");
+  const completedGamesBody = page.document.getElementById("season-completed-games-body");
+  assert(upcomingGamesBody instanceof page.window.HTMLElement);
+  assert(completedGamesBody instanceof page.window.HTMLElement);
   assert.equal(page.document.getElementById("season-title")?.textContent, "Winter 2026");
-  assert.match(gamesBody.textContent ?? "", /game-visible/);
-  assert.doesNotMatch(gamesBody.textContent ?? "", /game-foreign/);
+  assert(upcomingGamesBody.querySelector('a[href="/games/game-visible"]'));
+  assert.equal(upcomingGamesBody.querySelector('a[href="/games/game-foreign"]'), null);
+  assert(completedGamesBody.querySelector('a[href="/games/game-visible-finished"]'));
+  assert.equal(completedGamesBody.querySelector('a[href="/games/game-foreign-finished"]'), null);
+  assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-visible|game-foreign/);
+  assert.doesNotMatch(completedGamesBody.textContent ?? "", /game-visible-finished|game-foreign-finished/);
 });
 
 test("setup happy path runs from sign-in to created game context", async () => {
@@ -2623,26 +3185,24 @@ test("setup happy path runs from sign-in to created game context", async () => {
 
   const gameDateInput = seasonPage.document.getElementById("game-date");
   const gameKickoffInput = seasonPage.document.getElementById("game-kickoff");
-  const gameIdDisplay = seasonPage.document.getElementById("game-id-display");
   const createGameButton = seasonPage.document.querySelector('[data-action="create-game"]');
   assert(gameDateInput instanceof seasonPage.window.HTMLInputElement);
   assert(gameKickoffInput instanceof seasonPage.window.HTMLInputElement);
-  assert(gameIdDisplay instanceof seasonPage.window.HTMLElement);
+  assert.equal(seasonPage.document.getElementById("game-id-display"), null);
   assert(createGameButton instanceof seasonPage.window.HTMLButtonElement);
 
   gameDateInput.value = "2026-03-28";
   gameDateInput.dispatchEvent(new seasonPage.window.Event("change", { bubbles: true }));
   gameKickoffInput.value = "2026-03-28T10:00";
   gameKickoffInput.dispatchEvent(new seasonPage.window.Event("change", { bubbles: true }));
-  const gameId = gameIdDisplay.textContent ?? "";
   dispatchClick(createGameButton);
   await flushAsync();
 
-  const createdGame = apiState.games.get(gameId);
-  assert(createdGame);
-
   const gameNavigation = seasonPage.navigations.at(-1);
   assert(gameNavigation);
+  const gameId = decodeURIComponent(gameNavigation.url.split("/").at(-1) ?? "");
+  const createdGame = apiState.games.get(gameId);
+  assert(createdGame);
   assert.equal(gameNavigation.url, `/games/${gameId}`);
 
   const gamePage = await bootPage({
@@ -2658,15 +3218,36 @@ test("setup happy path runs from sign-in to created game context", async () => {
   const seasonId = gamePage.document.getElementById("game-season-id");
   const createAnotherLink = gamePage.document.getElementById("create-another-game-link");
 
-  assert.equal(title?.textContent, gameId);
-  assert.match(subtitle?.textContent ?? "", new RegExp(expectedLocalTimestamp(createdGame.gameStartTs)));
+  assert.equal(title?.textContent, expectedLocalDateHeading(createdGame.gameStartTs));
+  assert.doesNotMatch(title?.textContent ?? "", new RegExp(gameId));
+  assert.match(subtitle?.textContent ?? "", /^Kickoff at /);
   assert.doesNotMatch(subtitle?.textContent ?? "", /Z\b|UTC/);
   assert.equal(leagueId?.textContent, "three-sided-football-club");
   assert.equal(seasonId?.textContent, "autumn-cup");
   assert.equal(
     createAnotherLink?.getAttribute("href"),
-    "/leagues/three-sided-football-club/seasons/autumn-cup",
+    "/leagues/three-sided-football-club/seasons/autumn-cup#create-game",
   );
+});
+
+test("season create-game hash opens and focuses the hidden form", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "existing-game" });
+
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup#create-game",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const toggle = page.document.querySelector('[data-testid="toggle-create-game"]');
+  const region = page.document.getElementById("season-create-game-region");
+  assert(toggle instanceof page.window.HTMLButtonElement);
+  assert(region instanceof page.window.HTMLElement);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(region.hidden, false);
+  assert.equal(page.document.activeElement?.id, "game-date");
 });
 
 test("season page does not fall back to legacy create routes when scoped writes are unavailable", async () => {
@@ -2911,7 +3492,11 @@ test("game page quick-creates and assigns roster players", async () => {
 
   const nicknameInput = gamePage.document.getElementById("player-nickname");
   const quickCreateButton = gamePage.document.querySelector('[data-action="quick-create-player"]');
+  const playerCreateActions = gamePage.document.querySelector('[data-ui="inline-input-actions"]');
+  const playerPool = gamePage.document.getElementById("player-pool");
   const rosterTeams = gamePage.document.getElementById("roster-teams");
+  const scoringTeamInput = gamePage.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = gamePage.document.getElementById("goal-conceding-team");
   const scorerInput = gamePage.document.getElementById("goal-scorer");
   const saveGoalButton = gamePage.document.querySelector('[data-action="save-goal"]');
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
@@ -2924,7 +3509,13 @@ test("game page quick-creates and assigns roster players", async () => {
   const finishedStatusOption = statusInput?.querySelector('option[value="finished"]');
   assert(nicknameInput instanceof gamePage.window.HTMLInputElement);
   assert(quickCreateButton instanceof gamePage.window.HTMLButtonElement);
+  assert(playerCreateActions instanceof gamePage.window.HTMLElement);
+  assert.equal(nicknameInput.parentElement, playerCreateActions);
+  assert.equal(quickCreateButton.parentElement, playerCreateActions);
+  assert(playerPool instanceof gamePage.window.HTMLElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
+  assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
   assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
   assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
@@ -2976,16 +3567,323 @@ test("game page quick-creates and assigns roster players", async () => {
   const assignment = apiState.roster.get(`game-1:${createdPlayer.playerId}`);
   assert.equal(assignment?.teamId, "red");
   assert.match(rosterTeams.textContent ?? "", /Ari/);
-  assert.equal(scorerInput.value, createdPlayer.playerId);
-  assert.match(scorerInput.textContent ?? "", /Ari/);
+  assert.doesNotMatch(playerPool.textContent ?? "", /Assigned to/);
+  const activeRedChip = playerPool.querySelector(
+    `[data-ui="team-chip"][data-player-id="${createdPlayer.playerId}"][data-team-id="red"]`,
+  );
+  assert(activeRedChip instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(activeRedChip.getAttribute("data-context"), "assign");
+  assert.equal(activeRedChip.getAttribute("aria-pressed"), "true");
+  assert.match(activeRedChip.getAttribute("style") ?? "", /--team-color: #d83b36/);
+  assert(activeRedChip.querySelector('[data-ui="team-chip-visual"]'));
+  assert(activeRedChip.querySelector('[data-icon="circle-check"]'));
+  const idleBlueChip = playerPool.querySelector(
+    `[data-ui="team-chip"][data-player-id="${createdPlayer.playerId}"][data-team-id="blue"]`,
+  );
+  assert(idleBlueChip instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(idleBlueChip.getAttribute("data-context"), "assign");
+  assert.equal(idleBlueChip.getAttribute("aria-pressed"), "false");
+  assert(idleBlueChip.querySelector('[data-ui="team-chip-visual"]'));
+  assert.equal(idleBlueChip.querySelector('[data-icon="circle-check"]'), null);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(concedingTeamInput.disabled, true);
+  assert.equal(scorerInput.value, "");
+  assert.equal(scorerInput.disabled, true);
+  assert.equal(scorerInput.textContent, "Assign players first");
   assert.equal(saveGoalButton.disabled, true);
-  assert.match(goalFormNote.textContent ?? "", /Start a third/);
+  assert.match(goalFormNote.textContent ?? "", /Choose a scoring team/);
 
+  const redRoster = rosterTeams.querySelector('[data-ui="roster-team"][data-team-id="red"]');
+  let transferButton = redRoster?.querySelector(
+    `[data-action="toggle-transfer"][data-player-id="${createdPlayer.playerId}"]`,
+  );
+  assert(transferButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(transferButton.getAttribute("aria-label"), "Transfer Ari");
+  assert.equal(transferButton.getAttribute("title"), "Transfer Ari");
+  assert.equal(transferButton.textContent, "");
+  const transferIcon = transferButton.querySelector('[data-icon="arrow-left-right"]');
+  assert(transferIcon instanceof gamePage.window.HTMLElement);
+  dispatchClick(transferIcon);
+
+  let transferMenu = gamePage.document.getElementById(`transfer-options-${createdPlayer.playerId}`);
+  assert(transferMenu instanceof gamePage.window.HTMLElement);
+  assert.equal(transferMenu.hidden, false);
+  assert.match(transferMenu.textContent ?? "", /Blue/);
+  assert.match(transferMenu.textContent ?? "", /Yellow/);
+  assert.doesNotMatch(transferMenu.textContent ?? "", /Red/);
+  assert.equal(
+    transferMenu.querySelector('[data-team-id="blue"]')?.getAttribute("aria-label"),
+    "Transfer Ari to Blue",
+  );
+  assert.equal(transferMenu.querySelector('[data-team-id="blue"]')?.getAttribute("data-context"), "transfer");
+  assert.equal(gamePage.document.activeElement?.getAttribute("data-team-id"), "blue");
+
+  transferMenu.dispatchEvent(
+    new gamePage.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  transferButton = rosterTeams.querySelector(
+    `[data-action="toggle-transfer"][data-player-id="${createdPlayer.playerId}"]`,
+  );
+  assert(transferButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(transferButton.getAttribute("aria-expanded"), "false");
+  assert.equal(gamePage.document.activeElement, transferButton);
+
+  dispatchClick(transferButton);
+  transferMenu = gamePage.document.getElementById(`transfer-options-${createdPlayer.playerId}`);
+  const transferBlue = transferMenu?.querySelector('[data-action="assign-player"][data-team-id="blue"]');
+  assert(transferBlue instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(transferBlue);
+  await flushAsync();
+
+  assert.equal(apiState.roster.get(`game-1:${createdPlayer.playerId}`)?.teamId, "blue");
+  const blueTransferButton = rosterTeams.querySelector(
+    `[data-ui="roster-team"][data-team-id="blue"] [data-action="toggle-transfer"][data-player-id="${createdPlayer.playerId}"]`,
+  );
+  assert(blueTransferButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(blueTransferButton.getAttribute("aria-expanded"), "false");
+  assert.equal(gamePage.document.activeElement, blueTransferButton);
+  dispatchClick(blueTransferButton);
+  const returnRed = gamePage.document
+    .getElementById(`transfer-options-${createdPlayer.playerId}`)
+    ?.querySelector('[data-action="assign-player"][data-team-id="red"]');
+  assert(returnRed instanceof gamePage.window.HTMLButtonElement);
+  dispatchClick(returnRed);
+  await flushAsync();
+  assert.equal(apiState.roster.get(`game-1:${createdPlayer.playerId}`)?.teamId, "red");
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  scorerInput.value = createdPlayer.playerId;
+  scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   dispatchClick(startThirdButton);
   await flushAsync();
   assert.equal(apiState.games.get("game-1")?.thirds[1].startedAt, "2026-03-28T11:00:10.000Z");
   assert.equal(saveGoalButton.disabled, false);
   assert.match(goalFormNote.textContent ?? "", /third 2/);
+});
+
+test("game roster transfer remains open after assignment failure", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-transfer-failure",
+    role: "admin",
+    sessionEmail: "organizer@3fc.football",
+  });
+  const transferFailureGame = apiState.games.get("game-transfer-failure");
+  assert(transferFailureGame);
+  ensureGameTeams(apiState, transferFailureGame);
+  const malformedRedTeam = apiState.gameTeams.get("game-transfer-failure:red");
+  assert(malformedRedTeam);
+  apiState.gameTeams.set("game-transfer-failure:red", {
+    ...malformedRedTeam,
+    color: "#12345",
+  });
+  apiState.players.set("player one", {
+    playerId: "player one",
+    nickname: "Player One",
+    claimedByUserId: null,
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+  apiState.gamePlayers.set("game-transfer-failure:player one", {
+    gameId: "game-transfer-failure",
+    playerId: "player one",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+  apiState.roster.set("game-transfer-failure:player one", {
+    gameId: "game-transfer-failure",
+    playerId: "player one",
+    teamId: "yellow",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
+  const defaultFetch = createMockFetch(apiState);
+  const failingTransferFetch: typeof fetch = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    if (
+      (init.method ?? "GET").toUpperCase() === "PUT" &&
+      target.pathname === "/v1/games/game-transfer-failure/roster/player-ari"
+    ) {
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Roster service unavailable.",
+      });
+    }
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-transfer-failure" }),
+    url: "http://localhost:3000/games/game-transfer-failure",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: failingTransferFetch,
+  });
+
+  const transferButton = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="red"] [data-action="toggle-transfer"][data-player-id="player-ari"]',
+  );
+  const unclaimedBadge = page.document.querySelector(
+    '[data-ui="claim-badge"][data-state="unclaimed"]',
+  );
+  const malformedRedRoster = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="red"]',
+  );
+  const malformedRedChip = page.document.querySelector(
+    '[data-ui="team-chip"][data-player-id="player-ari"][data-team-id="red"]',
+  );
+  const validBlueRoster = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="blue"]',
+  );
+  const spacedIdTransfer = page.document.querySelector(
+    '[data-action="toggle-transfer"][data-player-id="player one"]',
+  );
+  assert(transferButton instanceof page.window.HTMLButtonElement);
+  assert(unclaimedBadge instanceof page.window.HTMLElement);
+  assert(malformedRedRoster instanceof page.window.HTMLElement);
+  assert(malformedRedChip instanceof page.window.HTMLButtonElement);
+  assert(validBlueRoster instanceof page.window.HTMLElement);
+  assert(spacedIdTransfer instanceof page.window.HTMLButtonElement);
+  assert.match(malformedRedRoster.getAttribute("style") ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.match(malformedRedChip.getAttribute("style") ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.doesNotMatch(malformedRedRoster.getAttribute("style") ?? "", /javascript:/i);
+  assert.doesNotMatch(malformedRedChip.getAttribute("style") ?? "", /javascript:/i);
+  assert.match(validBlueRoster.getAttribute("style") ?? "", /--team-color: #2364d2/);
+  assert.equal(spacedIdTransfer.getAttribute("aria-controls"), "transfer-options-player%20one");
+  assert(page.document.getElementById("transfer-options-player%20one"));
+  assert.equal(unclaimedBadge.getAttribute("aria-label"), "Not claimed");
+  assert(unclaimedBadge.querySelector('[data-icon="circle-user-round"]'));
+  assert.doesNotMatch(page.document.getElementById("player-pool")?.textContent ?? "", /Not claimed/);
+  dispatchClick(transferButton);
+  let menu = page.document.getElementById("transfer-options-player-ari");
+  const beaTransferButton = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="red"] [data-action="toggle-transfer"][data-player-id="player-bea"]',
+  );
+  assert(beaTransferButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(beaTransferButton);
+  assert.equal(page.document.getElementById("transfer-options-player-ari")?.hidden, true);
+  assert.equal(page.document.getElementById("transfer-options-player-bea")?.hidden, false);
+  page.document
+    .getElementById("transfer-options-player-bea")
+    ?.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  const currentAriTransferButton = page.document.querySelector(
+    '[data-action="toggle-transfer"][data-player-id="player-ari"]',
+  );
+  assert(currentAriTransferButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(currentAriTransferButton);
+  menu = page.document.getElementById("transfer-options-player-ari");
+  const blueOption = menu?.querySelector('[data-action="assign-player"][data-team-id="blue"]');
+  assert(menu instanceof page.window.HTMLElement);
+  assert(blueOption instanceof page.window.HTMLButtonElement);
+  dispatchClick(blueOption);
+  blueOption.blur();
+  await flushAsync();
+
+  assert.equal(apiState.roster.get("game-transfer-failure:player-ari")?.teamId, "red");
+  assert.equal(menu.hidden, false);
+  assert.equal(
+    page.document
+      .querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]')
+      ?.getAttribute("aria-expanded"),
+    "true",
+  );
+  assert.equal(page.document.activeElement, blueOption);
+  assert.equal(page.document.getElementById("setup-status")?.textContent, "Roster assignment failed.");
+});
+
+test("game roster reconciles a committed transfer when refresh fails", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-transfer-refresh-failure",
+    role: "admin",
+    sessionEmail: "organizer@3fc.football",
+  });
+  const defaultFetch = createMockFetch(apiState);
+  let assignmentCommitted = false;
+  let resolveRosterRefresh: ((response: Response) => void) | undefined;
+  const refreshFailureFetch: typeof fetch = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (
+      method === "PUT" &&
+      target.pathname === "/v1/games/game-transfer-refresh-failure/roster/player-ari"
+    ) {
+      const response = await defaultFetch(input, init);
+      assignmentCommitted = true;
+      return response;
+    }
+    if (
+      assignmentCommitted &&
+      method === "GET" &&
+      target.pathname === "/v1/games/game-transfer-refresh-failure/roster"
+    ) {
+      return new Promise<Response>((resolve) => {
+        resolveRosterRefresh = resolve;
+      });
+    }
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-transfer-refresh-failure" }),
+    url: "http://localhost:3000/games/game-transfer-refresh-failure",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: refreshFailureFetch,
+  });
+
+  const transferButton = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="red"] [data-action="toggle-transfer"][data-player-id="player-ari"]',
+  );
+  assert(transferButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(transferButton);
+  const blueOption = page.document
+    .getElementById("transfer-options-player-ari")
+    ?.querySelector('[data-action="assign-player"][data-team-id="blue"]');
+  assert(blueOption instanceof page.window.HTMLButtonElement);
+  dispatchClick(blueOption);
+  await flushAsync();
+
+  assert.equal(assignmentCommitted, true);
+  assert.equal(apiState.roster.get("game-transfer-refresh-failure:player-ari")?.teamId, "blue");
+  let reconciledTrigger = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="blue"] [data-action="toggle-transfer"][data-player-id="player-ari"]',
+  );
+  assert(reconciledTrigger instanceof page.window.HTMLButtonElement);
+  assert.equal(reconciledTrigger.getAttribute("aria-expanded"), "false");
+  assert.equal(page.document.activeElement, reconciledTrigger);
+  assert.equal(page.document.querySelector('[data-ui="transfer-menu"]:not([hidden])'), null);
+
+  assert(resolveRosterRefresh);
+  resolveRosterRefresh(createJsonResponse(503, {
+    error: "unavailable",
+    message: "Roster refresh unavailable.",
+  }));
+  await flushAsync();
+
+  reconciledTrigger = page.document.querySelector(
+    '[data-ui="roster-team"][data-team-id="blue"] [data-action="toggle-transfer"][data-player-id="player-ari"]',
+  );
+  assert(reconciledTrigger instanceof page.window.HTMLButtonElement);
+  assert.equal(page.document.activeElement, reconciledTrigger);
+  assert.equal(
+    page.document.getElementById("setup-status")?.textContent,
+    "Roster assignment saved; roster refresh failed.",
+  );
+  assert.match(
+    page.document.getElementById("setup-error")?.textContent ?? "",
+    /Assignment was saved.*Roster refresh unavailable/,
+  );
 });
 
 test("game page lets league admins promote claimed players to scorers", async () => {
@@ -3008,6 +3906,13 @@ test("game page lets league admins promote claimed players to scorers", async ()
     createdAt: "2026-03-28T11:00:09.000Z",
     updatedAt: "2026-03-28T11:00:09.000Z",
   });
+  apiState.roster.set("game-delegate-scorer:player-delegate", {
+    gameId: "game-delegate-scorer",
+    playerId: "player-delegate",
+    teamId: "yellow",
+    createdAt: "2026-03-28T11:00:09.000Z",
+    updatedAt: "2026-03-28T11:00:09.000Z",
+  });
 
   const page = await bootPage({
     html: renderGamePage("http://localhost:3001", { gameId: "game-delegate-scorer" }),
@@ -3018,11 +3923,16 @@ test("game page lets league admins promote claimed players to scorers", async ()
 
   const playerPool = page.document.getElementById("player-pool");
   const makeScorerButton = page.document.querySelector(
-    '[data-action="grant-player-access"][data-user-id="delegate@3fc.football"][data-role="scorekeeper"]',
+    '[data-action="grant-player-access"][data-player-id="player-delegate"][data-role="scorekeeper"]',
   );
   assert(playerPool instanceof page.window.HTMLElement);
   assert(makeScorerButton instanceof page.window.HTMLButtonElement);
-  assert.match(playerPool.textContent ?? "", /delegate@3fc\.football/);
+  assert.doesNotMatch(playerPool.textContent ?? "", /delegate@3fc\.football/);
+  assert.doesNotMatch(playerPool.innerHTML, /delegate@3fc\.football|data-user-id/);
+  assert.equal(
+    playerPool.querySelector('[data-ui="claim-badge"][data-state="claimed"]')?.getAttribute("aria-label"),
+    "Claimed",
+  );
 
   dispatchClick(makeScorerButton);
   await flushAsync();
@@ -3215,7 +4125,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   const finishGameButton = page.document.querySelector('[data-action="finish-game"]');
   const timerDisplay = page.document.getElementById("timer-display");
   const resultSummary = page.document.getElementById("game-result-summary");
-  const finalReadiness = page.document.getElementById("final-game-readiness");
+  const finalStatus = page.document.getElementById("final-game-status");
   const thirdStatusList = page.document.getElementById("third-status-list");
 
   assert(structureMode instanceof page.window.HTMLElement);
@@ -3230,7 +4140,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert(finishGameButton instanceof page.window.HTMLButtonElement);
   assert(timerDisplay instanceof page.window.HTMLElement);
   assert(resultSummary instanceof page.window.HTMLElement);
-  assert(finalReadiness instanceof page.window.HTMLElement);
+  assert(finalStatus instanceof page.window.HTMLElement);
   assert(thirdStatusList instanceof page.window.HTMLElement);
   assert.equal(structureMode.hidden, false);
   assert.equal(playersMode.hidden, true);
@@ -3260,7 +4170,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   dispatchClick(startThirdButton);
   await flushAsync();
   assert.equal(runMode.hidden, false);
-  assert.match(finalReadiness.textContent ?? "", /Running/);
+  assert.equal(finalStatus.textContent, "Live");
   assert.match(gameStateTab.textContent ?? "", /Third 1/);
   assert.equal(gameStateTab.getAttribute("data-game-state"), "running");
 
@@ -3292,7 +4202,7 @@ test("game page mode panels advance from setup to run and finalisation", async (
   await flushAsync();
 
   assert.equal(finalMode.hidden, false);
-  assert.match(finalReadiness.textContent ?? "", /Ready to finish/);
+  assert.equal(finalStatus.textContent, "Live");
   assert.match(gameStateTab.textContent ?? "", /Final/);
   assert.match(gameStateTab.textContent ?? "", /Finish game/);
   assert.equal(gameStateTab.getAttribute("data-game-state"), "ready");
@@ -3313,6 +4223,73 @@ test("game page mode panels advance from setup to run and finalisation", async (
   assert.equal(gameStateTab.getAttribute("data-game-state"), "finished");
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /Draw/);
+});
+
+test("game page keeps delete locked while a finished game is loading", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, {
+    gameId: "game-finished-loading",
+    status: "finished",
+    role: "admin",
+    sessionEmail: "organizer@3fc.football",
+  });
+  const defaultFetch = createMockFetch(apiState);
+  let resolveGameResponse: (response: Response) => void = () => undefined;
+  const delayedGameResponse = new Promise<Response>((resolve) => {
+    resolveGameResponse = resolve;
+  });
+  let delayInitialGameRequest = true;
+  let deleteRequests = 0;
+  const delayedGameFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "DELETE" && target.pathname === "/v1/games/game-finished-loading") {
+      deleteRequests += 1;
+    }
+    if (
+      delayInitialGameRequest &&
+      method === "GET" &&
+      target.pathname === "/v1/games/game-finished-loading"
+    ) {
+      delayInitialGameRequest = false;
+      return delayedGameResponse;
+    }
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-finished-loading" }),
+    url: "http://localhost:3000/games/game-finished-loading",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: delayedGameFetch,
+    flushOnBoot: false,
+  });
+  const deleteButton = page.document.querySelector('[data-action="delete-game"]');
+  const deleteReason = page.document.getElementById("game-delete-lock-reason");
+  assert(deleteButton instanceof page.window.HTMLButtonElement);
+  assert(deleteReason instanceof page.window.HTMLElement);
+  assert.equal(deleteButton.disabled, true);
+  assert.equal(deleteReason.hidden, true);
+  dispatchClick(deleteButton);
+  assert.equal(deleteRequests, 0);
+
+  const game = apiState.games.get("game-finished-loading");
+  assert(game);
+  resolveGameResponse(createJsonResponse(200, game));
+  await flushAsync();
+
+  assert.equal(deleteButton.disabled, false);
+  assert.equal(deleteButton.getAttribute("aria-disabled"), "true");
+  assert.equal(deleteReason.hidden, false);
+  deleteButton.focus();
+  assert.equal(page.document.activeElement, deleteButton);
+  dispatchClick(deleteButton);
+  assert.equal(deleteRequests, 0);
+  assert.equal(page.document.getElementById("setup-status")?.textContent, "Finished games are locked.");
 });
 
 test("game page retries early game-state tab selection after initial game loading", async () => {
@@ -3404,16 +4381,18 @@ test("game page resumes completed live timers in finalisation mode", async () =>
   const runMode = page.document.getElementById("game-mode-run");
   const finalMode = page.document.getElementById("game-mode-final");
   const finishGameButton = page.document.querySelector('[data-action="finish-game"]');
-  const finalReadiness = page.document.getElementById("final-game-readiness");
+  const finalStatus = page.document.getElementById("final-game-status");
 
   assert(runMode instanceof page.window.HTMLElement);
   assert(finalMode instanceof page.window.HTMLElement);
   assert(finishGameButton instanceof page.window.HTMLButtonElement);
-  assert(finalReadiness instanceof page.window.HTMLElement);
+  assert(finalStatus instanceof page.window.HTMLElement);
   assert.equal(runMode.hidden, true);
   assert.equal(finalMode.hidden, false);
   assert.equal(finishGameButton.disabled, false);
-  assert.match(finalReadiness.textContent ?? "", /Ready to finish/);
+  assert.equal(finalStatus.textContent, "Live");
+  assert.equal(page.document.getElementById("final-game-id-value"), null);
+  assert.equal(page.document.getElementById("final-game-readiness"), null);
 });
 
 test("game page renders final team logs and aggregate player stats", async () => {
@@ -3467,7 +4446,7 @@ test("game page renders final team logs and aggregate player stats", async () =>
     {
       gameId: "game-final-stats",
       eventId: "goal-3",
-      third: 1,
+      third: 3,
       thirdMinute: 25,
       gameMinute: 25,
       elapsedSeconds: 1680,
@@ -3512,13 +4491,12 @@ test("game page renders final team logs and aggregate player stats", async () =>
   assert(ownGoalStats instanceof page.window.HTMLElement);
   assert(fullGoalLog instanceof page.window.HTMLElement);
   assert.equal(resultSummary.hidden, false);
-  assert.match(resultSummary.textContent ?? "", new RegExp(expectedLocalTimestamp("2026-03-28T11:02:00.000Z")));
-  assert.doesNotMatch(resultSummary.textContent ?? "", /Z\b|UTC/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Computed|2026-03-28 22:02|Z\b|UTC/);
   assert.match(redTeamLog.textContent ?? "", /Ari/);
   assert.match(redTeamLog.textContent ?? "", /1"/);
   assert.match(redTeamLog.textContent ?? "", /Assisted by Bea/);
   assert.match(redTeamLog.textContent ?? "", /Bea own goal/);
-  assert.match(redTeamLog.textContent ?? "", /25\+3"/);
+  assert.match(redTeamLog.textContent ?? "", /75\+3"/);
   assert.match(redTeamLog.textContent ?? "", /Conceded-only own goal/);
   assert.match(scorerStats.textContent ?? "", /Ari\s*1/);
   assert.match(scorerStats.textContent ?? "", /Cy\s*1/);
@@ -3526,7 +4504,25 @@ test("game page renders final team logs and aggregate player stats", async () =>
   assert.match(ownGoalStats.textContent ?? "", /Bea\s*1/);
   assert.equal(fullGoalLog.querySelectorAll('[data-ui="final-goal-item"]').length, 3);
   assert.match(fullGoalLog.textContent ?? "", /43"/);
-  assert.match(fullGoalLog.textContent ?? "", /Third 2/);
+  assert.doesNotMatch(fullGoalLog.textContent ?? "", /Third [123]/);
+  assert.equal(fullGoalLog.querySelectorAll('[data-ui="third-indicator"]').length, 3);
+  assert(
+    fullGoalLog.querySelector('[data-ui="third-indicator"][data-third="2"][aria-label="Third 2 of 3"]'),
+  );
+  assert(
+    fullGoalLog.querySelector('[data-ui="third-indicator"][data-third="1"][aria-label="Third 1 of 3"]'),
+  );
+  assert(
+    fullGoalLog.querySelector('[data-ui="third-indicator"][data-third="3"][aria-label="Third 3 of 3"]'),
+  );
+  assert.equal(
+    fullGoalLog.querySelector('[data-event-id="goal-1"] [data-ui="goal-team-semantics"]')?.textContent,
+    "Scoring team: Red. Conceding team: Blue.",
+  );
+  assert.equal(
+    fullGoalLog.querySelector('[data-event-id="goal-3"] [data-ui="goal-team-semantics"]')?.textContent,
+    "Own goal. No scoring team. Conceding team: Red.",
+  );
 });
 
 test("game page converts partial goal times into full-match football notation", async () => {
@@ -3566,7 +4562,7 @@ test("game page converts partial goal times into full-match football notation", 
   apiState.goalEvents.set("goal-partial-stoppage", {
     gameId: "game-football-time-format",
     eventId: "goal-partial-stoppage",
-    third: 1,
+    third: 3,
     thirdMinute: 25,
     gameMinute: 0,
     elapsedSeconds: 1680,
@@ -3591,14 +4587,22 @@ test("game page converts partial goal times into full-match football notation", 
 
   const resultSummary = page.document.getElementById("game-result-summary");
   const fullGoalLog = page.document.querySelector('[data-testid="final-full-goal-log"]');
+  const timeline = page.document.getElementById("goal-timeline");
 
   assert(resultSummary instanceof page.window.HTMLElement);
   assert(fullGoalLog instanceof page.window.HTMLElement);
+  assert(timeline instanceof page.window.HTMLElement);
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /43"/);
-  assert.match(resultSummary.textContent ?? "", /25\+3"/);
+  assert.match(resultSummary.textContent ?? "", /75\+3"/);
   assert.match(fullGoalLog.textContent ?? "", /43"/);
-  assert.match(fullGoalLog.textContent ?? "", /25\+3"/);
+  assert.match(fullGoalLog.textContent ?? "", /75\+3"/);
+  const latestGoal = timeline.querySelector('[data-ui="goal-event"][data-state="latest"]');
+  assert(latestGoal instanceof page.window.HTMLElement);
+  assert.match(latestGoal.textContent ?? "", /75\+3"\s*Bea\s*OG\s*→/);
+  assert.equal(latestGoal.querySelectorAll('[data-ui="goal-team-chip"]').length, 1);
+  assert(latestGoal.querySelector('[data-ui="goal-team-chip"][data-team-id="red"]'));
+  assert(latestGoal.querySelector('[data-ui="third-indicator"][data-third="3"][aria-label="Third 3 of 3"]'));
   assert.doesNotMatch(resultSummary.textContent ?? "", /18:00|25\+03|UTC|Z\b/);
 });
 
@@ -3643,6 +4647,22 @@ test("game page remains usable when goal timeline load fails", async () => {
         ? new URL(String(input))
         : new URL(input.url);
     const method = (init.method ?? "GET").toUpperCase();
+    if (method === "GET" && target.pathname === "/v1/games/game-goals-fail/roster") {
+      const response = await defaultFetch(input, init);
+      const payload = (await response.json()) as {
+        teams?: Array<Record<string, unknown>>;
+        roster?: unknown[];
+      };
+      return createJsonResponse(200, {
+        ...payload,
+        teams: (payload.teams ?? []).map((team) => ({
+          ...team,
+          conceded: 0,
+          scored: 0,
+        })),
+      });
+    }
+
     if (method === "GET" && target.pathname === "/v1/games/game-goals-fail/goals") {
       return createJsonResponse(503, {
         error: "unavailable",
@@ -3677,6 +4697,12 @@ test("game page remains usable when goal timeline load fails", async () => {
   assert(goalSummaryUnavailable instanceof page.window.HTMLElement);
   assert(quickCreateButton instanceof page.window.HTMLButtonElement);
   assert.equal(status.textContent, "Could not load goal timeline.");
+  assert.equal(status.getAttribute("data-state"), "error");
+  assert.equal(status.getAttribute("data-activity"), "message");
+  assert.equal(
+    status.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"),
+    false,
+  );
   assert.equal(error.hidden, false);
   assert.equal(error.textContent, "Goal feed unavailable.");
   assert.match(rosterTeams.textContent ?? "", /Red/);
@@ -3685,6 +4711,22 @@ test("game page remains usable when goal timeline load fails", async () => {
   assert.match(resultSummary.textContent ?? "", /Red win/);
   assert.match(resultSummary.textContent ?? "", /Goal summaries unavailable/);
   assert.doesNotMatch(resultSummary.textContent ?? "", /No goals recorded|No scorers recorded/);
+  const initialRedScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  const initialBlueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  assert(initialRedScoreCard instanceof page.window.HTMLElement);
+  assert(initialBlueScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...initialRedScoreCard.querySelectorAll("dl div")].map((row) =>
+      row.textContent?.replace(/\s/g, ""),
+    ),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...initialBlueScoreCard.querySelectorAll("dl div")].map((row) =>
+      row.textContent?.replace(/\s/g, ""),
+    ),
+    ["Conceded1", "Scored0"],
+  );
   assert.equal(page.document.querySelector('[data-testid="final-full-goal-log"]'), null);
   assert.equal(quickCreateButton.disabled, false);
 });
@@ -3785,10 +4827,18 @@ test("game page reuses create goal idempotency key for unchanged retry", async (
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  const beaAssist = page.document.querySelector('#goal-assists input[value="player-bea"]');
+  assert(beaAssist instanceof page.window.HTMLInputElement);
+  beaAssist.checked = true;
+  beaAssist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
 
   dispatchClick(saveGoalButton);
   await flushAsync();
   assert.equal(apiState.goalEvents.size, 0);
+  assert.equal(scoringTeamInput.value, "red");
+  assert.equal(concedingTeamInput.value, "blue");
+  assert.equal(scorerInput.value, "player-ari");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 1);
 
   dispatchClick(saveGoalButton);
   await flushAsync();
@@ -3797,6 +4847,740 @@ test("game page reuses create goal idempotency key for unchanged retry", async (
   assert.equal(createGoalIdempotencyKeys.length, 2);
   assert.ok(createGoalIdempotencyKeys[0]);
   assert.equal(createGoalIdempotencyKeys[0], createGoalIdempotencyKeys[1]);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.equal(concedingTeamInput.disabled, true);
+  assert.equal(scorerInput.disabled, true);
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  const repeatedBeaAssist = page.document.querySelector('#goal-assists input[value="player-bea"]');
+  assert(repeatedBeaAssist instanceof page.window.HTMLInputElement);
+  repeatedBeaAssist.checked = true;
+  repeatedBeaAssist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 2);
+  assert.equal(createGoalIdempotencyKeys.length, 3);
+  assert.ok(createGoalIdempotencyKeys[2]);
+  assert.notEqual(createGoalIdempotencyKeys[1], createGoalIdempotencyKeys[2]);
+});
+
+test("game page preserves authoritative scores and retires retry keys after rejected goal mutations", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-goal-rejected",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-goal-rejected",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  const seededGame = apiState.games.get("game-goal-rejected");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+
+  const defaultFetch = createMockFetch(apiState);
+  const updateKeys: Array<string | null> = [];
+  const undoKeys: Array<string | null> = [];
+  const deleteKeys: Array<string | null> = [];
+  const rejectedFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const goalsPath = "/v1/games/game-goal-rejected/goals";
+
+    if (method === "PATCH" && target.pathname === `${goalsPath}/goal-1`) {
+      updateKeys.push(readInitHeader(init, "idempotency-key"));
+      return createJsonResponse(403, {
+        error: "forbidden",
+        message: "Goal correction is not permitted.",
+      });
+    }
+    if (method === "POST" && target.pathname === `${goalsPath}/undo-last`) {
+      undoKeys.push(readInitHeader(init, "idempotency-key"));
+      return createJsonResponse(409, {
+        error: "goal_conflict",
+        message: "The latest goal cannot be undone.",
+      });
+    }
+    if (method === "DELETE" && target.pathname === `${goalsPath}/goal-1`) {
+      deleteKeys.push(readInitHeader(init, "idempotency-key"));
+      return createJsonResponse(403, {
+        error: "forbidden",
+        message: "Goal deletion is not permitted.",
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-goal-rejected" }),
+    url: "http://localhost:3000/games/game-goal-rejected",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: rejectedFetch,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const status = page.document.getElementById("setup-status");
+  const error = page.document.getElementById("setup-error");
+  const editGoalButton = page.document.querySelector(
+    '[data-action="edit-goal"][data-event-id="goal-1"]',
+  );
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert(error instanceof page.window.HTMLElement);
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+
+  const assertAuthoritativeRedResult = () => {
+    const redScoreCard = scoreboard.querySelector('[data-ui="score-team"][data-team-id="red"]');
+    const blueScoreCard = scoreboard.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+    assert(redScoreCard instanceof page.window.HTMLElement);
+    assert(blueScoreCard instanceof page.window.HTMLElement);
+    assert.deepEqual(
+      [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+      ["Conceded0", "Scored1"],
+    );
+    assert.deepEqual(
+      [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+      ["Conceded1", "Scored0"],
+    );
+    assert.match(resultSummary.textContent ?? "", /Red win/);
+    assert.doesNotMatch(resultSummary.textContent ?? "", /Result may have changed|Result refresh required/);
+    assert(page.document.querySelector('[data-event-id="goal-1"]'));
+  };
+
+  assertAuthoritativeRedResult();
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  assertAuthoritativeRedResult();
+  assert.match(status.textContent ?? "", /Goal was not saved/);
+  assert.match(error.textContent ?? "", /Goal correction is not permitted/);
+  assert.equal(scoringTeamInput.value, "blue");
+  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(scorerInput.value, "player-cy");
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  assert.equal(updateKeys.length, 2);
+  assert.ok(updateKeys[0]);
+  assert.ok(updateKeys[1]);
+  assert.notEqual(updateKeys[0], updateKeys[1]);
+  assertAuthoritativeRedResult();
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assertAuthoritativeRedResult();
+  assert.match(status.textContent ?? "", /latest goal was not undone/i);
+  assert.match(error.textContent ?? "", /latest goal cannot be undone/i);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.equal(undoKeys.length, 2);
+  assert.ok(undoKeys[0]);
+  assert.ok(undoKeys[1]);
+  assert.notEqual(undoKeys[0], undoKeys[1]);
+  assertAuthoritativeRedResult();
+
+  const deleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteGoalButton);
+  await flushAsync();
+  assertAuthoritativeRedResult();
+  assert.match(status.textContent ?? "", /goal was not deleted/i);
+  assert.match(error.textContent ?? "", /Goal deletion is not permitted/);
+  const retryDeleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(retryDeleteGoalButton);
+  await flushAsync();
+  assert.equal(deleteKeys.length, 2);
+  assert.ok(deleteKeys[0]);
+  assert.ok(deleteKeys[1]);
+  assert.notEqual(deleteKeys[0], deleteKeys[1]);
+  assertAuthoritativeRedResult();
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "red");
+  assert.equal(apiState.games.get("game-goal-rejected")?.result?.winnerTeamId, "red");
+});
+
+test("game page reconciles authoritative goals after replayed create, delete, and undo responses", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-goal-replay-reconcile",
+    status: "live",
+    thirds,
+  });
+
+  const defaultFetch = createMockFetch(apiState);
+  const createKeys: Array<string | null> = [];
+  const deleteKeys: Array<string | null> = [];
+  const undoKeys: Array<string | null> = [];
+  let createAttempts = 0;
+  let deleteAttempts = 0;
+  let undoAttempts = 0;
+  let authoritativeGoalGets = 0;
+  let createReplay: unknown = null;
+  let deleteReplay: unknown = null;
+  let undoReplay: unknown = null;
+
+  const externalGoal = (
+    eventId: string,
+    createdAt: string,
+    scoringTeamId: TeamId,
+    concedingTeamId: TeamId,
+    scorerPlayerId: string,
+  ): MockGoalEvent => ({
+    gameId: "game-goal-replay-reconcile",
+    eventId,
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 45,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId,
+    concedingTeamId,
+    scorerPlayerId,
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt,
+    updatedAt: createdAt,
+  });
+
+  const replayingFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const goalsPath = "/v1/games/game-goal-replay-reconcile/goals";
+
+    if (method === "POST" && target.pathname === goalsPath) {
+      createAttempts += 1;
+      createKeys.push(readInitHeader(init, "idempotency-key"));
+      if (createAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        createReplay = await committed.json();
+        apiState.goalEvents.set(
+          "goal-external-create",
+          externalGoal(
+            "goal-external-create",
+            "2026-03-28T11:01:02.000Z",
+            "blue",
+            "red",
+            "player-cy",
+          ),
+        );
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Goal response was lost after commit.",
+        });
+      }
+      if (createAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before replay.",
+        });
+      }
+      return createJsonResponse(201, createReplay);
+    }
+
+    if (
+      method === "DELETE" &&
+      target.pathname === "/v1/games/game-goal-replay-reconcile/goals/goal-1"
+    ) {
+      deleteAttempts += 1;
+      deleteKeys.push(readInitHeader(init, "idempotency-key"));
+      if (deleteAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        deleteReplay = await committed.json();
+        apiState.goalEvents.set(
+          "goal-external-delete",
+          externalGoal(
+            "goal-external-delete",
+            "2026-03-28T11:01:03.000Z",
+            "yellow",
+            "blue",
+            "player-bea",
+          ),
+        );
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Delete response was lost after commit.",
+        });
+      }
+      if (deleteAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before delete replay.",
+        });
+      }
+      return createJsonResponse(200, deleteReplay);
+    }
+
+    if (
+      method === "POST" &&
+      target.pathname === "/v1/games/game-goal-replay-reconcile/goals/undo-last"
+    ) {
+      undoAttempts += 1;
+      undoKeys.push(readInitHeader(init, "idempotency-key"));
+      if (undoAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        undoReplay = await committed.json();
+        apiState.goalEvents.set(
+          "goal-external-undo",
+          externalGoal(
+            "goal-external-undo",
+            "2026-03-28T11:01:04.000Z",
+            "red",
+            "yellow",
+            "player-ari",
+          ),
+        );
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Undo response was lost after commit.",
+        });
+      }
+      if (undoAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before undo replay.",
+        });
+      }
+      return createJsonResponse(200, undoReplay);
+    }
+
+    if (method === "GET" && target.pathname === goalsPath) {
+      authoritativeGoalGets += 1;
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-goal-replay-reconcile" }),
+    url: "http://localhost:3000/games/game-goal-replay-reconcile",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: replayingFetch,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+  authoritativeGoalGets = 0;
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const status = page.document.getElementById("setup-status");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(status.textContent ?? "", /earlier goal save is still unconfirmed/);
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(createAttempts, 3);
+  assert.ok(createKeys[0]);
+  assert.equal(createKeys[0], createKeys[1]);
+  assert.equal(createKeys[1], createKeys[2]);
+  assert(page.document.querySelector('[data-event-id="goal-external-create"]'));
+  assert.equal(authoritativeGoalGets, 1);
+
+  const deleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(deleteGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  const retryDeleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(retryDeleteGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(status.textContent ?? "", /earlier deletion is still unconfirmed/);
+  const replayDeleteGoalButton = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(replayDeleteGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(replayDeleteGoalButton);
+  await flushAsync();
+
+  assert.equal(deleteAttempts, 3);
+  assert.ok(deleteKeys[0]);
+  assert.equal(deleteKeys[0], deleteKeys[1]);
+  assert.equal(deleteKeys[1], deleteKeys[2]);
+  assert.equal(page.document.querySelector('[data-event-id="goal-1"]'), null);
+  assert(page.document.querySelector('[data-event-id="goal-external-delete"]'));
+  assert.equal(authoritativeGoalGets, 2);
+
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(status.textContent ?? "", /earlier undo is still unconfirmed/);
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+
+  assert.equal(undoAttempts, 3);
+  assert.ok(undoKeys[0]);
+  assert.equal(undoKeys[0], undoKeys[1]);
+  assert.equal(undoKeys[1], undoKeys[2]);
+  assert.equal(page.document.querySelector('[data-event-id="goal-external-delete"]'), null);
+  assert(page.document.querySelector('[data-event-id="goal-external-undo"]'));
+  assert.equal(authoritativeGoalGets, 3);
+});
+
+test("game page hides finished scores until a lost correction response is replayed", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-finished-lost-correction",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-finished-lost-correction",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  const seededGame = apiState.games.get("game-finished-lost-correction");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+
+  const defaultFetch = createMockFetch(apiState);
+  const updateKeys: Array<string | null> = [];
+  let updateAttempts = 0;
+  let replayBody: unknown = null;
+  const lostResponseFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    if (
+      method === "PATCH" &&
+      target.pathname === "/v1/games/game-finished-lost-correction/goals/goal-1"
+    ) {
+      updateAttempts += 1;
+      updateKeys.push(readInitHeader(init, "idempotency-key"));
+      if (updateAttempts === 1) {
+        const committed = await defaultFetch(input, init);
+        replayBody = await committed.json();
+        return createJsonResponse(503, {
+          error: "response_lost",
+          message: "Goal update response was lost after commit.",
+        });
+      }
+      if (updateAttempts === 2) {
+        return createJsonResponse(403, {
+          error: "forbidden",
+          message: "Goal access expired before correction replay.",
+        });
+      }
+      return createJsonResponse(200, replayBody);
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-finished-lost-correction" }),
+    url: "http://localhost:3000/games/game-finished-lost-correction",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: lostResponseFetch,
+  });
+
+  const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const status = page.document.getElementById("setup-status");
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert.match(resultSummary.textContent ?? "", /Red win/);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateAttempts, 1);
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "blue");
+  assert.equal(apiState.games.get("game-finished-lost-correction")?.result?.winnerTeamId, "blue");
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
+  assert.match(resultSummary.textContent ?? "", /Result may have changed/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Red win|Blue win|Draw/);
+  assert.match(status.textContent ?? "", /Retry with the same details/);
+  assert.equal(scoringTeamInput.value, "blue");
+  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(scorerInput.value, "player-cy");
+
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateAttempts, 2);
+  assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
+  assert.match(resultSummary.textContent ?? "", /Result may have changed/);
+  assert.equal(scoringTeamInput.value, "blue");
+  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(scorerInput.value, "player-cy");
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(updateAttempts, 3);
+  assert.ok(updateKeys[0]);
+  assert.equal(updateKeys[0], updateKeys[1]);
+  assert.equal(updateKeys[1], updateKeys[2]);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.match(resultSummary.textContent ?? "", /Blue win/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Result may have changed|Result refresh required/);
+  const blueScoreCard = scoreboard.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  const redScoreCard = scoreboard.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  assert(blueScoreCard instanceof page.window.HTMLElement);
+  assert(redScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
+});
+
+test("game page clears an open edit draft after a committed delete or undo", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0] = {
+    ...thirds[0],
+    startedAt: "2026-03-28T11:00:10.000Z",
+  };
+  seedGoalScoringGame(apiState, {
+    gameId: "game-edit-draft-mutation",
+    status: "live",
+    thirds,
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-edit-draft-mutation",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: ["player-bea"],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  apiState.goalEvents.set("goal-2", {
+    gameId: "game-edit-draft-mutation",
+    eventId: "goal-2",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 40,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "blue",
+    concedingTeamId: "red",
+    scorerPlayerId: "player-cy",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:02.000Z",
+    updatedAt: "2026-03-28T11:01:02.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-edit-draft-mutation" }),
+    url: "http://localhost:3000/games/game-edit-draft-mutation",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  Object.defineProperty(page.window, "confirm", {
+    value: () => true,
+    configurable: true,
+  });
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+
+  const editGoalOne = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const deleteGoalOne = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(editGoalOne instanceof page.window.HTMLButtonElement);
+  assert(deleteGoalOne instanceof page.window.HTMLButtonElement);
+  dispatchClick(editGoalOne);
+  await flushAsync();
+  assert.equal(scoringTeamInput.value, "red");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 1);
+
+  const refreshedDeleteGoalOne = page.document.querySelector(
+    '[data-action="delete-goal"][data-event-id="goal-1"]',
+  );
+  assert(refreshedDeleteGoalOne instanceof page.window.HTMLButtonElement);
+  dispatchClick(refreshedDeleteGoalOne);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.has("goal-1"), false);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
+  assert.match(saveGoalButton.textContent ?? "", /Add goal/);
+
+  const editGoalTwo = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-2"]');
+  assert(editGoalTwo instanceof page.window.HTMLButtonElement);
+  dispatchClick(editGoalTwo);
+  await flushAsync();
+  assert.equal(scoringTeamInput.value, "blue");
+
+  dispatchClick(undoLastGoalButton);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.has("goal-2"), false);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.match(saveGoalButton.textContent ?? "", /Add goal/);
 });
 
 test("game page treats later created same-second goals as latest", async () => {
@@ -3890,7 +5674,7 @@ test("game page reuses correction idempotency keys for unchanged retries", async
     scoringTeamId: "red",
     concedingTeamId: "blue",
     scorerPlayerId: "player-ari",
-    assistPlayerIds: [],
+    assistPlayerIds: ["player-bea", "player-cy"],
     ownGoal: false,
     createdAt: "2026-03-28T11:01:01.000Z",
     updatedAt: "2026-03-28T11:01:01.000Z",
@@ -3974,21 +5758,39 @@ test("game page reuses correction idempotency keys for unchanged retries", async
 
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
   const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  const assistsDropdown = page.document.getElementById("goal-assists-dropdown");
+  const assistsSummary = page.document.getElementById("goal-assists-summary");
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  assert(assistsDropdown instanceof page.window.HTMLDetailsElement);
+  assert(assistsSummary instanceof page.window.HTMLElement);
 
   const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
   dispatchClick(editGoalButton);
   await flushAsync();
+  assert.equal(assistsDropdown.open, false);
+  assert.equal(assistsSummary.textContent, "Bea, Cy");
+  assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 2);
+  assistsDropdown.open = true;
   dispatchClick(saveGoalButton);
   await flushAsync();
+  assert.equal(assistsDropdown.open, true);
+  assert.equal(assistsSummary.textContent, "Bea, Cy");
+  assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy");
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 2);
   dispatchClick(saveGoalButton);
   await flushAsync();
 
   assert.equal(updateKeys.length, 2);
   assert.ok(updateKeys[0]);
   assert.equal(updateKeys[0], updateKeys[1]);
+  assert.equal(apiState.goalEvents.get("goal-1")?.ownGoal, false);
+  assert.equal(assistsDropdown.open, false);
+  assert.equal(assistsSummary.textContent, "Choose assists");
+  assert.equal(assistsSummary.hasAttribute("title"), false);
+  assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
 
   const deleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
   assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
@@ -4148,7 +5950,9 @@ test("game page clears a historical scorer after changing the goal context", asy
   concedingTeamInput.value = "blue";
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
 
-  assert.equal(scorerSelect.value, "player-cy");
+  assert.equal(scorerSelect.value, "");
+  assert.equal(scorerSelect.disabled, false);
+  assert.match(scorerSelect.textContent ?? "", /Cy/);
   assert.doesNotMatch(scorerSelect.textContent ?? "", /Ari \(not currently rostered\)/);
 });
 
@@ -4256,7 +6060,7 @@ test("game page reconciles current goals after stale correction replay", async (
   await flushAsync();
 
   assert.equal(patchCalls, 2);
-  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+  assert.match(timeline.textContent ?? "", /Cy\s*→/);
 });
 
 test("game page invalidates current goals when correction replay refresh fails", async () => {
@@ -4350,13 +6154,21 @@ test("game page invalidates current goals when correction replay refresh fails",
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
   const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
   const timeline = page.document.getElementById("goal-timeline");
+  const scoreboard = page.document.getElementById("live-scoreboard");
   const status = page.document.getElementById("setup-status");
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
   assert(timeline instanceof page.window.HTMLElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
   assert(status instanceof page.window.HTMLElement);
-  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert.match(timeline.textContent ?? "", /Cy\s*→/);
 
   dispatchClick(editGoalButton);
   await flushAsync();
@@ -4364,11 +6176,217 @@ test("game page invalidates current goals when correction replay refresh fails",
   await flushAsync();
   await flushAsync();
 
-  assert.match(status.textContent ?? "", /Goal save failed/);
+  assert.match(status.textContent ?? "", /Goal updated; scores and timeline unavailable/);
+  assert.equal(status.hasAttribute("data-state"), false);
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
-  assert.doesNotMatch(timeline.textContent ?? "", /Cy for Blue/);
+  assert.doesNotMatch(timeline.textContent ?? "", /Cy\s*→/);
+  assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
+  assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
   assert.equal(saveGoalButton.disabled, true);
   assert.equal(undoLastGoalButton.disabled, true);
+});
+
+test("game page refreshes the finished result when a committed edit timeline reload fails", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-finished-timeline-refresh-fail",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  apiState.goalEvents.set("goal-1", {
+    gameId: "game-finished-timeline-refresh-fail",
+    eventId: "goal-1",
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "blue",
+    scorerPlayerId: "player-ari",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  });
+  const seededGame = apiState.games.get("game-finished-timeline-refresh-fail");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+  const originalGoal = apiState.goalEvents.get("goal-1");
+  assert(originalGoal);
+  const staleReplayGoal = { ...originalGoal };
+  const staleReplayScoreboard = recomputeMockScoreboard(apiState, seededGame);
+
+  const defaultFetch = createMockFetch(apiState);
+  let correctionCommitted = false;
+  let failedGoalRefreshes = 0;
+  let successfulGameRefreshes = 0;
+  let resolveGameRefresh: ((response: Response) => void) | undefined;
+  const partialRefreshFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (
+      method === "PATCH" &&
+      target.pathname === "/v1/games/game-finished-timeline-refresh-fail/goals/goal-1"
+    ) {
+      await defaultFetch(input, init);
+      correctionCommitted = true;
+      return createJsonResponse(200, {
+        goal: staleReplayGoal,
+        scoreboard: {
+          teams: staleReplayScoreboard,
+        },
+        timeline: [staleReplayGoal],
+      });
+    }
+
+    if (
+      correctionCommitted &&
+      method === "GET" &&
+      target.pathname === "/v1/games/game-finished-timeline-refresh-fail/goals"
+    ) {
+      failedGoalRefreshes += 1;
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Goal timeline could not be refreshed.",
+      });
+    }
+
+    if (
+      correctionCommitted &&
+      method === "GET" &&
+      target.pathname === "/v1/games/game-finished-timeline-refresh-fail"
+    ) {
+      successfulGameRefreshes += 1;
+      return new Promise<Response>((resolve) => {
+        resolveGameRefresh = resolve;
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", {
+      gameId: "game-finished-timeline-refresh-fail",
+    }),
+    url: "http://localhost:3000/games/game-finished-timeline-refresh-fail",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: partialRefreshFetch,
+  });
+
+  const editGoalButton = page.document.querySelector(
+    '[data-action="edit-goal"][data-event-id="goal-1"]',
+  );
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const timeline = page.document.getElementById("goal-timeline");
+  const status = page.document.getElementById("setup-status");
+  const error = page.document.getElementById("setup-error");
+  const resultSummary = page.document.getElementById("game-result-summary");
+  assert(editGoalButton instanceof page.window.HTMLButtonElement);
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(timeline instanceof page.window.HTMLElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert(error instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert.match(resultSummary.textContent ?? "", /Red win/);
+
+  dispatchClick(editGoalButton);
+  await flushAsync();
+  scoringTeamInput.value = "blue";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "red";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-cy";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "blue");
+  assert.equal(apiState.goalEvents.get("goal-1")?.concedingTeamId, "red");
+  assert.equal(apiState.goalEvents.get("goal-1")?.scorerPlayerId, "player-cy");
+  assert.equal(apiState.games.get("game-finished-timeline-refresh-fail")?.result?.winnerTeamId, "blue");
+  assert.equal(failedGoalRefreshes, 1);
+  assert.equal(successfulGameRefreshes, 1);
+  assert(resolveGameRefresh);
+  assert.equal(saveGoalButton.disabled, true);
+  assert.match(page.document.getElementById("live-scoreboard")?.textContent ?? "", /Refreshing scores/);
+  assert.equal(page.document.querySelector('[data-ui="score-team"]'), null);
+
+  const refreshedGame = apiState.games.get("game-finished-timeline-refresh-fail");
+  assert(refreshedGame);
+  resolveGameRefresh(createJsonResponse(200, refreshedGame));
+  await flushAsync();
+
+  assert.equal(failedGoalRefreshes, 1);
+  assert.equal(successfulGameRefreshes, 1);
+  assert.match(status.textContent ?? "", /Goal updated\. Scores refreshed; goal timeline unavailable/);
+  assert.match(error.textContent ?? "", /Goal details could not be loaded\. Reload to try again/);
+  assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
+  assert.equal(resultSummary.hidden, false);
+  assert.equal(
+    resultSummary.querySelector('[data-testid="game-result-outcome"]')?.textContent,
+    "Blue win",
+  );
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Result refresh required/);
+  const blueTeam = resultSummary.querySelector('[data-ui="result-team"][data-team-id="blue"]');
+  const redTeam = resultSummary.querySelector('[data-ui="result-team"][data-team-id="red"]');
+  assert(blueTeam instanceof page.window.HTMLElement);
+  assert(redTeam instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...blueTeam.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...redTeam.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
+  const blueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  const redScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  assert(blueScoreCard instanceof page.window.HTMLElement);
+  assert(redScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
+  assert(resultSummary.querySelector('[data-testid="final-team-log-unavailable-blue"]'));
+  assert(resultSummary.querySelector('[data-testid="final-goal-summary-unavailable"]'));
+  assert.equal(resultSummary.querySelector('[data-testid="final-full-goal-log"]'), null);
+  assert.equal(scoringTeamInput.disabled, true);
+  assert.equal(concedingTeamInput.disabled, true);
+  assert.equal(scorerInput.disabled, true);
+  assert.equal(saveGoalButton.disabled, true);
+  const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
+  assert.equal(undoLastGoalButton.disabled, true);
+  assert.equal(timeline.querySelector('[data-action="edit-goal"]'), null);
+  assert.equal(timeline.querySelector('[data-action="delete-goal"]'), null);
 });
 
 test("game page renders malformed result data without crashing", async () => {
@@ -4413,7 +6431,7 @@ test("game page renders malformed result data without crashing", async () => {
         {
           teamId: "red",
           name: 123,
-          color: "#d83b36",
+          color: "url(javascript:alert(1))",
           scored: "1",
           conceded: null,
           rank: 0,
@@ -4450,6 +6468,240 @@ test("game page renders malformed result data without crashing", async () => {
     resultSummary.querySelector('[data-ui="result-team"][data-team-id="red"] strong')?.textContent,
     "red",
   );
+  assert.match(
+    resultSummary.querySelector('[data-ui="result-team"][data-team-id="red"]')?.getAttribute("style") ?? "",
+    /^--team-color: #[0-9a-f]{6}$/i,
+  );
+  assert.doesNotMatch(resultSummary.innerHTML, /javascript:/);
+});
+
+test("game page renders malformed goal identity values without crashing", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-malformed-goal",
+    status: "finished",
+    thirds,
+  });
+  const seededGame = apiState.games.get("game-malformed-goal");
+  assert(seededGame);
+  ensureGameTeams(apiState, seededGame);
+  const malformedRedTeam = apiState.gameTeams.get("game-malformed-goal:red");
+  assert(malformedRedTeam);
+  malformedRedTeam.name = 123 as unknown as string;
+  malformedRedTeam.color = "#123";
+  const malformedBlueTeam = apiState.gameTeams.get("game-malformed-goal:blue");
+  assert(malformedBlueTeam);
+  malformedBlueTeam.color = "#123f";
+  const malformedYellowTeam = apiState.gameTeams.get("game-malformed-goal:yellow");
+  assert(malformedYellowTeam);
+  malformedYellowTeam.color = "javascript:alert(1)";
+  apiState.gameTeams.set("game-malformed-goal:constructor", {
+    ...malformedRedTeam,
+    teamId: "constructor" as TeamId,
+    name: "Constructor",
+    color: "#00000080",
+  });
+  apiState.gameTeams.set("game-malformed-goal:opaque-alpha", {
+    ...malformedRedTeam,
+    teamId: "opaque-alpha" as TeamId,
+    name: "Opaque Alpha",
+    color: "#1a2b3cff",
+  });
+  for (const player of [
+    { playerId: "99", nickname: "Valid 99" },
+    { playerId: "17", nickname: "Valid 17" },
+  ]) {
+    apiState.players.set(player.playerId, {
+      ...player,
+      claimedByUserId: null,
+      createdAt: "2026-03-28T11:00:07.000Z",
+      updatedAt: "2026-03-28T11:00:07.000Z",
+    });
+    apiState.gamePlayers.set(`game-malformed-goal:${player.playerId}`, {
+      gameId: "game-malformed-goal",
+      playerId: player.playerId,
+      createdAt: "2026-03-28T11:00:08.000Z",
+      updatedAt: "2026-03-28T11:00:08.000Z",
+    });
+    apiState.roster.set(`game-malformed-goal:${player.playerId}`, {
+      gameId: "game-malformed-goal",
+      playerId: player.playerId,
+      teamId: "red",
+      createdAt: "2026-03-28T11:00:08.000Z",
+      updatedAt: "2026-03-28T11:00:08.000Z",
+    });
+  }
+  apiState.goalEvents.set("malformed-goal", {
+    gameId: "game-malformed-goal",
+    eventId: 123,
+    third: 1,
+    thirdMinute: 1,
+    gameMinute: 1,
+    elapsedSeconds: 30,
+    stoppageMinute: null,
+    displayTime: "1'",
+    scoringTeamId: "red",
+    concedingTeamId: "constructor",
+    scorerPlayerId: 99,
+    assistPlayerIds: [17],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:01.000Z",
+    updatedAt: "2026-03-28T11:01:01.000Z",
+  } as unknown as MockGoalEvent);
+  for (const [index, eventId] of ["valid-goal-1", "valid-goal-2"].entries()) {
+    apiState.goalEvents.set(eventId, {
+      gameId: "game-malformed-goal",
+      eventId,
+      third: 1,
+      thirdMinute: 2 + index,
+      gameMinute: 2 + index,
+      elapsedSeconds: 60 + index * 30,
+      stoppageMinute: null,
+      displayTime: `${2 + index}'`,
+      scoringTeamId: "red",
+      concedingTeamId: "blue",
+      scorerPlayerId: "99",
+      assistPlayerIds: ["17"],
+      ownGoal: false,
+      createdAt: `2026-03-28T11:01:0${2 + index}.000Z`,
+      updatedAt: `2026-03-28T11:01:0${2 + index}.000Z`,
+    });
+  }
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:02:00.000Z");
+  apiState.goalEvents.set("unsafe-color-goal", {
+    gameId: "game-malformed-goal",
+    eventId: "unsafe-color-goal",
+    third: 1,
+    thirdMinute: 4,
+    gameMinute: 4,
+    elapsedSeconds: 120,
+    stoppageMinute: null,
+    displayTime: "4'",
+    scoringTeamId: "yellow",
+    concedingTeamId: "red",
+    scorerPlayerId: "unsafe-player",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:04.000Z",
+    updatedAt: "2026-03-28T11:01:04.000Z",
+  });
+  apiState.goalEvents.set("unknown-color-goal", {
+    gameId: "game-malformed-goal",
+    eventId: "unknown-color-goal",
+    third: 1,
+    thirdMinute: 5,
+    gameMinute: 5,
+    elapsedSeconds: 150,
+    stoppageMinute: null,
+    displayTime: "5'",
+    scoringTeamId: 1 as unknown as TeamId,
+    concedingTeamId: 6 as unknown as TeamId,
+    scorerPlayerId: "unknown-color-player",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:05.000Z",
+    updatedAt: "2026-03-28T11:01:05.000Z",
+  });
+  apiState.goalEvents.set("opaque-alpha-goal", {
+    gameId: "game-malformed-goal",
+    eventId: "opaque-alpha-goal",
+    third: 1,
+    thirdMinute: 6,
+    gameMinute: 6,
+    elapsedSeconds: 180,
+    stoppageMinute: null,
+    displayTime: "6'",
+    scoringTeamId: "opaque-alpha" as TeamId,
+    concedingTeamId: "red",
+    scorerPlayerId: "opaque-alpha-player",
+    assistPlayerIds: [],
+    ownGoal: false,
+    createdAt: "2026-03-28T11:01:06.000Z",
+    updatedAt: "2026-03-28T11:01:06.000Z",
+  });
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-malformed-goal" }),
+    url: "http://localhost:3000/games/game-malformed-goal",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+
+  const goal = page.document.querySelector('[data-ui="goal-event"][data-event-id="123"]');
+  const fullGoalLog = page.document.querySelector('[data-testid="final-full-goal-log"]');
+  const scorerStats = page.document.querySelector('[data-testid="final-scorer-stats"]');
+  const assistStats = page.document.querySelector('[data-testid="final-assist-stats"]');
+  assert(goal instanceof page.window.HTMLElement);
+  assert(fullGoalLog instanceof page.window.HTMLElement);
+  assert(scorerStats instanceof page.window.HTMLElement);
+  assert(assistStats instanceof page.window.HTMLElement);
+  assert.match(goal.textContent ?? "", /Unknown player \(invalid ID: 99\)\s*→/);
+  assert.match(goal.textContent ?? "", /Assists: Unknown player \(invalid ID: 17\)/);
+  assert(goal.querySelector('[data-ui="goal-team-chip"][data-team-id="red"][aria-label="Scoring team: red"]'));
+  assert(goal.querySelector('[data-ui="goal-team-chip"][data-team-id="constructor"][aria-label="Conceding team: Constructor"]'));
+  assert.equal(goal.querySelector('[data-team-id="red"]')?.textContent, "");
+  assert.equal(goal.querySelector('[data-team-id="constructor"]')?.textContent, "");
+  const malformedScoringDotStyle = goal.querySelector('[data-team-id="red"]')?.getAttribute("style");
+  const malformedConcedingDotStyle = goal.querySelector('[data-team-id="constructor"]')?.getAttribute("style");
+  assert.match(malformedScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.match(malformedConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.notEqual(malformedScoringDotStyle, malformedConcedingDotStyle);
+  assert.doesNotMatch(malformedConcedingDotStyle ?? "", /#00000080/i);
+  const duplicateColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="valid-goal-1"]');
+  assert(duplicateColorGoal instanceof page.window.HTMLElement);
+  const duplicateScoringDotStyle = duplicateColorGoal.querySelector('[data-team-id="red"]')?.getAttribute("style");
+  const duplicateConcedingDotStyle = duplicateColorGoal.querySelector('[data-team-id="blue"]')?.getAttribute("style");
+  assert.match(duplicateScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.match(duplicateConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.notEqual(duplicateScoringDotStyle, duplicateConcedingDotStyle);
+  assert.notEqual(duplicateScoringDotStyle, "--team-color: #112233");
+  assert.notEqual(duplicateConcedingDotStyle, "--team-color: #112233");
+  const liveScoreboard = page.document.getElementById("live-scoreboard");
+  assert(liveScoreboard instanceof page.window.HTMLElement);
+  assert.equal(
+    liveScoreboard.querySelector('[data-ui="score-team"][data-team-id="red"]')?.getAttribute("style"),
+    duplicateScoringDotStyle,
+  );
+  assert.equal(
+    liveScoreboard.querySelector('[data-ui="score-team"][data-team-id="blue"]')?.getAttribute("style"),
+    duplicateConcedingDotStyle,
+  );
+  const unsafeColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unsafe-color-goal"]');
+  assert(unsafeColorGoal instanceof page.window.HTMLElement);
+  const unsafeDotStyle = unsafeColorGoal.querySelector('[data-team-id="yellow"]')?.getAttribute("style");
+  assert.match(unsafeDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.doesNotMatch(unsafeColorGoal.innerHTML, /javascript:/i);
+  assert.equal(
+    liveScoreboard.querySelector('[data-ui="score-team"][data-team-id="yellow"]')?.getAttribute("style"),
+    unsafeDotStyle,
+  );
+  const unknownColorGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="unknown-color-goal"]');
+  assert(unknownColorGoal instanceof page.window.HTMLElement);
+  const unknownScoringDotStyle = unknownColorGoal.querySelector('[data-team-id="1"]')?.getAttribute("style");
+  const unknownConcedingDotStyle = unknownColorGoal.querySelector('[data-team-id="6"]')?.getAttribute("style");
+  assert.match(unknownScoringDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.match(unknownConcedingDotStyle ?? "", /^--team-color: #[0-9a-f]{6}$/i);
+  assert.notEqual(unknownScoringDotStyle, unknownConcedingDotStyle);
+  const opaqueAlphaGoal = page.document.querySelector('[data-ui="goal-event"][data-event-id="opaque-alpha-goal"]');
+  assert(opaqueAlphaGoal instanceof page.window.HTMLElement);
+  assert.equal(
+    opaqueAlphaGoal.querySelector('[data-team-id="opaque-alpha"]')?.getAttribute("style"),
+    "--team-color: #1a2b3c",
+  );
+  assert.doesNotMatch(goal.innerHTML, /javascript:/i);
+  assert.doesNotMatch(goal.innerHTML, /undefined|null/);
+  assert.match(fullGoalLog.textContent ?? "", /Unknown player \(invalid ID: 99\)/);
+  assert.match(scorerStats.textContent ?? "", /Valid 99\s*2/);
+  assert.match(scorerStats.textContent ?? "", /Unknown player \(invalid ID: 99\)\s*1/);
+  assert.doesNotMatch(scorerStats.textContent ?? "", /Valid 99\s*3/);
+  assert.match(assistStats.textContent ?? "", /Valid 17\s*2/);
+  assert.match(assistStats.textContent ?? "", /Unknown player \(invalid ID: 17\)\s*1/);
+  assert.doesNotMatch(fullGoalLog.innerHTML, /undefined|null/);
 });
 
 test("game page runs live goal scoring, corrections, undo, and delete", async () => {
@@ -4488,6 +6740,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
     { playerId: "player-ari", nickname: "Ari", teamId: "red" as TeamId },
     { playerId: "player-bea", nickname: "Bea", teamId: "red" as TeamId },
     { playerId: "player-cy", nickname: "Cy", teamId: "blue" as TeamId },
+    { playerId: "player-dax", nickname: "Dax", teamId: "red" as TeamId },
+    { playerId: "player-eve", nickname: "Eve", teamId: "blue" as TeamId },
   ];
   for (const playerSeed of playerSeeds) {
     apiState.players.set(playerSeed.playerId, {
@@ -4529,6 +6783,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   const concedingTeamInput = gamePage.document.getElementById("goal-conceding-team");
   const ownGoalInput = gamePage.document.getElementById("goal-own-goal");
   const scorerInput = gamePage.document.getElementById("goal-scorer");
+  const assistsDropdown = gamePage.document.getElementById("goal-assists-dropdown");
+  const assistsSummary = gamePage.document.getElementById("goal-assists-summary");
   const assistsElement = gamePage.document.getElementById("goal-assists");
   const saveGoalButton = gamePage.document.querySelector('[data-action="save-goal"]');
   const undoLastGoalButton = gamePage.document.querySelector('[data-action="undo-last-goal"]');
@@ -4540,6 +6796,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
   assert(ownGoalInput instanceof gamePage.window.HTMLInputElement);
   assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
+  assert(assistsDropdown instanceof gamePage.window.HTMLDetailsElement);
+  assert(assistsSummary instanceof gamePage.window.HTMLElement);
   assert(assistsElement instanceof gamePage.window.HTMLElement);
   assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof gamePage.window.HTMLButtonElement);
@@ -4547,7 +6805,17 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
 
   assert.match(scoreboard.textContent ?? "", /Red/);
   assert.match(timeline.textContent ?? "", /No goals yet/);
+  assert.equal(scoringTeamInput.options[0]?.textContent, "Choose Team");
+  assert.equal(concedingTeamInput.options[0]?.textContent, "Choose Team");
+  assert.equal(assistsDropdown.open, false);
+  assert.equal(assistsSummary.textContent, "Choose assists");
   assert.equal(undoLastGoalButton.disabled, true);
+  for (const scoreTeam of scoreboard.querySelectorAll('[data-ui="score-team"]')) {
+    assert.deepEqual(
+      [...scoreTeam.querySelectorAll("dt")].map((term) => term.textContent),
+      ["Conceded", "Scored"],
+    );
+  }
 
   dispatchClick(startThirdButton);
   await flushAsync();
@@ -4560,17 +6828,77 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   const beaAssist = assistsElement.querySelector('input[value="player-bea"]');
   assert(beaAssist instanceof gamePage.window.HTMLInputElement);
+  assistsDropdown.open = true;
+  beaAssist.focus();
   beaAssist.checked = true;
   beaAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  const focusedBeaAssist = assistsElement.querySelector('input[value="player-bea"]');
+  const cyAssist = assistsElement.querySelector('input[value="player-cy"]');
+  assert(focusedBeaAssist instanceof gamePage.window.HTMLInputElement);
+  assert(cyAssist instanceof gamePage.window.HTMLInputElement);
+  assert.equal(gamePage.document.activeElement, focusedBeaAssist);
+  assert.equal(assistsSummary.textContent, "Bea");
+  cyAssist.checked = true;
+  cyAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  assert.equal(assistsSummary.textContent, "Bea, Cy");
+  assert.equal(assistsElement.querySelectorAll('input[type="checkbox"]:checked').length, 2);
+  const daxAssist = assistsElement.querySelector('input[value="player-dax"]');
+  assert(daxAssist instanceof gamePage.window.HTMLInputElement);
+  daxAssist.checked = true;
+  daxAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
+  assert.equal(assistsSummary.textContent, "Bea, Cy, Dax");
+  assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy, Dax");
+  const eveAssist = assistsElement.querySelector('input[value="player-eve"]');
+  assert(eveAssist instanceof gamePage.window.HTMLInputElement);
+  assert.equal(eveAssist.disabled, true);
+  assert.equal(assistsElement.querySelectorAll('input[type="checkbox"]:checked').length, 3);
+  const assistsSummaryControl = assistsDropdown.querySelector("summary");
+  assert(assistsSummaryControl instanceof gamePage.window.HTMLElement);
+  assistsDropdown.dispatchEvent(new gamePage.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(assistsDropdown.open, false);
+  assert.equal(gamePage.document.activeElement, assistsSummaryControl);
   dispatchClick(saveGoalButton);
   await flushAsync();
 
   assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, "red");
   assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*1/);
   assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
-  assert.match(timeline.textContent ?? "", /Ari for Red/);
-  assert.match(timeline.textContent ?? "", /Assists: Bea/);
+  assert.match(timeline.textContent ?? "", /Ari\s*→/);
+  assert.deepEqual(apiState.goalEvents.get("goal-1")?.assistPlayerIds, ["player-bea", "player-cy", "player-dax"]);
+  assert.match(timeline.textContent ?? "", /Assists: Bea, Cy, Dax/);
   assert.equal(undoLastGoalButton.disabled, false);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.equal(ownGoalInput.checked, false);
+  assert.equal(concedingTeamInput.disabled, true);
+  assert.equal(scorerInput.disabled, true);
+  assert.equal(assistsElement.querySelectorAll('input[type="checkbox"]:checked').length, 0);
+  assert.equal(assistsDropdown.open, false);
+  assert.equal(assistsSummary.textContent, "Choose assists");
+  const firstGoal = timeline.querySelector('[data-ui="goal-event"][data-event-id="goal-1"]');
+  assert(firstGoal instanceof gamePage.window.HTMLElement);
+  assert.equal(firstGoal.querySelector('[data-ui="goal-scorer"]')?.getAttribute("title"), "Ari");
+  assert(
+    firstGoal.querySelector(
+      '[data-ui="goal-team-chip"][role="img"][data-team-id="red"][aria-label="Scoring team: Red"]',
+    ),
+  );
+  assert.equal(firstGoal.querySelector('[data-team-id="red"]')?.textContent, "");
+  assert.equal(firstGoal.querySelector('[data-team-id="red"]')?.getAttribute("title"), "Scoring team: Red");
+  assert(firstGoal.querySelector('[data-ui="goal-team-arrow"]'));
+  assert(
+    firstGoal.querySelector(
+      '[data-ui="goal-team-chip"][role="img"][data-team-id="blue"][aria-label="Conceding team: Blue"]',
+    ),
+  );
+  assert.equal(firstGoal.querySelector('[data-team-id="blue"]')?.textContent, "");
+  assert.equal(firstGoal.querySelector('[data-team-id="blue"]')?.getAttribute("title"), "Conceding team: Blue");
+  assert.doesNotMatch(firstGoal.textContent ?? "", /\bRed\b|\bBlue\b/);
+  assert(firstGoal.querySelector('[data-ui="third-indicator"][data-third="1"][aria-label="Third 1 of 3"]'));
+  assert(firstGoal.querySelector('[data-action="edit-goal"] [data-icon="pencil"]'));
+  assert(firstGoal.querySelector('[data-action="delete-goal"] [data-icon="trash-2"]'));
+  assert.doesNotMatch(firstGoal.textContent ?? "", /Latest/);
 
   const refreshedPage = await bootPage({
     html: renderGamePage("http://localhost:3001", { gameId: "game-live-1" }),
@@ -4588,12 +6916,14 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert(refreshedEditButton instanceof refreshedPage.window.HTMLButtonElement);
   assert.match(refreshedScoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*1/);
   assert.match(refreshedScoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
-  assert.match(refreshedTimeline.textContent ?? "", /Ari for Red/);
+  assert.match(refreshedTimeline.textContent ?? "", /Ari\s*→/);
   assert.equal(refreshedUndoButton.disabled, false);
 
   const editGoalButton = gamePage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   assert(editGoalButton instanceof gamePage.window.HTMLButtonElement);
-  dispatchClick(editGoalButton);
+  const editGoalIcon = editGoalButton.querySelector('[data-icon="pencil"]');
+  assert(editGoalIcon instanceof gamePage.window.HTMLElement);
+  dispatchClick(editGoalIcon);
   await flushAsync();
   ownGoalInput.checked = true;
   ownGoalInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -4608,7 +6938,20 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert.equal(apiState.goalEvents.get("goal-1")?.scoringTeamId, null);
   assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*0/);
   assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
-  assert.match(timeline.textContent ?? "", /Cy own goal against Blue/);
+  assert.match(timeline.textContent ?? "", /Cy\s*OG\s*→/);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.equal(ownGoalInput.checked, false);
+  const ownGoalEvent = timeline.querySelector('[data-ui="goal-event"][data-event-id="goal-1"]');
+  assert(ownGoalEvent instanceof gamePage.window.HTMLElement);
+  assert(ownGoalEvent.querySelector('[data-ui="own-goal-marker"][aria-label="Own goal"]'));
+  assert.equal(ownGoalEvent.querySelectorAll('[data-ui="goal-team-chip"]').length, 1);
+  assert(
+    ownGoalEvent.querySelector(
+      '[data-ui="goal-team-chip"][role="img"][data-team-id="blue"][aria-label="Conceding team: Blue"]',
+    ),
+  );
 
   ownGoalInput.checked = false;
   ownGoalInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -4622,7 +6965,7 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   await flushAsync();
 
   assert.equal(apiState.goalEvents.size, 2);
-  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+  assert.match(timeline.textContent ?? "", /Cy\s*→/);
 
   const deleteGoalButton = gamePage.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
   assert(deleteGoalButton instanceof gamePage.window.HTMLButtonElement);
@@ -4630,7 +6973,7 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   await flushAsync();
   assert.equal(apiState.goalEvents.has("goal-1"), false);
   assert.equal(apiState.goalEvents.has("goal-2"), true);
-  assert.match(timeline.textContent ?? "", /Cy for Blue/);
+  assert.match(timeline.textContent ?? "", /Cy\s*→/);
   assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Scored\s*1/);
   assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Conceded\s*1/);
 
@@ -4773,6 +7116,7 @@ test("setup smoke completes live game through finish", async () => {
   const joinCodeValue = gamePage.document.getElementById("game-join-code-value");
   const joinLink = gamePage.document.getElementById("game-join-link");
   const joinQr = gamePage.document.getElementById("game-join-qr");
+  const gameDetailsActions = gamePage.document.querySelector('[data-ui="game-details-actions"]');
   const scoreboard = gamePage.document.getElementById("live-scoreboard");
   const goalFormNote = gamePage.document.getElementById("goal-form-note");
   const resultSummary = gamePage.document.getElementById("game-result-summary");
@@ -4792,13 +7136,28 @@ test("setup smoke completes live game through finish", async () => {
   assert(joinCodeValue instanceof gamePage.window.HTMLElement);
   assert(joinLink instanceof gamePage.window.HTMLAnchorElement);
   assert(joinQr instanceof gamePage.window.HTMLElement);
+  assert(gameDetailsActions instanceof gamePage.window.HTMLElement);
+  assert.equal(gameDetailsActions.children.length, 2);
+  assert.equal(gameDetailsActions.children[0]?.getAttribute("data-testid"), "save-game");
+  assert.equal(gameDetailsActions.children[1]?.getAttribute("data-testid"), "game-mode-next-players");
   assert(scoreboard instanceof gamePage.window.HTMLElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
   assert(resultSummary instanceof gamePage.window.HTMLElement);
   assert.equal(finishGameButton.disabled, true);
+  assert.equal(deleteGameButton.disabled, false);
+  assert.equal(deleteGameButton.hasAttribute("aria-disabled"), false);
+  assert.equal(gamePage.document.getElementById("game-delete-lock-reason")?.hidden, true);
   assert.equal(joinCodeValue.textContent, "SMOKE123");
   assert.equal(joinLink.getAttribute("href"), "http://localhost:3000/join?code=SMOKE123");
   assert.equal(joinLink.textContent, "http://localhost:3000/join?code=SMOKE123");
+  const joinDetails = gamePage.document.querySelector('[data-testid="game-join-details"]');
+  assert(joinDetails instanceof gamePage.window.HTMLElement);
+  assert.equal(joinDetails.getAttribute("aria-label"), "Join game details");
+  assert.equal(joinDetails.children[0]?.getAttribute("data-ui"), "join-qr-block");
+  assert.equal(joinDetails.children[1]?.getAttribute("data-ui"), "join-copy");
+  assert.equal(joinDetails.querySelectorAll("#game-join-code-value").length, 1);
+  assert.equal(joinDetails.querySelectorAll("#game-join-link").length, 1);
+  assert.equal(joinDetails.querySelectorAll("#game-join-qr").length, 1);
   const joinQrSvg = joinQr.querySelector("svg");
   assert(joinQrSvg instanceof gamePage.window.SVGElement);
   assert.equal(joinQrSvg.getAttribute("aria-label"), "Join QR code for http://localhost:3000/join?code=SMOKE123");
@@ -4874,7 +7233,14 @@ test("setup smoke completes live game through finish", async () => {
   assert.equal(statusInput.value, "finished");
   assert.equal(finishGameButton.disabled, true);
   assert.equal(finishGameButton.textContent, "Game finished");
-  assert.equal(deleteGameButton.disabled, true);
+  assert.equal(deleteGameButton.disabled, false);
+  assert.equal(deleteGameButton.getAttribute("aria-disabled"), "true");
+  assert.equal(deleteGameButton.getAttribute("aria-describedby"), "game-delete-lock-reason");
+  assert.match(deleteGameButton.getAttribute("aria-label") ?? "", /unavailable.*finished/i);
+  assert.equal(deleteGameButton.title, "Finished games cannot be deleted");
+  assert.equal(gamePage.document.getElementById("game-delete-lock-reason")?.hidden, false);
+  deleteGameButton.focus();
+  assert.equal(gamePage.document.activeElement, deleteGameButton);
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /Red win/);
   assert.match(resultSummary.querySelector('[data-team-id="red"]')?.textContent ?? "", /Conceded\s*0/);
@@ -4885,6 +7251,11 @@ test("setup smoke completes live game through finish", async () => {
   assert.equal(saveGoalButton.disabled, true);
   assert.equal(undoLastGoalButton.disabled, true);
   assert.equal(quickCreateButton.disabled, true);
+  const lockedTransferButton = gamePage.document.querySelector(
+    `[data-action="toggle-transfer"][data-player-id="${ari.playerId}"]`,
+  );
+  assert(lockedTransferButton instanceof gamePage.window.HTMLButtonElement);
+  assert.equal(lockedTransferButton.disabled, true);
   assert.match(goalFormNote.textContent ?? "", /Admin role is required/);
 
   const editGoalButton = gamePage.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
@@ -5076,7 +7447,8 @@ test("game page allows admins to correct finished goals and refresh result", asy
   scorerInput.value = dee.playerId;
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   assert.equal(saveGoalButton.disabled, false);
-  assert.match(goalFormNote.textContent ?? "", /final whistle/);
+  assert.match(goalFormNote.textContent ?? "", /correct the finished result/);
+  assert.doesNotMatch(goalFormNote.textContent ?? "", /final whistle/);
   dispatchClick(saveGoalButton);
   await flushAsync();
 
@@ -5084,6 +7456,262 @@ test("game page allows admins to correct finished goals and refresh result", asy
   assert.equal([...apiState.goalEvents.values()][0]?.scorerPlayerId, dee.playerId);
   assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, "red");
   assert.match(resultSummary.textContent ?? "", /Red win/);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+});
+
+test("game page serializes goal corrections through the finished-result refresh", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-correction-serialized",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  const seededGame = apiState.games.get("game-correction-serialized");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:00:12.000Z");
+
+  const defaultFetch = createMockFetch(apiState);
+  let goalMutationRequests = 0;
+  let goalCommitted = false;
+  let resolveFinishedGameRefresh: ((response: Response) => void) | undefined;
+  const serializedFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const isGoalMutation = method !== "GET" && target.pathname.includes("/goals");
+    if (isGoalMutation) {
+      goalMutationRequests += 1;
+    }
+
+    if (method === "POST" && target.pathname === "/v1/games/game-correction-serialized/goals") {
+      const response = await defaultFetch(input, init);
+      goalCommitted = true;
+      return response;
+    }
+
+    if (
+      goalCommitted &&
+      method === "GET" &&
+      target.pathname === "/v1/games/game-correction-serialized"
+    ) {
+      return new Promise<Response>((resolve) => {
+        resolveFinishedGameRefresh = resolve;
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-correction-serialized" }),
+    url: "http://localhost:3000/games/game-correction-serialized",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: serializedFetch,
+  });
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(goalMutationRequests, 1);
+  assert(resolveFinishedGameRefresh);
+  assert.equal(scoringTeamInput.disabled, true);
+  assert.equal(concedingTeamInput.disabled, true);
+  assert.equal(scorerInput.disabled, true);
+  assert.equal(saveGoalButton.disabled, true);
+  assert.match(page.document.getElementById("goal-form-note")?.textContent ?? "", /Saving goal change/);
+  const pendingStatus = page.document.getElementById("setup-status");
+  assert(pendingStatus instanceof page.window.HTMLElement);
+  assert.equal(pendingStatus.getAttribute("role"), "status");
+  assert.equal(pendingStatus.getAttribute("aria-live"), "polite");
+  assert.equal(pendingStatus.getAttribute("data-activity"), "loading");
+  assert.equal(pendingStatus.getAttribute("data-state"), null);
+  assert.equal(pendingStatus.textContent, "Adding goal…");
+  assert(pendingStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
+  assert(pendingStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
+
+  const pendingUndo = page.document.querySelector('[data-action="undo-last-goal"]');
+  const pendingEdit = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const pendingDelete = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(pendingUndo instanceof page.window.HTMLButtonElement);
+  assert(pendingEdit instanceof page.window.HTMLButtonElement);
+  assert(pendingDelete instanceof page.window.HTMLButtonElement);
+  assert.equal(pendingUndo.disabled, true);
+  assert.equal(pendingEdit.disabled, true);
+  assert.equal(pendingDelete.disabled, true);
+
+  dispatchClick(pendingUndo);
+  dispatchClick(pendingEdit);
+  dispatchClick(pendingDelete);
+  await flushAsync();
+  assert.equal(goalMutationRequests, 1);
+  assert.equal(page.document.querySelector('[data-action="cancel-goal-edit"]')?.hasAttribute("hidden"), true);
+
+  const refreshedGame = apiState.games.get("game-correction-serialized");
+  assert(refreshedGame);
+  resolveFinishedGameRefresh(createJsonResponse(200, refreshedGame));
+  await flushAsync();
+
+  const restoredUndo = page.document.querySelector('[data-action="undo-last-goal"]');
+  const restoredEdit = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
+  const restoredDelete = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  assert(restoredUndo instanceof page.window.HTMLButtonElement);
+  assert(restoredEdit instanceof page.window.HTMLButtonElement);
+  assert(restoredDelete instanceof page.window.HTMLButtonElement);
+  assert.equal(scoringTeamInput.disabled, false);
+  assert.equal(restoredUndo.disabled, false);
+  assert.equal(restoredEdit.disabled, false);
+  assert.equal(restoredDelete.disabled, false);
+  const completedStatus = page.document.getElementById("setup-status");
+  assert(completedStatus instanceof page.window.HTMLElement);
+  assert.equal(completedStatus.textContent, "Goal added.");
+  assert.equal(completedStatus.getAttribute("data-state"), "success");
+  assert.equal(completedStatus.getAttribute("data-activity"), "message");
+  assert.equal(
+    completedStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"),
+    true,
+  );
+});
+
+test("game page clears a committed finished-goal draft when timeline and result refresh fail", async () => {
+  const apiState = createMockApiState();
+  const finishedThirds = createDefaultThirdTimerSegments().map((third) => ({
+    ...third,
+    startedAt: `2026-03-28T11:00:0${third.third}.000Z`,
+    finishedAt: `2026-03-28T11:00:1${third.third}.000Z`,
+  }));
+  seedGoalScoringGame(apiState, {
+    gameId: "game-create-refresh-fail",
+    status: "finished",
+    thirds: finishedThirds,
+    role: "admin",
+    sessionEmail: "admin@3fc.football",
+  });
+  const seededGame = apiState.games.get("game-create-refresh-fail");
+  assert(seededGame);
+  refreshMockFinishedResult(apiState, seededGame, "2026-03-28T11:00:12.000Z");
+
+  const defaultFetch = createMockFetch(apiState);
+  let failNextGoalRefresh = false;
+  let failNextGameRefresh = false;
+  const staleResultFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const target =
+      typeof input === "string" || input instanceof URL
+        ? new URL(String(input))
+        : new URL(input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+
+    if (method === "POST" && target.pathname === "/v1/games/game-create-refresh-fail/goals") {
+      const response = await defaultFetch(input, init);
+      failNextGoalRefresh = true;
+      failNextGameRefresh = true;
+      return response;
+    }
+
+    if (
+      method === "GET" &&
+      target.pathname === "/v1/games/game-create-refresh-fail/goals" &&
+      failNextGoalRefresh
+    ) {
+      failNextGoalRefresh = false;
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Goal refresh unavailable.",
+      });
+    }
+
+    if (method === "GET" && target.pathname === "/v1/games/game-create-refresh-fail" && failNextGameRefresh) {
+      failNextGameRefresh = false;
+      return createJsonResponse(503, {
+        error: "unavailable",
+        message: "Game refresh unavailable.",
+      });
+    }
+
+    return defaultFetch(input, init);
+  };
+
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-create-refresh-fail" }),
+    url: "http://localhost:3000/games/game-create-refresh-fail",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: staleResultFetch,
+  });
+
+  const scoringTeamInput = page.document.getElementById("goal-scoring-team");
+  const concedingTeamInput = page.document.getElementById("goal-conceding-team");
+  const scorerInput = page.document.getElementById("goal-scorer");
+  const ownGoalInput = page.document.getElementById("goal-own-goal");
+  const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
+  const status = page.document.getElementById("setup-status");
+  const error = page.document.getElementById("setup-error");
+  const resultSummary = page.document.getElementById("game-result-summary");
+  const scoreboard = page.document.getElementById("live-scoreboard");
+  const timeline = page.document.getElementById("goal-timeline");
+  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scorerInput instanceof page.window.HTMLSelectElement);
+  assert(ownGoalInput instanceof page.window.HTMLInputElement);
+  assert(saveGoalButton instanceof page.window.HTMLButtonElement);
+  assert(status instanceof page.window.HTMLElement);
+  assert(error instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
+  assert(scoreboard instanceof page.window.HTMLElement);
+  assert(timeline instanceof page.window.HTMLElement);
+
+  scoringTeamInput.value = "red";
+  scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  concedingTeamInput.value = "blue";
+  concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  scorerInput.value = "player-ari";
+  scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  dispatchClick(saveGoalButton);
+  await flushAsync();
+
+  assert.equal(apiState.goalEvents.size, 1);
+  assert.match(status.textContent ?? "", /Goal added; timeline and result refresh failed/);
+  assert.equal(status.getAttribute("data-state"), "error");
+  assert.match(error.textContent ?? "", /neither the latest goal state nor the finished result/);
+  assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
+  assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
+  assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
+  assert.equal(resultSummary.hidden, false);
+  assert.match(resultSummary.textContent ?? "", /Result refresh required/);
+  assert.match(resultSummary.textContent ?? "", /goal change was saved/);
+  assert.equal(resultSummary.querySelector('[data-testid="game-result-outcome"]'), null);
+  assert.equal(scoringTeamInput.value, "");
+  assert.equal(concedingTeamInput.value, "");
+  assert.equal(scorerInput.value, "");
+  assert.equal(ownGoalInput.checked, false);
+  assert.equal(concedingTeamInput.disabled, true);
+  assert.equal(scorerInput.disabled, true);
 });
 
 test("game page treats committed undo as success when finished result refresh fails", async () => {
@@ -5176,10 +7804,12 @@ test("game page treats committed undo as success when finished result refresh fa
   const timeline = page.document.getElementById("goal-timeline");
   const status = page.document.getElementById("setup-status");
   const error = page.document.getElementById("setup-error");
+  const resultSummary = page.document.getElementById("game-result-summary");
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
   assert(timeline instanceof page.window.HTMLElement);
   assert(status instanceof page.window.HTMLElement);
   assert(error instanceof page.window.HTMLElement);
+  assert(resultSummary instanceof page.window.HTMLElement);
 
   dispatchClick(undoLastGoalButton);
   await flushAsync();
@@ -5187,10 +7817,25 @@ test("game page treats committed undo as success when finished result refresh fa
   assert.equal(apiState.goalEvents.has("goal-2"), false);
   assert.equal(apiState.goalEvents.has("goal-1"), true);
   assert.equal(apiState.games.get("game-undo-refresh-fail")?.result?.winnerTeamId, "red");
-  assert.match(timeline.textContent ?? "", /Ari for Red/);
-  assert.doesNotMatch(timeline.textContent ?? "", /Cy for Blue/);
-  assert.match(status.textContent ?? "", /Latest goal undone; result refresh failed/);
+  assert.match(timeline.textContent ?? "", /Ari\s*→/);
+  assert.doesNotMatch(timeline.textContent ?? "", /Cy\s*→/);
+  assert.match(status.textContent ?? "", /Latest goal undone\. Run scores refreshed; Match Summary unavailable/);
+  assert.equal(status.hasAttribute("data-state"), false);
   assert.match(error.textContent ?? "", /finished result could not be refreshed/);
+  const redScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  const blueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');
+  assert(redScoreCard instanceof page.window.HTMLElement);
+  assert(blueScoreCard instanceof page.window.HTMLElement);
+  assert.deepEqual(
+    [...redScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded0", "Scored1"],
+  );
+  assert.deepEqual(
+    [...blueScoreCard.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")),
+    ["Conceded1", "Scored0"],
+  );
+  assert.match(resultSummary.textContent ?? "", /Result refresh required/);
+  assert.doesNotMatch(resultSummary.textContent ?? "", /Red win|Blue win|Draw/);
 });
 
 test("setup flow resolves route ids from static shells", async () => {
@@ -5257,7 +7902,10 @@ test("setup flow resolves route ids from static shells", async () => {
     scriptFile: "setup-flow.js",
     apiState,
   });
-  assert.equal(gamePage.document.getElementById("game-title")?.textContent, "game-20260328-abc123");
+  assert.equal(
+    gamePage.document.getElementById("game-title")?.textContent,
+    expectedLocalDateHeading(apiState.games.get("game-20260328-abc123")!.gameStartTs),
+  );
   assert.equal(gamePage.document.getElementById("game-id-value")?.textContent, "game-20260328-abc123");
 });
 
@@ -5288,6 +7936,8 @@ test("join page registers a player without organizer authentication", async () =
 
   assert.equal(joinPage.navigations.length, 0);
   assert.equal(joinPage.document.getElementById("join-code-value")?.textContent, "JOIN0001");
+  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "");
+  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, false);
 
   const nicknameInput = joinPage.document.getElementById("join-player-nickname");
   const form = joinPage.document.getElementById("join-game-form");

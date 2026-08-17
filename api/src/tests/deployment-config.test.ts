@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 const serverlessCoreConfig = readFileSync(resolve(process.cwd(), "../serverless.api-core.yml"), "utf8");
+const applicationTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/application/main.tf"), "utf8");
 const productionTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/prod/main.tf"), "utf8");
 const siteDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
 
@@ -41,4 +42,10 @@ test("api core deployment config sets canonical public invite link origins", () 
   assert.match(serverlessCoreConfig, /prod: https:\/\/3fc\.football,https:\/\/app\.3fc\.football,https:\/\/qa\.3fc\.football/);
   assert.match(productionTerraformConfig, /site_domain\s+=\s+"3fc\.football"/);
   assert.match(siteDeployScript, /SITE_DOMAIN="\$\{SITE_DOMAIN:-3fc\.football\}"/);
+});
+
+test("api core deployment config keeps sign-in sessions active for eight days", () => {
+  assert.match(serverlessCoreConfig, /MAGIC_LINK_SESSION_TTL_SECONDS:\s*691200/);
+  assert.doesNotMatch(serverlessCoreConfig, /MAGIC_LINK_SESSION_TTL_SECONDS:\s*86400/);
+  assert.match(applicationTerraformConfig, /ttl\s*\{\s*attribute_name\s*=\s*"ttlEpoch"\s*enabled\s*=\s*true\s*\}/);
 });

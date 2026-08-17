@@ -14,6 +14,9 @@ import {
 import {
   renderButton,
   renderDataTable,
+  renderIcon,
+  renderIconButton,
+  renderIconLink,
   renderInputField,
   renderModalPrompt,
   renderNavigation,
@@ -60,6 +63,9 @@ test("primitives render expected semantic and data-ui hooks", () => {
     cancelLabel: "Cancel",
   });
   const panel = renderPanel("League setup", "Description", field, button);
+  const icon = renderIcon("circle-plus");
+  const iconButton = renderIconButton({ icon: "trash-2", label: "Delete league" });
+  const iconLink = renderIconLink({ href: "/leagues/league-1", icon: "eye", label: "View league" });
 
   assert.match(button, /data-ui="button"/);
   assert.match(button, /data-variant="danger"/);
@@ -80,6 +86,12 @@ test("primitives render expected semantic and data-ui hooks", () => {
   assert.match(modal, /data-modal-open="delete-game"/);
   assert.match(modal, /data-ui="prompt-overlay"/);
   assert.match(panel, /data-ui="panel"/);
+  assert.match(icon, /data-icon="circle-plus"/);
+  assert.match(icon, /aria-hidden="true"/);
+  assert.match(iconButton, /aria-label="Delete league"/);
+  assert.match(iconButton, /title="Delete league"/);
+  assert.match(iconLink, /aria-label="View league"/);
+  assert.throws(() => renderIcon("missing-icon" as never), /Unsupported icon/);
 });
 
 test("setup home page includes stepwise setup panels and setup-flow script", () => {
@@ -89,14 +101,45 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /data-page="dashboard"/);
   assert.match(html, /data-testid="panel-dashboard-create-league"/);
   assert.match(html, /data-testid="panel-dashboard-leagues"/);
-  assert.match(html, /League friendly URL/);
+  assert.match(html, /id="dashboard-welcome">Welcome</);
+  assert.match(html, /data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading"/);
+  assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
+  assert.match(html, /data-ui="activity-message" class="sr-only">Checking sign-in state…/);
+  assert.doesNotMatch(html, /data-ui="status-note" id="setup-status"/);
+  assert.match(html, /id="setup-error" role="status" aria-live="polite" hidden/);
+  assert.doesNotMatch(html, /API target/);
+  assert.doesNotMatch(html, /3FC ORGANIZER/i);
+  assert.match(html, /data-testid="toggle-create-league"/);
+  assert.match(html, /aria-controls="dashboard-create-league-region"/);
+  assert.match(html, /id="dashboard-create-league-region" data-ui="disclosure-panel" hidden/);
+  assert.ok(html.indexOf('data-testid="panel-dashboard-leagues"') < html.indexOf('data-testid="panel-dashboard-create-league"'));
+  assert.ok(html.indexOf('data-testid="panel-dashboard-leagues"') < html.indexOf('data-testid="toggle-create-league"'));
+  assert.ok(html.indexOf('data-testid="toggle-create-league"') < html.indexOf('data-testid="panel-dashboard-create-league"'));
   assert.match(html, /dashboard-leagues-body/);
   assert.match(html, /data-testid="create-league"/);
   assert.match(html, /id="league-id-display"/);
   assert.match(html, /rel="stylesheet" href="\/ui\/styles\.css"/);
+  assert.match(html, /rel="stylesheet" href="\/ui\/icons\.css"/);
   assert.match(html, /data-testid="setup-shell"/);
   assert.match(html, /<script src="\/ui\/setup-flow\.js" defer><\/script>/);
   assert.match(html, /https:\/\/qa-api\.3fc\.football/);
+});
+
+test("management pages render routine progress as a quiet activity indicator", () => {
+  const pages = [
+    renderSetupHomePage("https://qa-api.3fc.football"),
+    renderLeaguePage("https://qa-api.3fc.football", "league-1"),
+    renderSeasonPage("https://qa-api.3fc.football", "season-1", "league-1"),
+    renderGamePage("https://qa-api.3fc.football", { gameId: "game-1" }),
+  ];
+
+  for (const html of pages) {
+    assert.match(html, /data-ui="activity-status" id="setup-status"/);
+    assert.match(html, /data-activity="loading"/);
+    assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
+    assert.match(html, /data-ui="activity-message" class="sr-only"/);
+    assert.doesNotMatch(html, /data-ui="status-note" id="setup-status"/);
+  }
 });
 
 test("setup pages can version UI asset URLs for deployments", () => {
@@ -109,6 +152,7 @@ test("setup pages can version UI asset URLs for deployments", () => {
     const componentHtml = renderComponentShowcasePage("https://qa-api.3fc.football");
 
     assert.match(setupHtml, /href="\/ui\/styles\.css\?v=abc1234"/);
+    assert.match(setupHtml, /href="\/ui\/icons\.css\?v=abc1234"/);
     assert.match(setupHtml, /<script src="\/ui\/setup-flow\.js\?v=abc1234" defer><\/script>/);
     assert.match(signInHtml, /<script src="\/ui\/auth-flow\.js\?v=abc1234" defer><\/script>/);
     assert.match(componentHtml, /<script src="\/ui\/modal\.js\?v=abc1234" defer><\/script>/);
@@ -127,10 +171,29 @@ test("league page includes season create form and seasons table", () => {
   assert.match(html, /data-testid="league-shell"/);
   assert.match(html, /data-page="league"/);
   assert.match(html, /data-league-id="league-1"/);
-  assert.match(html, /Season friendly URL/);
+  assert.match(html, /id="league-reference">League ID: league-1/);
+  assert.match(html, /data-testid="toggle-create-season"/);
+  assert.match(html, /data-ui="header-actions" role="toolbar" aria-label="League actions"/);
+  assert.match(html, /data-testid="toggle-organiser-invite"/);
+  assert.match(html, /aria-controls="league-create-season-region"/);
+  assert.match(html, /id="league-create-season-region" data-ui="disclosure-panel" hidden/);
+  assert.match(html, /Share the link or code below or send an invite via email/);
+  assert.doesNotMatch(html, /Share invite ready/);
   assert.match(html, /league-seasons-body/);
+  assert.match(
+    html,
+    /<th scope="col">Season name<\/th><th scope="col">Dates<\/th><th scope="col">Actions<\/th>/,
+  );
   assert.match(html, /data-testid="create-season"/);
   assert.match(html, /data-testid="delete-league"/);
+  assert.match(html, /data-icon="calendar-plus"/);
+  assert.match(html, /data-icon="user-round-plus"/);
+  assert.match(html, /data-icon="trash-2"/);
+  assert.doesNotMatch(html, /League page ready/);
+  assert.equal((html.match(/friendly URL/gi) ?? []).length, 1);
+  assert.ok(html.indexOf('id="season-name"') < html.indexOf('id="season-start"'));
+  assert.ok(html.indexOf('id="season-start"') < html.indexOf('id="season-end"'));
+  assert.ok(html.indexOf('id="season-end"') < html.indexOf('id="season-friendly-url"'));
 });
 
 test("season page includes game create form and games table", () => {
@@ -139,11 +202,38 @@ test("season page includes game create form and games table", () => {
   assert.match(html, /data-testid="season-shell"/);
   assert.match(html, /data-page="season"/);
   assert.match(html, /data-season-id="season-1"/);
+  assert.match(html, /id="season-reference">Season ID: season-1/);
+  assert.match(html, /data-testid="toggle-create-game"/);
+  assert.match(html, /data-ui="header-actions" role="toolbar" aria-label="Season actions"/);
+  assert.match(html, /aria-controls="season-create-game-region"/);
+  assert.match(html, /id="season-create-game-region" data-ui="disclosure-panel" hidden/);
+  assert.doesNotMatch(html, /game-id-display/);
   assert.match(html, /Game date/);
   assert.match(html, /data-testid="game-third-length"/);
-  assert.match(html, /season-games-body/);
+  assert.match(html, /data-testid="panel-season-upcoming-games"/);
+  assert.match(html, /id="season-upcoming-games-body"/);
+  assert.match(html, /data-testid="season-upcoming-games-table"/);
+  assert.match(html, /<table data-ui="data-table" aria-label="Upcoming games">/);
+  assert.match(html, /id="season-upcoming-games-empty" hidden>No upcoming games\.<\/p>/);
+  assert.match(html, /data-testid="panel-season-completed-games"/);
+  assert.match(html, /id="season-completed-games-body"/);
+  assert.match(html, /data-testid="season-completed-games-table"/);
+  assert.match(html, /<table data-ui="data-table" aria-label="Completed games">/);
+  assert.match(html, /id="season-completed-games-empty" hidden>No completed games\.<\/p>/);
+  assert.equal(
+    (html.match(/<th scope="col">Date<\/th><th scope="col">Status<\/th><th scope="col">Actions<\/th>/g) ?? []).length,
+    2,
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-season-upcoming-games"') <
+      html.indexOf('data-testid="panel-season-completed-games"'),
+  );
+  assert.ok(
+    html.indexOf('data-testid="panel-season-completed-games"') < html.indexOf('id="season-create-game-region"'),
+  );
   assert.match(html, /data-testid="create-game"/);
   assert.match(html, /data-testid="delete-season"/);
+  assert.doesNotMatch(html, /Season page ready|friendly URL/i);
 });
 
 test("component showcase page includes navigation, players, tables, validation, row actions, and modal", () => {
@@ -198,9 +288,30 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-join-code-value"/);
   assert.match(html, /data-testid="game-join-link"/);
   assert.match(html, /data-testid="game-join-qr"/);
+  assert.match(html, /data-ui="join-details" data-testid="game-join-details" aria-label="Join game details"/);
+  assert.ok(html.indexOf('data-ui="join-qr-block"') < html.indexOf('data-ui="join-copy"'));
+  assert.doesNotMatch(html, /Edit core game metadata/);
+  assert.match(html, /data-testid="game-reference-ids"/);
+  assert.match(html, /<summary>Reference IDs<\/summary>/);
   assert.match(html, /data-testid="save-game"/);
+  assert.match(html, /data-icon="save"/);
+  assert.match(html, />Save<\/span>/);
+  assert.match(
+    html,
+    /data-ui="game-details-actions">[\s\S]*data-testid="save-game"[\s\S]*data-testid="game-mode-next-players"[\s\S]*<\/div>/,
+  );
   assert.match(html, /data-testid="delete-game"/);
+  assert.match(html, /data-testid="delete-game"[^>]*disabled="disabled"/);
+  assert.match(html, /id="game-delete-lock-reason" hidden/);
   assert.match(html, /data-testid="create-another-game"/);
+  assert.match(html, /role="toolbar" aria-label="Game actions"/);
+  assert.ok(html.indexOf('aria-label="Game actions"') < html.indexOf('data-testid="setup-flow-root"'));
+  assert.equal((html.match(/data-action="delete-game"/g) ?? []).length, 1);
+  assert.match(html, /data-testid="player-create-row"/);
+  assert.match(html, /data-ui="inline-input-actions"/);
+  assert.match(html, /id="player-nickname"[\s\S]*data-testid="quick-create-player"/);
+  assert.match(html, /aria-label="Create player"/);
+  assert.match(html, /aria-label="Add players"/);
   assert.match(html, /data-testid="game-mode-nav"/);
   assert.match(html, /data-testid="game-mode-structure-tab"/);
   assert.match(html, /data-testid="game-mode-players-tab"/);
@@ -212,7 +323,9 @@ test("game page renders editable game metadata view", () => {
   assert.doesNotMatch(html, /data-testid="game-mode-final-tab"[^>]*aria-controls=/);
   assert.doesNotMatch(html, /id="game-mode-tab-final"[^>]*role="tab"/);
   assert.doesNotMatch(html, /id="game-mode-tab-final"[^>]*aria-controls=/);
-  assert.match(html, /data-testid="game-mode-status"/);
+  assert.doesNotMatch(html, /data-testid="game-mode-status"/);
+  assert.doesNotMatch(html, /Game page ready/);
+  assert.doesNotMatch(html, /Game setup<\/p>/);
   assert.match(html, /data-testid="game-mode-structure"/);
   assert.match(html, /data-testid="game-mode-players" hidden/);
   assert.match(html, /data-testid="game-mode-run" data-mode-layout="run" hidden/);
@@ -220,6 +333,9 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="run-console"/);
   assert.match(html, /data-testid="run-score-strip"/);
   assert.match(html, /data-testid="run-primary-scoring"/);
+  assert.match(html, /<div data-ui="run-scoring-panel" data-testid="panel-game-live">/);
+  assert.match(html, /data-testid="run-primary-scoring" aria-labelledby="run-goal-form-heading"/);
+  assert.doesNotMatch(html, /aria-labelledby="run-scoring-heading"/);
   assert.match(html, /data-testid="run-timer-bar"/);
   assert.match(html, /data-testid="run-third-history"/);
   assert.match(html, /data-testid="run-latest-goals"/);
@@ -232,6 +348,11 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-result-summary"/);
   assert.match(html, /data-testid="panel-game-final"/);
   assert.match(html, /data-testid="finalisation-board"/);
+  assert.match(html, />Match Summary</);
+  assert.doesNotMatch(html, />Run game</);
+  assert.doesNotMatch(html, /Record goals first/);
+  assert.doesNotMatch(html, />Finalisation</);
+  assert.doesNotMatch(html, /final-game-id-value|final-game-readiness/);
   assert.match(html, /data-testid="game-edit-third-length"/);
   assert.ok(
     html.indexOf('data-testid="game-mode-structure"') < html.indexOf('data-testid="game-mode-players"'),
@@ -264,6 +385,10 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="goal-own-goal"/);
   assert.match(html, /data-testid="goal-scorer"/);
   assert.match(html, /data-testid="goal-assists"/);
+  assert.match(html, /id="goal-assists-dropdown"[^>]*data-testid="goal-assists-dropdown"/);
+  assert.doesNotMatch(html, /id="goal-assists-dropdown"[^>]*\sopen(?:\s|>)/);
+  assert.match(html, /id="goal-assists-summary"[^>]*>Choose assists<\/span>/);
+  assert.match(html, /data-icon="chevron-down"/);
   assert.match(html, /data-testid="add-goal"/);
   assert.match(html, /data-testid="undo-last-goal"/);
   assert.match(html, /data-testid="goal-timeline"/);

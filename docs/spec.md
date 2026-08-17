@@ -169,6 +169,7 @@ POST  /v1/invites/{inviteCode}/accept
 ## 10. Token storage + CSP
 
 - Decision: httpOnly secure cookies for tokens.
+- Authenticated sessions expire eight days after sign-in so weekly players do not need to authenticate again between games. The lifetime is absolute rather than sliding; sessions issued before a configuration change retain their original expiry.
 - Backstop: strong CSP + security headers.
 
 ## 11. Email notifications
