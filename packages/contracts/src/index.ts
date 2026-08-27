@@ -11,12 +11,12 @@ export const DEFAULT_THIRD_LENGTH_MINUTES = 20 satisfies ThirdLengthMinutes;
 
 export const APP_RETURN_TARGET_PATTERN_SOURCES = [
   "^/$",
-  "^/setup$",
-  "^/leagues/[^/]+(?:/seasons/[^/]+)?$",
-  "^/seasons/[^/]+$",
-  "^/games/[^/]+$",
-  "^/join(?:/[^/]+)?$",
-  "^/invites(?:/[^/]+)?$",
+  "^/setup/?$",
+  "^/leagues/[^/]+(?:/seasons/[^/]+)?/?$",
+  "^/seasons/[^/]+/?$",
+  "^/games/[^/]+/?$",
+  "^/join(?:/[^/]+)?/?$",
+  "^/invites(?:/[^/]+)?/?$",
 ] as const;
 
 const APP_RETURN_TARGET_PATHS = APP_RETURN_TARGET_PATTERN_SOURCES.map(
@@ -63,7 +63,10 @@ export function normalizeAppReturnTarget(value: unknown): string | null {
       return null;
     }
 
-    return `${target.pathname}${target.search}${target.hash}`;
+    const pathname = target.pathname.length > 1 && target.pathname.endsWith("/")
+      ? target.pathname.slice(0, -1)
+      : target.pathname;
+    return `${pathname}${target.search}${target.hash}`;
   } catch {
     return null;
   }

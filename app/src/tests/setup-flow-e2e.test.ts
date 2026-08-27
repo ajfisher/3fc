@@ -2083,6 +2083,29 @@ test("auth flow rejects unsafe direct and stored return targets", async () => {
   assert.equal(storedState.storage.has("threefc.auth.return_to"), false);
 });
 
+test("auth flow canonicalizes trailing slashes on safe return targets", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+
+  const page = await bootPage({
+    html: renderSignInPage("http://localhost:3001", "/setup"),
+    url: "http://localhost:3000/sign-in?returnTo=%2Fgames%2Fgame-1%2F%3Fmode%3Drun%23latest",
+    scriptFile: "auth-flow.js",
+    apiState,
+  });
+
+  assert.deepEqual(page.navigations.at(-1), {
+    url: "/games/game-1?mode=run#latest",
+    mode: "replace",
+  });
+});
+
 test("auth callback redacts the URL while retaining recoverable state for transport retries", async () => {
   const apiState = createMockApiState();
   apiState.storage.set("threefc.auth.return_to", "/games/game-1");

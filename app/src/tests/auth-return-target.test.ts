@@ -45,3 +45,22 @@ test("rejects non-application and ambiguous return targets", () => {
     assert.equal(normalizeAppReturnTarget(target), null);
   }
 });
+
+test("canonicalizes trailing slashes on known application return targets", () => {
+  const targets = new Map([
+    ["/setup/", "/setup"],
+    ["/leagues/league-1/", "/leagues/league-1"],
+    [
+      "/leagues/league-1/seasons/winter-2026/?view=table#games",
+      "/leagues/league-1/seasons/winter-2026?view=table#games",
+    ],
+    ["/seasons/winter-2026/", "/seasons/winter-2026"],
+    ["/games/game-1/?mode=run#latest", "/games/game-1?mode=run#latest"],
+    ["/join/ABCD2345/", "/join/ABCD2345"],
+    ["/invites/ABCD2345/", "/invites/ABCD2345"],
+  ]);
+
+  for (const [target, expected] of targets) {
+    assert.equal(normalizeAppReturnTarget(target), expected);
+  }
+});

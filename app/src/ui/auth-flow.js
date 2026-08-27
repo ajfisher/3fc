@@ -91,7 +91,10 @@
       ) {
         return null;
       }
-      return `${target.pathname}${target.search}${target.hash}`;
+      const pathname = target.pathname.length > 1 && target.pathname.endsWith("/")
+        ? target.pathname.slice(0, -1)
+        : target.pathname;
+      return `${pathname}${target.search}${target.hash}`;
     } catch {
       return null;
     }
