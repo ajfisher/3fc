@@ -238,6 +238,23 @@ test("magic start can send invite-specific copy with a safe return target", asyn
   );
 });
 
+test("magic start excludes unsafe return targets from callback links", async () => {
+  const unsafeTargets = [
+    "https://evil.example",
+    "//evil.example",
+    "/\\evil.example",
+    "/%5cevil.example",
+    "/auth/callback",
+    "/v1/auth/session",
+  ];
+
+  for (const returnTo of unsafeTargets) {
+    const { service, sentMessages } = createHarness();
+    await service.start("coach@example.com", { returnTo });
+    assert.doesNotMatch(sentMessages[0].body, /returnTo=/);
+  }
+});
+
 test("magic complete consumes token once and creates a session", async () => {
   const { client, service, sentMessages } = createHarness();
 

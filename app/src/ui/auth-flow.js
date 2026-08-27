@@ -16,6 +16,23 @@
 
   const apiBaseUrl = resolveApiBaseUrl();
   const RETURN_TO_STORAGE_KEY = "threefc.auth.return_to";
+  const CALLBACK_STORAGE_KEY = "threefc.auth.callback";
+  const CALLBACK_RECOVERY_MAX_AGE_MS = 15 * 60 * 1000;
+
+  function resolveReturnTargetPatterns() {
+    try {
+      const raw = document.body.getAttribute("data-return-target-patterns");
+      const sources = raw ? JSON.parse(raw) : null;
+      if (!Array.isArray(sources) || !sources.every((source) => typeof source === "string")) {
+        return [];
+      }
+      return sources.map((source) => new RegExp(source, "u"));
+    } catch {
+      return [];
+    }
+  }
+
+  const RETURN_TARGET_PATHS = resolveReturnTargetPatterns();
 
   function navigateTo(url, mode = "assign") {
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
@@ -37,6 +54,52 @@
     return new URL(normalizedPath, normalizedBase).toString();
   }
 
+  function normalizeReturnTo(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 2048) {
+      return null;
+    }
+
+    if (!value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u001f\u007f]/u.test(value)) {
+      return null;
+    }
+
+    let decoded = value;
+    for (let index = 0; index < 2; index += 1) {
+      try {
+        const next = decodeURIComponent(decoded);
+        if (next === decoded) {
+          break;
+        }
+        decoded = next;
+      } catch {
+        if (index === 0) {
+          return null;
+        }
+        break;
+      }
+    }
+
+    if (/[\\\u0000-\u001f\u007f]/u.test(decoded)) {
+      return null;
+    }
+
+    try {
+      const target = new URL(value, window.location.origin);
+      if (
+        target.origin !== window.location.origin ||
+        !RETURN_TARGET_PATHS.some((pattern) => pattern.test(target.pathname))
+      ) {
+        return null;
+      }
+      const pathname = target.pathname.length > 1 && target.pathname.endsWith("/")
+        ? target.pathname.slice(0, -1)
+        : target.pathname;
+      return `${pathname}${target.search}${target.hash}`;
+    } catch {
+      return null;
+    }
+  }
+
   function resolveReturnTo(fallback = "/setup") {
     const hiddenInput = document.getElementById("auth-return-to");
     const hiddenValue =
@@ -47,13 +110,13 @@
     try {
       const requested = new URL(window.location.href).searchParams.get("returnTo");
       if (requested && requested.trim().length > 0) {
-        return requested.trim();
+        return normalizeReturnTo(requested.trim()) ?? fallback;
       }
     } catch {
       // Fall back to hidden input value when URL parsing fails.
     }
 
-    return hiddenValue;
+    return normalizeReturnTo(hiddenValue) ?? fallback;
   }
 
   async function requestJson(path, init) {
@@ -156,18 +219,26 @@
 
   function persistReturnTo(returnTo) {
     try {
-      localStorage.setItem(RETURN_TO_STORAGE_KEY, returnTo);
+      const safeReturnTo = normalizeReturnTo(returnTo);
+      if (safeReturnTo) {
+        localStorage.setItem(RETURN_TO_STORAGE_KEY, safeReturnTo);
+      } else {
+        localStorage.removeItem(RETURN_TO_STORAGE_KEY);
+      }
     } catch {
       // Ignore storage failures.
     }
   }
 
-  function consumeReturnTo(fallback = "/setup") {
+  function readStoredReturnTo(fallback = "/setup") {
     try {
       const value = localStorage.getItem(RETURN_TO_STORAGE_KEY);
       if (value && value.length > 0) {
+        const safeReturnTo = normalizeReturnTo(value);
+        if (safeReturnTo) {
+          return safeReturnTo;
+        }
         localStorage.removeItem(RETURN_TO_STORAGE_KEY);
-        return value;
       }
     } catch {
       // Ignore storage failures.
@@ -176,20 +247,11 @@
     return fallback;
   }
 
-  function isSafeReturnTo(value) {
-    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
-      return false;
-    }
-
-    if (value.includes("\\")) {
-      return false;
-    }
-
+  function clearStoredReturnTo() {
     try {
-      const target = new URL(value, window.location.origin);
-      return target.origin === window.location.origin && target.pathname.startsWith("/");
+      localStorage.removeItem(RETURN_TO_STORAGE_KEY);
     } catch {
-      return false;
+      // Ignore storage failures.
     }
   }
 
@@ -253,6 +315,7 @@
         setStatus(statusElement, "Session active. Redirecting to setup…", "success");
         setSessionState(true, result.body.session.email);
         setTimeout(() => {
+          clearStoredReturnTo();
           navigateTo(returnTo, "replace");
         }, 500);
         return;
@@ -333,27 +396,99 @@
   }
 
   async function initAuthCallbackPage() {
-    if (window.location.pathname !== "/auth/callback") {
+    if (
+      window.location.pathname !== "/auth/callback" &&
+      window.location.pathname !== "/auth/callback/"
+    ) {
       return;
     }
 
     const statusElement = document.getElementById("auth-callback-status");
     const errorElement = document.getElementById("auth-callback-error");
+    const recoveryLink = document.getElementById("auth-callback-recovery");
+    const callbackTitle = document.getElementById("auth-callback-title");
+    const callbackCopy = document.getElementById("auth-callback-copy");
     const completeButton = document.querySelector('[data-action="complete-magic-link"]');
     const params = new URLSearchParams(window.location.search);
-    const token = params.get("token");
-    const oauthError = params.get("error");
-    const code = params.get("code");
+    let callbackState = null;
+    try {
+      const storedCallback = sessionStorage.getItem(CALLBACK_STORAGE_KEY);
+      callbackState = storedCallback ? JSON.parse(storedCallback) : null;
+      const capturedAt = callbackState?.capturedAt;
+      if (
+        typeof capturedAt !== "number" ||
+        !Number.isFinite(capturedAt) ||
+        capturedAt > Date.now() ||
+        Date.now() - capturedAt > CALLBACK_RECOVERY_MAX_AGE_MS
+      ) {
+        sessionStorage.removeItem(CALLBACK_STORAGE_KEY);
+        callbackState = null;
+      }
+    } catch {
+      callbackState = null;
+    }
+    const incomingToken = params.get("token");
+    const incomingCode = params.get("code");
+    const incomingOauthError = params.has("error");
+    const hasIncomingEnvelope = window.location.search.length > 0 || window.location.hash.length > 0;
+    const token = incomingToken ??
+      (!hasIncomingEnvelope && typeof callbackState?.token === "string" ? callbackState.token : null);
+    const oauthError = incomingOauthError || (!hasIncomingEnvelope && callbackState?.oauthError === true);
+    const code = incomingCode ??
+      (!hasIncomingEnvelope && typeof callbackState?.code === "string" ? callbackState.code : null);
+    const callbackReturnTo = normalizeReturnTo(
+      params.get("returnTo") ?? (!hasIncomingEnvelope ? callbackState?.returnTo : null),
+    );
+    const callbackCapturedAt = hasIncomingEnvelope ? Date.now() : callbackState?.capturedAt;
 
-    function showCallbackError(message) {
+    try {
+      sessionStorage.setItem(
+        CALLBACK_STORAGE_KEY,
+        JSON.stringify({
+          capturedAt: callbackCapturedAt,
+          ...(token ? { token } : {}),
+          ...(code ? { code } : {}),
+          ...(oauthError ? { oauthError: true } : {}),
+          ...(callbackReturnTo ? { returnTo: callbackReturnTo } : {}),
+        }),
+      );
+    } catch {
+      // The in-memory values still support completion when session storage is unavailable.
+    }
+    window.history.replaceState(null, "", "/auth/callback");
+
+    function clearCallbackState() {
+      try {
+        sessionStorage.removeItem(CALLBACK_STORAGE_KEY);
+      } catch {
+        // Ignore storage failures.
+      }
+    }
+
+    function showCallbackError(message, fatal = false, moveFocus = false) {
       if (errorElement) {
         errorElement.textContent = message;
         errorElement.hidden = false;
       }
 
-      setStatus(statusElement, "Sign-in callback failed.", "error");
+      setStatus(statusElement, "", "default");
+      if (recoveryLink instanceof HTMLAnchorElement) {
+        recoveryLink.hidden = false;
+      }
+      if (fatal) {
+        if (callbackTitle) {
+          callbackTitle.textContent = "Sign-in failed";
+        }
+        if (callbackCopy) {
+          callbackCopy.textContent = "Return to sign in to request a new magic link.";
+        }
+      }
       if (completeButton instanceof HTMLButtonElement) {
-        completeButton.disabled = false;
+        completeButton.hidden = fatal;
+        completeButton.disabled = fatal;
+      }
+      if (fatal && moveFocus && recoveryLink instanceof HTMLAnchorElement) {
+        recoveryLink.focus();
       }
     }
 
@@ -364,13 +499,21 @@
 
       errorElement.hidden = true;
       errorElement.textContent = "";
+      if (recoveryLink instanceof HTMLAnchorElement) {
+        recoveryLink.hidden = true;
+      }
     }
 
-    const callbackReturnTo = params.get("returnTo");
-    const returnTo = isSafeReturnTo(callbackReturnTo) ? callbackReturnTo : consumeReturnTo("/setup");
+    const storedReturnTo = readStoredReturnTo("/setup");
+    const returnTo = callbackReturnTo ?? storedReturnTo;
+    if (recoveryLink instanceof HTMLAnchorElement) {
+      recoveryLink.href = `/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
+      recoveryLink.addEventListener("click", clearCallbackState);
+    }
 
     if (oauthError) {
-      showCallbackError(`OAuth provider returned: ${oauthError}.`);
+      clearCallbackState();
+      showCallbackError("Sign in failed. The authorization request could not be completed.", true);
       return;
     }
 
@@ -387,21 +530,33 @@
         clearCallbackError();
         completeButton.disabled = true;
         setStatus(statusElement, "Completing magic-link sign-in…", "default");
-        const result = await requestJson("/v1/auth/magic/complete", {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ token }),
-        });
-
-        if (!result.ok) {
-          const message = result.body?.message || result.body?.error || "Magic-link completion failed.";
-          showCallbackError(message);
+        let result;
+        try {
+          result = await requestJson("/v1/auth/magic/complete", {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ token }),
+          });
+        } catch {
+          showCallbackError("Sign in could not be completed. Please try again.");
           return;
         }
 
+        if (!result.ok) {
+          if (result.status === 400 || result.status === 401) {
+            clearCallbackState();
+            showCallbackError("Sign in failed. Invalid or expired magic link.", true, true);
+          } else {
+            showCallbackError("Sign in could not be completed. Please try again.");
+          }
+          return;
+        }
+
+        clearCallbackState();
+        clearStoredReturnTo();
         setStatus(statusElement, "Sign-in complete. Redirecting…", "success");
         setTimeout(() => {
           navigateTo(returnTo, "replace");
@@ -411,6 +566,8 @@
     }
 
     if (code) {
+      clearCallbackState();
+      clearStoredReturnTo();
       setStatus(statusElement, "OAuth callback received. Redirecting…", "success");
       setTimeout(() => {
         navigateTo(returnTo, "replace");
@@ -418,7 +575,8 @@
       return;
     }
 
-    showCallbackError("Missing callback token or authorization code.");
+    clearCallbackState();
+    showCallbackError("Sign in failed. The callback link is incomplete.", true);
   }
 
   void initSignInPage();

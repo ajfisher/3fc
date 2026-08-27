@@ -86,6 +86,10 @@ test("sign-in route renders dedicated auth page", () => {
   assert.match(response.body, /id="auth-magic-form"/);
   assert.match(response.body, /id="auth-return-to"/);
   assert.match(response.body, /value="\/setup"/);
+
+  const unsafeResponse = executeRoute("GET", "/sign-in?returnTo=https%3A%2F%2Fevil.example");
+  assert.match(unsafeResponse.body, /value="\/setup"/);
+  assert.doesNotMatch(unsafeResponse.body, /evil\.example/);
 });
 
 test("stylesheet route serves external UI css", () => {
@@ -196,23 +200,60 @@ test("league, season, game, join, and invite routes render their shells", () => 
   assert.match(inviteResponse.body, /data-invite-code=""/);
 });
 
+test("known application routes accept one trailing slash", () => {
+  const routes = [
+    "/setup/",
+    "/leagues/league-1/",
+    "/leagues/league-1/seasons/season-1/",
+    "/seasons/season-1/",
+    "/games/game-123/",
+    "/join/",
+    "/join/join0001/",
+    "/invites/",
+    "/invites/ABCD2345/",
+  ];
+
+  for (const route of routes) {
+    const response = executeRoute("GET", route);
+    assert.equal(response.statusCode, 200, route);
+    assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8", route);
+    assertSecurityHeaders(response.headers);
+  }
+
+  assert.equal(executeRoute("GET", "/games/game-123//").statusCode, 404);
+});
+
 test("auth callback error and success responses include security headers", () => {
   const errorResponse = executeRoute("GET", "/auth/callback?error=access_denied");
-  assert.equal(errorResponse.statusCode, 400);
-  assertSecurityHeaders(errorResponse.headers);
+  assert.equal(errorResponse.statusCode, 200);
+  assert.equal(errorResponse.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(errorResponse.headers["Cache-Control"], "no-store");
+  assert.match(errorResponse.body, /data-testid="auth-callback-shell"/);
+  assert.doesNotMatch(errorResponse.body, /access_denied/);
 
   const tokenResponse = executeRoute("GET", "/auth/callback?token=abc123");
   assert.equal(tokenResponse.statusCode, 200);
-  assertSecurityHeaders(tokenResponse.headers);
+  assert.equal(tokenResponse.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(tokenResponse.headers["Cache-Control"], "no-store");
   assert.match(tokenResponse.body, /Complete sign-in/);
   assert.match(tokenResponse.body, /data-testid="complete-magic-link"/);
+  assert.doesNotMatch(tokenResponse.body, /abc123/);
 
   const successResponse = executeRoute("GET", "/auth/callback?code=abc123");
   assert.equal(successResponse.statusCode, 200);
-  assertSecurityHeaders(successResponse.headers);
+  assert.equal(successResponse.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(successResponse.headers["Cache-Control"], "no-store");
 
   const missingResponse = executeRoute("GET", "/auth/callback");
-  assert.equal(missingResponse.statusCode, 400);
-  assertSecurityHeaders(missingResponse.headers);
-  assert.match(missingResponse.body, /did not include token or code/);
+  assert.equal(missingResponse.statusCode, 200);
+  assert.equal(missingResponse.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(missingResponse.headers["Cache-Control"], "no-store");
+  assert.match(missingResponse.body, /data-testid="auth-callback-shell"/);
+
+  const trailingSlashResponse = executeRoute("GET", "/auth/callback/?token=abc123");
+  assert.equal(trailingSlashResponse.statusCode, 200);
+  assert.equal(trailingSlashResponse.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(trailingSlashResponse.headers["Cache-Control"], "no-store");
+  assert.match(trailingSlashResponse.body, /data-testid="auth-callback-shell"/);
+  assert.doesNotMatch(trailingSlashResponse.body, /abc123/);
 });

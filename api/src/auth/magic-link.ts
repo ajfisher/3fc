@@ -8,6 +8,7 @@ import {
   type GetItemCommandOutput,
   type UpdateItemCommandOutput,
 } from "@aws-sdk/client-dynamodb";
+import { normalizeAppReturnTarget } from "@3fc/contracts";
 
 const MAGIC_TOKEN_PK_PREFIX = "AUTH_MAGIC#";
 const SESSION_PK_PREFIX = "AUTH_SESSION#";
@@ -198,8 +199,9 @@ function buildMagicLinkUrl(
   const normalizedBase = appBaseUrl.endsWith("/") ? appBaseUrl.slice(0, -1) : appBaseUrl;
   const normalizedPath = callbackPath.startsWith("/") ? callbackPath : `/${callbackPath}`;
   const query = new URLSearchParams({ token });
-  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
-    query.set("returnTo", returnTo);
+  const safeReturnTo = normalizeAppReturnTarget(returnTo);
+  if (safeReturnTo) {
+    query.set("returnTo", safeReturnTo);
   }
   return `${normalizedBase}${normalizedPath}?${query.toString()}`;
 }

@@ -110,9 +110,12 @@ jobs:
             exit 1
           fi
 
-          ROOT_HTTP_CODE="$(curl -sS -o /tmp/prod-site-root.html -w '%{http_code}' "${SITE_URL}/")"
+          ROOT_HTTP_CODE="$(curl -sS -D /tmp/prod-site-root.headers -o /tmp/prod-site-root.html -w '%{http_code}' "${SITE_URL}/")"
           SIGNIN_HTTP_CODE="$(curl -sS -o /tmp/prod-site-signin.html -w '%{http_code}' "${SITE_URL}/sign-in")"
           SETUP_HTTP_CODE="$(curl -sS -o /tmp/prod-site-setup.html -w '%{http_code}' "${SITE_URL}/setup")"
+          CALLBACK_HTTP_CODE="$(curl -sS -D /tmp/prod-site-callback.headers -o /tmp/prod-site-callback.html -w '%{http_code}' "${SITE_URL}/auth/callback")"
+          CALLBACK_SLASH_HTTP_CODE="$(curl -sS -D /tmp/prod-site-callback-slash.headers -o /tmp/prod-site-callback-slash.html -w '%{http_code}' "${SITE_URL}/auth/callback/")"
+          AUTH_FLOW_HTTP_CODE="$(curl -sS -o /tmp/prod-site-auth-flow.js -w '%{http_code}' "${SITE_URL}/ui/auth-flow.js")"
           JOIN_HTTP_CODE="$(curl -sS -o /tmp/prod-site-join.html -w '%{http_code}' "${SITE_URL}/join")"
           JOIN_LINK_HTTP_CODE="$(curl -sS -o /tmp/prod-site-join-link.html -w '%{http_code}' "${SITE_URL}/join?code=ABCDEFGH")"
 
@@ -134,6 +137,23 @@ jobs:
             exit 1
           fi
 
+          if [ "$CALLBACK_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/auth/callback (HTTP ${CALLBACK_HTTP_CODE})"
+            cat /tmp/prod-site-callback.html
+            exit 1
+          fi
+
+          if [ "$CALLBACK_SLASH_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/auth/callback/ (HTTP ${CALLBACK_SLASH_HTTP_CODE})"
+            cat /tmp/prod-site-callback-slash.html
+            exit 1
+          fi
+
+          if [ "$AUTH_FLOW_HTTP_CODE" != "200" ]; then
+            echo "Smoke test failed for ${SITE_URL}/ui/auth-flow.js (HTTP ${AUTH_FLOW_HTTP_CODE})"
+            exit 1
+          fi
+
           if [ "$JOIN_HTTP_CODE" != "200" ]; then
             echo "Smoke test failed for ${SITE_URL}/join (HTTP ${JOIN_HTTP_CODE})"
             cat /tmp/prod-site-join.html
@@ -147,8 +167,18 @@ jobs:
           fi
 
           grep -q "Dashboard" /tmp/prod-site-root.html
+          grep -qi '^referrer-policy: strict-origin-when-cross-origin' /tmp/prod-site-root.headers
           grep -q "Sign in before setup" /tmp/prod-site-signin.html
           grep -q "Dashboard" /tmp/prod-site-setup.html
+          grep -q "Complete sign-in" /tmp/prod-site-callback.html
+          grep -q "Complete sign-in" /tmp/prod-site-callback-slash.html
+          grep -q "initAuthCallbackPage" /tmp/prod-site-auth-flow.js
+          grep -qi "^content-security-policy: .*script-src 'self'.*connect-src 'self' https://api\.3fc\.football" /tmp/prod-site-callback.headers
+          grep -qi '^referrer-policy: no-referrer' /tmp/prod-site-callback.headers
+          grep -qi '^cache-control: no-cache, no-store, must-revalidate' /tmp/prod-site-callback.headers
+          grep -qi "^content-security-policy: .*script-src 'self'.*connect-src 'self' https://api\.3fc\.football" /tmp/prod-site-callback-slash.headers
+          grep -qi '^referrer-policy: no-referrer' /tmp/prod-site-callback-slash.headers
+          grep -qi '^cache-control: no-cache, no-store, must-revalidate' /tmp/prod-site-callback-slash.headers
           grep -q "Join game" /tmp/prod-site-join.html
           grep -q "Join game" /tmp/prod-site-join-link.html
 
@@ -157,6 +187,9 @@ jobs:
             echo "SITE_ROOT_HTTP_CODE=${ROOT_HTTP_CODE}"
             echo "SITE_SIGNIN_HTTP_CODE=${SIGNIN_HTTP_CODE}"
             echo "SITE_SETUP_HTTP_CODE=${SETUP_HTTP_CODE}"
+            echo "SITE_CALLBACK_HTTP_CODE=${CALLBACK_HTTP_CODE}"
+            echo "SITE_CALLBACK_SLASH_HTTP_CODE=${CALLBACK_SLASH_HTTP_CODE}"
+            echo "SITE_AUTH_FLOW_HTTP_CODE=${AUTH_FLOW_HTTP_CODE}"
             echo "SITE_JOIN_HTTP_CODE=${JOIN_HTTP_CODE}"
             echo "SITE_JOIN_LINK_HTTP_CODE=${JOIN_LINK_HTTP_CODE}"
           } >> "$GITHUB_ENV"
