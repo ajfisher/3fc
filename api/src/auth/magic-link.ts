@@ -14,6 +14,7 @@ const SESSION_PK_PREFIX = "AUTH_SESSION#";
 const METADATA_SK = "METADATA";
 const COMPLETE_SESSION_CANDIDATE_MAX_ATTEMPTS = 3;
 const COMPLETE_AMBIGUOUS_RETRY_MAX_ATTEMPTS = 3;
+const MAGIC_LINK_TIME_ZONE_MAX_LENGTH = 100;
 
 const ENTITY_TYPE = {
   magicToken: "magicToken",
@@ -58,6 +59,7 @@ export interface MagicLinkStartOptions {
   returnTo?: string | null;
   subject?: string;
   introLines?: string[];
+  timeZone?: string | null;
 }
 
 export interface MagicLinkCompleteResult {
@@ -116,6 +118,23 @@ export function isMagicLinkEmailLike(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+export function normalizeMagicLinkTimeZone(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAGIC_LINK_TIME_ZONE_MAX_LENGTH) {
+    return null;
+  }
+
+  try {
+    return new Intl.DateTimeFormat("en-AU", { timeZone: trimmed }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+}
+
 function hashTokenSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
@@ -136,6 +155,31 @@ function sessionPk(sessionId: string): string {
 
 function asIsoString(value: Date): string {
   return value.toISOString();
+}
+
+function formatMagicLinkExpiry(expiresAtEpoch: number, timeZone: string | null): string {
+  const effectiveTimeZone = timeZone ?? "UTC";
+  const expiresAt = new Date(expiresAtEpoch * 1000);
+  const timeParts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: effectiveTimeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  }).formatToParts(expiresAt);
+  const dateParts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: effectiveTimeZone,
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).formatToParts(expiresAt);
+  const timePart = (type: Intl.DateTimeFormatPartTypes): string =>
+    timeParts.find((part) => part.type === type)?.value ?? "";
+  const datePart = (type: Intl.DateTimeFormatPartTypes): string =>
+    dateParts.find((part) => part.type === type)?.value ?? "";
+  const zoneName = timeZone === null ? "UTC" : timePart("timeZoneName");
+
+  return `${timePart("hour")}:${timePart("minute")} ${timePart("dayPeriod").toLowerCase()} ${zoneName} on ${datePart("day")} ${datePart("month")} ${datePart("year")}`;
 }
 
 function invalidOrExpiredTokenError(): MagicLinkAuthError {
@@ -243,6 +287,7 @@ export class MagicLinkService {
     const nowIso = asIsoString(now);
     const expiresAtEpoch = Math.floor(now.getTime() / 1000) + this.options.tokenTtlSeconds;
     const expiresAtIso = new Date(expiresAtEpoch * 1000).toISOString();
+    const normalizedTimeZone = normalizeMagicLinkTimeZone(options.timeZone);
 
     const tokenId = this.randomProvider.tokenId();
     const tokenSecret = this.randomProvider.tokenSecret();
@@ -273,19 +318,36 @@ export class MagicLinkService {
       }),
     );
 
-    const emailResponse = await this.emailSender.sendMagicLink({
-      to: normalizedEmail,
-      subject: options.subject?.trim() || "Your 3FC sign-in link",
-      body: [
-        ...(options.introLines ?? []),
-        ...(options.introLines && options.introLines.length > 0 ? [""] : []),
-        "Use this link to sign in to 3FC:",
-        magicLink,
-        "",
-        `This link expires at ${expiresAtIso}.`,
-        "If you did not request this email, you can ignore it.",
-      ].join("\n"),
-    });
+    const hasCustomMessage = options.subject !== undefined || options.introLines !== undefined;
+    const emailResponse = await this.emailSender.sendMagicLink(
+      hasCustomMessage
+        ? {
+            to: normalizedEmail,
+            subject: options.subject?.trim() || "Your 3FC sign-in link",
+            body: [
+              ...(options.introLines ?? []),
+              ...(options.introLines && options.introLines.length > 0 ? [""] : []),
+              "Use this link to sign in to 3FC:",
+              magicLink,
+              "",
+              `This link expires at ${expiresAtIso}.`,
+              "If you did not request this email, you can ignore it.",
+            ].join("\n"),
+          }
+        : {
+            to: normalizedEmail,
+            subject: "Your 3FC sign in magic link",
+            body: [
+              "Please use the link below to sign into the 3FC app:",
+              "",
+              magicLink,
+              "",
+              `This link will expire at ${formatMagicLinkExpiry(expiresAtEpoch, normalizedTimeZone)}`,
+              "",
+              "If you didn't request this email then you can safely ignore it",
+            ].join("\n"),
+          },
+    );
 
     return {
       email: normalizedEmail,

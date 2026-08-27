@@ -149,6 +149,7 @@ interface MockApiState {
   storage: Map<string, string>;
   pendingToken: string | null;
   pendingEmail: string | null;
+  lastMagicLinkStartRequest: Record<string, unknown> | null;
   disableScopedSeasonApi: boolean;
   session: MockSession | null;
   leagues: Map<string, MockLeague>;
@@ -184,6 +185,7 @@ function createMockApiState(): MockApiState {
     storage: new Map<string, string>(),
     pendingToken: null,
     pendingEmail: null,
+    lastMagicLinkStartRequest: null,
     disableScopedSeasonApi: false,
     session: null,
     leagues: new Map<string, MockLeague>(),
@@ -639,6 +641,7 @@ function createMockFetch(state: MockApiState) {
         : {};
 
     if (method === "POST" && path === "/v1/auth/magic/start") {
+      state.lastMagicLinkStartRequest = body;
       if (!isValidEmail(body.email)) {
         return createJsonResponse(400, {
           error: "invalid_email",
@@ -3699,6 +3702,10 @@ test("setup happy path runs from sign-in to created game context", async () => {
   await flushAsync();
 
   assert.equal(apiState.pendingToken, "token-1");
+  assert.deepEqual(apiState.lastMagicLinkStartRequest, {
+    email: "organizer@3fc.football",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  });
   assert.match(signInStatus.textContent ?? "", /Magic link sent/);
 
   const callbackPage = await bootPage({

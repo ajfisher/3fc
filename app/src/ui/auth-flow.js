@@ -20,6 +20,15 @@
   const CALLBACK_RECOVERY_MAX_AGE_MS = 15 * 60 * 1000;
   const COMPLETION_REQUEST_TIMEOUT_MS = 15 * 1000;
 
+  function resolveBrowserTimeZone() {
+    try {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      return typeof timeZone === "string" && timeZone.length > 0 ? timeZone : null;
+    } catch {
+      return null;
+    }
+  }
+
   function resolveReturnTargetPatterns() {
     try {
       const raw = document.body.getAttribute("data-return-target-patterns");
@@ -334,13 +343,19 @@
       setStatus(statusElement, "Sending magic link…", "default");
 
       try {
+        const requestBody = { email };
+        const timeZone = resolveBrowserTimeZone();
+        if (timeZone) {
+          requestBody.timeZone = timeZone;
+        }
+
         const result = await requestJson("/v1/auth/magic/start", {
           method: "POST",
           credentials: "include",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ email }),
+          body: JSON.stringify(requestBody),
         });
 
         if (!result.ok) {
