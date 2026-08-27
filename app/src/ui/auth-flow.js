@@ -393,7 +393,10 @@
   }
 
   async function initAuthCallbackPage() {
-    if (window.location.pathname !== "/auth/callback") {
+    if (
+      window.location.pathname !== "/auth/callback" &&
+      window.location.pathname !== "/auth/callback/"
+    ) {
       return;
     }
 

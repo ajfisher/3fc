@@ -2189,6 +2189,26 @@ test("auth callback prefers a safe invite destination and removes sensitive URL 
   assert.equal(apiState.storage.has("threefc.auth.return_to"), false);
 });
 
+test("auth callback replaces credentials on the trailing-slash route", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback/?token=token-1&returnTo=%2Fgames%2Fgame-1#fragment",
+    scriptFile: "auth-flow.js",
+    apiState,
+  });
+
+  assert.equal(page.window.location.href, "http://localhost:3000/auth/callback");
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  assert.deepEqual(page.navigations.at(-1), { url: "/games/game-1", mode: "replace" });
+});
+
 test("auth callback moves focus to recovery after definitive completion failure", async () => {
   const apiState = createMockApiState();
   const page = await bootPage({
