@@ -1,3 +1,5 @@
+import { APP_RETURN_TARGET_PATTERN_SOURCES } from "@3fc/contracts";
+
 import {
   renderButton,
   renderDataTable,
@@ -34,6 +36,10 @@ function renderAssetPath(path: string): string {
 function renderStylesheetLink(): string {
   return `<link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/styles.css"))}" />
   <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />`;
+}
+
+function renderAuthReturnTargetPatterns(): string {
+  return escapeHtml(JSON.stringify(APP_RETURN_TARGET_PATTERN_SOURCES));
 }
 
 function renderModalScriptTag(): string {
@@ -591,7 +597,7 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
     <title>3FC Sign-in</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="signin-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
         <span data-ui="hero-kicker">3FC Auth</span>
@@ -816,18 +822,19 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
     <title>3FC Sign-in callback</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="auth-callback-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
         <span data-ui="hero-kicker">3FC Auth</span>
-        <h1>Complete sign-in</h1>
-        <p data-ui="hero-copy">Confirm this browser should finish sign-in and continue.</p>
+        <h1 id="auth-callback-title">Complete sign-in</h1>
+        <p data-ui="hero-copy" id="auth-callback-copy">Confirm this browser should finish sign-in and continue.</p>
       </section>
       <section data-ui="section-stack">
-        <p data-ui="status-note" id="auth-callback-status">Verifying callback parameters…</p>
+        <p data-ui="status-note" id="auth-callback-status" role="status" aria-live="polite">Verifying callback parameters…</p>
         <div data-ui="button-row">
           ${renderButton("Complete sign-in", "primary", {
             type: "button",
@@ -836,7 +843,8 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
             hidden: "hidden",
           })}
         </div>
-        <p data-ui="status-note" data-state="error" id="auth-callback-error" hidden></p>
+        <p data-ui="status-note" data-state="error" id="auth-callback-error" role="alert" hidden></p>
+        <a data-ui="button-secondary" id="auth-callback-recovery" href="/sign-in" hidden>Return to sign in</a>
       </section>
     </main>
     ${renderAuthScriptTag()}

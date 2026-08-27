@@ -9,6 +9,66 @@ export const THIRD_NUMBERS = [1, 2, 3] as const satisfies readonly ThirdNumber[]
 export const THIRD_LENGTH_MINUTES = [20, 25, 30] as const satisfies readonly ThirdLengthMinutes[];
 export const DEFAULT_THIRD_LENGTH_MINUTES = 20 satisfies ThirdLengthMinutes;
 
+export const APP_RETURN_TARGET_PATTERN_SOURCES = [
+  "^/$",
+  "^/setup$",
+  "^/leagues/[^/]+(?:/seasons/[^/]+)?$",
+  "^/seasons/[^/]+$",
+  "^/games/[^/]+$",
+  "^/join(?:/[^/]+)?$",
+  "^/invites(?:/[^/]+)?$",
+] as const;
+
+const APP_RETURN_TARGET_PATHS = APP_RETURN_TARGET_PATTERN_SOURCES.map(
+  (source) => new RegExp(source, "u"),
+);
+
+/**
+ * Normalizes a post-authentication destination to a known application route.
+ * Authentication, API, and asset routes are intentionally excluded.
+ */
+export function normalizeAppReturnTarget(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) {
+    return null;
+  }
+
+  if (!value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u001f\u007f]/u.test(value)) {
+    return null;
+  }
+
+  let decoded = value;
+  for (let index = 0; index < 2; index += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) {
+        break;
+      }
+      decoded = next;
+    } catch {
+      if (index === 0) {
+        return null;
+      }
+      break;
+    }
+  }
+
+  if (/[\\\u0000-\u001f\u007f]/u.test(decoded)) {
+    return null;
+  }
+
+  try {
+    const base = "https://return-target.invalid";
+    const target = new URL(value, base);
+    if (target.origin !== base || !APP_RETURN_TARGET_PATHS.some((pattern) => pattern.test(target.pathname))) {
+      return null;
+    }
+
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return null;
+  }
+}
+
 export interface DefaultTeamDefinition {
   teamId: TeamId;
   name: string;

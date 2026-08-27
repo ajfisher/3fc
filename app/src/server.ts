@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { normalizeAppReturnTarget } from "@3fc/contracts";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL, fileURLToPath } from "node:url";
@@ -14,7 +15,6 @@ import {
   renderSeasonPage,
   renderSignInPage,
   renderSetupHomePage,
-  renderStatusPage,
 } from "./ui/layout.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3000", 10);
@@ -183,7 +183,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     }
 
     if (method === "GET" && route === "/sign-in") {
-      const returnTo = requestUrl.searchParams.get("returnTo") ?? "/setup";
+      const returnTo = normalizeAppReturnTarget(requestUrl.searchParams.get("returnTo")) ?? "/setup";
       sendHtml(response, securityHeaders, 200, renderSignInPage(apiBaseUrl, returnTo));
       return;
     }
@@ -287,36 +287,12 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     }
 
     if (method === "GET" && route === "/auth/callback") {
-      const errorCode = requestUrl.searchParams.get("error");
-      const token = requestUrl.searchParams.get("token");
-      const code = requestUrl.searchParams.get("code");
-
-      if (errorCode) {
-        sendHtml(
-          response,
-          securityHeaders,
-          400,
-          renderStatusPage("Sign-in failed", `OAuth provider returned: ${errorCode}.`),
-        );
-        return;
-      }
-
-      if (token) {
-        sendHtml(response, securityHeaders, 200, renderMagicLinkCallbackPage(apiBaseUrl));
-        return;
-      }
-
-      if (!code) {
-        sendHtml(
-          response,
-          securityHeaders,
-          400,
-          renderStatusPage("Sign-in callback failed", "Authorization callback did not include token or code."),
-        );
-        return;
-      }
-
-      sendHtml(response, securityHeaders, 200, renderMagicLinkCallbackPage(apiBaseUrl));
+      const callbackSecurityHeaders = {
+        ...securityHeaders,
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+      };
+      sendHtml(response, callbackSecurityHeaders, 200, renderMagicLinkCallbackPage(apiBaseUrl));
       return;
     }
 

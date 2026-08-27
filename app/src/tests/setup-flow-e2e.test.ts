@@ -1822,6 +1822,7 @@ async function bootPage(input: {
   apiState: MockApiState;
   fetch?: ReturnType<typeof createMockFetch>;
   flushOnBoot?: boolean;
+  sessionStorage?: Map<string, string>;
 }) {
   const dom = new JSDOM(input.html, {
     url: input.url,
@@ -1854,6 +1855,20 @@ async function bootPage(input: {
     },
     configurable: true,
   });
+  if (input.sessionStorage) {
+    Object.defineProperty(window, "sessionStorage", {
+      value: {
+        getItem: (key: string) => input.sessionStorage?.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          input.sessionStorage?.set(key, value);
+        },
+        removeItem: (key: string) => {
+          input.sessionStorage?.delete(key);
+        },
+      },
+      configurable: true,
+    });
+  }
   Object.defineProperty(window, "fetch", {
     value: input.fetch ?? createMockFetch(input.apiState),
     configurable: true,
@@ -2013,6 +2028,7 @@ test("auth callback rejects backslash return targets", async () => {
   });
   await flushAsync();
 
+  assert.equal(new URL(callbackPage.window.location.href).search, "");
   assert.equal(callbackPage.navigations.length, 0);
   assert.equal(apiState.cookieJar, "");
   assert.equal(
@@ -2029,6 +2045,205 @@ test("auth callback rejects backslash return targets", async () => {
   assert(callbackNavigation);
   assert.equal(callbackNavigation.url, "/setup");
   assert.equal(apiState.cookieJar, "threefc_session=session-1");
+});
+
+test("auth flow rejects unsafe direct and stored return targets", async () => {
+  const directState = createMockApiState();
+  directState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  directState.cookieJar = "threefc_session=session-1";
+
+  const directPage = await bootPage({
+    html: renderSignInPage("http://localhost:3001", "/setup"),
+    url: "http://localhost:3000/sign-in?returnTo=https%3A%2F%2Fevil.example",
+    scriptFile: "auth-flow.js",
+    apiState: directState,
+  });
+  assert.deepEqual(directPage.navigations.at(-1), { url: "/setup", mode: "replace" });
+
+  const storedState = createMockApiState();
+  storedState.pendingEmail = "organizer@3fc.football";
+  storedState.pendingToken = "token-1";
+  storedState.storage.set("threefc.auth.return_to", "//evil.example");
+  const storedPage = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1",
+    scriptFile: "auth-flow.js",
+    apiState: storedState,
+  });
+  const completeButton = storedPage.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof storedPage.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+  assert.deepEqual(storedPage.navigations.at(-1), { url: "/setup", mode: "replace" });
+  assert.equal(storedState.storage.has("threefc.auth.return_to"), false);
+});
+
+test("auth callback redacts the URL while retaining recoverable state for transport retries", async () => {
+  const apiState = createMockApiState();
+  apiState.storage.set("threefc.auth.return_to", "/games/game-1");
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1",
+    scriptFile: "auth-flow.js",
+    apiState,
+    fetch: (async () => {
+      throw new Error("network unavailable");
+    }) as ReturnType<typeof createMockFetch>,
+  });
+
+  assert.equal(new URL(page.window.location.href).search, "");
+  assert.equal(
+    JSON.parse(page.window.sessionStorage.getItem("threefc.auth.callback") ?? "{}").token,
+    "token-1",
+  );
+  assert.equal(apiState.storage.get("threefc.auth.return_to"), "/games/game-1");
+
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  assert.equal(completeButton.disabled, false);
+  assert.equal(
+    page.document.getElementById("auth-callback-error")?.textContent,
+    "Sign in could not be completed. Please try again.",
+  );
+  assert.equal(
+    JSON.parse(page.window.sessionStorage.getItem("threefc.auth.callback") ?? "{}").token,
+    "token-1",
+  );
+  assert.equal(apiState.storage.get("threefc.auth.return_to"), "/games/game-1");
+
+  const recoveryLink = page.document.getElementById("auth-callback-recovery");
+  assert(recoveryLink instanceof page.window.HTMLAnchorElement);
+  recoveryLink.dispatchEvent(new page.window.Event("click", { bubbles: true }));
+  assert.equal(page.window.sessionStorage.getItem("threefc.auth.callback"), null);
+});
+
+test("auth callback recovers a redacted token after a same-tab reload", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+  const callbackStorage = new Map<string, string>();
+
+  const firstPage = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1&returnTo=%2Fgames%2Fgame-1",
+    scriptFile: "auth-flow.js",
+    apiState,
+    sessionStorage: callbackStorage,
+  });
+  assert.equal(new URL(firstPage.window.location.href).search, "");
+
+  const reloadedPage = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback",
+    scriptFile: "auth-flow.js",
+    apiState,
+    sessionStorage: callbackStorage,
+  });
+  const completeButton = reloadedPage.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof reloadedPage.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  assert.deepEqual(reloadedPage.navigations.at(-1), { url: "/games/game-1", mode: "replace" });
+  assert.equal(callbackStorage.has("threefc.auth.callback"), false);
+});
+
+test("auth callback prefers a safe invite destination and removes sensitive URL parameters", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+  apiState.storage.set("threefc.auth.return_to", "/games/game-1");
+  const callbackStorage = new Map<string, string>([
+    [
+      "threefc.auth.callback",
+      JSON.stringify({
+        capturedAt: Date.now(),
+        oauthError: true,
+        returnTo: "/games/stale-game",
+      }),
+    ],
+  ]);
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1&returnTo=%2Finvites%3Fcode%3DABCD2345&unknown=secret#fragment",
+    scriptFile: "auth-flow.js",
+    apiState,
+    sessionStorage: callbackStorage,
+  });
+
+  assert.equal(page.window.location.href, "http://localhost:3000/auth/callback");
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  assert.deepEqual(page.navigations.at(-1), { url: "/invites?code=ABCD2345", mode: "replace" });
+  assert.equal(apiState.storage.has("threefc.auth.return_to"), false);
+});
+
+test("auth callback moves focus to recovery after definitive completion failure", async () => {
+  const apiState = createMockApiState();
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=expired-token&returnTo=%2Fsetup",
+    scriptFile: "auth-flow.js",
+    apiState,
+    fetch: (async () =>
+      createJsonResponse(401, {
+        error: "invalid_or_expired_magic_link",
+        message: "Invalid or expired magic link.",
+      })) as ReturnType<typeof createMockFetch>,
+  });
+
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  const recoveryLink = page.document.getElementById("auth-callback-recovery");
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  assert(recoveryLink instanceof page.window.HTMLAnchorElement);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  assert.equal(completeButton.hidden, true);
+  assert.equal(recoveryLink.hidden, false);
+  assert.equal(page.document.activeElement, recoveryLink);
+  assert.equal(recoveryLink.getAttribute("href"), "/sign-in?returnTo=%2Fsetup");
+  assert.equal(page.window.sessionStorage.getItem("threefc.auth.callback"), null);
+});
+
+test("auth callback never combines stored credentials with a fresh non-credential envelope", async () => {
+  const apiState = createMockApiState();
+  const callbackStorage = new Map<string, string>([
+    [
+      "threefc.auth.callback",
+      JSON.stringify({
+        capturedAt: Date.now(),
+        token: "stored-token",
+        returnTo: "/games/game-1",
+      }),
+    ],
+  ]);
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?returnTo=%2Finvites%3Fcode%3DATTACKER#fragment",
+    scriptFile: "auth-flow.js",
+    apiState,
+    sessionStorage: callbackStorage,
+  });
+
+  assert.equal(page.window.location.href, "http://localhost:3000/auth/callback");
+  assert.equal(page.document.querySelector('[data-testid="complete-magic-link"]')?.hasAttribute("hidden"), true);
+  assert.equal(
+    page.document.getElementById("auth-callback-error")?.textContent,
+    "Sign in failed. The callback link is incomplete.",
+  );
+  assert.equal(callbackStorage.has("threefc.auth.callback"), false);
 });
 
 test("setup flow shows inline validation for blank required fields", async () => {
