@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   GetItemCommand,
   PutItemCommand,
-  UpdateItemCommand,
+  TransactWriteItemsCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 
@@ -19,6 +19,14 @@ type Item = Record<string, AttributeValue>;
 
 class InMemoryMagicDynamoClient {
   private readonly items = new Map<string, Item>();
+
+  private loseNextTransactionResponse = false;
+
+  private cancelNextTransaction = false;
+
+  private loseNextTransactionResponseBeforeCommit = false;
+
+  private readonly transactionClientTokens: string[] = [];
 
   async send(command: unknown): Promise<unknown> {
     if (command instanceof PutItemCommand) {
@@ -40,48 +48,60 @@ class InMemoryMagicDynamoClient {
       return {};
     }
 
-    if (command instanceof UpdateItemCommand) {
-      const key = command.input.Key;
-      const values = command.input.ExpressionAttributeValues ?? {};
+    if (command instanceof TransactWriteItemsCommand) {
+      this.transactionClientTokens.push(command.input.ClientRequestToken ?? "");
+      const [tokenOperation, sessionOperation] = command.input.TransactItems ?? [];
+      const update = tokenOperation?.Update;
+      const put = sessionOperation?.Put;
 
-      if (!key) {
-        throw new Error("UpdateItemCommand is missing Key.");
+      if (!update?.Key || !put?.Item) {
+        throw new Error("Magic-link transaction is missing its token update or session put.");
       }
 
-      const pk = this.readString(key.pk, "pk");
-      const sk = this.readString(key.sk, "sk");
-      const itemKey = `${pk}|${sk}`;
-      const existing = this.items.get(itemKey);
+      const tokenKey = `${this.readString(update.Key.pk, "pk")}|${this.readString(update.Key.sk, "sk")}`;
+      const existingToken = this.items.get(tokenKey);
+      const values = update.ExpressionAttributeValues ?? {};
+      const sessionKey = `${this.readString(put.Item.pk, "pk")}|${this.readString(put.Item.sk, "sk")}`;
 
-      if (!existing) {
-        throw this.conditionalCheckFailed();
+      if (!existingToken) {
+        throw this.transactionCanceled();
+      }
+
+      if (this.loseNextTransactionResponseBeforeCommit) {
+        this.loseNextTransactionResponseBeforeCommit = false;
+        throw new Error("Simulated ambiguous response loss before the local commit is visible.");
+      }
+
+      if (this.cancelNextTransaction) {
+        this.cancelNextTransaction = false;
+        throw this.transactionCanceled();
       }
 
       const expectedTokenHash = this.readString(values[":tokenHash"], ":tokenHash");
-      const usedAt = this.readString(values[":usedAt"], ":usedAt");
-      const updatedAt = this.readString(values[":updatedAt"], ":updatedAt");
       const nowEpoch = this.readNumber(values[":nowEpoch"], ":nowEpoch");
-
-      const storedTokenHash = this.readString(existing.tokenHash, "tokenHash");
-      const storedExpiresEpoch = this.readNumber(existing.expiresAtEpoch, "expiresAtEpoch");
-      const alreadyUsed = existing.usedAt?.S !== undefined;
-
       if (
-        storedTokenHash !== expectedTokenHash ||
-        alreadyUsed ||
-        storedExpiresEpoch < nowEpoch
+        this.readString(existingToken.tokenHash, "tokenHash") !== expectedTokenHash ||
+        existingToken.usedAt?.S !== undefined ||
+        this.readNumber(existingToken.expiresAtEpoch, "expiresAtEpoch") <= nowEpoch ||
+        this.items.has(sessionKey)
       ) {
-        throw this.conditionalCheckFailed();
+        throw this.transactionCanceled();
       }
 
-      const next = {
-        ...existing,
-        usedAt: { S: usedAt },
-        updatedAt: { S: updatedAt },
-      };
-      this.items.set(itemKey, next);
+      this.items.set(tokenKey, {
+        ...existingToken,
+        usedAt: { S: this.readString(values[":usedAt"], ":usedAt") },
+        updatedAt: { S: this.readString(values[":updatedAt"], ":updatedAt") },
+        sessionId: { S: this.readString(values[":sessionId"], ":sessionId") },
+      });
+      this.items.set(sessionKey, { ...put.Item });
 
-      return { Attributes: next };
+      if (this.loseNextTransactionResponse) {
+        this.loseNextTransactionResponse = false;
+        throw new Error("Simulated response loss after transaction commit.");
+      }
+
+      return {};
     }
 
     if (command instanceof GetItemCommand) {
@@ -106,9 +126,31 @@ class InMemoryMagicDynamoClient {
     return this.items.get(`${pk}|${sk}`);
   }
 
+  loseTransactionResponseOnce(): void {
+    this.loseNextTransactionResponse = true;
+  }
+
+  cancelTransactionOnce(): void {
+    this.cancelNextTransaction = true;
+  }
+
+  loseTransactionResponseBeforeCommitOnce(): void {
+    this.loseNextTransactionResponseBeforeCommit = true;
+  }
+
+  getTransactionClientTokens(): string[] {
+    return [...this.transactionClientTokens];
+  }
+
   private conditionalCheckFailed(): Error {
     const error = new Error("Conditional check failed");
     (error as Error & { name: string }).name = "ConditionalCheckFailedException";
+    return error;
+  }
+
+  private transactionCanceled(): Error {
+    const error = new Error("Transaction cancelled");
+    (error as Error & { name: string }).name = "TransactionCanceledException";
     return error;
   }
 
@@ -217,6 +259,7 @@ test("magic start stores TTL token and sends callback link email", async () => {
   assert.equal(tokenItem.entityType?.S, "magicToken");
   assert.equal(tokenItem.email?.S, "player@example.com");
   assert.equal(tokenItem.ttlEpoch?.N, tokenItem.expiresAtEpoch?.N);
+  assert.equal(tokenItem.tokenSecret, undefined);
 });
 
 test("magic start can send invite-specific copy with a safe return target", async () => {
@@ -255,7 +298,7 @@ test("magic start excludes unsafe return targets from callback links", async () 
   }
 });
 
-test("magic complete consumes token once and creates a session", async () => {
+test("magic complete atomically links one replayable session", async () => {
   const { client, service, sentMessages } = createHarness();
 
   await service.start("player@example.com");
@@ -270,6 +313,7 @@ test("magic complete consumes token once and creates a session", async () => {
   const tokenItem = client.getItem("AUTH_MAGIC#token-1", "METADATA");
   assert(tokenItem);
   assert.equal(typeof tokenItem.usedAt?.S, "string");
+  assert.equal(tokenItem.sessionId?.S, "session-1");
 
   const sessionItem = client.getItem("AUTH_SESSION#session-1", "METADATA");
   assert(sessionItem);
@@ -281,6 +325,124 @@ test("magic complete consumes token once and creates a session", async () => {
   assert.equal(persistedSession.email, "player@example.com");
   assert.equal(persistedSession.subject, magicLinkSubjectForEmail("player@example.com"));
 
+  assert.deepEqual(await service.complete(token), firstCompletion);
+  assert.equal(client.getItem("AUTH_SESSION#session-2", "METADATA"), undefined);
+});
+
+test("concurrent completions converge on the same persisted session", async () => {
+  const { client, service, sentMessages } = createHarness();
+
+  await service.start("concurrent@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const [first, second] = await Promise.all([service.complete(token), service.complete(token)]);
+
+  assert.deepEqual(second, first);
+  assert.equal(first.sessionId, "session-1");
+  assert(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+  assert.equal(client.getItem("AUTH_SESSION#session-2", "METADATA"), undefined);
+  assert.equal(client.getItem("AUTH_MAGIC#token-1", "METADATA")?.sessionId?.S, "session-1");
+});
+
+test("completion recovers when the transaction commits but its response is lost", async () => {
+  const { client, service, sentMessages } = createHarness();
+
+  await service.start("response-loss@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  client.loseTransactionResponseOnce();
+
+  const recovered = await service.complete(token);
+  assert.equal(recovered.sessionId, "session-1");
+  assert.equal(client.getItem("AUTH_MAGIC#token-1", "METADATA")?.sessionId?.S, "session-1");
+  assert(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+  assert.deepEqual(await service.complete(token), recovered);
+});
+
+test("ambiguous transport failure retries the identical idempotent transaction", async () => {
+  const { client, service, sentMessages } = createHarness();
+
+  await service.start("ambiguous@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  client.loseTransactionResponseBeforeCommitOnce();
+
+  const completed = await service.complete(token);
+  assert.equal(completed.sessionId, "session-1");
+  assert.deepEqual(client.getTransactionClientTokens(), ["session-1", "session-1"]);
+  assert(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+  assert.equal(client.getItem("AUTH_SESSION#session-2", "METADATA"), undefined);
+});
+
+test("a cancelled transaction leaves the token unused and retries without an orphan session", async () => {
+  const { client, service, sentMessages } = createHarness();
+
+  await service.start("transaction-retry@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  client.cancelTransactionOnce();
+
+  const completed = await service.complete(token);
+  assert.equal(completed.sessionId, "session-2");
+  assert.equal(client.getItem("AUTH_SESSION#session-1", "METADATA"), undefined);
+  assert(client.getItem("AUTH_SESSION#session-2", "METADATA"));
+  assert.equal(client.getItem("AUTH_MAGIC#token-1", "METADATA")?.sessionId?.S, "session-2");
+});
+
+test("replay recovery ends at the token persisted expiry", async () => {
+  const { service, sentMessages, clock } = createHarness();
+
+  await service.start("replay-expiry@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  await service.complete(token);
+  clock.advanceSeconds(300);
+
+  await assert.rejects(
+    service.complete(token),
+    (error: unknown) => {
+      assert(error instanceof MagicLinkAuthError);
+      assert.equal(error.code, "invalid_or_expired_magic_link");
+      return true;
+    },
+  );
+});
+
+test("already-issued tokens use their persisted expiry after configuration changes", async () => {
+  const harness = createHarness();
+
+  await harness.service.start("persisted-expiry@example.com");
+  const token = extractTokenFromBody(harness.sentMessages[0].body);
+  harness.clock.advanceSeconds(120);
+
+  const reconfiguredService = new MagicLinkService(
+    harness.client,
+    {
+      async sendMagicLink(input) {
+        harness.sentMessages.push(input);
+        return { messageId: `msg-${harness.sentMessages.length}` };
+      },
+    },
+    {
+      tableName: "threefc_test",
+      appBaseUrl: "http://localhost:3000",
+      callbackPath: "/auth/callback",
+      tokenTtlSeconds: 1,
+      sessionTtlSeconds: 3600,
+    },
+    harness.clock,
+    harness.randomProvider,
+  );
+
+  const completion = await reconfiguredService.complete(token);
+  assert.equal(completion.sessionId, "session-1");
+  assert.equal(completion.email, "persisted-expiry@example.com");
+});
+
+test("legacy used tokens without a session link remain invalid", async () => {
+  const { client, service, sentMessages } = createHarness();
+
+  await service.start("legacy@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const tokenItem = client.getItem("AUTH_MAGIC#token-1", "METADATA");
+  assert(tokenItem);
+  tokenItem.usedAt = { S: "2026-02-22T00:00:01.000Z" };
+
   await assert.rejects(
     service.complete(token),
     (error: unknown) => {
@@ -290,6 +452,7 @@ test("magic complete consumes token once and creates a session", async () => {
       return true;
     },
   );
+  assert.equal(client.getItem("AUTH_SESSION#session-1", "METADATA"), undefined);
 });
 
 test("eight-day sessions persist matching expiry and reject at the configured boundary", async () => {
