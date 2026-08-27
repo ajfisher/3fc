@@ -200,6 +200,29 @@ test("league, season, game, join, and invite routes render their shells", () => 
   assert.match(inviteResponse.body, /data-invite-code=""/);
 });
 
+test("known application routes accept one trailing slash", () => {
+  const routes = [
+    "/setup/",
+    "/leagues/league-1/",
+    "/leagues/league-1/seasons/season-1/",
+    "/seasons/season-1/",
+    "/games/game-123/",
+    "/join/",
+    "/join/join0001/",
+    "/invites/",
+    "/invites/ABCD2345/",
+  ];
+
+  for (const route of routes) {
+    const response = executeRoute("GET", route);
+    assert.equal(response.statusCode, 200, route);
+    assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8", route);
+    assertSecurityHeaders(response.headers);
+  }
+
+  assert.equal(executeRoute("GET", "/games/game-123//").statusCode, 404);
+});
+
 test("auth callback error and success responses include security headers", () => {
   const errorResponse = executeRoute("GET", "/auth/callback?error=access_denied");
   assert.equal(errorResponse.statusCode, 200);

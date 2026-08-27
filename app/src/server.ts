@@ -177,7 +177,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    if (method === "GET" && (route === "/" || route === "/setup")) {
+    if (method === "GET" && (route === "/" || route === "/setup" || route === "/setup/")) {
       sendHtml(response, securityHeaders, 200, setupShellHtml);
       return;
     }
@@ -218,7 +218,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    const leaguePageMatch = route.match(/^\/leagues\/([^/]+)$/);
+    const leaguePageMatch = route.match(/^\/leagues\/([^/]+)\/?$/);
     if (method === "GET" && leaguePageMatch) {
       sendHtml(
         response,
@@ -229,7 +229,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    const leagueSeasonPageMatch = route.match(/^\/leagues\/([^/]+)\/seasons\/([^/]+)$/);
+    const leagueSeasonPageMatch = route.match(/^\/leagues\/([^/]+)\/seasons\/([^/]+)\/?$/);
     if (method === "GET" && leagueSeasonPageMatch) {
       sendHtml(
         response,
@@ -244,7 +244,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    const seasonPageMatch = route.match(/^\/seasons\/([^/]+)$/);
+    const seasonPageMatch = route.match(/^\/seasons\/([^/]+)\/?$/);
     if (method === "GET" && seasonPageMatch) {
       sendHtml(
         response,
@@ -255,31 +255,31 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    const gamePageMatch = route.match(/^\/games\/([^/]+)$/);
+    const gamePageMatch = route.match(/^\/games\/([^/]+)\/?$/);
     if (method === "GET" && gamePageMatch) {
       const gameId = decodeURIComponent(gamePageMatch[1]);
       sendHtml(response, securityHeaders, 200, renderGamePage(apiBaseUrl, { gameId }));
       return;
     }
 
-    if (method === "GET" && route === "/join") {
+    if (method === "GET" && (route === "/join" || route === "/join/")) {
       sendHtml(response, securityHeaders, 200, renderJoinPage(apiBaseUrl, ""));
       return;
     }
 
-    const joinPageMatch = route.match(/^\/join\/([^/]+)$/);
+    const joinPageMatch = route.match(/^\/join\/([^/]+)\/?$/);
     if (method === "GET" && joinPageMatch) {
       const joinCode = decodeURIComponent(joinPageMatch[1]);
       sendHtml(response, securityHeaders, 200, renderJoinPage(apiBaseUrl, joinCode));
       return;
     }
 
-    if (method === "GET" && route === "/invites") {
+    if (method === "GET" && (route === "/invites" || route === "/invites/")) {
       sendHtml(response, securityHeaders, 200, renderInvitePage(apiBaseUrl, ""));
       return;
     }
 
-    const invitePageMatch = route.match(/^\/invites\/([^/]+)$/);
+    const invitePageMatch = route.match(/^\/invites\/([^/]+)\/?$/);
     if (method === "GET" && invitePageMatch) {
       const inviteCode = decodeURIComponent(invitePageMatch[1]);
       sendHtml(response, securityHeaders, 200, renderInvitePage(apiBaseUrl, inviteCode));
