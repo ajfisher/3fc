@@ -1793,6 +1793,43 @@ async function flushAsync(): Promise<void> {
   await Promise.resolve();
 }
 
+function createManualTimers() {
+  let now = 0;
+  let nextId = 1;
+  const pending = new Map<number, { callback: () => void; runAt: number }>();
+
+  return {
+    setTimeout(callback: () => void, delay = 0): number {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, { callback, runAt: now + delay });
+      return id;
+    },
+    clearTimeout(id: number): void {
+      pending.delete(id);
+    },
+    pendingCount(): number {
+      return pending.size;
+    },
+    advanceBy(milliseconds: number): void {
+      const target = now + milliseconds;
+      while (true) {
+        const next = [...pending.entries()]
+          .filter(([, timer]) => timer.runAt <= target)
+          .sort((left, right) => left[1].runAt - right[1].runAt || left[0] - right[0])[0];
+        if (!next) {
+          break;
+        }
+        const [id, timer] = next;
+        pending.delete(id);
+        now = timer.runAt;
+        timer.callback();
+      }
+      now = target;
+    },
+  };
+}
+
 function expectedLocalTimestamp(isoTimestamp: string): string {
   const parsed = new Date(isoTimestamp);
   const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000);
@@ -1823,6 +1860,7 @@ async function bootPage(input: {
   fetch?: ReturnType<typeof createMockFetch>;
   flushOnBoot?: boolean;
   sessionStorage?: Map<string, string>;
+  timers?: ReturnType<typeof createManualTimers>;
 }) {
   const dom = new JSDOM(input.html, {
     url: input.url,
@@ -1874,10 +1912,17 @@ async function bootPage(input: {
     configurable: true,
   });
   Object.defineProperty(window, "setTimeout", {
-    value: (callback: () => void) => {
+    value: input.timers?.setTimeout ?? ((callback: () => void, delay = 0) => {
+      if (window.location.pathname.startsWith("/auth/callback") && (delay === 3000 || delay === 15000)) {
+        return 0;
+      }
       callback();
       return 0;
-    },
+    }),
+    configurable: true,
+  });
+  Object.defineProperty(window, "clearTimeout", {
+    value: input.timers?.clearTimeout ?? (() => undefined),
     configurable: true,
   });
   Object.defineProperty(window, "setInterval", {
@@ -2015,6 +2060,292 @@ test("sign-in page shows inline validation for invalid email", async () => {
   assert.equal(notice.textContent, "Enter a valid email address.");
 });
 
+test("sign-in page announces an existing-session redirect without exposing identity", async () => {
+  const apiState = createMockApiState();
+  apiState.session = {
+    sessionId: "session-1",
+    email: "organizer@3fc.football",
+    createdAt: "2026-03-28T11:00:00.000Z",
+    expiresAt: "2026-03-29T11:00:00.000Z",
+  };
+  apiState.cookieJar = "threefc_session=session-1";
+  const page = await bootPage({
+    html: renderSignInPage("http://localhost:3001", "/setup"),
+    url: "http://localhost:3000/sign-in",
+    scriptFile: "auth-flow.js",
+    apiState,
+  });
+
+  const status = page.document.getElementById("auth-status");
+  assert(status instanceof page.window.HTMLElement);
+  assert.equal(status.getAttribute("role"), "status");
+  assert.equal(status.hidden, false);
+  assert.equal(status.textContent, "Sign-in complete. Redirecting…");
+  assert.doesNotMatch(page.document.body.textContent ?? "", /organizer@3fc\.football/);
+});
+
+test("sign-in request failure uses one actionable alert without duplicate status copy", async () => {
+  const apiState = createMockApiState();
+  const page = await bootPage({
+    html: renderSignInPage("http://localhost:3001", "/setup"),
+    url: "http://localhost:3000/sign-in",
+    scriptFile: "auth-flow.js",
+    apiState,
+    fetch: async (input, init) => {
+      const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+      if (target.pathname === "/v1/auth/session") {
+        return createJsonResponse(401, { error: "unauthorized" });
+      }
+      return createJsonResponse(503, { message: "Please try again shortly." });
+    },
+  });
+  const form = page.document.getElementById("auth-magic-form");
+  const emailInput = page.document.getElementById("auth-email");
+  assert(form instanceof page.window.HTMLFormElement);
+  assert(emailInput instanceof page.window.HTMLInputElement);
+  emailInput.value = "organizer@3fc.football";
+
+  dispatchSubmit(form);
+  await flushAsync();
+
+  const status = page.document.getElementById("auth-status");
+  const error = page.document.getElementById("auth-error");
+  assert(status instanceof page.window.HTMLElement);
+  assert(error instanceof page.window.HTMLElement);
+  assert.equal(status.hidden, true);
+  assert.equal(status.textContent, "");
+  assert.equal(error.hidden, false);
+  assert.equal(error.textContent, "Please try again shortly.");
+});
+
+test("auth callback completes once at exactly three seconds", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+  const timers = createManualTimers();
+  const baseFetch = createMockFetch(apiState);
+  let completionRequests = 0;
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1&returnTo=%2Fsetup",
+    scriptFile: "auth-flow.js",
+    apiState,
+    timers,
+    fetch: async (input, init) => {
+      const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+      if (target.pathname === "/v1/auth/magic/complete") {
+        completionRequests += 1;
+      }
+      return baseFetch(input, init);
+    },
+  });
+
+  assert.equal(completionRequests, 0);
+  timers.advanceBy(2999);
+  await flushAsync();
+  assert.equal(completionRequests, 0);
+  assert.equal(page.navigations.length, 0);
+
+  timers.advanceBy(1);
+  await flushAsync();
+  assert.equal(completionRequests, 1);
+  assert.deepEqual(page.navigations, [{ url: "/setup", mode: "replace" }]);
+  assert.equal(timers.pendingCount(), 0);
+});
+
+test("manual callback activation synchronously cancels and latches the timer", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+  const timers = createManualTimers();
+  const baseFetch = createMockFetch(apiState);
+  let completionRequests = 0;
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1",
+    scriptFile: "auth-flow.js",
+    apiState,
+    timers,
+    fetch: async (input, init) => {
+      const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+      if (target.pathname === "/v1/auth/magic/complete") {
+        completionRequests += 1;
+      }
+      return baseFetch(input, init);
+    },
+  });
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  const nestedTarget = page.document.createElement("span");
+  completeButton.append(nestedTarget);
+
+  dispatchClick(nestedTarget);
+  dispatchClick(nestedTarget);
+  timers.advanceBy(3000);
+  await flushAsync();
+
+  assert.equal(completionRequests, 1);
+  assert.deepEqual(page.navigations, [{ url: "/setup", mode: "replace" }]);
+  assert.equal(timers.pendingCount(), 0);
+});
+
+test("timer-boundary callback activation cannot send a duplicate request", async () => {
+  const apiState = createMockApiState();
+  apiState.pendingEmail = "organizer@3fc.football";
+  apiState.pendingToken = "token-1";
+  const timers = createManualTimers();
+  const baseFetch = createMockFetch(apiState);
+  let completionRequests = 0;
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1",
+    scriptFile: "auth-flow.js",
+    apiState,
+    timers,
+    fetch: async (input, init) => {
+      const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+      if (target.pathname === "/v1/auth/magic/complete") {
+        completionRequests += 1;
+      }
+      return baseFetch(input, init);
+    },
+  });
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+
+  timers.advanceBy(3000);
+  dispatchClick(completeButton);
+  await flushAsync();
+
+  assert.equal(completionRequests, 1);
+  assert.deepEqual(page.navigations, [{ url: "/setup", mode: "replace" }]);
+});
+
+test("transient automatic completion failure requires a manual retry", async () => {
+  const apiState = createMockApiState();
+  const timers = createManualTimers();
+  let completionRequests = 0;
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1&returnTo=%2Fsetup",
+    scriptFile: "auth-flow.js",
+    apiState,
+    timers,
+    fetch: async () => {
+      completionRequests += 1;
+      return createJsonResponse(503, { error: "temporarily_unavailable" });
+    },
+  });
+
+  timers.advanceBy(3000);
+  await flushAsync();
+  timers.advanceBy(30000);
+  await flushAsync();
+
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  const recoveryLink = page.document.getElementById("auth-callback-recovery");
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  assert(recoveryLink instanceof page.window.HTMLAnchorElement);
+  assert.equal(completionRequests, 1);
+  assert.equal(completeButton.disabled, false);
+  assert.equal(recoveryLink.hidden, false);
+  assert.equal(timers.pendingCount(), 0);
+
+  dispatchClick(completeButton);
+  await flushAsync();
+  assert.equal(completionRequests, 2);
+});
+
+test("a timed-out committed completion recovers the same session on manual retry", async () => {
+  const apiState = createMockApiState();
+  const timers = createManualTimers();
+  let completionRequests = 0;
+  let sessionCreations = 0;
+  const page = await bootPage({
+    html: renderMagicLinkCallbackPage("http://localhost:3001"),
+    url: "http://localhost:3000/auth/callback?token=token-1&returnTo=%2Fsetup",
+    scriptFile: "auth-flow.js",
+    apiState,
+    timers,
+    fetch: async (_input, init) => {
+      completionRequests += 1;
+      if (completionRequests > 1 && apiState.session) {
+        apiState.cookieJar = `threefc_session=${apiState.session.sessionId}`;
+        return createJsonResponse(
+          200,
+          {
+            status: "authenticated",
+            session: apiState.session,
+          },
+          {
+            headers: {
+              "set-cookie": `${apiState.cookieJar}; Path=/; HttpOnly; SameSite=Lax`,
+            },
+          },
+        );
+      }
+
+      sessionCreations += 1;
+      apiState.session = {
+        sessionId: "session-1",
+        email: "organizer@3fc.football",
+        createdAt: "2026-03-28T11:00:00.000Z",
+        expiresAt: "2026-03-29T11:00:00.000Z",
+      };
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    },
+  });
+  const completeButton = page.document.querySelector('[data-testid="complete-magic-link"]');
+  const recoveryLink = page.document.getElementById("auth-callback-recovery");
+  assert(completeButton instanceof page.window.HTMLButtonElement);
+  assert(recoveryLink instanceof page.window.HTMLAnchorElement);
+
+  timers.advanceBy(3000);
+  await flushAsync();
+  assert.equal(completionRequests, 1);
+  assert.equal(completeButton.disabled, true);
+
+  timers.advanceBy(14999);
+  await flushAsync();
+  assert.equal(completeButton.disabled, true);
+  timers.advanceBy(1);
+  await flushAsync();
+
+  assert.equal(completeButton.disabled, false);
+  assert.equal(recoveryLink.hidden, false);
+  assert.equal(apiState.cookieJar, "");
+  assert.equal(
+    page.document.getElementById("auth-callback-error")?.textContent,
+    "Sign in could not be completed. Please try again.",
+  );
+  assert.equal(page.navigations.length, 0);
+
+  dispatchClick(completeButton);
+  await flushAsync();
+  assert.equal(completionRequests, 2);
+  assert.equal(sessionCreations, 1);
+  assert.equal(apiState.cookieJar, "threefc_session=session-1");
+  assert.deepEqual(page.navigations, [{ url: "/setup", mode: "replace" }]);
+});
+
+test("missing-token and OAuth-error callback states do not start a timer", async () => {
+  for (const query of ["", "?error=access_denied"]) {
+    const timers = createManualTimers();
+    const page = await bootPage({
+      html: renderMagicLinkCallbackPage("http://localhost:3001"),
+      url: `http://localhost:3000/auth/callback${query}`,
+      scriptFile: "auth-flow.js",
+      apiState: createMockApiState(),
+      timers,
+    });
+    assert.equal(timers.pendingCount(), 0);
+    assert.equal(page.document.querySelectorAll('[role="alert"]').length, 1);
+    assert.equal(page.document.getElementById("auth-callback-error")?.hidden, false);
+  }
+});
+
 test("auth callback rejects backslash return targets", async () => {
   const apiState = createMockApiState();
   apiState.pendingEmail = "organizer@3fc.football";
@@ -2031,10 +2362,7 @@ test("auth callback rejects backslash return targets", async () => {
   assert.equal(new URL(callbackPage.window.location.href).search, "");
   assert.equal(callbackPage.navigations.length, 0);
   assert.equal(apiState.cookieJar, "");
-  assert.equal(
-    callbackPage.document.getElementById("auth-callback-status")?.textContent,
-    "Magic link ready. Complete sign-in to continue.",
-  );
+  assert.equal(callbackPage.document.getElementById("auth-callback-status")?.textContent, "");
 
   const completeButton = callbackPage.document.querySelector('[data-testid="complete-magic-link"]');
   assert(completeButton instanceof callbackPage.window.HTMLButtonElement);

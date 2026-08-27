@@ -82,7 +82,8 @@ test("sign-in route renders dedicated auth page", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Sign in before setup/);
+  assert.match(response.body, /League organiser sign in/);
+  assert.doesNotMatch(response.body, /Sign in before setup/);
   assert.match(response.body, /id="auth-magic-form"/);
   assert.match(response.body, /id="auth-return-to"/);
   assert.match(response.body, /value="\/setup"/);
@@ -235,7 +236,7 @@ test("auth callback error and success responses include security headers", () =>
   assert.equal(tokenResponse.statusCode, 200);
   assert.equal(tokenResponse.headers["Referrer-Policy"], "no-referrer");
   assert.equal(tokenResponse.headers["Cache-Control"], "no-store");
-  assert.match(tokenResponse.body, /Complete sign-in/);
+  assert.match(tokenResponse.body, /Complete your sign-in/);
   assert.match(tokenResponse.body, /data-testid="complete-magic-link"/);
   assert.doesNotMatch(tokenResponse.body, /abc123/);
 

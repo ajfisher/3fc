@@ -264,7 +264,11 @@ test("magic-link callback page includes auth flow script and callback messaging"
       html.indexOf('<link rel="stylesheet"'),
   );
   assert.match(html, /data-testid="auth-callback-shell"/);
-  assert.match(html, /Complete sign-in/);
+  assert.match(html, /Complete your sign-in/);
+  assert.match(html, /The browser will redirect to finish your sign in within a few seconds\. If not, please click the button below to continue/);
+  assert.doesNotMatch(html, /3FC Auth/);
+  assert.doesNotMatch(html, /Magic link ready/);
+  assert.equal((html.match(/role="alert"/g) ?? []).length, 1);
   assert.match(html, /data-testid="complete-magic-link"/);
   assert.match(html, /id="auth-callback-status"/);
   assert.match(html, /id="auth-callback-error" role="alert"/);
@@ -277,10 +281,19 @@ test("sign-in page renders magic-link form and carries return path", () => {
 
   assert.match(html, /data-testid="signin-shell"/);
   assert.match(html, /data-testid="panel-signin-flow"/);
+  assert.match(html, /League organiser sign in/);
+  assert.match(html, /If you&#39;re a league organiser, put in your email address and we&#39;ll send you a magic link to sign in\. If this is your first time, once you&#39;ve signed in you can finish your account creation\./);
   assert.match(html, /id="auth-magic-form"/);
   assert.match(html, /id="auth-return-to"/);
   assert.match(html, /value="\/setup"/);
   assert.match(html, /data-testid="send-magic-link"/);
+  assert.match(html, /autocomplete="email"/);
+  assert.match(html, /inputmode="email"/);
+  assert.match(html, /autocapitalize="none"/);
+  assert.doesNotMatch(html, /3FC Auth/);
+  assert.doesNotMatch(html, /A magic link will be sent to this address/);
+  assert.doesNotMatch(html, /Send yourself a magic link/);
+  assert.doesNotMatch(html, /Magic-link sign-in/);
   assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
 });
 
