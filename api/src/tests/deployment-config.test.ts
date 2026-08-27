@@ -49,3 +49,16 @@ test("api core deployment config keeps sign-in sessions active for eight days", 
   assert.doesNotMatch(serverlessCoreConfig, /MAGIC_LINK_SESSION_TTL_SECONDS:\s*86400/);
   assert.match(applicationTerraformConfig, /ttl\s*\{\s*attribute_name\s*=\s*"ttlEpoch"\s*enabled\s*=\s*true\s*\}/);
 });
+
+test("static CloudFront distribution applies app security headers", () => {
+  assert.match(applicationTerraformConfig, /resource "aws_cloudfront_response_headers_policy" "site_security"/);
+  assert.match(applicationTerraformConfig, /content_security_policy\s*=\s*local\.site_content_security_policy/);
+  assert.match(applicationTerraformConfig, /default\s*=\s*"strict-origin-when-cross-origin"/);
+  assert.match(applicationTerraformConfig, /auth_callback\s*=\s*"no-referrer"/);
+  assert.match(applicationTerraformConfig, /path_pattern\s*=\s*"\/auth\/callback\*"/);
+  assert.match(applicationTerraformConfig, /response_headers_policy_id\s*=\s*aws_cloudfront_response_headers_policy\.site_security\["default"\]\.id/);
+  assert.match(applicationTerraformConfig, /response_headers_policy_id\s*=\s*aws_cloudfront_response_headers_policy\.site_security\["auth_callback"\]\.id/);
+  assert.match(applicationTerraformConfig, /Cross-Origin-Opener-Policy/);
+  assert.match(applicationTerraformConfig, /Cross-Origin-Resource-Policy/);
+  assert.match(applicationTerraformConfig, /Permissions-Policy/);
+});

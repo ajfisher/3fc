@@ -226,4 +226,11 @@ test("auth callback error and success responses include security headers", () =>
   assert.equal(missingResponse.headers["Referrer-Policy"], "no-referrer");
   assert.equal(missingResponse.headers["Cache-Control"], "no-store");
   assert.match(missingResponse.body, /data-testid="auth-callback-shell"/);
+
+  const trailingSlashResponse = executeRoute("GET", "/auth/callback/?token=abc123");
+  assert.equal(trailingSlashResponse.statusCode, 200);
+  assert.equal(trailingSlashResponse.headers["Referrer-Policy"], "no-referrer");
+  assert.equal(trailingSlashResponse.headers["Cache-Control"], "no-store");
+  assert.match(trailingSlashResponse.body, /data-testid="auth-callback-shell"/);
+  assert.doesNotMatch(trailingSlashResponse.body, /abc123/);
 });

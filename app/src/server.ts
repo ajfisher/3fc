@@ -286,7 +286,7 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    if (method === "GET" && route === "/auth/callback") {
+    if (method === "GET" && (route === "/auth/callback" || route === "/auth/callback/")) {
       const callbackSecurityHeaders = {
         ...securityHeaders,
         "Cache-Control": "no-store",
