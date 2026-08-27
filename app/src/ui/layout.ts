@@ -594,42 +594,37 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Sign-in</title>
+    <title>League organiser sign in | 3FC</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="signin-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Auth</span>
-        <h1>Sign in before setup</h1>
-        <p data-ui="hero-copy">Send yourself a magic link and continue to setup flow.</p>
-      </section>
-      <section data-ui="section-stack">
-        ${renderPanel(
-          "Magic-link sign-in",
-          "Use your organizer email and open the link from your inbox. First-time emails are treated as sign-up and account creation.",
-          `<form data-ui="auth-form" id="auth-magic-form" novalidate>
-            <input id="auth-return-to" type="hidden" value="${safeReturnTo}" />
-            ${renderValidatedField({
-              id: "auth-email",
-              label: "Email address",
-              type: "email",
-              placeholder: "organizer@3fc.football",
-              required: true,
-              hint: "A magic link will be sent to this address.",
-            })}
-            <div data-ui="button-row">${renderButton("Send magic link", "primary", {
-              type: "submit",
-              "data-action": "send-magic-link",
-              "data-testid": "send-magic-link",
-            })}</div>
-          </form>
-          <p data-ui="status-note" id="auth-status">Checking session…</p>
-          <p data-ui="status-note" data-state="error" id="auth-error" hidden></p>
-          <p data-ui="status-note" data-state="success" id="auth-session" hidden>Signed in as <strong id="auth-session-email"></strong>. Redirecting…</p>`,
-          "",
-          "panel-signin-flow",
-        )}
+      <section data-ui="hero" data-layout="auth" data-testid="panel-signin-flow">
+        <h1>League organiser sign in</h1>
+        <p data-ui="hero-copy">If you&#39;re a league organiser, put in your email address and we&#39;ll send you a magic link to sign in. If this is your first time, once you&#39;ve signed in you can finish your account creation.</p>
+        <form data-ui="auth-form" id="auth-magic-form" novalidate>
+          <input id="auth-return-to" type="hidden" value="${safeReturnTo}" />
+          ${renderValidatedField({
+            id: "auth-email",
+            label: "Email address",
+            type: "email",
+            placeholder: "organiser@3fc.football",
+            required: true,
+            inputAttributes: {
+              autocomplete: "email",
+              inputmode: "email",
+              autocapitalize: "none",
+              spellcheck: "false",
+            },
+          })}
+          <div data-ui="button-row">${renderButton("Send magic link", "primary", {
+            type: "submit",
+            "data-action": "send-magic-link",
+            "data-testid": "send-magic-link",
+          })}</div>
+        </form>
+        <p data-ui="status-note" id="auth-status" role="status" aria-live="polite" hidden></p>
+        <p data-ui="status-note" data-state="error" id="auth-error" role="alert" hidden></p>
       </section>
     </main>
     ${renderAuthScriptTag()}
@@ -823,18 +818,14 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>3FC Sign-in callback</title>
+    <title>Complete your sign-in | 3FC</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="auth-callback-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Auth</span>
-        <h1 id="auth-callback-title">Complete sign-in</h1>
-        <p data-ui="hero-copy" id="auth-callback-copy">Confirm this browser should finish sign-in and continue.</p>
-      </section>
-      <section data-ui="section-stack">
-        <p data-ui="status-note" id="auth-callback-status" role="status" aria-live="polite">Verifying callback parameters…</p>
+      <section data-ui="hero" data-layout="auth">
+        <h1 id="auth-callback-title">Complete your sign-in</h1>
+        <p data-ui="hero-copy" id="auth-callback-copy">The browser will redirect to finish your sign in within a few seconds. If not, please click the button below to continue</p>
         <div data-ui="button-row">
           ${renderButton("Complete sign-in", "primary", {
             type: "button",
@@ -843,6 +834,7 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
             hidden: "hidden",
           })}
         </div>
+        <p class="sr-only" id="auth-callback-status" role="status" aria-live="polite" hidden></p>
         <p data-ui="status-note" data-state="error" id="auth-callback-error" role="alert" hidden></p>
         <a data-ui="button-secondary" id="auth-callback-recovery" href="/sign-in" hidden>Return to sign in</a>
       </section>

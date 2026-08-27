@@ -1047,12 +1047,13 @@ test.describe("M2 local-stack smoke", () => {
       await page.locator("#goal-scoring-team").selectOption("red");
       await page.locator("#goal-conceding-team").selectOption("blue");
       await page.locator("#goal-scorer").selectOption(ariPlayerId);
+      await page.getByTestId("goal-assists-dropdown").locator("summary").click();
       await page.locator(`#goal-assists input[value="${beaPlayerId}"]`).check();
       await page.getByTestId("add-goal").click();
 
       await expect(page.getByTestId("goal-timeline")).toContainText(ariNickname);
-      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="red"]')).toContainText("Red");
-      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="blue"]')).toContainText("Blue");
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="red"]')).toHaveAttribute("aria-label", "Scoring team: Red");
+      await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="blue"]')).toHaveAttribute("aria-label", "Conceding team: Blue");
       await expect(page.getByTestId("goal-timeline")).toContainText(`Assists: ${beaNickname}`);
       await expect(page.getByTestId("goal-timeline").locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
       await expect(page.locator("#goal-scoring-team")).toHaveValue("");

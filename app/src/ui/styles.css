@@ -95,6 +95,20 @@ body {
   &[data-layout="dashboard"] h1 {
     margin-bottom: 0;
   }
+
+  &[data-layout="auth"] {
+    display: grid;
+    gap: 1rem;
+
+    h1 {
+      margin: 0;
+    }
+  }
+}
+
+[data-ui="auth-form"] {
+  display: grid;
+  gap: 0.9rem;
 }
 
 [data-ui="hero"] + [data-ui="setup-flow"] {

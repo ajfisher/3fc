@@ -168,10 +168,10 @@ jobs:
 
           grep -q "Dashboard" /tmp/prod-site-root.html
           grep -qi '^referrer-policy: strict-origin-when-cross-origin' /tmp/prod-site-root.headers
-          grep -q "Sign in before setup" /tmp/prod-site-signin.html
+          grep -q "League organiser sign in" /tmp/prod-site-signin.html
           grep -q "Dashboard" /tmp/prod-site-setup.html
-          grep -q "Complete sign-in" /tmp/prod-site-callback.html
-          grep -q "Complete sign-in" /tmp/prod-site-callback-slash.html
+          grep -q "Complete your sign-in" /tmp/prod-site-callback.html
+          grep -q "Complete your sign-in" /tmp/prod-site-callback-slash.html
           grep -q "initAuthCallbackPage" /tmp/prod-site-auth-flow.js
           grep -qi "^content-security-policy: .*script-src 'self'.*connect-src 'self' https://api\.3fc\.football" /tmp/prod-site-callback.headers
           grep -qi '^referrer-policy: no-referrer' /tmp/prod-site-callback.headers
