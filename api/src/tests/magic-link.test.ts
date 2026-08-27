@@ -12,6 +12,7 @@ import {
   magicLinkSubjectForEmail,
   MagicLinkAuthError,
   MagicLinkService,
+  normalizeMagicLinkTimeZone,
 } from "../auth/magic-link.js";
 import { DEFAULT_SESSION_TTL_SECONDS } from "../auth/session.js";
 
@@ -252,7 +253,19 @@ test("magic start stores TTL token and sends callback link email", async () => {
   assert.equal(result.email, "player@example.com");
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].to, "player@example.com");
-  assert.match(sentMessages[0].body, /http:\/\/localhost:3000\/auth\/callback\?token=/);
+  assert.equal(sentMessages[0].subject, "Your 3FC sign in magic link");
+  assert.equal(
+    sentMessages[0].body,
+    [
+      "Please use the link below to sign into the 3FC app:",
+      "",
+      "http://localhost:3000/auth/callback?token=token-1.secret-1",
+      "",
+      "This link will expire at 12:05 am UTC on 22 February 2026",
+      "",
+      "If you didn't request this email then you can safely ignore it",
+    ].join("\n"),
+  );
 
   const tokenItem = client.getItem("AUTH_MAGIC#token-1", "METADATA");
   assert(tokenItem);
@@ -260,6 +273,81 @@ test("magic start stores TTL token and sends callback link email", async () => {
   assert.equal(tokenItem.email?.S, "player@example.com");
   assert.equal(tokenItem.ttlEpoch?.N, tokenItem.expiresAtEpoch?.N);
   assert.equal(tokenItem.tokenSecret, undefined);
+  assert.equal(tokenItem.timeZone, undefined);
+});
+
+test("magic start formats persisted expiry in Melbourne standard and daylight seasons", async () => {
+  const standardHarness = createHarness(3600, "2026-08-27T05:32:33.000Z");
+  await standardHarness.service.start("standard@example.com", {
+    timeZone: "Australia/Melbourne",
+  });
+  assert.match(
+    standardHarness.sentMessages[0].body,
+    /This link will expire at 3:37 pm AEST on 27 August 2026/,
+  );
+  assert.equal(
+    standardHarness.sentMessages[0].body.includes(standardHarness.sentMessages[0].to),
+    false,
+  );
+  assert.equal(
+    standardHarness.client.getItem("AUTH_MAGIC#token-1", "METADATA")?.timeZone,
+    undefined,
+  );
+
+  const daylightHarness = createHarness(3600, "2026-12-27T04:32:33.000Z");
+  await daylightHarness.service.start("daylight@example.com", {
+    timeZone: "Australia/Melbourne",
+  });
+  assert.match(
+    daylightHarness.sentMessages[0].body,
+    /This link will expire at 3:37 pm AEDT on 27 December 2026/,
+  );
+});
+
+test("magic start formats both sides of Melbourne daylight-saving transitions", async () => {
+  const cases = [
+    {
+      initialTime: "2026-04-04T15:54:00.000Z",
+      expected: "This link will expire at 2:59 am AEDT on 5 April 2026",
+    },
+    {
+      initialTime: "2026-04-04T15:56:00.000Z",
+      expected: "This link will expire at 2:01 am AEST on 5 April 2026",
+    },
+    {
+      initialTime: "2026-10-03T15:54:00.000Z",
+      expected: "This link will expire at 1:59 am AEST on 4 October 2026",
+    },
+    {
+      initialTime: "2026-10-03T15:56:00.000Z",
+      expected: "This link will expire at 3:01 am AEDT on 4 October 2026",
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    const { service, sentMessages } = createHarness(3600, testCase.initialTime);
+    await service.start("boundary@example.com", { timeZone: "Australia/Melbourne" });
+    assert.match(sentMessages[0].body, new RegExp(testCase.expected));
+  }
+});
+
+test("magic start falls back to human-readable UTC for invalid or oversized timezone hints", async () => {
+  for (const timeZone of ["Mars/Olympus", "x".repeat(101)]) {
+    const { service, sentMessages } = createHarness(3600, "2026-08-27T05:32:33.000Z");
+    await service.start("fallback@example.com", { timeZone });
+    assert.match(
+      sentMessages[0].body,
+      /This link will expire at 5:37 am UTC on 27 August 2026/,
+    );
+    assert.doesNotMatch(sentMessages[0].body, /2026-08-27T05:37:33\.000Z/);
+  }
+});
+
+test("magic timezone normalization accepts IANA zones and rejects invalid hints", () => {
+  assert.equal(normalizeMagicLinkTimeZone(" Australia/Melbourne "), "Australia/Melbourne");
+  assert.equal(normalizeMagicLinkTimeZone("Mars/Olympus"), null);
+  assert.equal(normalizeMagicLinkTimeZone("x".repeat(101)), null);
+  assert.equal(normalizeMagicLinkTimeZone({ timeZone: "Australia/Melbourne" }), null);
 });
 
 test("magic start can send invite-specific copy with a safe return target", async () => {
@@ -275,6 +363,10 @@ test("magic start can send invite-specific copy with a safe return target", asyn
   assert.equal(sentMessages[0].to, "coach@example.com");
   assert.equal(sentMessages[0].subject, "You're invited to organise League One on 3FC");
   assert.match(sentMessages[0].body, /You have been invited to help organise League One on 3FC\./);
+  assert.match(sentMessages[0].body, /Use this link to sign in to 3FC:/);
+  assert.match(sentMessages[0].body, /This link expires at 2026-02-22T00:05:00\.000Z\./);
+  assert.match(sentMessages[0].body, /If you did not request this email, you can ignore it\./);
+  assert.doesNotMatch(sentMessages[0].body, /Please use the link below/);
   assert.match(
     sentMessages[0].body,
     /http:\/\/localhost:3000\/auth\/callback\?token=token-1\.secret-1&returnTo=%2Finvites%3Fcode%3DABCD2345/,

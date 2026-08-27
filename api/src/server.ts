@@ -27,6 +27,7 @@ import {
   MagicLinkAuthError,
   MagicLinkService,
   normalizeMagicLinkEmail,
+  normalizeMagicLinkTimeZone,
   type AuthSessionRecord,
   type MagicLinkEmailSender,
 } from "./auth/magic-link.js";
@@ -2922,7 +2923,11 @@ async function handleMagicLinkStart(
   }
 
   try {
-    const result = await magicLinkService.start(email);
+    const timeZone = normalizeMagicLinkTimeZone(body.timeZone);
+    const result = await magicLinkService.start(
+      email,
+      timeZone === null ? undefined : { timeZone },
+    );
     logMagicLinkEvent({
       requestId: context.requestId,
       route: context.route,
