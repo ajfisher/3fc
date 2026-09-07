@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -74,6 +74,31 @@ test("QA API provenance rejects failed, stale, rolled-back and replaced deployme
   }
   for (const changed of [{ ...fingerprint, codeSha256: "old-code" }, { ...fingerprint, revisionId: "newer-revision" }, { ...fingerprint, lastUpdateStatus: "InProgress" }]) {
     expect(() => assertApiProvenance(head, run, manifest, changed)).toThrow();
+  }
+});
+
+function assertSiteAssetRevision(head: string, assets: string[]) {
+  if (!assets.some(asset => new URL(asset, site).pathname === "/ui/styles.css") ||
+      !assets.some(asset => /\/ui\/(?:setup|auth)-flow\.js$/.test(new URL(asset, site).pathname)) ||
+      assets.some(asset => new URL(asset, site).searchParams.get("v") !== head.slice(0, 7))) {
+    throw new Error("QA page assets do not match the expected source revision");
+  }
+}
+
+async function verifySitePage(page: Page, head: string) {
+  const assets = await page.locator('link[href*="/ui/styles.css"], script[src*="/ui/"]').evaluateAll(elements =>
+    elements.map(element => element.getAttribute("href") ?? element.getAttribute("src") ?? ""));
+  assertSiteAssetRevision(head, assets);
+}
+
+test("QA site provenance rejects mixed or replaced assets on later pages", () => {
+  const head = "a".repeat(40);
+  const current = ["/ui/styles.css?v=aaaaaaa", "/ui/setup-flow.js?v=aaaaaaa"];
+  expect(() => assertSiteAssetRevision(head, current)).not.toThrow();
+  for (const assets of [[], current.slice(0, 1), [current[0], "/ui/setup-flow.js?v=bbbbbbb"],
+    ["/ui/styles.css?v=bbbbbbb", "/ui/auth-flow.js?v=bbbbbbb"],
+    current.map(asset => `${asset}extra`)]) {
+    expect(() => assertSiteAssetRevision(head, assets)).toThrow();
   }
 });
 
@@ -247,8 +272,7 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     contexts.push(context);
     const page = await context.newPage();
     await page.goto(`${site}/sign-in`);
-    const asset = await page.locator('link[href*="/ui/styles.css"]').getAttribute("href");
-    expect(asset).toContain(`v=${expectedHead.slice(0, 7)}`);
+    await verifySitePage(page, expectedHead);
     phase = "first synthetic sign-in";
     const first = await seedMagicLink();
     const complete = await authRequest("/v1/auth/magic/complete", { token: first.token });
@@ -258,10 +282,12 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     await page.goto(`${site}/setup`);
     const signOut = page.getByRole("button", { name: "Sign out", exact: true });
     await expect(signOut).toBeVisible();
+    await verifySitePage(page, expectedHead);
     await signOut.focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(`${site}/sign-in`);
     await expect(page.getByRole("heading", { name: "League organiser sign in" })).toBeVisible();
+    await verifySitePage(page, expectedHead);
     expect((await context.cookies(api)).some(cookie => cookie.name === "threefc_session")).toBe(false);
     // Revoked cookie and still-unexpired original bearer both fail on real API.
     phase = "revoked cookie, magic-link recovery and repeat logout";
@@ -274,6 +300,7 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     expect(repeat.status).toBe(204);
     await page.goto(`${site}/setup`);
     await expect(page).toHaveURL(/\/sign-in\?returnTo=/);
+    await verifySitePage(page, expectedHead);
     phase = "different synthetic account sign-in";
     const second = await seedMagicLink();
     const newComplete = await authRequest("/v1/auth/magic/complete", { token: second.token });
@@ -281,10 +308,14 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     const newCookie = await installSessionCookie(context, newComplete.headers);
     await page.goto(`${site}/setup`);
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    await verifySitePage(page, expectedHead);
     const newSession = await authRequest("/v1/auth/session", { cookie: newCookie });
     expect(newSession.status).toBe(200);
     expect(newSession.body.session.email === second.email).toBe(true);
-    phase = "post-acceptance API provenance verification";
+    phase = "post-acceptance site and API provenance verification";
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    await verifySitePage(page, expectedHead);
     await verifyApiProvenance(expectedHead, runId);
     // Only safe evidence is emitted: assertions, exact deployment SHA/run, counts.
     console.log(`QA sign-out PASS head=${expectedHead} run=${runId}; live API fingerprint, isolated account switch, cookie expiry, revoked replay, protected re-entry verified`);

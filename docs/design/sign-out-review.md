@@ -20,6 +20,7 @@ read-only; the primary agent owned every validation process.
 | Playwright API error logs could disclose fixture cookies despite tracing off | Removed APIRequest credential transport. Bounded native fetch, safe cookie installation and fixed phase errors suppress details; local fault-injection test verifies redaction. |
 | GitHub Codex review: site asset SHA does not prove the API revision | The successful exact-head QA run now preserves an API manifest. The fixture verifies its full SHA and the live Lambda code/revision before any fixture writes and again before reporting acceptance. |
 | Independent security re-review: a concurrent QA deployment could be misattributed to this run | Bind the live code hash to this invocation's packaged core ZIP before emitting the manifest; reject a recorded/live pair that differs from the package digest. No runtime provenance endpoint or secret environment read is added. |
+| Independent QA re-review: a frontend-only deployment could replace later accepted pages without changing the API fingerprint | Verify stylesheet and script revisions on every accepted page and a final fresh reload; regression rejects mixed, missing and replaced page assets. |
 
 No rejected findings. Production architecture, engineering/QA and visual reviews
 passed after fixes. The QA harness receives its own security re-review before any
@@ -44,6 +45,9 @@ are not claimed as this slice's visual evidence.
   approved source-package binding before publication.
 - Full repository lint, tests, contracts and build repeated after that fix:
   group 93303, exit 0, peak 915024 KiB, no survivors.
+- Later-page site provenance regression and complete nonremote QA helper file:
+  TypeScript and ten tests passed, deployed opt-in case skipped; group 94653,
+  exit 0, peak 653872 KiB, no survivors.
 - All commands serialized; every returned session was observed to actual exit
   and group cleanup verified. Ordinary fixture failures were isolated and
   corrected through single-test → file → broader validation, with no resource
@@ -59,8 +63,10 @@ SHA, actual Lambda completion, browser Sign out, cookie expiry, revoked-cookie
 401, consumed-link replay rejection and a different-account sign-in. Deployment
 run metadata and its preserved API artifact must prove the full source SHA,
 successful deployment, source-package digest and matching live Lambda revision.
-The fixture verifies provenance before creating records and again before claiming
-acceptance; stale, failed, replaced and rolled-back deployments fail closed.
+The fixture verifies API provenance before creating records and again before
+claiming acceptance, and site asset revisions on each accepted page plus a final
+fresh reload. Stale, failed, replaced and rolled-back deployments fail closed.
+The package digest proves code provenance, not secret environment-value contents.
 Only counts/SHA and safe phase outcomes are reported; no trace, screenshots,
 video, bearer-bearing URL or credentialed APIRequest log is captured. Cleanup
 verifies ownership and removes only synthetic tokens and their linked sessions.
