@@ -140,8 +140,9 @@ tokens into terminals, screenshots or review evidence. For authenticated browser
 acceptance, use dedicated QA accounts, never an organiser's real games/session.
 
 AWS deployment uses the existing `serverless.api-core.yml` core service and QA/
-production workflows. Explicit POST/OPTIONS logout routes are deployed with the
-API before the site; both workflows smoke the no-cookie 204, CORS, no-store and
+production workflows. Their existing sequence publishes the site, then the API;
+Sign out safely retains retry if activated before the new route is available.
+Explicit POST/OPTIONS routes deploy with the API. Both workflows smoke the no-cookie 204, CORS, no-store and
 cookie-expiry attributes. Existing table-scoped `dynamodb:DeleteItem` permission
 already covers revocation; no Terraform change or migration is needed. Production
 release still requires AJ's explicit authorisation.
