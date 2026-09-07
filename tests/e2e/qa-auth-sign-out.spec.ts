@@ -1,5 +1,10 @@
 import { expect, test, type BrowserContext } from "@playwright/test";
 import { randomBytes, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   DeleteItemCommand, DescribeTableCommand, DynamoDBClient, GetItemCommand,
   type AttributeValue, type GetItemCommandOutput,
@@ -13,6 +18,64 @@ const site = "https://qa.3fc.football";
 const api = "https://qa-api.3fc.football";
 const tableName = "3fc-qa-app";
 test.use({ trace: "off", screenshot: "off", video: "off" });
+
+type Fingerprint = { functionName: string; codeSha256: string; revisionId: string; lastUpdateStatus: string };
+type QaRun = { head_sha: string; conclusion: string; status: string; name: string; repository: { full_name: string } };
+type DeploymentManifest = { env: string; service: string; gitCommit: string; packageCodeSha256: string; functionFingerprint: Fingerprint };
+
+function assertApiProvenance(head: string, run: QaRun, manifest: DeploymentManifest, live: Fingerprint) {
+  if (run.repository?.full_name !== "ajfisher/3fc" || run.name !== "Deploy QA" || run.head_sha !== head || run.status !== "completed" || run.conclusion !== "success") {
+    throw new Error("QA deployment run is not successful at the expected head");
+  }
+  if (manifest.env !== "qa" || manifest.service !== "api-core" || manifest.gitCommit !== head || manifest.functionFingerprint?.functionName !== "3fc-qa-api-core") {
+    throw new Error("QA API deployment artifact does not identify the expected head and function");
+  }
+  const recorded = manifest.functionFingerprint;
+  if (!manifest.packageCodeSha256 || recorded.codeSha256 !== manifest.packageCodeSha256) {
+    throw new Error("QA API fingerprint does not match the source checkout's deployed package");
+  }
+  if (live.functionName !== recorded.functionName || live.lastUpdateStatus !== "Successful" || recorded.lastUpdateStatus !== "Successful" || !live.codeSha256 || !live.revisionId || live.codeSha256 !== recorded.codeSha256 || live.revisionId !== recorded.revisionId) {
+    throw new Error("Live QA API has changed or does not match the deployment fingerprint");
+  }
+}
+
+const execute = promisify(execFile);
+async function verifyApiProvenance(head: string, runId: string) {
+  if (!/^\d+$/.test(runId)) throw new Error("An explicit successful QA run ID is required");
+  const directory = await mkdtemp(join(tmpdir(), "3fc-qa-provenance-"));
+  try {
+    const runOutput = await execute("gh", ["api", `repos/ajfisher/3fc/actions/runs/${runId}`], { timeout: 20000, maxBuffer: 1024 * 1024 });
+    await execute("gh", ["run", "download", runId, "--repo", "ajfisher/3fc", "--name", "qa-api-core-deployment", "--dir", directory], { timeout: 20000, maxBuffer: 1024 * 1024 });
+    const manifest = JSON.parse(await readFile(join(directory, "api-core-deploy-manifest.json"), "utf8"));
+    const live = await execute("aws", ["lambda", "get-function-configuration", "--function-name", "3fc-qa-api-core", "--profile", "3fc-agent", "--region", "ap-southeast-2", "--query", "{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus}", "--output", "json"], { timeout: 20000, maxBuffer: 1024 * 1024 });
+    assertApiProvenance(head, JSON.parse(runOutput.stdout), manifest, JSON.parse(live.stdout));
+  } catch {
+    throw new Error("QA API provenance verification failed; no current-head acceptance may be claimed");
+  } finally {
+    // This exact newly created directory contains downloaded non-secret evidence only.
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("QA API provenance rejects failed, stale, rolled-back and replaced deployments", () => {
+  const head = "a".repeat(40);
+  const fingerprint: Fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "fixture-code", revisionId: "fixture-revision", lastUpdateStatus: "Successful" };
+  const run: QaRun = { head_sha: head, conclusion: "success", status: "completed", name: "Deploy QA", repository: { full_name: "ajfisher/3fc" } };
+  const manifest: DeploymentManifest = { env: "qa", service: "api-core", gitCommit: head, packageCodeSha256: fingerprint.codeSha256, functionFingerprint: fingerprint };
+  expect(() => assertApiProvenance(head, run, manifest, fingerprint)).not.toThrow();
+  for (const changed of [{ ...run, conclusion: "failure" }, { ...run, head_sha: "b".repeat(40) }, { ...run, status: "in_progress" }]) {
+    expect(() => assertApiProvenance(head, changed, manifest, fingerprint)).toThrow();
+  }
+  expect(() => assertApiProvenance(head, run, { ...manifest, gitCommit: "b".repeat(40) }, fingerprint)).toThrow();
+  // A concurrent deploy's recorded and live revisions can agree with each other
+  // while belonging to a different package than this successful workflow built.
+  for (const packageCodeSha256 of ["", "different-checkout-package"]) {
+    expect(() => assertApiProvenance(head, run, { ...manifest, packageCodeSha256 }, fingerprint)).toThrow();
+  }
+  for (const changed of [{ ...fingerprint, codeSha256: "old-code" }, { ...fingerprint, revisionId: "newer-revision" }, { ...fingerprint, lastUpdateStatus: "InProgress" }]) {
+    expect(() => assertApiProvenance(head, run, manifest, changed)).toThrow();
+  }
+});
 
 // Playwright APIRequest errors can attach Cookie/Set-Cookie call logs even with
 // tracing off. Credential transport stays outside that reporter and is bounded.
@@ -158,6 +221,8 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
   expect(process.env.AWS_PROFILE).toBe("3fc-agent");
   const expectedHead = process.env.THREEFC_QA_HEAD ?? "";
   expect(expectedHead).toMatch(/^[a-f0-9]{40}$/);
+  const runId = process.env.THREEFC_QA_RUN ?? "";
+  await verifyApiProvenance(expectedHead, runId);
   const client = new DynamoDBClient({ region: "ap-southeast-2" });
   const table = await client.send(new DescribeTableCommand({ TableName: tableName }));
   expect(table.Table?.TableArn).toBe("arn:aws:dynamodb:ap-southeast-2:301691475109:table/3fc-qa-app");
@@ -219,8 +284,10 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     const newSession = await authRequest("/v1/auth/session", { cookie: newCookie });
     expect(newSession.status).toBe(200);
     expect(newSession.body.session.email === second.email).toBe(true);
-    // Only safe evidence is emitted: assertions, exact deployment SHA, counts.
-    console.log(`QA sign-out PASS head=${expectedHead}; isolated account switch, cookie expiry, revoked replay, protected re-entry verified`);
+    phase = "post-acceptance API provenance verification";
+    await verifyApiProvenance(expectedHead, runId);
+    // Only safe evidence is emitted: assertions, exact deployment SHA/run, counts.
+    console.log(`QA sign-out PASS head=${expectedHead} run=${runId}; live API fingerprint, isolated account switch, cookie expiry, revoked replay, protected re-entry verified`);
   } catch {
     // Never forward a browser/SDK exception with credential-bearing call logs.
     throw new Error(`QA sign-out failed during ${phase}; sensitive diagnostic detail suppressed`);

@@ -25,6 +25,8 @@ require_command() {
 require_command make
 require_command aws
 require_command npx
+require_command jq
+require_command node
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -83,7 +85,21 @@ export LAMBDA_EXECUTION_ROLE_ARN
 echo "[deploy] Deploying ${SERVICE} with Serverless Framework"
 npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
 
-COMMIT_SHA="$(git rev-parse --short HEAD)"
+COMMIT_SHA="$(git rev-parse HEAD)"
+FUNCTION_FINGERPRINT="null"
+PACKAGE_CODE_SHA256=""
+if [[ "$SERVICE" == "api-core" ]]; then
+  # Bind the live revision to this invocation's individually packaged core ZIP.
+  # Another PR can deploy to shared QA between Serverless returning and this read.
+  PACKAGE_CODE_SHA256="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(".serverless/core.zip")).digest("base64"))')"
+  # Record only code provenance, never the function's secret environment values.
+  FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
+    --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus}' \
+    --output json)"
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0)' \
+    <<< "$FUNCTION_FINGERPRINT" >/dev/null
+fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 ARTIFACT_DIR="out/deploy/$ENV"
 DEPLOY_MANIFEST_PATH="$ARTIFACT_DIR/${SERVICE}-deploy-manifest.json"
@@ -96,6 +112,8 @@ cat > "$DEPLOY_MANIFEST_PATH" <<JSON
   "service": "$SERVICE",
   "deployedAtUtc": "$TIMESTAMP",
   "gitCommit": "$COMMIT_SHA",
+  "packageCodeSha256": "$PACKAGE_CODE_SHA256",
+  "functionFingerprint": $FUNCTION_FINGERPRINT,
   "region": "$AWS_REGION",
   "serverlessConfig": "$CONFIG_FILE",
   "httpApiId": "$HTTP_API_ID",

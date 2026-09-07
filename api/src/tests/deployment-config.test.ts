@@ -7,6 +7,8 @@ const serverlessCoreConfig = readFileSync(resolve(process.cwd(), "../serverless.
 const applicationTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/application/main.tf"), "utf8");
 const productionTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/prod/main.tf"), "utf8");
 const siteDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
+const apiDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-app.sh"), "utf8");
+const qaWorkflow = readFileSync(resolve(process.cwd(), "../.github/workflows/deploy-qa.yml"), "utf8");
 
 function assertServerlessRoute(method: string, path: string): void {
   assert.match(
@@ -35,6 +37,21 @@ test("api core deployment config registers claim and access routes", () => {
   assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions");
   assertServerlessRoute("POST", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games");
   assertServerlessRoute("OPTIONS", "/v1/leagues/{leagueId}/seasons/{seasonId}/sessions/{sessionId}/games");
+});
+
+test("QA deployment evidence records the full head and live API fingerprint without environment values", () => {
+  assert.match(apiDeployScript, /COMMIT_SHA="\$\(git rev-parse HEAD\)"/);
+  assert.match(apiDeployScript, /codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus/);
+  assert.match(apiDeployScript, /readFileSync\("\.serverless\/core\.zip"\)/);
+  assert.match(apiDeployScript, /createHash\("sha256"\)/);
+  assert.match(apiDeployScript, /digest\("base64"\)/);
+  assert.match(apiDeployScript, /\.codeSha256 == \$expected/);
+  assert.match(apiDeployScript, /"packageCodeSha256": "\$PACKAGE_CODE_SHA256"/);
+  assert.doesNotMatch(apiDeployScript, /Environment\.Variables/);
+  assert.match(qaWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
+  assert.match(qaWorkflow, /name: qa-api-core-deployment/);
+  assert.match(qaWorkflow, /path: out\/deploy\/qa\/api-core-deploy-manifest\.json/);
+  assert.match(qaWorkflow, /if-no-files-found: error/);
 });
 
 test("api core deployment config sets canonical public invite link origins", () => {

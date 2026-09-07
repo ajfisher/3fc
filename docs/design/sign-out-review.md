@@ -18,6 +18,8 @@ read-only; the primary agent owned every validation process.
 | New account test's mock returned every league | Test-local scoped API response now mirrors production; strict old-league absence and cross-account 403 assertions retained. No production ACL change. |
 | QA cleanup could delete a token while completion created a linked session | Fixed ownership/state-conditional deletion with bounded rereads; session-first cleanup preserves linkage on failure. Seven local mock tests cover races, ownership and continued cleanup. |
 | Playwright API error logs could disclose fixture cookies despite tracing off | Removed APIRequest credential transport. Bounded native fetch, safe cookie installation and fixed phase errors suppress details; local fault-injection test verifies redaction. |
+| GitHub Codex review: site asset SHA does not prove the API revision | The successful exact-head QA run now preserves an API manifest. The fixture verifies its full SHA and the live Lambda code/revision before any fixture writes and again before reporting acceptance. |
+| Independent security re-review: a concurrent QA deployment could be misattributed to this run | Bind the live code hash to this invocation's packaged core ZIP before emitting the manifest; reject a recorded/live pair that differs from the package digest. No runtime provenance endpoint or secret environment read is added. |
 
 No rejected findings. Production architecture, engineering/QA and visual reviews
 passed after fixes. The QA harness receives its own security re-review before any
@@ -36,6 +38,12 @@ are not claimed as this slice's visual evidence.
   320/390/1280px, both system themes; process group 89548, exit 0, peak 633728 KiB.
 - QA harness TypeScript check and nonremote tests: eight passed, deployed case
   deliberately skipped without opt-in; group 91456, exit 0, peak 602336 KiB.
+- Provenance fix: five deployment-config tests passed; QA harness TypeScript,
+  nine nonremote tests and 57 review-gate tests passed. Groups 93058/93133 exited
+  0 with peaks 564976/634544 KiB and no survivors. Architecture/security re-review
+  approved source-package binding before publication.
+- Full repository lint, tests, contracts and build repeated after that fix:
+  group 93303, exit 0, peak 915024 KiB, no survivors.
 - All commands serialized; every returned session was observed to actual exit
   and group cleanup verified. Ordinary fixture failures were isolated and
   corrected through single-test → file → broader validation, with no resource
@@ -49,7 +57,10 @@ The separate opt-in QA test uses two synthetic authentication fixtures with no
 SES delivery and no league, roster, game or ACL changes. It verifies site asset
 SHA, actual Lambda completion, browser Sign out, cookie expiry, revoked-cookie
 401, consumed-link replay rejection and a different-account sign-in. Deployment
-run metadata must separately prove API and site were deployed from the same SHA.
+run metadata and its preserved API artifact must prove the full source SHA,
+successful deployment, source-package digest and matching live Lambda revision.
+The fixture verifies provenance before creating records and again before claiming
+acceptance; stale, failed, replaced and rolled-back deployments fail closed.
 Only counts/SHA and safe phase outcomes are reported; no trace, screenshots,
 video, bearer-bearing URL or credentialed APIRequest log is captured. Cleanup
 verifies ownership and removes only synthetic tokens and their linked sessions.

@@ -50,6 +50,16 @@ core Lambda and explicit POST/OPTIONS Serverless routes. The table-scoped runtim
 role already grants DeleteItem; no new IAM, Terraform, package or migration.
 QA/prod workflow smoke calls supply no session and do not revoke a user's login.
 
+QA acceptance uses out-of-band deployment evidence, not a new public endpoint.
+The deployment manifest records the full checkout SHA and a base64 SHA-256 of
+the actual individually packaged `.serverless/core.zip`. The live Lambda code
+hash must match that digest before the manifest is emitted. The successful QA
+run retains the manifest as an artifact. Before and after isolated acceptance,
+the fixture requires that exact-head run and matching live code/revision. This
+rejects a concurrent deployment being attributed to another checkout. Only four
+non-secret function metadata fields are queried; no environment values, new
+IAM permissions or API/authentication contract changes are introduced.
+
 Rollback redeploys the reviewed parent API/site head
 `69b1cc5e1ecc9d5bbb452f1247fc59aa5e01740d`. The parent already rejects consumed
 links whose referenced session is absent; a deleted session therefore stays

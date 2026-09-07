@@ -297,6 +297,14 @@ jobs:
             echo "SMOKE_MAGIC_HTTP_CODE=${MAGIC_HTTP_CODE}"
           } >> "$GITHUB_ENV"
 
+      - name: Preserve exact-head API deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qa-api-core-deployment
+          path: out/deploy/qa/api-core-deploy-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Write deployment summary
         run: |
           {
