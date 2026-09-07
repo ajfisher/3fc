@@ -49,7 +49,112 @@
       return;
     }
 
+    if (mode === "reload") {
+      window.location.reload();
+      return;
+    }
+
     window.location.assign(url);
+  }
+
+  let signOutPending = false;
+  let signOutUnconfirmed = false;
+  let hasAuthenticatedAccount = false;
+  let accountRevalidating = false;
+
+  function setAccountSession(session) {
+    const actions = document.getElementById("account-actions");
+    const button = document.getElementById("sign-out");
+    const authenticated = typeof session?.email === "string" && session.email.trim().length > 0;
+    hasAuthenticatedAccount = authenticated;
+    if (actions instanceof HTMLElement) {
+      // Once requested, sign-out owns its pending/recovery surface. A later
+      // join-session probe can legitimately return 401 after revocation and
+      // must not hide the only confirmation/retry control.
+      actions.hidden = !authenticated && !signOutPending && !signOutUnconfirmed;
+    }
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = signOutPending || (!authenticated && !signOutUnconfirmed);
+    }
+  }
+
+  function initializeSignOut() {
+    const button = document.getElementById("sign-out");
+    const feedback = document.getElementById("sign-out-status");
+    if (!(button instanceof HTMLButtonElement) || !(feedback instanceof HTMLElement)) {
+      return;
+    }
+
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted || accountRevalidating || (page === "join" && !hasAuthenticatedAccount)) {
+        return;
+      }
+      accountRevalidating = true;
+      // A restored page can belong to a session revoked in another tab, or to
+      // the previous account. Hide its stale data before a fresh load performs
+      // the normal server session check. Ordinary page loads are untouched.
+      const shell = document.querySelector('[data-ui="app-shell"]');
+      if (shell instanceof HTMLElement) {
+        shell.hidden = true;
+      }
+      const progress = document.createElement("div");
+      progress.setAttribute("data-ui", "activity-status");
+      progress.setAttribute("data-activity", "loading");
+      progress.setAttribute("role", "status");
+      progress.setAttribute("aria-live", "polite");
+      progress.id = "account-revalidation-status";
+      progress.innerHTML = `${renderClientIcon("loader-circle")}<span class="sr-only">Checking sign-in state…</span>`;
+      document.body.append(progress);
+      navigateTo(`${window.location.pathname}${window.location.search}${window.location.hash}`, "reload");
+    });
+
+    button.addEventListener("click", async () => {
+      if (signOutPending || button.disabled) {
+        return;
+      }
+      // Latch before awaiting: repeated activation must not start parallel
+      // revocations. Keep this feedback separate from page-data refreshes.
+      const restoreFocusOnFailure = document.activeElement === button;
+      signOutPending = true;
+      signOutUnconfirmed = false;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      feedback.hidden = false;
+      feedback.removeAttribute("data-state");
+      feedback.textContent = "Signing out…";
+
+      try {
+        const result = await requestJson("/v1/auth/logout", { method: "POST" });
+        if (result.status !== 204) {
+          throw new Error("sign_out_unconfirmed");
+        }
+        // Only remove auth navigation/recovery state after confirmed server
+        // revocation. Never discard another workflow's drafts or retry keys.
+        try {
+          window.localStorage.removeItem("threefc.auth.return_to");
+        } catch {
+          // Storage access is optional; the server session is already revoked.
+        }
+        try {
+          window.sessionStorage.removeItem("threefc.auth.callback");
+        } catch {
+          // A blocked storage API must not prevent leaving the signed-out page.
+        }
+        navigateTo("/sign-in", "replace");
+      } catch {
+        // A lost response may mean revocation committed. Do not promise that
+        // the session is still active, and never display raw transport errors.
+        signOutUnconfirmed = true;
+        signOutPending = false;
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        feedback.setAttribute("data-state", "error");
+        feedback.textContent = "Sign out could not be confirmed. Please try again.";
+        if (restoreFocusOnFailure && (document.activeElement === document.body || document.activeElement === button)) {
+          button.focus();
+        }
+      }
+    });
   }
 
   function randomSuffix(length = 8) {
@@ -477,6 +582,10 @@
     document.body.setAttribute("data-api-base-url", apiBaseUrl);
     document.body.innerHTML = `<main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
+        <div data-ui="account-actions" id="account-actions" hidden>
+          ${renderClientButton("Sign out", "secondary", { type: "button", id: "sign-out", "data-testid": "sign-out", disabled: "" })}
+          <p data-ui="status-note" id="sign-out-status" role="status" aria-live="polite" hidden></p>
+        </div>
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
         <div data-ui="hero-title-row">
           <h1 id="season-title">${safeSeasonId || "Season"}</h1>
@@ -939,12 +1048,15 @@
   }
 
   async function currentAuthenticatedSession() {
-    const result = await requestJson("/v1/auth/session", { method: "GET" });
+    const result = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store" });
     if (!result.ok) {
+      setAccountSession(null);
       return null;
     }
 
-    return result.body?.session ?? null;
+    const session = result.body?.session ?? null;
+    setAccountSession(session);
+    return session;
   }
 
   function toIsoTimestamp(localDateTime) {
@@ -1149,7 +1261,7 @@
 
   async function ensureAuthenticatedSession() {
     setStatus("Checking sign-in state…", "default");
-    const result = await requestJson("/v1/auth/session", { method: "GET" });
+    const result = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store" });
 
     if (!result.ok) {
       const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
@@ -5074,6 +5186,13 @@
     const initialPlayerId = searchParams.get("playerId") ?? "";
     let claimPlayerId = initialPlayerId.trim();
 
+    // Account switching is needed before joining/claiming, not only afterwards.
+    // The existing claim path already checks the session when playerId exists.
+    // This read never blocks an anonymous join or changes claiming behaviour.
+    if (!claimPlayerId) {
+      void currentAuthenticatedSession().catch(() => setAccountSession(null));
+    }
+
     if (joinCodeValue) {
       joinCodeValue.textContent = joinCode || "Missing";
     }
@@ -5410,6 +5529,7 @@
 
   async function initialize() {
     mountSeasonShellForNestedLeagueRoute();
+    initializeSignOut();
     clearError();
 
     if (page === "join") {
@@ -5426,6 +5546,7 @@
     let authenticatedSession = null;
     try {
       authenticatedSession = await ensureAuthenticatedSession();
+      setAccountSession(authenticatedSession);
     } catch (error) {
       if (error instanceof Error && error.message === "redirecting_to_sign_in") {
         return;

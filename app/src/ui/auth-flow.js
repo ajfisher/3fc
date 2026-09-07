@@ -301,6 +301,7 @@
       const result = await requestJson("/v1/auth/session", {
         method: "GET",
         credentials: "include",
+        cache: "no-store",
       });
 
       if (result.ok && result.body?.session?.email) {

@@ -58,6 +58,18 @@ function renderAuthScriptTag(): string {
   return `<script src="${escapeHtml(renderAssetPath("/ui/auth-flow.js"))}" defer></script>`;
 }
 
+function renderAccountActions(): string {
+  return `<div data-ui="account-actions" id="account-actions" hidden>
+    ${renderButton("Sign out", "secondary", {
+      type: "button",
+      id: "sign-out",
+      "data-testid": "sign-out",
+      disabled: "",
+    })}
+    <p data-ui="status-note" id="sign-out-status" role="status" aria-live="polite" hidden></p>
+  </div>`;
+}
+
 function renderSetupFoundationPanels(): string {
   return `<div data-ui="auth-form" data-testid="fixture-fields">
     ${renderInputField({
@@ -126,6 +138,7 @@ function renderTableShell(input: {
 
 function renderDashboardHero(): string {
   return `<section data-ui="hero" data-layout="dashboard">
+    ${renderAccountActions()}
     <h1 id="dashboard-welcome">Welcome</h1>
   </section>`;
 }
@@ -295,6 +308,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="league-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
+        ${renderAccountActions()}
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / League</span>
         <div data-ui="hero-title-row">
           <h1 id="league-title">${leagueHeading}</h1>
@@ -368,6 +382,7 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="invite-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
+        ${renderAccountActions()}
         <span data-ui="hero-kicker">3FC Invite</span>
         <h1>Organiser invite</h1>
         <p data-ui="hero-copy">Code <code>${inviteHeading}</code></p>
@@ -494,6 +509,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
+        ${renderAccountActions()}
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
         <div data-ui="hero-title-row">
           <h1 id="season-title">${seasonHeading}</h1>
@@ -853,6 +869,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="join-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
+        ${renderAccountActions()}
         <span data-ui="hero-kicker">3FC Join</span>
         <h1>Join game</h1>
         <p data-ui="hero-copy">Code <code>${joinHeading}</code></p>
@@ -1182,6 +1199,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="game-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
+        ${renderAccountActions()}
         <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="game-league-link" href="/setup">League</a> / <a id="game-season-link" href="/setup">Season</a> / Game</span>
         <h1 id="game-title">${gameHeading}</h1>
         <p data-ui="hero-copy" id="game-subtitle">Loading game details…</p>

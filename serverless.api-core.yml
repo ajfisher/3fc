@@ -91,6 +91,12 @@ functions:
           method: GET
           path: /v1/auth/session
       - httpApi:
+          method: POST
+          path: /v1/auth/logout
+      - httpApi:
+          method: OPTIONS
+          path: /v1/auth/logout
+      - httpApi:
           method: OPTIONS
           path: /v1/auth/session
       - httpApi:

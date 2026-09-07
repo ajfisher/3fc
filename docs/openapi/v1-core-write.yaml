@@ -11,6 +11,46 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/auth/logout:
+    post:
+      summary: Sign out the session represented by the current cookie
+      operationId: logoutCurrentSession
+      description: >-
+        Deletes only the active session and expires its host-only HttpOnly cookie.
+        No body or idempotency key is needed. Missing, invalid, expired and repeated
+        sessions safely return 204. An allowed supplied Origin is required for browser
+        mutations under the existing origin policy. Consumed magic links cannot recreate
+        a deleted session. Independently issued sessions remain valid; copies of the same
+        session are all revoked. Requests authorized before deletion may finish.
+      responses:
+        "204":
+          description: Session revoked or already absent; response has no body
+          headers:
+            Set-Cookie:
+              description: Empty session cookie with Path=/, HttpOnly, SameSite=Lax, past Expires, Max-Age=0 and environment-appropriate Secure; no Domain
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Revocation could not be confirmed; preserve cookie for safe retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, message]
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    const: logout_unavailable
+                  message:
+                    type: string
+                    const: Sign out could not be confirmed. Please try again.
   /v1/join:
     post:
       summary: Reject join registration without a join code

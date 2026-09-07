@@ -223,6 +223,25 @@ jobs:
 
           jq -e '.error == "unauthorized"' /tmp/prod-core.json >/dev/null
 
+          # No cookie is supplied: smoke the deployed logout route without
+          # touching an organiser session or emitting credentials to logs.
+          LOGOUT_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/logout"
+          LOGOUT_HTTP_CODE="$(curl -sS -D /tmp/prod-logout.headers -o /tmp/prod-logout.body -w '%{http_code}' \
+            -X POST "$LOGOUT_ENDPOINT" -H 'origin: https://3fc.football')"
+          test "$LOGOUT_HTTP_CODE" = "204"
+          test ! -s /tmp/prod-logout.body
+          grep -qi '^cache-control: no-store' /tmp/prod-logout.headers
+          grep -qi '^access-control-allow-origin: https:\/\/3fc\.football' /tmp/prod-logout.headers
+          grep -qi '^access-control-allow-credentials: true' /tmp/prod-logout.headers
+          grep -qi '^set-cookie: threefc_session=;' /tmp/prod-logout.headers
+          for ATTRIBUTE in 'Path=/' 'HttpOnly' 'SameSite=Lax' 'Max-Age=0' 'Secure'; do
+            grep -i '^set-cookie:' /tmp/prod-logout.headers | grep -q "$ATTRIBUTE"
+          done
+          LOGOUT_OPTIONS_HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X OPTIONS "$LOGOUT_ENDPOINT" -H 'origin: https://3fc.football')"
+          test "$LOGOUT_OPTIONS_HTTP_CODE" = "204"
+
+
           CLAIM_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/players/smoke-player/claim"
           CLAIM_HTTP_CODE="$(curl -sS -o /tmp/prod-claim.json -w '%{http_code}' \
             -X POST "$CLAIM_ENDPOINT" \

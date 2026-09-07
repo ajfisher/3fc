@@ -271,6 +271,7 @@ interface HarnessConfig {
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
   magicLinkStartDelayMs?: number;
   magicLinkStartError?: Error;
+  revokeSessionError?: Error;
   beforeIdempotencyRecordRead?: (input: {
     scope: string;
     key: string;
@@ -358,6 +359,7 @@ function completedThirdTimerSegments(): ThirdTimerSegment[] {
 }
 
 function createHarness(config: HarnessConfig = {}) {
+  const revokedSessions: string[] = [];
   const createdLeagues: CreatedLeagueInput[] = [];
   const createdSeasons: CreatedSeasonInput[] = [];
   const createdSessions: CreatedSessionInput[] = [];
@@ -793,6 +795,11 @@ function createHarness(config: HarnessConfig = {}) {
     corsAllowedOrigins: ["https://qa.3fc.football"],
     appBaseUrl: "https://qa.3fc.football",
     magicLinkService: {
+      async revokeSession(sessionId: string) {
+        revokedSessions.push(sessionId);
+        if (config.revokeSessionError) throw config.revokeSessionError;
+        if (config.sessions) delete config.sessions[sessionId];
+      },
       async getSession(sessionId: string) {
         return config.sessions?.[sessionId] ?? null;
       },
@@ -2015,6 +2022,7 @@ function createHarness(config: HarnessConfig = {}) {
     linkedGamePlayers,
     magicLinkStarts,
     magicLinkCompletes,
+    revokedSessions,
     magicLinkRateLimitChecks,
     grantedLeagueAccess,
     listGamesForSeasonCalls,
@@ -2424,6 +2432,74 @@ test("core lambda returns rate limit response before starting magic-link auth", 
     },
   ]);
   assert.deepEqual(harness.magicLinkStarts, []);
+});
+
+test("core lambda logout revokes only the cookie session and immediately rejects it", async () => {
+  const session = (sessionId: string): MockSessionRecord => ({
+    sessionId, email: "organiser@example.com", createdAt: "2026-09-07T00:00:00Z", expiresAt: "2026-09-15T00:00:00Z",
+  });
+  const harness = createHarness({
+    sessionCookieSecure: true,
+    sessions: { first: session("first"), second: session("second") },
+  });
+  const event = createEvent({
+    method: "POST", path: "/v1/auth/logout",
+    headers: { Origin: "https://qa.3fc.football" },
+    cookies: ["theme=%", "threefc_session=first"],
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await harness.handler(event);
+    assert.equal(response.statusCode, 204);
+    assert.equal(response.body, "");
+    assert.equal(response.headers["cache-control"], "no-store");
+    assert.equal(response.headers["Access-Control-Allow-Origin"], "https://qa.3fc.football");
+    assert.equal(response.headers["Access-Control-Allow-Credentials"], "true");
+    assert.match(response.headers["set-cookie"], /^threefc_session=;/);
+    for (const attribute of ["Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0", "Secure", "Expires=Thu, 01 Jan 1970 00:00:00 GMT"]) {
+      assert.ok(response.headers["set-cookie"].includes(attribute), attribute);
+    }
+    assert.ok(!response.headers["set-cookie"].includes("Domain="));
+  }
+  assert.deepEqual(harness.revokedSessions, ["first", "first"]);
+  for (const [sessionId, expected] of [["first", 401], ["second", 200]] as const) {
+    const response = await harness.handler(createEvent({ method: "GET", path: "/v1/auth/session", headers: { Cookie: `threefc_session=${sessionId}` } }));
+    assert.equal(response.statusCode, expected);
+    assert.equal(response.headers["cache-control"], "no-store");
+  }
+});
+
+test("core lambda logout safely expires missing and malformed cookies without session lookup", async () => {
+  const harness = createHarness();
+  for (const cookie of ["", "threefc_session=%", "threefc_session=", "theme=%", `threefc_session=${"x".repeat(10000)}`]) {
+    const response = await harness.handler(createEvent({ method: "POST", path: "/v1/auth/logout", headers: { Cookie: cookie } }));
+    assert.equal(response.statusCode, 204);
+    assert.equal(response.body, "");
+    assert.match(response.headers["set-cookie"], /Max-Age=0/);
+    assert.ok(!response.headers["set-cookie"].includes("Secure"));
+  }
+  assert.deepEqual(harness.revokedSessions, []);
+});
+
+test("core lambda logout rejects foreign origins before revocation and supports preflight", async () => {
+  const harness = createHarness();
+  const denied = await harness.handler(createEvent({ method: "POST", path: "/v1/auth/logout", headers: { Origin: "https://evil.example", Cookie: "threefc_session=first" } }));
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.headers["set-cookie"], undefined);
+  assert.deepEqual(harness.revokedSessions, []);
+  const preflight = await harness.handler(createEvent({ method: "OPTIONS", path: "/v1/auth/logout", headers: { Origin: "https://qa.3fc.football" } }));
+  assert.equal(preflight.statusCode, 204);
+  assert.equal(preflight.headers["Access-Control-Allow-Credentials"], "true");
+  assert.deepEqual(harness.revokedSessions, []);
+});
+
+test("core lambda logout retains retry cookie and hides SDK detail after storage failure", async () => {
+  const harness = createHarness({ revokeSessionError: new Error("private-session-id secret SDK diagnostic") });
+  const response = await harness.handler(createEvent({ method: "POST", path: "/v1/auth/logout", headers: { Cookie: "threefc_session=first", Origin: "https://qa.3fc.football" } }));
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.deepEqual(JSON.parse(response.body), { error: "logout_unavailable", message: "Sign out could not be confirmed. Please try again." });
+  assert.doesNotMatch(response.body, /private-session-id|secret SDK/);
 });
 
 test("core lambda completes magic-link auth and returns a session cookie", async () => {

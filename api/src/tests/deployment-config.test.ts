@@ -16,6 +16,8 @@ function assertServerlessRoute(method: string, path: string): void {
 }
 
 test("api core deployment config registers claim and access routes", () => {
+  assertServerlessRoute("POST", "/v1/auth/logout");
+  assertServerlessRoute("OPTIONS", "/v1/auth/logout");
   assertServerlessRoute("POST", "/v1/players/{playerId}/claim");
   assertServerlessRoute("OPTIONS", "/v1/players/{playerId}/claim");
   assertServerlessRoute("POST", "/v1/leagues/{leagueId}/access");

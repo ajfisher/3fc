@@ -89,6 +89,40 @@ test("customer page copy excludes every rejected design concept, including acces
   }
 });
 
+test("sign out belongs to the existing account-capable shells and is initially hidden", () => {
+  const api = "http://localhost:3001";
+  const pages = [
+    renderSetupHomePage(api), renderLeaguePage(api, "league"),
+    renderSeasonPage(api, "season", "league"), renderSeasonPage(api, "season"),
+    renderGamePage(api, { gameId: "game" }), renderInvitePage(api, "ABCD2345"),
+    renderJoinPage(api, "ABCD2345"),
+  ];
+  for (const html of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const actions = dom.window.document.getElementById("account-actions");
+      const button = dom.window.document.getElementById("sign-out");
+      const feedback = dom.window.document.getElementById("sign-out-status");
+      assert(actions instanceof dom.window.HTMLElement);
+      assert(button instanceof dom.window.HTMLButtonElement);
+      assert(feedback instanceof dom.window.HTMLElement);
+      assert.equal(actions.closest('[data-ui="hero"]') !== null, true);
+      assert.equal(actions.hidden, true);
+      assert.equal(button.disabled, true);
+      assert.equal(button.type, "button");
+      assert.equal(button.textContent, "Sign out");
+      assert.equal(feedback.hidden, true);
+      assert.equal(feedback.getAttribute("role"), "status");
+      assert.equal(feedback.getAttribute("aria-live"), "polite");
+      assert.equal(dom.window.document.querySelectorAll("#sign-out").length, 1);
+    } finally {
+      dom.window.close();
+    }
+  }
+  assert.doesNotMatch(renderSignInPage(api, "/setup"), /id="sign-out"/);
+  assert.doesNotMatch(renderMagicLinkCallbackPage(api), /id="sign-out"/);
+});
+
 test("primitives render expected semantic and data-ui hooks", () => {
   const button = renderButton("Continue", "danger");
   const chip = renderStepChip({ label: "1. League", state: "active" });

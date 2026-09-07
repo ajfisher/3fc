@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
+  DeleteItemCommand,
   GetItemCommand,
   PutItemCommand,
   TransactWriteItemsCommand,
@@ -15,6 +16,9 @@ const METADATA_SK = "METADATA";
 const COMPLETE_SESSION_CANDIDATE_MAX_ATTEMPTS = 3;
 const COMPLETE_AMBIGUOUS_RETRY_MAX_ATTEMPTS = 3;
 const MAGIC_LINK_TIME_ZONE_MAX_LENGTH = 100;
+// Leave room for the key prefix below DynamoDB's 2 KiB partition-key limit.
+// Existing opaque IDs remain valid; revocation does not assume UUID issuance.
+const SESSION_ID_MAX_BYTES = 1024;
 
 const ENTITY_TYPE = {
   magicToken: "magicToken",
@@ -151,6 +155,15 @@ function tokenPk(tokenId: string): string {
 
 function sessionPk(sessionId: string): string {
   return `${SESSION_PK_PREFIX}${sessionId}`;
+}
+
+function isSessionIdValid(sessionId: string): boolean {
+  return (
+    typeof sessionId === "string" &&
+    sessionId.length > 0 &&
+    !/[\s\u0000-\u001f\u007f]/u.test(sessionId) &&
+    Buffer.byteLength(sessionId, "utf8") <= SESSION_ID_MAX_BYTES
+  );
 }
 
 function asIsoString(value: Date): string {
@@ -471,11 +484,12 @@ export class MagicLinkService {
   }
 
   async getSession(sessionId: string): Promise<AuthSessionRecord | null> {
-    if (sessionId.trim().length === 0) {
+    if (!isSessionIdValid(sessionId)) {
       return null;
     }
 
-    const item = await this.getItem(sessionPk(sessionId));
+    // A completed logout must be authoritative for every subsequent request.
+    const item = await this.getItem(sessionPk(sessionId), true);
 
     if (!item) {
       return null;
@@ -502,6 +516,25 @@ export class MagicLinkService {
       createdAt: readString(item.createdAt, "createdAt"),
       expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
     };
+  }
+
+  async revokeSession(sessionId: string): Promise<void> {
+    if (!isSessionIdValid(sessionId)) {
+      return;
+    }
+
+    // Keep the used magic token's session reference: recovery then rejects the
+    // missing session instead of treating the token as unused and recreating it.
+    // Unconditional deletion is safe to repeat after a lost logout response.
+    await this.client.send(
+      new DeleteItemCommand({
+        TableName: this.options.tableName,
+        Key: {
+          pk: { S: sessionPk(sessionId) },
+          sk: { S: METADATA_SK },
+        },
+      }),
+    );
   }
 
   private async getItem(pk: string, consistentRead = false): Promise<Item | undefined> {

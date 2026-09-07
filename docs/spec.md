@@ -127,6 +127,7 @@ GET   /v1/public/games/{gameId}/timeline
 Auth:
 POST  /v1/auth/magic/start
 POST  /v1/auth/magic/complete
+POST  /v1/auth/logout
 
 Core (authed):
 POST  /v1/leagues
@@ -176,6 +177,7 @@ or invalid hints fall back to a human-readable UTC expiry.
 
 - Decision: httpOnly secure cookies for tokens.
 - Authenticated sessions expire eight days after sign-in so weekly players do not need to authenticate again between games. The lifetime is absolute rather than sliding; sessions issued before a configuration change retain their original expiry.
+- Sign-out deletes only the session identified by the current cookie and expires that cookie. Subsequent authentication reads are strongly consistent. Consumed magic-link recovery retains its session reference and cannot recreate a deleted session. Independently issued sessions remain valid; browsers sharing a replayed session are signed out together. See [session revocation](architecture/session-sign-out.md) for failure, concurrency and rollback boundaries.
 - Backstop: strong CSP + security headers.
 
 ## 11. Email notifications

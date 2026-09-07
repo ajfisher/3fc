@@ -703,6 +703,12 @@ function createMockFetch(state: MockApiState) {
       });
     }
 
+    if (method === "POST" && path === "/v1/auth/logout") {
+      state.session = null;
+      state.cookieJar = "";
+      return new Response(null, { status: 204 });
+    }
+
     const joinMatch = path.match(/^\/v1\/join\/([^/]+)$/);
     if (method === "POST" && joinMatch) {
       const joinCode = decodeURIComponent(joinMatch[1]).trim().toUpperCase();
@@ -2061,6 +2067,567 @@ test("sign-in page shows inline validation for invalid email", async () => {
   assert.equal(emailInput.getAttribute("data-state"), "invalid");
   assert.equal(emailInput.getAttribute("aria-invalid"), "true");
   assert.equal(notice.textContent, "Enter a valid email address.");
+});
+
+test("sign out is hidden until the existing authenticated session check resolves", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  let resolveSession: ((response: Response) => void) | undefined;
+  let logoutRequests = 0;
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/auth/session") {
+        assert.equal(init?.cache, "no-store");
+        return new Promise<Response>((resolve) => { resolveSession = resolve; });
+      }
+      if (path === "/v1/auth/logout") logoutRequests += 1;
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    const actions = page.document.getElementById("account-actions");
+    const button = page.document.getElementById("sign-out");
+    assert(actions instanceof page.window.HTMLElement);
+    assert(button instanceof page.window.HTMLButtonElement);
+    assert.equal(actions.hidden, true);
+    assert.equal(button.disabled, true);
+    dispatchClick(button);
+    assert.equal(logoutRequests, 0);
+    assert(resolveSession);
+    resolveSession(createJsonResponse(200, { session: apiState.session }));
+    await flushAsync();
+    assert.equal(actions.hidden, false);
+    assert.equal(button.disabled, false);
+    assert.equal(button.textContent, "Sign out");
+    assert.equal(button.type, "button");
+    button.focus();
+    assert.equal(page.document.activeElement, button);
+  } finally {
+    page.dom.window.close();
+  }
+});
+
+for (const sessionResult of ["visitor", "unavailable", "missing-session"] as const) {
+  test(`sign out is unavailable for a ${sessionResult} session`, async () => {
+    const apiState = createMockApiState();
+    let logoutRequests = 0;
+    const page = await bootPage({
+      html: renderSetupHomePage("http://localhost:3001"),
+      url: "http://localhost:3000/setup",
+      scriptFile: "setup-flow.js",
+      apiState,
+      fetch: async (input) => {
+        if (new URL(String(input)).pathname === "/v1/auth/logout") logoutRequests += 1;
+        if (sessionResult === "unavailable") throw new Error("offline");
+        return createJsonResponse(sessionResult === "visitor" ? 401 : 200, {});
+      },
+    });
+    try {
+      const actions = page.document.getElementById("account-actions");
+      const button = page.document.getElementById("sign-out");
+      assert(actions instanceof page.window.HTMLElement);
+      assert(button instanceof page.window.HTMLButtonElement);
+      assert.equal(actions.hidden, true);
+      assert.equal(button.disabled, true);
+      dispatchClick(button);
+      await flushAsync();
+      assert.equal(logoutRequests, 0);
+    } finally {
+      page.dom.window.close();
+    }
+  });
+}
+
+test("sign out commits once, clears only auth recovery state and replaces history after confirmation", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
+  apiState.storage.set("threefc.auth.return_to", "/games/logout-fixture");
+  apiState.storage.set("threefc.idempotency.goal-draft", "keep-retry-key");
+  const sessionStorage = new Map([
+    ["threefc.auth.callback", "private-recovery-state"],
+    ["other-workflow", "keep-this"],
+  ]);
+  const baseFetch = createMockFetch(apiState);
+  let completeLogout: (() => void) | undefined;
+  const logoutRequests: RequestInit[] = [];
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+    sessionStorage,
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname !== "/v1/auth/logout") return baseFetch(input, init);
+      logoutRequests.push(init ?? {});
+      return new Promise<Response>((resolve) => {
+        completeLogout = () => { void baseFetch(input, init).then(resolve); };
+      });
+    },
+  });
+  try {
+    const button = page.document.getElementById("sign-out");
+    const feedback = page.document.getElementById("sign-out-status");
+    assert(button instanceof page.window.HTMLButtonElement);
+    assert(feedback instanceof page.window.HTMLElement);
+    // Nested markup has the same native button activation path as its label.
+    button.innerHTML = "<span>Sign out</span>";
+    const label = button.firstElementChild;
+    assert(label instanceof page.window.HTMLElement);
+    dispatchClick(label);
+    dispatchClick(button);
+    dispatchClick(label);
+    assert.equal(logoutRequests.length, 1);
+    assert.equal(logoutRequests[0]?.method, "POST");
+    assert.equal(logoutRequests[0]?.credentials, "include");
+    assert.equal(logoutRequests[0]?.body, undefined);
+    assert.equal(button.disabled, true);
+    assert.equal(button.getAttribute("aria-busy"), "true");
+    assert.equal(feedback.hidden, false);
+    assert.equal(feedback.getAttribute("role"), "status");
+    assert.equal(feedback.textContent, "Signing out…");
+    assert.equal(page.navigations.length, 0);
+    assert(apiState.session);
+    assert.equal(apiState.storage.get("threefc.auth.return_to"), "/games/logout-fixture");
+    assert.equal(sessionStorage.get("threefc.auth.callback"), "private-recovery-state");
+
+    assert(completeLogout);
+    completeLogout();
+    await flushAsync();
+    assert.deepEqual(page.navigations, [{ url: "/sign-in", mode: "replace" }]);
+    assert.equal(apiState.session, null);
+    assert.equal(apiState.cookieJar, "");
+    assert.equal(apiState.storage.has("threefc.auth.return_to"), false);
+    assert.equal(sessionStorage.has("threefc.auth.callback"), false);
+    assert.equal(apiState.storage.get("threefc.idempotency.goal-draft"), "keep-retry-key");
+    assert.equal(sessionStorage.get("other-workflow"), "keep-this");
+    dispatchClick(button);
+    assert.equal(logoutRequests.length, 1, "keep the latch closed while replacement navigation completes");
+  } finally {
+    page.dom.window.close();
+  }
+});
+
+for (const failure of ["network", "lost-response", 503, 401, 200] as const) {
+  test(`sign out ${failure} failure retains drafts and offers one truthful retry`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
+    apiState.storage.set("threefc.auth.return_to", "/games/logout-fixture");
+    apiState.storage.set("draft-retry-key", "unchanged");
+    const sessionStorage = new Map([["threefc.auth.callback", "recovery-state"]]);
+    const baseFetch = createMockFetch(apiState);
+    let requests = 0;
+    const page = await bootPage({
+      html: renderSetupHomePage("http://localhost:3001"),
+      url: "http://localhost:3000/setup",
+      scriptFile: "setup-flow.js",
+      apiState,
+      sessionStorage,
+      fetch: async (input, init) => {
+        if (new URL(String(input)).pathname !== "/v1/auth/logout") return baseFetch(input, init);
+        requests += 1;
+        if (requests > 1) return baseFetch(input, init);
+        if (failure === "lost-response") await baseFetch(input, init);
+        if (typeof failure === "string") throw new Error("private transport diagnostic");
+        return createJsonResponse(failure, { message: "private transport diagnostic" });
+      },
+    });
+    try {
+      const toggle = page.document.querySelector('[data-testid="toggle-create-league"]');
+      const input = page.document.getElementById("league-name");
+      const button = page.document.getElementById("sign-out");
+      const feedback = page.document.getElementById("sign-out-status");
+      assert(toggle instanceof page.window.HTMLButtonElement);
+      assert(input instanceof page.window.HTMLInputElement);
+      assert(button instanceof page.window.HTMLButtonElement);
+      assert(feedback instanceof page.window.HTMLElement);
+      dispatchClick(toggle);
+      input.value = "Unfinished league draft";
+      button.focus();
+      dispatchClick(button);
+      await flushAsync();
+      assert.equal(requests, 1);
+      assert.equal(page.navigations.length, 0);
+      assert.equal(button.disabled, false);
+      assert.equal(button.hasAttribute("aria-busy"), false);
+      assert.equal(page.document.activeElement, button);
+      assert.equal(input.value, "Unfinished league draft");
+      assert.equal(toggle.getAttribute("aria-expanded"), "true");
+      assert.equal(apiState.storage.get("draft-retry-key"), "unchanged");
+      assert.equal(apiState.storage.get("threefc.auth.return_to"), "/games/logout-fixture");
+      assert.equal(sessionStorage.get("threefc.auth.callback"), "recovery-state");
+      assert.equal(feedback.hidden, false);
+      assert.equal(feedback.getAttribute("aria-live"), "polite");
+      assert.equal(feedback.getAttribute("data-state"), "error");
+      assert.equal(feedback.textContent, "Sign out could not be confirmed. Please try again.");
+      assert.doesNotMatch(page.document.body.textContent ?? "", /private transport diagnostic|still signed in|signed out successfully/i);
+      assert.equal(page.document.getElementById("setup-error")?.hasAttribute("hidden"), true);
+      dispatchClick(button);
+      await flushAsync();
+      assert.equal(requests, 2);
+      assert.deepEqual(page.navigations, [{ url: "/sign-in", mode: "replace" }]);
+    } finally {
+      page.dom.window.close();
+    }
+  });
+}
+
+for (const failure of ["lost-response", "upstream-503"] as const) {
+  for (const ordering of ["session-first", "logout-first", "join-last"] as const) {
+    test(`sign out recovery stays visible after a join session probe: ${failure}, ${ordering}`, async () => {
+      const apiState = createMockApiState();
+      seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "viewer" });
+      const game = apiState.games.get("logout-fixture");
+      assert(game);
+      game.joinCode = "ABCD2345";
+      const baseFetch = createMockFetch(apiState);
+      let completeJoin: (() => void) | undefined;
+      let completeSessionProbe: (() => void) | undefined;
+      let completeLogoutFailure: (() => void) | undefined;
+      let sessionRequests = 0;
+      let logoutRequests = 0;
+      const page = await bootPage({
+        html: renderJoinPage("http://localhost:3001", "ABCD2345"),
+        url: "http://localhost:3000/join/ABCD2345", scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          const path = new URL(String(input)).pathname;
+          if (path === "/v1/auth/session" && ++sessionRequests > 1) {
+            return new Promise<Response>((resolve) => {
+              completeSessionProbe = () => resolve(createJsonResponse(401, { error: "unauthorized" }));
+            });
+          }
+          if (path === "/v1/join/ABCD2345") {
+            return new Promise<Response>((resolve) => {
+              completeJoin = () => { void baseFetch(input, init).then(resolve); };
+            });
+          }
+          if (path === "/v1/auth/logout" && ++logoutRequests === 1) {
+            // Revocation committed but its response was lost or replaced by an
+            // upstream error. Join registration is independent and can finish.
+            await baseFetch(input, init);
+            return new Promise<Response>((resolve, reject) => {
+              completeLogoutFailure = () => {
+                if (failure === "lost-response") reject(new Error("connection lost"));
+                else resolve(createJsonResponse(503, { error: "unavailable" }));
+              };
+            });
+          }
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        const form = page.document.getElementById("join-game-form");
+        const nickname = page.document.getElementById("join-player-nickname");
+        const button = page.document.getElementById("sign-out");
+        const feedback = page.document.getElementById("sign-out-status");
+        assert(form instanceof page.window.HTMLFormElement);
+        assert(nickname instanceof page.window.HTMLInputElement);
+        assert(button instanceof page.window.HTMLButtonElement);
+        assert(feedback instanceof page.window.HTMLElement);
+        const assertVisible = (element: HTMLElement) => {
+          for (let ancestor: HTMLElement | null = element; ancestor; ancestor = ancestor.parentElement) {
+            assert.equal(ancestor.hidden, false, `${ancestor.id || ancestor.tagName} must not hide logout recovery`);
+            assert.notEqual(page.window.getComputedStyle(ancestor).display, "none", ancestor.id || ancestor.tagName);
+          }
+        };
+        nickname.value = "New player";
+        dispatchSubmit(form);
+        dispatchClick(button);
+        await flushAsync();
+        assert(completeJoin);
+        assert(completeLogoutFailure);
+        if (ordering !== "join-last") {
+          completeJoin();
+          await flushAsync();
+          assert(completeSessionProbe);
+        }
+        if (ordering === "session-first") {
+          assert(completeSessionProbe);
+          completeSessionProbe();
+          await flushAsync();
+          assertVisible(feedback);
+          assertVisible(button);
+          assert.equal(button.disabled, true, "a 401 cannot release the pending logout latch");
+          assert.equal(feedback.textContent, "Signing out…");
+        }
+        completeLogoutFailure();
+        await flushAsync();
+        assertVisible(feedback);
+        assertVisible(button);
+        assert.equal(button.disabled, false);
+        if (ordering === "join-last") {
+          completeJoin();
+          await flushAsync();
+          assert(completeSessionProbe);
+        }
+        if (ordering !== "session-first") {
+          assert(completeSessionProbe);
+          completeSessionProbe();
+          await flushAsync();
+        }
+        assertVisible(feedback);
+        assertVisible(button);
+        assert.equal(feedback.textContent, "Sign out could not be confirmed. Please try again.");
+        assert.equal(button.disabled, false);
+        assert.equal(page.navigations.length, 0);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "New player");
+        assert.doesNotMatch(page.document.getElementById("join-claim-status")?.textContent ?? "", /signed in as/i);
+        dispatchClick(button);
+        await flushAsync();
+        assert.equal(logoutRequests, 2);
+        assert.deepEqual(page.navigations, [{ url: "/sign-in", mode: "replace" }]);
+      } finally {
+        page.dom.window.close();
+      }
+    });
+  }
+}
+
+test("sign out continues to sign in even when optional browser storage is unavailable", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"),
+    url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js",
+    apiState,
+  });
+  try {
+    for (const property of ["localStorage", "sessionStorage"]) {
+      Object.defineProperty(page.window, property, { get: () => { throw new Error("storage blocked"); }, configurable: true });
+    }
+    const button = page.document.getElementById("sign-out");
+    assert(button instanceof page.window.HTMLButtonElement);
+    dispatchClick(button);
+    await flushAsync();
+    assert.equal(apiState.session, null);
+    assert.deepEqual(page.navigations, [{ url: "/sign-in", mode: "replace" }]);
+  } finally {
+    page.dom.window.close();
+  }
+});
+
+test("sign out permits a different account to sign in without redirecting into the old account", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin", sessionEmail: "previous@example.com" });
+  apiState.storage.set("threefc.auth.return_to", "/games/logout-fixture");
+  const baseFetch = createMockFetch(apiState);
+  // The general UI fixture deliberately lists all seeded leagues. This
+  // account-switch scenario needs the production API's membership filtering.
+  const accountScopedFetch: ReturnType<typeof createMockFetch> = async (input, init) => {
+    if (new URL(String(input)).pathname === "/v1/leagues" && (init?.method ?? "GET") === "GET") {
+      return createJsonResponse(200, {
+        leagues: [...apiState.leagues.values()].filter((league) => mockLeagueRoleForSession(apiState, league) !== null),
+      });
+    }
+    return baseFetch(input, init);
+  };
+  const dashboard = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js", apiState, fetch: accountScopedFetch,
+  });
+  const openedPages = [dashboard];
+  try {
+    assert.equal(dashboard.document.querySelectorAll("#dashboard-leagues-body tr").length, 1, "previous account has a league to clear");
+    const button = dashboard.document.getElementById("sign-out");
+    assert(button instanceof dashboard.window.HTMLButtonElement);
+    dispatchClick(button);
+    await flushAsync();
+    const signIn = await bootPage({
+      html: renderSignInPage("http://localhost:3001", "/setup"), url: "http://localhost:3000/sign-in",
+      scriptFile: "auth-flow.js", apiState,
+    });
+    openedPages.push(signIn);
+    assert.equal(signIn.navigations.length, 0, "revoked session must not trigger the existing-session redirect");
+    const email = signIn.document.getElementById("auth-email");
+    const form = signIn.document.getElementById("auth-magic-form");
+    assert(email instanceof signIn.window.HTMLInputElement);
+    assert(form instanceof signIn.window.HTMLFormElement);
+    email.value = "next@example.com";
+    dispatchSubmit(form);
+    await flushAsync();
+    assert.equal(apiState.pendingEmail, "next@example.com");
+    const callback = await bootPage({
+      html: renderMagicLinkCallbackPage("http://localhost:3001"), url: "http://localhost:3000/auth/callback?token=token-1",
+      scriptFile: "auth-flow.js", apiState,
+    });
+    openedPages.push(callback);
+    const complete = callback.document.querySelector('[data-action="complete-magic-link"]');
+    assert(complete instanceof callback.window.HTMLButtonElement);
+    dispatchClick(complete);
+    await flushAsync();
+    assert.equal(apiState.session?.email, "next@example.com");
+    assert.deepEqual(callback.navigations, [{ url: "/setup", mode: "replace" }]);
+    const nextDashboard = await bootPage({
+      html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup",
+      scriptFile: "setup-flow.js", apiState, fetch: accountScopedFetch,
+    });
+    openedPages.push(nextDashboard);
+    assert.equal(nextDashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome Next");
+    assert.equal(nextDashboard.document.querySelectorAll("#dashboard-leagues-body tr").length, 0);
+    assert.doesNotMatch(nextDashboard.document.body.textContent ?? "", /previous@example\.com|Three Sided Football Club/);
+    const previousLeague = await accountScopedFetch("http://localhost:3001/v1/leagues/three-sided-football-club", { method: "GET" });
+    assert.equal(previousLeague.status, 403, "the new account also cannot directly open the previous account's league");
+  } finally {
+    for (const openedPage of openedPages) openedPage.dom.window.close();
+  }
+});
+
+test("sign out is available across management and game shells without extra session requests", async () => {
+  const api = "http://localhost:3001";
+  const cases = [
+    { html: renderLeaguePage(api, "three-sided-football-club"), path: "/leagues/three-sided-football-club" },
+    { html: renderSeasonPage(api, "autumn-cup", "three-sided-football-club"), path: "/leagues/three-sided-football-club/seasons/autumn-cup" },
+    { html: renderSeasonPage(api, "autumn-cup"), path: "/seasons/autumn-cup" },
+    // The deployed static fallback initially serves the league shell here.
+    { html: renderLeaguePage(api, "three-sided-football-club"), path: "/leagues/three-sided-football-club/seasons/autumn-cup" },
+    { html: renderGamePage(api, { gameId: "logout-fixture" }), path: "/games/logout-fixture" },
+    { html: renderInvitePage(api, "ABCD2345"), path: "/invites/ABCD2345" },
+    { html: renderJoinPage(api, "ABCD2345"), path: "/join/ABCD2345?playerId=player-ari" },
+  ];
+  for (const item of cases) {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
+    const baseFetch = createMockFetch(apiState);
+    let sessionRequests = 0;
+    let logoutRequests = 0;
+    const page = await bootPage({
+      html: item.html, url: `http://localhost:3000${item.path}`, scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/v1/auth/session") sessionRequests += 1;
+        if (path === "/v1/auth/logout") logoutRequests += 1;
+        return baseFetch(input, init);
+      },
+    });
+    try {
+      const button = page.document.getElementById("sign-out");
+      const actions = page.document.getElementById("account-actions");
+      assert(button instanceof page.window.HTMLButtonElement, item.path);
+      assert(actions instanceof page.window.HTMLElement, item.path);
+      assert.equal(actions.hidden, false, item.path);
+      assert.equal(button.disabled, false, item.path);
+      assert.equal(sessionRequests, 1, `no added auth lookup on ${item.path}`);
+      dispatchClick(button);
+      await flushAsync();
+      assert.equal(logoutRequests, 1, item.path);
+      assert.deepEqual(page.navigations, [{ url: "/sign-in", mode: "replace" }], item.path);
+    } finally {
+      page.dom.window.close();
+    }
+  }
+});
+
+test("sign out checks the account without blocking or redirecting an anonymous join form", async () => {
+  const apiState = createMockApiState();
+  const paths: string[] = [];
+  const page = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "ABCD2345"),
+    url: "http://localhost:3000/join/ABCD2345", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      paths.push(new URL(String(input)).pathname);
+      assert.equal(init?.cache, "no-store");
+      return createJsonResponse(401, {});
+    },
+  });
+  try {
+    assert.deepEqual(paths, ["/v1/auth/session"]);
+    assert.equal(page.navigations.length, 0);
+    assert.equal(page.document.getElementById("account-actions")?.hasAttribute("hidden"), true);
+    assert.equal(page.document.getElementById("sign-out")?.hasAttribute("disabled"), true);
+  } finally {
+    page.dom.window.close();
+  }
+});
+
+test("sign out is offered before a signed-in player submits the initial join form", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "viewer" });
+  const baseFetch = createMockFetch(apiState);
+  const requests: Array<{ path: string; method: string }> = [];
+  const page = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "ABCD2345"),
+    url: "http://localhost:3000/join/ABCD2345", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      requests.push({ path: new URL(String(input)).pathname, method: init?.method ?? "GET" });
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    const button = page.document.getElementById("sign-out");
+    assert(button instanceof page.window.HTMLButtonElement);
+    assert.equal(button.disabled, false);
+    assert.equal(page.document.getElementById("account-actions")?.hasAttribute("hidden"), false);
+    assert.deepEqual(requests, [{ path: "/v1/auth/session", method: "GET" }], "do not join or claim while checking the account");
+    dispatchClick(button);
+    await flushAsync();
+    assert.deepEqual(page.navigations, [{ url: "/sign-in", mode: "replace" }]);
+    assert.deepEqual(requests.at(-1), { path: "/v1/auth/logout", method: "POST" });
+  } finally {
+    page.dom.window.close();
+  }
+});
+
+test("sign out session protection hides stale account data on BFCache restoration and reloads once", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup?view=leagues#current",
+    scriptFile: "setup-flow.js", apiState,
+  });
+  try {
+    const shell = page.document.querySelector('[data-ui="app-shell"]');
+    assert(shell instanceof page.window.HTMLElement);
+    page.window.dispatchEvent(new page.window.Event("pageshow"));
+    assert.equal(shell.hidden, false);
+    assert.equal(page.navigations.length, 0);
+    // Another tab has signed out since this document entered the BFCache.
+    apiState.session = null;
+    apiState.cookieJar = "";
+    const restored = new page.window.Event("pageshow");
+    Object.defineProperty(restored, "persisted", { value: true });
+    page.window.dispatchEvent(restored);
+    assert.equal(shell.hidden, true, "old account data disappears before the reload request");
+    assert.equal(page.document.getElementById("account-revalidation-status")?.textContent, "Checking sign-in state…");
+    assert.deepEqual(page.navigations, [{ url: "/setup?view=leagues#current", mode: "reload" }]);
+    page.window.dispatchEvent(restored);
+    assert.equal(page.navigations.length, 1);
+    assert.equal(page.document.querySelectorAll("#account-revalidation-status").length, 1);
+    const reloaded = await bootPage({
+      html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup?view=leagues#current",
+      scriptFile: "setup-flow.js", apiState,
+    });
+    try {
+      assert.equal(reloaded.document.getElementById("account-actions")?.hasAttribute("hidden"), true);
+      assert.equal(reloaded.navigations[0]?.mode, "replace");
+      assert.match(reloaded.navigations[0]?.url ?? "", /^\/sign-in\?returnTo=/);
+    } finally {
+      reloaded.dom.window.close();
+    }
+  } finally {
+    page.dom.window.close();
+  }
+});
+
+test("sign out BFCache protection leaves anonymous join forms usable", async () => {
+  const page = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
+    scriptFile: "setup-flow.js", apiState: createMockApiState(),
+  });
+  try {
+    const restored = new page.window.Event("pageshow");
+    Object.defineProperty(restored, "persisted", { value: true });
+    page.window.dispatchEvent(restored);
+    assert.equal(page.document.querySelector('[data-ui="app-shell"]')?.hasAttribute("hidden"), false);
+    assert.equal(page.navigations.length, 0);
+  } finally {
+    page.dom.window.close();
+  }
 });
 
 test("sign-in page announces an existing-session redirect without exposing identity", async () => {

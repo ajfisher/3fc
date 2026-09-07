@@ -11,6 +11,8 @@ import {
   handleLocalDeleteGameRoute,
   handleLocalFinishGameRoute,
   handleLocalGetGameRoute,
+  handleLocalLogoutRoute,
+  handleGetAuthSession,
   handleLocalUpdateGameTeamRoute,
 } from "../server.js";
 import {
@@ -88,6 +90,65 @@ function createMockRequest(input: {
 function createMockResponse(): MockResponse & ServerResponse {
   return new MockResponse() as MockResponse & ServerResponse;
 }
+
+test("local logout matches the Lambda success, retry, malformed-cookie and CORS contract", async () => {
+  const activeSessions = new Set(["first", "second"]);
+  const revoked: string[] = [];
+  const sessionService = { async revokeSession(id: string) { revoked.push(id); activeSessions.delete(id); } };
+  for (const cookie of ["theme=%; threefc_session=first", "threefc_session=first", "", "threefc_session=%", `threefc_session=${"x".repeat(10000)}`]) {
+    const response = createMockResponse();
+    const status = await handleLocalLogoutRoute({
+      request: createMockRequest({ headers: { origin: "https://qa.3fc.football", cookie } }),
+      response, sessionService, cookieName: "threefc_session", cookieSecure: true,
+    });
+    assert.equal(status, 204);
+    assert.equal(response.statusCode, 204);
+    assert.equal(response.body, "");
+    assert.equal(response.headers["Cache-Control"], "no-store");
+    assert.equal(response.headers["Access-Control-Allow-Origin"], "https://qa.3fc.football");
+    assert.equal(response.headers["Access-Control-Allow-Credentials"], "true");
+    for (const attribute of ["threefc_session=;", "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0", "Secure", "Expires=Thu, 01 Jan 1970 00:00:00 GMT"]) {
+      assert.ok(response.headers["Set-Cookie"].includes(attribute), attribute);
+    }
+    assert.ok(!response.headers["Set-Cookie"].includes("Domain="));
+  }
+  assert.deepEqual(revoked, ["first", "first"]);
+  assert.deepEqual([...activeSessions], ["second"]);
+});
+
+test("local authenticated session probes cannot be cached across sign-out", async () => {
+  const response = createMockResponse();
+  await handleGetAuthSession(createMockRequest(), response, {
+    sessionId: "first", email: "organiser@example.com", createdAt: "2026-09-07T00:00:00Z", expiresAt: "2026-09-15T00:00:00Z",
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["Cache-Control"], "no-store");
+});
+
+test("local logout rejects foreign origin without revocation or cookie expiry", async () => {
+  const response = createMockResponse();
+  let called = false;
+  const status = await handleLocalLogoutRoute({
+    request: createMockRequest({ headers: { origin: "https://evil.example", cookie: "threefc_session=first" } }), response,
+    sessionService: { async revokeSession() { called = true; } },
+  });
+  assert.equal(status, 403);
+  assert.equal(called, false);
+  assert.equal(response.headers["Set-Cookie"], undefined);
+});
+
+test("local logout preserves the cookie and sanitizes uncertain storage failure", async () => {
+  const response = createMockResponse();
+  const status = await handleLocalLogoutRoute({
+    request: createMockRequest({ headers: { cookie: "threefc_session=private-session" } }), response,
+    sessionService: { async revokeSession() { throw new Error("private-session secret SDK diagnostic"); } },
+  });
+  assert.equal(status, 503);
+  assert.equal(response.headers["Set-Cookie"], undefined);
+  assert.equal(response.headers["Cache-Control"], "no-store");
+  assert.deepEqual(JSON.parse(response.body), { error: "logout_unavailable", message: "Sign out could not be confirmed. Please try again." });
+  assert.doesNotMatch(response.body, /private-session|secret SDK/);
+});
 
 function completedThirds(): ThirdTimerSegment[] {
   return createDefaultThirdTimerSegments().map((third) => ({

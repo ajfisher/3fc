@@ -36,6 +36,7 @@ import {
 } from "./auth/acl.js";
 import {
   buildCorsHeaders,
+  getCookieValue,
   isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
@@ -47,6 +48,7 @@ import {
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
+  buildExpiredSessionCookie,
   DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
@@ -2965,6 +2967,42 @@ async function handleMagicLinkStart(
   }
 }
 
+export async function handleLocalLogoutRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  sessionService?: Pick<MagicLinkService, "revokeSession">;
+  cookieName?: string;
+  cookieSecure?: boolean;
+}): Promise<number> {
+  const { request, response } = input;
+  if (!isStateChangeOriginPermitted("POST", request.headers.origin, CORS_ALLOWED_ORIGINS)) {
+    return forbiddenOrigin(request, response);
+  }
+  const cookieName = input.cookieName ?? SESSION_COOKIE_NAME;
+  const headers = { "Cache-Control": "no-store" };
+  try {
+    const sessionId = getCookieValue(request.headers.cookie, cookieName);
+    if (sessionId) {
+      await (input.sessionService ?? magicLinkService).revokeSession(sessionId);
+    }
+    response.writeHead(204, {
+      ...buildCorsHeaders(request.headers.origin, CORS_ALLOWED_ORIGINS),
+      ...headers,
+      "Set-Cookie": buildExpiredSessionCookie(cookieName, input.cookieSecure ?? SESSION_COOKIE_SECURE),
+    });
+    response.end();
+    return 204;
+  } catch {
+    // Deletion may have committed before response loss. Preserve the credential
+    // for idempotent retry and keep diagnostics free of cookie/SDK details.
+    sendJsonWithCors(request, response, 503, {
+      error: "logout_unavailable",
+      message: "Sign out could not be confirmed. Please try again.",
+    }, headers);
+    return 503;
+  }
+}
+
 async function handleMagicLinkComplete(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3045,7 +3083,7 @@ async function handleMagicLinkComplete(
   }
 }
 
-async function handleGetAuthSession(
+export async function handleGetAuthSession(
   request: IncomingMessage,
   response: ServerResponse,
   session: AuthSessionRecord,
@@ -3053,7 +3091,7 @@ async function handleGetAuthSession(
   sendJsonWithCors(request, response, 200, {
     authenticated: true,
     session,
-  });
+  }, { "Cache-Control": "no-store" });
 
   return 200;
 }
@@ -3083,7 +3121,7 @@ async function enforceSessionIfRequired(
     sendJsonWithCors(request, response, 401, {
       error: "unauthorized",
       message: "Valid session cookie required.",
-    });
+    }, { "Cache-Control": "no-store" });
 
     return { allowed: false, session: null, status: 401 };
   }
@@ -3091,7 +3129,7 @@ async function enforceSessionIfRequired(
     sendJsonWithCors(request, response, 401, {
       error: "unauthorized",
       message: "Session is missing, invalid, or expired.",
-    });
+    }, { "Cache-Control": "no-store" });
 
     return { allowed: false, session: null, status: 401 };
   }
@@ -3166,6 +3204,11 @@ async function start(): Promise<void> {
 
       if (method === "POST" && route === "/v1/dev/send-email") {
         status = await handleSendDevEmail(request, response);
+        return;
+      }
+
+      if (method === "POST" && route === "/v1/auth/logout") {
+        status = await handleLocalLogoutRoute({ request, response });
         return;
       }
 

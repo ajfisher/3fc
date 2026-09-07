@@ -18,6 +18,7 @@ import {
 import { authorizeProtectedMutation } from "./auth/acl.js";
 import {
   buildCorsHeaders,
+  getCookieValue,
   isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
@@ -38,6 +39,7 @@ import {
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
+  buildExpiredSessionCookie,
   DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
@@ -131,6 +133,7 @@ interface SessionLookup {
 }
 
 interface MagicLinkServiceContract extends SessionLookup {
+  revokeSession(sessionId: string): Promise<void>;
   start(email: string, options?: MagicLinkStartOptions): Promise<{
     email: string;
     expiresAt: string;
@@ -2648,6 +2651,35 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         return forbiddenOrigin(origin, dependencies.corsAllowedOrigins);
       }
 
+      if (method === "POST" && route === "/v1/auth/logout") {
+        const headers = {
+          ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          "cache-control": "no-store",
+        };
+        try {
+          const sessionId = getCookieValue(cookieHeader, dependencies.sessionCookieName);
+          if (sessionId) {
+            await dependencies.magicLinkService.revokeSession(sessionId);
+          }
+          status = 204;
+          return createNoContentResponse({
+            ...headers,
+            "set-cookie": buildExpiredSessionCookie(
+              dependencies.sessionCookieName,
+              dependencies.sessionCookieSecure,
+            ),
+          });
+        } catch {
+          // A lost delete response is uncertain, not a successful sign-out. Keep
+          // the cookie available for a safe retry; never expose SDK credentials.
+          status = 503;
+          return createJsonResponse(status, {
+            error: "logout_unavailable",
+            message: "Sign out could not be confirmed. Please try again.",
+          }, headers);
+        }
+      }
+
       if (method === "POST" && route === "/v1/auth/magic/start") {
         if (!isMagicLinkStartOriginPermitted(method, route, origin, dependencies.corsAllowedOrigins)) {
           status = 403;
@@ -2958,7 +2990,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               error: "unauthorized",
               message: "Valid session cookie required.",
             },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
           );
         }
         if (sessionResolution.failure === "invalid_session") {
@@ -2969,7 +3001,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               error: "unauthorized",
               message: "Session is missing, invalid, or expired.",
             },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
           );
         }
 
@@ -5663,7 +5695,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               authenticated: true,
               session,
             },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
           );
         }
       }
