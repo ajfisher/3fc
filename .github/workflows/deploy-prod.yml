@@ -166,10 +166,10 @@ jobs:
             exit 1
           fi
 
-          grep -q "Dashboard" /tmp/prod-site-root.html
+          grep -q "3FC Home" /tmp/prod-site-root.html
           grep -qi '^referrer-policy: strict-origin-when-cross-origin' /tmp/prod-site-root.headers
           grep -q "League organiser sign in" /tmp/prod-site-signin.html
-          grep -q "Dashboard" /tmp/prod-site-setup.html
+          grep -q "3FC Home" /tmp/prod-site-setup.html
           grep -q "Complete your sign-in" /tmp/prod-site-callback.html
           grep -q "Complete your sign-in" /tmp/prod-site-callback-slash.html
           grep -q "initAuthCallbackPage" /tmp/prod-site-auth-flow.js

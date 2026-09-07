@@ -198,6 +198,7 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /data-testid="panel-dashboard-create-league"/);
   assert.match(html, /data-testid="panel-dashboard-leagues"/);
   assert.match(html, /id="dashboard-welcome">Welcome</);
+  assert.match(html, /<title>3FC Home<\/title>/);
   assert.match(html, /data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading"/);
   assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
   assert.match(html, /data-ui="activity-message" class="sr-only">Checking sign-in state…/);
@@ -238,6 +239,56 @@ test("management pages render routine progress as a quiet activity indicator", (
   }
 });
 
+test("organiser shells use real navigation, intentional forms and no authority before loading", () => {
+  const pages = [
+    { html: renderSetupHomePage("/api"), formIds: ["create-league-form"], title: "Welcome" },
+    { html: renderLeaguePage("/api", "opaque-league-id"), formIds: ["create-season-form", "organiser-invite-form"], title: "League" },
+    { html: renderSeasonPage("/api", "opaque-season-id", "opaque-league-id"), formIds: ["create-game-form"], title: "Season" },
+    { html: renderSeasonPage("/api", "opaque-season-id"), formIds: ["create-game-form"], title: "Season" },
+  ];
+  for (const { html, formIds, title } of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      assert.equal(document.querySelector("h1")?.textContent, title);
+      assert.equal(document.querySelector('nav[aria-label="Primary"] a')?.getAttribute("href"), "/setup");
+      assert.doesNotMatch(document.body.textContent ?? "", /Start here if|Select a league to manage|Manage seasons for|Create a season inside|Add a game into|Scheduled and live games, ordered|Finished games, with the most recent/);
+      assert.equal(document.querySelectorAll('[data-ui="hero-kicker"]').length, 0);
+      assert.equal(document.querySelectorAll('a[href*="performance"], a[href*="standings"]').length, 0);
+      for (const formId of formIds) {
+        const form = document.getElementById(formId);
+        assert(form instanceof dom.window.HTMLFormElement);
+        assert.equal(form.getAttribute("aria-label")?.length! > 0, true);
+        assert.equal(form.querySelectorAll('button[type="submit"]').length, 1);
+        assert.equal(form.querySelector('[data-action="cancel-disclosure"]')?.getAttribute("type"), "button");
+        assert.equal(form.closest('[data-ui="disclosure-panel"]')?.hasAttribute("hidden"), true);
+        assert.equal(form.querySelectorAll("form").length, 0, "forms must not nest");
+      }
+      for (const input of document.querySelectorAll('input[id$="friendly-url"]')) {
+        const details = input.closest("details");
+        assert(details instanceof dom.window.HTMLDetailsElement);
+        assert.equal(details.open, false);
+        assert.equal(details.querySelector("summary")?.textContent, "Additional options");
+      }
+      for (const control of document.querySelectorAll("button[data-management-only]")) {
+        assert.equal((control as HTMLButtonElement).disabled, true);
+      }
+      const more = document.querySelector('[data-ui="more-actions"]');
+      if (more) {
+        assert.equal(more.hasAttribute("hidden"), true);
+        assert.equal(more.querySelector("summary")?.textContent, "More");
+        assert.equal(more.querySelectorAll('[data-variant="danger"]').length, 1);
+      }
+      for (const reference of document.querySelectorAll('[data-ui="reference-id"]')) {
+        assert.equal(reference.closest("details")?.hasAttribute("open"), false);
+      }
+      for (const empty of document.querySelectorAll('[id$="-empty"]')) {
+        assert.equal(empty.hasAttribute("hidden"), true, "loading must not flash an empty result");
+      }
+    } finally { dom.window.close(); }
+  }
+});
+
 test("setup pages can version UI asset URLs for deployments", () => {
   const previousVersion = process.env.THREEFC_ASSET_VERSION;
   process.env.THREEFC_ASSET_VERSION = "abc1234";
@@ -269,11 +320,12 @@ test("league page includes season create form and seasons table", () => {
   assert.match(html, /data-league-id="league-1"/);
   assert.match(html, /id="league-reference">League ID: league-1/);
   assert.match(html, /data-testid="toggle-create-season"/);
-  assert.match(html, /data-ui="header-actions" role="toolbar" aria-label="League actions"/);
+  assert.match(html, /data-ui="header-actions" role="group" aria-label="League actions"/);
   assert.match(html, /data-testid="toggle-organiser-invite"/);
   assert.match(html, /aria-controls="league-create-season-region"/);
   assert.match(html, /id="league-create-season-region" data-ui="disclosure-panel" hidden/);
   assert.match(html, /Share the link or code below or send an invite via email/);
+  assert.match(html, /Only this email address can accept\./);
   assert.doesNotMatch(html, /Share invite ready/);
   assert.match(html, /league-seasons-body/);
   assert.match(
@@ -300,7 +352,7 @@ test("season page includes game create form and games table", () => {
   assert.match(html, /data-season-id="season-1"/);
   assert.match(html, /id="season-reference">Season ID: season-1/);
   assert.match(html, /data-testid="toggle-create-game"/);
-  assert.match(html, /data-ui="header-actions" role="toolbar" aria-label="Season actions"/);
+  assert.match(html, /data-ui="header-actions" role="group" aria-label="Season actions"/);
   assert.match(html, /aria-controls="season-create-game-region"/);
   assert.match(html, /id="season-create-game-region" data-ui="disclosure-panel" hidden/);
   assert.doesNotMatch(html, /game-id-display/);

@@ -70,6 +70,21 @@ function renderAccountActions(): string {
   </div>`;
 }
 
+function renderManagementNavigation(home = false): string {
+  return `<div data-ui="site-header">
+    <nav data-ui="site-nav" aria-label="Primary"><a href="/setup"${home ? ' aria-current="page"' : ""}>Home</a></nav>
+    ${renderAccountActions()}
+  </div>`;
+}
+
+function renderFormCancel(): string {
+  return renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-disclosure" });
+}
+
+function renderAdditionalOptions(content: string): string {
+  return `<details data-ui="additional-options"><summary>Additional options</summary><div data-ui="form-fields">${content}</div></details>`;
+}
+
 function renderSetupFoundationPanels(): string {
   return `<div data-ui="auth-form" data-testid="fixture-fields">
     ${renderInputField({
@@ -138,7 +153,7 @@ function renderTableShell(input: {
 
 function renderDashboardHero(): string {
   return `<section data-ui="hero" data-layout="dashboard">
-    ${renderAccountActions()}
+    ${renderManagementNavigation(true)}
     <h1 id="dashboard-welcome">Welcome</h1>
   </section>`;
 }
@@ -146,35 +161,36 @@ function renderDashboardHero(): string {
 export function renderSetupHomePage(apiBaseUrl: string): string {
   const createLeaguePanel = renderPanel(
     "Create league",
-    "Start here if this account has no leagues yet.",
+    "",
     `${renderValidatedField({
       id: "league-name",
       label: "League name",
       placeholder: "Three Sided Football Club",
       required: true,
-    })}${renderValidatedField({
+    })}${renderAdditionalOptions(`${renderValidatedField({
       id: "league-friendly-url",
-      label: "League friendly URL",
+      label: "Friendly URL",
       placeholder: "three-sided-football-club",
-      hint: "Auto-filled from league name. Editable.",
-    })}<dl data-ui="id-preview"><div><dt>League ID</dt><dd id="league-id-display">Not generated yet</dd></div></dl>`,
+    })}<dl data-ui="id-preview"><div><dt>League ID</dt><dd id="league-id-display">Not generated yet</dd></div></dl>`)}`,
     `<div data-ui="button-row">${renderButton("Create league", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-league",
       "data-testid": "create-league",
-    })}</div>`,
+    })}${renderFormCancel()}</div>`,
     "panel-dashboard-create-league",
   );
 
   const leaguesPanel = renderPanel(
     "Leagues",
-    "Select a league to manage seasons and games.",
+    "",
     renderTableShell({
       tableTestId: "dashboard-leagues-table",
       bodyId: "dashboard-leagues-body",
       emptyId: "dashboard-leagues-empty",
-      emptyText: "No leagues yet. Create your first league to begin.",
-      headers: ["League", "Actions"],
+      emptyText: "No leagues to show.",
+      headers: ["League"],
+      tableLabel: "Leagues",
+      emptyInitiallyHidden: true,
     }),
     "",
     "panel-dashboard-leagues",
@@ -185,7 +201,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Dashboard</title>
+    <title>3FC Home</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
@@ -196,12 +212,12 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="dashboard-grid">
           ${leaguesPanel}
-          <div data-ui="page-toolbar" role="toolbar" aria-label="Dashboard actions">
+          <div data-ui="page-toolbar" role="group" aria-label="Home actions">
             ${renderIconButton({
               icon: "circle-plus",
               label: "Create a new league",
               text: "Create a new league",
-              variant: "primary",
+              variant: "secondary",
               attributes: {
                 "data-action": "toggle-create-league",
                 "data-testid": "toggle-create-league",
@@ -211,7 +227,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
             })}
           </div>
           <section id="dashboard-create-league-region" data-ui="disclosure-panel" hidden>
-            ${createLeaguePanel}
+            <form id="create-league-form" data-ui="management-form" aria-label="Create league" novalidate>${createLeaguePanel}</form>
           </section>
         </section>
       </section>
@@ -223,10 +239,9 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
 
 export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   const safeLeagueId = escapeHtml(leagueId);
-  const leagueHeading = safeLeagueId.length > 0 ? safeLeagueId : "League";
   const createSeasonPanel = renderPanel(
     "Create season",
-    "Create a season inside this league.",
+    "",
     `${renderValidatedField({
       id: "season-name",
       label: "Season name",
@@ -234,35 +249,38 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
       required: true,
     })}${renderInputField({
       id: "season-start",
-      label: "Season start date",
+      label: "Start date",
       type: "date",
     })}${renderInputField({
       id: "season-end",
-      label: "Season end date",
+      label: "End date",
       type: "date",
-    })}${renderValidatedField({
+    })}${renderAdditionalOptions(`${renderValidatedField({
       id: "season-friendly-url",
-      label: "Season friendly URL",
+      label: "Friendly URL",
       placeholder: "2026-season",
-      hint: "Auto-filled from season name. Editable.",
-    })}<dl data-ui="id-preview"><div><dt>Season ID</dt><dd id="season-id-display">Not generated yet</dd></div></dl>`,
+    })}<dl data-ui="id-preview"><div><dt>Season ID</dt><dd id="season-id-display">Not generated yet</dd></div></dl>`)}`,
     `<div data-ui="button-row">${renderButton("Create season", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-season",
       "data-testid": "create-season",
-    })}</div>`,
+      "data-management-only": "",
+      disabled: "",
+    })}${renderFormCancel()}</div>`,
     "panel-league-create-season",
   );
 
   const seasonsPanel = renderPanel(
     "Seasons",
-    "Manage seasons for this league.",
+    "",
     renderTableShell({
       tableTestId: "league-seasons-table",
       bodyId: "league-seasons-body",
       emptyId: "league-seasons-empty",
-      emptyText: "No seasons yet. Create one to add games.",
+      emptyText: "No seasons yet.",
       headers: ["Season name", "Dates", "Actions"],
+      tableLabel: "Seasons",
+      emptyInitiallyHidden: true,
     }),
     "",
     "panel-league-seasons",
@@ -272,7 +290,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
     "Invite organiser",
     "Share the link or code below or send an invite via email.",
     `<section data-ui="section-stack" aria-labelledby="organiser-share-invite-heading">
-      <h3 id="organiser-share-invite-heading">Share code/link</h3>
+      <h3 id="organiser-share-invite-heading">Share invite</h3>
       <p data-ui="status-note" id="organiser-share-invite-status" aria-live="polite"></p>
       <dl data-ui="id-preview" data-testid="organiser-share-invite-result" id="organiser-share-invite-result">
         <div><dt>Invite code</dt><dd id="organiser-share-invite-code">Open this panel to load</dd></div>
@@ -286,14 +304,17 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         label: "Organiser email",
         type: "email",
         placeholder: "coach@example.com",
-        hint: "Sends a one-time invite restricted to this email.",
+        hint: "Only this email address can accept.",
+        inputAttributes: { autocomplete: "email", inputmode: "email", autocapitalize: "none" },
       })}
     </section>`,
     `<div data-ui="button-row">${renderButton("Send email invite", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-organiser-invite",
       "data-testid": "create-organiser-invite",
-    })}</div>`,
+      "data-management-only": "",
+      disabled: "",
+    })}${renderFormCancel()}</div>`,
     "panel-league-organiser-invite",
   );
 
@@ -308,17 +329,20 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="league-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
-        ${renderAccountActions()}
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / League</span>
+        ${renderManagementNavigation()}
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><span id="league-breadcrumb-name" aria-current="page">League</span></li></ol></nav>
         <div data-ui="hero-title-row">
-          <h1 id="league-title">${leagueHeading}</h1>
-          <small data-ui="reference-id" id="league-reference">League ID: ${safeLeagueId || "Loading…"}</small>
+          <h1 id="league-title">League</h1>
         </div>
-        <div data-ui="header-actions" role="toolbar" aria-label="League actions">
+        <details data-ui="reference-details"><summary>Reference ID</summary><small data-ui="reference-id" id="league-reference">League ID: ${safeLeagueId || "Loading…"}</small></details>
+        <div data-ui="header-actions" role="group" aria-label="League actions">
           ${renderIconButton({
             icon: "calendar-plus",
             label: "Create season",
+            text: "Create season",
+            variant: "primary",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-create-season",
               "data-testid": "toggle-create-season",
               "aria-controls": "league-create-season-region",
@@ -328,22 +352,26 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
           ${renderIconButton({
             icon: "user-round-plus",
             label: "Invite organiser",
+            text: "Invite organiser",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-organiser-invite",
               "data-testid": "toggle-organiser-invite",
               "aria-controls": "league-organiser-invite-region",
               "aria-expanded": "false",
             },
           })}
-          ${renderIconButton({
+          <details data-ui="more-actions" data-management-only hidden><summary>More</summary>${renderIconButton({
             icon: "trash-2",
             label: "Delete league",
+            text: "Delete league",
             variant: "danger",
             attributes: {
               "data-action": "delete-league",
               "data-testid": "delete-league",
+              "data-management-only": "", disabled: "",
             },
-          })}
+          })}</details>
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="league" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-league-id="${safeLeagueId}">
@@ -352,10 +380,10 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         <section data-ui="panel-stack" data-testid="league-grid">
           ${seasonsPanel}
           <section id="league-create-season-region" data-ui="disclosure-panel" hidden>
-            ${createSeasonPanel}
+            <form id="create-season-form" data-ui="management-form" aria-label="Create season" novalidate>${createSeasonPanel}</form>
           </section>
           <section id="league-organiser-invite-region" data-ui="disclosure-panel" hidden>
-            ${organiserInvitePanel}
+            <form id="organiser-invite-form" data-ui="management-form" aria-label="Invite organiser" novalidate>${organiserInvitePanel}</form>
           </section>
           <p data-ui="status-note" id="organiser-invite-email-status" role="status" aria-live="polite" hidden></p>
         </section>
@@ -435,10 +463,9 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
 export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId = ""): string {
   const safeSeasonId = escapeHtml(seasonId);
   const safeLeagueId = escapeHtml(leagueId);
-  const seasonHeading = safeSeasonId.length > 0 ? safeSeasonId : "Season";
   const createGamePanel = renderPanel(
     "Create game",
-    "Add a game into this season.",
+    "",
     `${renderValidatedField({
       id: "game-date",
       label: "Game date",
@@ -459,16 +486,17 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
       </select>
     </div>`,
     `<div data-ui="button-row">${renderButton("Create game", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-game",
       "data-testid": "create-game",
-    })}</div>`,
+      "data-management-only": "", disabled: "",
+    })}${renderFormCancel()}</div>`,
     "panel-season-create-game",
   );
 
   const upcomingGamesPanel = renderPanel(
     "Upcoming games",
-    "Scheduled and live games, ordered by kickoff.",
+    "",
     renderTableShell({
       tableTestId: "season-upcoming-games-table",
       bodyId: "season-upcoming-games-body",
@@ -484,7 +512,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
 
   const completedGamesPanel = renderPanel(
     "Completed games",
-    "Finished games, with the most recent first.",
+    "",
     renderTableShell({
       tableTestId: "season-completed-games-table",
       bodyId: "season-completed-games-body",
@@ -509,32 +537,37 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
-        ${renderAccountActions()}
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
+        ${renderManagementNavigation()}
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><a id="season-league-link"${safeLeagueId ? ` href="/leagues/${encodeURIComponent(leagueId)}"` : ""}>League</a></li><li><span id="season-breadcrumb-name" aria-current="page">Season</span></li></ol></nav>
         <div data-ui="hero-title-row">
-          <h1 id="season-title">${seasonHeading}</h1>
-          <small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading…"}</small>
+          <h1 id="season-title">Season</h1>
         </div>
-        <div data-ui="header-actions" role="toolbar" aria-label="Season actions">
+        <details data-ui="reference-details"><summary>Reference ID</summary><small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading…"}</small></details>
+        <div data-ui="header-actions" role="group" aria-label="Season actions">
           ${renderIconButton({
             icon: "calendar-plus",
             label: "Create game",
+            text: "Create game",
+            variant: "primary",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-create-game",
               "data-testid": "toggle-create-game",
               "aria-controls": "season-create-game-region",
               "aria-expanded": "false",
             },
           })}
-          ${renderIconButton({
+          <details data-ui="more-actions" data-management-only hidden><summary>More</summary>${renderIconButton({
             icon: "trash-2",
             label: "Delete season",
+            text: "Delete season",
             variant: "danger",
             attributes: {
               "data-action": "delete-season",
               "data-testid": "delete-season",
+              "data-management-only": "", disabled: "",
             },
-          })}
+          })}</details>
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
@@ -544,7 +577,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
           ${upcomingGamesPanel}
           ${completedGamesPanel}
           <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
-            ${createGamePanel}
+            <form id="create-game-form" data-ui="management-form" aria-label="Create game" novalidate>${createGamePanel}</form>
           </section>
         </section>
       </section>

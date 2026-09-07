@@ -55,7 +55,7 @@ test("home route includes security headers", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Dashboard/);
+  assert.match(response.body, /3FC Home/);
   assert.match(response.body, /data-testid="setup-flow-root"/);
   assert.match(response.body, /data-page="dashboard"/);
 });

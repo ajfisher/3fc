@@ -381,10 +381,10 @@
   }
 
   function renderClientValidatedField({ id, label, type, required = false }) {
-    return `<div data-ui="field">
+    return `<div data-ui="field" data-validated="true">
       <label for="${escapeHtml(id)}">${escapeHtml(label)}</label>
-      <input id="${escapeHtml(id)}" data-ui="input" data-testid="${escapeHtml(id)}" type="${escapeHtml(type)}"${required ? " required" : ""} />
-      <p data-ui="field-hint" id="${escapeHtml(id)}-notice" data-default-kind="empty" data-default-message=""></p>
+      <input id="${escapeHtml(id)}" name="${escapeHtml(id)}" data-ui="input" data-state="default" data-testid="${escapeHtml(id)}" aria-describedby="${escapeHtml(id)}-notice" type="${escapeHtml(type)}"${required ? " required" : ""} />
+      <div data-ui="field-message"><p data-ui="field-hint" id="${escapeHtml(id)}-notice" data-default-kind="empty" data-default-message=""></p></div>
     </div>`;
   }
 
@@ -411,7 +411,7 @@
     return `<span data-ui="icon" data-icon="${escapeHtml(name)}" aria-hidden="true"></span>`;
   }
 
-  function renderClientIconButton({ icon, label, variant = "secondary", attributes = {} }) {
+  function renderClientIconButton({ icon, label, text = "", variant = "secondary", attributes = {} }) {
     const renderedAttributes = Object.entries({
       ...attributes,
       type: "button",
@@ -420,7 +420,7 @@
     })
       .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
       .join(" ");
-    return `<button data-ui="icon-button" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${renderClientIcon(icon)}</button>`;
+    return `<button data-ui="${text ? "button" : "icon-button"}" data-variant="${escapeHtml(variant)}" ${renderedAttributes}>${renderClientIcon(icon)}${text ? `<span>${escapeHtml(text)}</span>` : ""}</button>`;
   }
 
   function renderClientIconLink({ href, icon, label, attributes = {} }) {
@@ -472,6 +472,9 @@
     }
 
     trigger.addEventListener("click", () => {
+      if (trigger.disabled) {
+        return;
+      }
       const open = trigger.getAttribute("aria-expanded") !== "true";
       if (open) {
         closeOtherDisclosures(trigger);
@@ -481,6 +484,166 @@
         options.onOpen();
       }
     });
+    panel.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest('[data-action="cancel-disclosure"]') : null;
+      if (target && panel.contains(target)) {
+        setDisclosureState(trigger, panel, false);
+      }
+    });
+    panel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !panel.hidden) {
+        event.preventDefault();
+        setDisclosureState(trigger, panel, false);
+      }
+    });
+  }
+
+  function setManagementAccess(canManage) {
+    for (const element of document.querySelectorAll("[data-management-only]")) {
+      if (!(element instanceof HTMLElement)) continue;
+      element.hidden = !canManage;
+      if (element instanceof HTMLButtonElement) element.disabled = !canManage;
+    }
+  }
+
+  function attachFormSubmit(formId, button, submit) {
+    const form = document.getElementById(formId);
+    if (!(form instanceof HTMLFormElement)) return;
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!button.disabled) void submit();
+    });
+  }
+
+  function freezeCreationRequest(path, payload, prefix, stablePart) {
+    return Object.freeze({
+      path,
+      init: Object.freeze({
+        method: "POST",
+        headers: Object.freeze({
+          "Content-Type": "application/json",
+          "Idempotency-Key": createIdempotencyKey(prefix, stablePart),
+        }),
+        body: JSON.stringify(payload),
+      }),
+    });
+  }
+
+  async function deleteManagementEntity(path) {
+    const result = await requestJson(path, { method: "DELETE" });
+    if (result.status === 204) return;
+    const error = new Error(result.body?.message || "Deletion could not be confirmed.");
+    if (!result.ok) error.statusCode = result.status;
+    throw error;
+  }
+
+  function trackDeletedRowFocus(button) {
+    const body = button.closest("tbody");
+    const row = button.closest("tr");
+    const ownedFocus = button === document.activeElement || button.contains(document.activeElement);
+    if (!ownedFocus || !(body instanceof HTMLElement) || !(row instanceof HTMLElement)) return () => {};
+    const rows = Array.from(body.querySelectorAll("tr"));
+    const index = rows.indexOf(row);
+    const adjacentHrefs = [...rows.slice(index + 1), ...rows.slice(0, index).reverse()]
+      .map((candidate) => candidate.querySelector("a[href]")?.getAttribute("href"))
+      .filter(Boolean);
+    const heading = body.closest('[data-ui="panel"]')?.querySelector("h2");
+    let userMoved = false;
+    const onFocus = (event) => {
+      if (event.target !== document.body && event.target instanceof Element && !button.contains(event.target)) userMoved = true;
+    };
+    const onPointer = (event) => {
+      if (event.target instanceof Element && !button.contains(event.target)) userMoved = true;
+    };
+    document.addEventListener("focusin", onFocus, true);
+    document.addEventListener("pointerdown", onPointer, true);
+    return (committed) => {
+      document.removeEventListener("focusin", onFocus, true);
+      document.removeEventListener("pointerdown", onPointer, true);
+      if (!committed || userMoved) return;
+      const links = Array.from(body.querySelectorAll("a[href]"));
+      const nextLink = adjacentHrefs.map((href) => links.find((link) => link.getAttribute("href") === href)).find(Boolean)
+        ?? links[Math.min(index, links.length - 1)];
+      if (nextLink instanceof HTMLElement) {
+        nextLink.focus();
+      } else if (heading instanceof HTMLElement) {
+        heading.setAttribute("tabindex", "-1");
+        heading.focus();
+      }
+    };
+  }
+
+  function replaceManagementRows(body, html) {
+    // Capture immediately before the synchronous redraw, not when the request
+    // starts: someone may have moved into a surviving row while it was pending.
+    const focused = document.activeElement;
+    const oldRow = focused instanceof HTMLElement && body.contains(focused) ? focused.closest("tr") : null;
+    const rowHref = oldRow?.querySelector("a[href]")?.getAttribute("href");
+    const controlKind = focused instanceof HTMLAnchorElement ? "link"
+      : focused instanceof HTMLButtonElement ? "button"
+        : focused instanceof HTMLElement && focused.tagName === "SUMMARY" ? "summary" : null;
+    const action = focused instanceof HTMLElement ? focused.getAttribute("data-action") : null;
+    const focusedHref = focused instanceof HTMLAnchorElement ? focused.getAttribute("href") : null;
+    const moreWasOpen = oldRow?.querySelector('details[data-ui="more-actions"]')?.hasAttribute("open") ?? false;
+    body.innerHTML = html;
+    if (!rowHref || !controlKind) return;
+    const row = Array.from(body.querySelectorAll("tr"))
+      .find((candidate) => candidate.querySelector("a[href]")?.getAttribute("href") === rowHref);
+    if (!(row instanceof HTMLElement)) return;
+    const more = row.querySelector('details[data-ui="more-actions"]');
+    if (more instanceof HTMLDetailsElement) more.open = moreWasOpen;
+    const replacement = controlKind === "link"
+      ? Array.from(row.querySelectorAll("a[href]")).find((link) => link.getAttribute("href") === focusedHref)
+      : controlKind === "summary" ? more?.querySelector("summary")
+        : Array.from(row.querySelectorAll("button[data-action]")).find((button) => button.getAttribute("data-action") === action);
+    if (replacement instanceof HTMLElement) replacement.focus({ preventScroll: true });
+  }
+
+  function renderManagementDelete(label, attributes, disabled = false) {
+    const reasonId = `delete-lock-${encodeURIComponent(attributes["data-game-id"] ?? label)}`;
+    return `<details data-ui="more-actions"><summary aria-label="${escapeHtml(`More actions for ${label}`)}">More</summary>${renderClientIconButton({
+      icon: "trash-2", label: disabled ? `Delete unavailable: ${label} is finished` : `Delete ${label}`, text: "Delete",
+      variant: "danger", attributes: { ...attributes, ...(disabled ? { disabled: "", "aria-describedby": reasonId } : {}) },
+    })}${disabled ? `<p data-ui="action-reason" id="${escapeHtml(reasonId)}">Finished games can’t be deleted.</p>` : ""}</details>`;
+  }
+
+  function initializeMoreActions() {
+    document.addEventListener("toggle", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLDetailsElement) || target.getAttribute("data-ui") !== "more-actions" || !target.open) return;
+      for (const other of document.querySelectorAll('details[data-ui="more-actions"][open]')) {
+        if (other !== target) other.removeAttribute("open");
+      }
+    }, true);
+    document.addEventListener("keydown", (event) => {
+      const target = event.target instanceof Element ? event.target.closest('details[data-ui="more-actions"][open]') : null;
+      if (event.key !== "Escape" || !(target instanceof HTMLDetailsElement)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      target.open = false;
+      target.querySelector("summary")?.focus();
+    });
+  }
+
+  function formatSeasonDate(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+    const parsed = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) return "";
+    return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(parsed);
+  }
+
+  function formatSeasonDates(startsOn, endsOn) {
+    const start = formatSeasonDate(startsOn);
+    const end = formatSeasonDate(endsOn);
+    return start && end ? `${start} – ${end}` : start ? `Starts ${start}` : end ? `Ends ${end}` : "Dates not set";
+  }
+
+  function formatSeasonKickoff(isoTimestamp) {
+    const parsed = new Date(isoTimestamp);
+    if (Number.isNaN(parsed.getTime())) return "Kickoff time unavailable";
+    return new Intl.DateTimeFormat("en-AU", {
+      day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit",
+    }).format(parsed);
   }
 
   function renderClientTableShell({
@@ -519,7 +682,7 @@
     const safeSeasonId = escapeHtml(route.seasonId);
     const createGamePanel = renderClientPanel(
       "Create game",
-      "Add a game into this season.",
+      "",
       `${renderClientValidatedField({
         id: "game-date",
         label: "Game date",
@@ -541,15 +704,16 @@
       </div>
       `,
       `<div data-ui="button-row">${renderClientButton("Create game", "primary", {
-        type: "button",
+        type: "submit",
         "data-action": "create-game",
         "data-testid": "create-game",
-      })}</div>`,
+        "data-management-only": "", disabled: "",
+      })}${renderClientButton("Cancel", "ghost", { type: "button", "data-action": "cancel-disclosure" })}</div>`,
       "panel-season-create-game",
     );
     const upcomingGamesPanel = renderClientPanel(
       "Upcoming games",
-      "Scheduled and live games, ordered by kickoff.",
+      "",
       renderClientTableShell({
         tableTestId: "season-upcoming-games-table",
         bodyId: "season-upcoming-games-body",
@@ -564,7 +728,7 @@
     );
     const completedGamesPanel = renderClientPanel(
       "Completed games",
-      "Finished games, with the most recent first.",
+      "",
       renderClientTableShell({
         tableTestId: "season-completed-games-table",
         bodyId: "season-completed-games-body",
@@ -582,35 +746,41 @@
     document.body.setAttribute("data-api-base-url", apiBaseUrl);
     document.body.innerHTML = `<main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
+        <div data-ui="site-header"><nav data-ui="site-nav" aria-label="Primary"><a href="/setup">Home</a></nav>
         <div data-ui="account-actions" id="account-actions" hidden>
           ${renderClientButton("Sign out", "secondary", { type: "button", id: "sign-out", "data-testid": "sign-out", disabled: "" })}
           <p data-ui="status-note" id="sign-out-status" role="status" aria-live="polite" hidden></p>
         </div>
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
-        <div data-ui="hero-title-row">
-          <h1 id="season-title">${safeSeasonId || "Season"}</h1>
-          <small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading..."}</small>
         </div>
-        <div data-ui="header-actions" role="toolbar" aria-label="Season actions">
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><a id="season-league-link" href="/leagues/${encodeURIComponent(route.leagueId)}">League</a></li><li><span id="season-breadcrumb-name" aria-current="page">Season</span></li></ol></nav>
+        <div data-ui="hero-title-row">
+          <h1 id="season-title">Season</h1>
+        </div>
+        <details data-ui="reference-details"><summary>Reference ID</summary><small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading…"}</small></details>
+        <div data-ui="header-actions" role="group" aria-label="Season actions">
           ${renderClientIconButton({
             icon: "calendar-plus",
             label: "Create game",
+            text: "Create game", variant: "primary",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-create-game",
               "data-testid": "toggle-create-game",
               "aria-controls": "season-create-game-region",
               "aria-expanded": "false",
             },
           })}
-          ${renderClientIconButton({
+          <details data-ui="more-actions" data-management-only hidden><summary>More</summary>${renderClientIconButton({
             icon: "trash-2",
             label: "Delete season",
+            text: "Delete season",
             variant: "danger",
             attributes: {
               "data-action": "delete-season",
               "data-testid": "delete-season",
+              "data-management-only": "", disabled: "",
             },
-          })}
+          })}</details>
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
@@ -620,7 +790,7 @@
           ${upcomingGamesPanel}
           ${completedGamesPanel}
           <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
-            ${createGamePanel}
+            <form id="create-game-form" data-ui="management-form" aria-label="Create game" novalidate>${createGamePanel}</form>
           </section>
         </section>
       </section>
@@ -1302,18 +1472,7 @@
     updateDerivedId();
   }
 
-  function dashboardNameFromSession(session) {
-    const email = typeof session?.email === "string" ? session.email.trim() : "";
-    const localPart = email.split("@")[0] ?? "";
-    const token = localPart.split(/[._-]+/).find((part) => part.length > 0) ?? "";
-    if (!token) {
-      return email || "there";
-    }
-
-    return `${token.charAt(0).toUpperCase()}${token.slice(1).toLowerCase()}`;
-  }
-
-  async function initDashboardPage(session) {
+  async function initDashboardPage() {
     const leagueNameInput = document.getElementById("league-name");
     const leagueFriendlyUrlInput = document.getElementById("league-friendly-url");
     const leagueIdDisplay = document.getElementById("league-id-display");
@@ -1344,7 +1503,7 @@
     });
     attachDisclosure(toggleCreateLeagueButton, createLeagueRegion);
     if (welcomeHeading instanceof HTMLElement) {
-      welcomeHeading.textContent = `Welcome ${dashboardNameFromSession(session)}`;
+      welcomeHeading.textContent = "Welcome";
     }
     leagueNameInput.addEventListener("input", () => {
       setFieldMessage("league-name");
@@ -1376,24 +1535,6 @@
         .map((league) => {
           return `<tr>
             <td data-label="League"><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td>
-            <td data-label="Actions">
-              <div data-ui="row-action-buttons">
-                ${renderClientIconLink({
-                  href: `/leagues/${encodeURIComponent(league.leagueId)}`,
-                  icon: "eye",
-                  label: `View ${league.name}`,
-                })}
-                ${renderClientIconButton({
-                  icon: "trash-2",
-                  label: `Delete ${league.name}`,
-                  variant: "danger",
-                  attributes: {
-                    "data-action": "delete-league",
-                    "data-league-id": league.leagueId,
-                  },
-                })}
-              </div>
-            </td>
           </tr>`;
         })
         .join("");
@@ -1408,11 +1549,14 @@
       setStatus("");
     }
 
-    createLeagueButton.addEventListener("click", async () => {
+    let creationPending = false;
+    let creationAttempt = null;
+    attachFormSubmit("create-league-form", createLeagueButton, async () => {
+      if (creationPending) return;
       clearError();
 
       const leagueName = leagueNameInput.value.trim();
-      if (!leagueName) {
+      if (!creationAttempt && !leagueName) {
         setFieldMessage("league-name", "invalid", "League name is required.");
         leagueNameInput.focus();
         return;
@@ -1422,65 +1566,29 @@
 
       const leagueFriendlyUrl = slugify(leagueFriendlyUrlInput.value) || slugify(leagueName);
       const leagueId = leagueFriendlyUrl || `league-${randomSuffix(6)}`;
-
+      if (!creationAttempt) {
+        creationAttempt = { leagueId, request: freezeCreationRequest("/v1/leagues", {
+          leagueId, name: leagueName, slug: leagueFriendlyUrl || null,
+        }, "create-league", leagueId) };
+      }
+      creationPending = true;
       createLeagueButton.disabled = true;
       setStatus("Creating league…", "default");
 
       try {
-        await requestJsonOrThrow("/v1/leagues", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Idempotency-Key": createIdempotencyKey("create-league", leagueId),
-          },
-          body: JSON.stringify({
-            leagueId,
-            name: leagueName,
-            slug: leagueFriendlyUrl || null,
-          }),
-        });
-
-        navigateTo(`/leagues/${encodeURIComponent(leagueId)}`);
+        await requestJsonOrThrow(creationAttempt.request.path, creationAttempt.request.init);
+        navigateTo(`/leagues/${encodeURIComponent(creationAttempt.leagueId)}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not create league.";
-        showError(message);
-        setStatus("League creation failed.", "error");
-      } finally {
+        if (isDefinitiveRequestRejection(error) && !creationAttempt.uncertain) {
+          creationAttempt = null;
+          showError(error.message);
+          setStatus("League could not be created.", "error");
+        } else {
+          creationAttempt.uncertain = true;
+          showError("League creation could not be confirmed. Try again to resend the original details; changes to this draft will not be sent yet.", { includesOutcome: true });
+        }
+        creationPending = false;
         createLeagueButton.disabled = false;
-      }
-    });
-
-    leaguesBody.addEventListener("click", async (event) => {
-      const eventTarget = event.target;
-      const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-league"]') : null;
-      if (!(target instanceof HTMLElement)) {
-        return;
-      }
-
-      const leagueId = target.getAttribute("data-league-id");
-      if (!leagueId) {
-        return;
-      }
-
-      if (!window.confirm(`Delete league ${leagueId}? This only works when the league has no seasons.`)) {
-        return;
-      }
-
-      target.setAttribute("disabled", "true");
-      clearError();
-      setStatus(`Deleting league ${leagueId}…`, "default");
-
-      try {
-        await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}`, {
-          method: "DELETE",
-        });
-        await renderLeagues();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not delete league.";
-        showError(message);
-        setStatus("League deletion failed.", "error");
-      } finally {
-        target.removeAttribute("disabled");
       }
     });
 
@@ -1516,6 +1624,11 @@
     const seasonsBody = document.getElementById("league-seasons-body");
     const seasonsTableWrap = document.querySelector('[data-testid="league-seasons-table"]');
     const seasonsEmpty = document.getElementById("league-seasons-empty");
+    let canManage = false;
+    let leagueName = "League";
+    const confirmedDeletedSeasonIds = new Set();
+    let seasonsRenderVersion = 0;
+    setManagementAccess(false);
 
     if (
       !(seasonNameInput instanceof HTMLInputElement) ||
@@ -1548,7 +1661,7 @@
     attachDisclosure(toggleCreateSeasonButton, createSeasonRegion);
     attachDisclosure(toggleOrganiserInviteButton, organiserInviteRegion, {
       onOpen: () => {
-        if (!shareInviteLoaded && !shareInvitePromise) {
+        if (canManage && !shareInviteLoaded && !shareInvitePromise) {
           shareInvitePromise = ensureShareInvite()
             .then((loaded) => {
               shareInviteLoaded = loaded;
@@ -1651,6 +1764,10 @@
         method: "GET",
       });
 
+      canManage = league.access?.role === "admin";
+      leagueName = league.name;
+      setManagementAccess(canManage);
+
       if (title) {
         title.textContent = league.name;
       }
@@ -1658,15 +1775,23 @@
       if (leagueReference) {
         leagueReference.textContent = `League ID: ${league.leagueId}`;
       }
+      const breadcrumb = document.getElementById("league-breadcrumb-name");
+      if (breadcrumb) breadcrumb.textContent = league.name;
     }
 
     async function renderSeasons() {
+      const renderVersion = ++seasonsRenderVersion;
       const payload = await requestJsonOrThrow(
         `/v1/leagues/${encodeURIComponent(leagueId)}/seasons`,
         { method: "GET" },
-      );
+      ).catch((error) => {
+        if (renderVersion !== seasonsRenderVersion) return null;
+        throw error;
+      });
+      if (renderVersion !== seasonsRenderVersion) return;
 
-      const seasons = Array.isArray(payload?.seasons) ? payload.seasons : [];
+      const seasons = (Array.isArray(payload?.seasons) ? payload.seasons : [])
+        .filter((season) => !confirmedDeletedSeasonIds.has(season.seasonId));
       if (seasons.length === 0) {
         seasonsBody.innerHTML = "";
         if (seasonsTableWrap instanceof HTMLElement) {
@@ -1678,27 +1803,21 @@
         return;
       }
 
-      seasonsBody.innerHTML = seasons
+      replaceManagementRows(seasonsBody, seasons
         .map((season) => {
-          const dateRange = `${season.startsOn ?? "-"} to ${season.endsOn ?? "-"}`;
+          const dateRange = formatSeasonDates(season.startsOn, season.endsOn);
           const seasonPath = buildLeagueSeasonPath(leagueId, season.seasonId);
           return `<tr>
             <td data-label="Season name"><a href="${seasonPath}">${escapeHtml(season.name)}</a></td>
             <td data-label="Dates">${escapeHtml(dateRange)}</td>
             <td data-label="Actions">
-              <div data-ui="row-action-buttons">
-                ${renderClientIconLink({ href: seasonPath, icon: "eye", label: `View ${season.name}` })}
-                ${renderClientIconButton({
-                  icon: "trash-2",
-                  label: `Delete ${season.name}`,
-                  variant: "danger",
-                  attributes: { "data-action": "delete-season", "data-season-id": season.seasonId },
-                })}
-              </div>
+              ${canManage ? renderManagementDelete(season.name, {
+                "data-action": "delete-season", "data-season-id": season.seasonId, "data-season-name": season.name,
+              }) : ""}
             </td>
           </tr>`;
         })
-        .join("");
+        .join(""));
 
       if (seasonsTableWrap instanceof HTMLElement) {
         seasonsTableWrap.hidden = false;
@@ -1708,11 +1827,14 @@
       }
     }
 
-    createSeasonButton.addEventListener("click", async () => {
+    let creationPending = false;
+    let creationAttempt = null;
+    attachFormSubmit("create-season-form", createSeasonButton, async () => {
+      if (!canManage || creationPending) return;
       clearError();
 
       const seasonName = seasonNameInput.value.trim();
-      if (!seasonName) {
+      if (!creationAttempt && !seasonName) {
         setFieldMessage("season-name", "invalid", "Season name is required.");
         seasonNameInput.focus();
         return;
@@ -1722,37 +1844,39 @@
 
       const seasonFriendlyUrl = slugify(seasonFriendlyUrlInput.value) || slugify(seasonName);
       const seasonId = seasonFriendlyUrl || `season-${randomSuffix(6)}`;
-
+      if (!creationAttempt) {
+        creationAttempt = { seasonId, request: freezeCreationRequest(
+          `/v1/leagues/${encodeURIComponent(leagueId)}/seasons`, {
+            seasonId, name: seasonName, slug: seasonFriendlyUrl || null,
+            startsOn: (document.getElementById("season-start")?.value ?? "") || null,
+            endsOn: (document.getElementById("season-end")?.value ?? "") || null,
+          }, "create-season", `${leagueId}-${seasonId}`,
+        ) };
+      }
+      creationPending = true;
       createSeasonButton.disabled = true;
       setStatus("Creating season…", "default");
 
       try {
-        await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}/seasons`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Idempotency-Key": createIdempotencyKey("create-season", `${leagueId}-${seasonId}`),
-          },
-          body: JSON.stringify({
-            seasonId,
-            name: seasonName,
-            slug: seasonFriendlyUrl || null,
-            startsOn: (document.getElementById("season-start")?.value ?? "") || null,
-            endsOn: (document.getElementById("season-end")?.value ?? "") || null,
-          }),
-        });
-
-        navigateTo(buildLeagueSeasonPath(leagueId, seasonId));
+        await requestJsonOrThrow(creationAttempt.request.path, creationAttempt.request.init);
+        navigateTo(buildLeagueSeasonPath(leagueId, creationAttempt.seasonId));
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not create season.";
-        showError(message);
-        setStatus("Season creation failed.", "error");
-      } finally {
+        if (isDefinitiveRequestRejection(error) && !creationAttempt.uncertain) {
+          creationAttempt = null;
+          showError(error.message);
+          setStatus("Season could not be created.", "error");
+        } else {
+          creationAttempt.uncertain = true;
+          showError("Season creation could not be confirmed. Try again to resend the original details; changes to this draft will not be sent yet.", { includesOutcome: true });
+        }
+        creationPending = false;
         createSeasonButton.disabled = false;
       }
     });
 
-    createOrganiserInviteButton.addEventListener("click", async () => {
+    let invitePending = false;
+    attachFormSubmit("organiser-invite-form", createOrganiserInviteButton, async () => {
+      if (!canManage || invitePending) return;
       clearError();
 
       const rawEmail = organiserInviteEmailInput.value.trim();
@@ -1768,6 +1892,7 @@
       }
 
       setFieldMessage("organiser-invite-email");
+      invitePending = true;
       createOrganiserInviteButton.disabled = true;
       clearError();
       setStatus("");
@@ -1811,6 +1936,7 @@
         const message = error instanceof Error ? error.message : "Could not create organiser invite.";
         setLocalStatus(organiserInviteEmailStatus, `Invite failed: ${message}`, "error");
       } finally {
+        invitePending = false;
         createOrganiserInviteButton.disabled = false;
       }
     });
@@ -1818,7 +1944,7 @@
     seasonsBody.addEventListener("click", async (event) => {
       const eventTarget = event.target;
       const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-season"]') : null;
-      if (!(target instanceof HTMLElement)) {
+      if (!(target instanceof HTMLButtonElement) || !canManage || target.disabled) {
         return;
       }
 
@@ -1827,32 +1953,42 @@
         return;
       }
 
-      if (!window.confirm(`Delete season ${seasonId}? This only works when it has no games.`)) {
+      const name = target.getAttribute("data-season-name") || "this season";
+      if (!window.confirm(`Delete ${name}? This only works when it has no games.`)) {
         return;
       }
 
+      const finishFocus = trackDeletedRowFocus(target);
+      let committed = false;
       target.setAttribute("disabled", "true");
       clearError();
       setStatus(`Deleting season ${seasonId}…`, "default");
 
       try {
-        await requestJsonOrThrow(`/v1/seasons/${encodeURIComponent(seasonId)}`, {
-          method: "DELETE",
-        });
-        await renderSeasons();
-        setStatus(`Season ${seasonId} deleted.`, "success");
+        await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`);
+        committed = true;
+        confirmedDeletedSeasonIds.add(seasonId);
+        target.closest("tr")?.remove();
+        try {
+          await renderSeasons();
+          setStatus("Season deleted.", "success");
+        } catch {
+          showError("Season deleted. The list could not be refreshed. Reload this page to see the latest seasons.", { includesOutcome: true });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not delete season.";
         showError(message);
-        setStatus("Season deletion failed.", "error");
+        setStatus(isDefinitiveRequestRejection(error) ? "Season could not be deleted." : "Season deletion could not be confirmed. Reload the page before trying again.", "error");
       } finally {
         target.removeAttribute("disabled");
+        finishFocus(committed);
       }
     });
 
     if (deleteLeagueButton instanceof HTMLButtonElement) {
       deleteLeagueButton.addEventListener("click", async () => {
-        if (!window.confirm(`Delete league ${leagueId}? This only works when the league has no seasons.`)) {
+        if (!canManage || deleteLeagueButton.disabled) return;
+        if (!window.confirm(`Delete ${leagueName}? This only works when the league has no seasons.`)) {
           return;
         }
 
@@ -1861,14 +1997,12 @@
         setStatus(`Deleting league ${leagueId}…`, "default");
 
         try {
-          await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}`, {
-            method: "DELETE",
-          });
+          await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}`);
           navigateTo("/setup");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete league.";
           showError(message);
-          setStatus("League deletion failed.", "error");
+          setStatus(isDefinitiveRequestRejection(error) ? "League could not be deleted." : "League deletion could not be confirmed. Reload the page before trying again.", "error");
         } finally {
           deleteLeagueButton.disabled = false;
         }
@@ -1921,7 +2055,12 @@
     }
 
     let leagueId = routeLeagueId ?? "";
-    let gameIdNonce = randomSuffix(4);
+    let canManage = false;
+    let seasonName = "this season";
+    const confirmedDeletedGameIds = new Set();
+    let gamesRenderVersion = 0;
+    setManagementAccess(false);
+    const gameIdNonce = randomSuffix(4);
     let derivedGameId = "";
 
     attachDisclosure(toggleCreateGameButton, createGameRegion);
@@ -1971,6 +2110,7 @@
       );
 
       leagueId = season.leagueId;
+      seasonName = season.name;
       if (seasonTitle) {
         seasonTitle.textContent = season.name;
       }
@@ -1978,13 +2118,31 @@
       if (seasonReference) {
         seasonReference.textContent = `Season ID: ${season.seasonId}`;
       }
+      const breadcrumb = document.getElementById("season-breadcrumb-name");
+      if (breadcrumb) breadcrumb.textContent = season.name;
 
       if (seasonLeagueLink instanceof HTMLAnchorElement) {
         seasonLeagueLink.href = `/leagues/${encodeURIComponent(season.leagueId)}`;
       }
+      // A season does not carry an ACL. One bounded parent read supplies both
+      // its real breadcrumb and authority, without an admin-only search.
+      try {
+        const league = await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(leagueId)}`, { method: "GET" });
+        if (league.leagueId === leagueId) {
+          if (seasonLeagueLink instanceof HTMLAnchorElement) seasonLeagueLink.textContent = league.name;
+          canManage = league.access?.role === "admin";
+        }
+      } catch {
+        // Existing season/game reads can still be useful. Unknown authority
+        // never enables management, even if #create-game was requested.
+        canManage = false;
+        showError("League details couldn’t be loaded. Reload this page to try again.", { includesOutcome: true });
+      }
+      setManagementAccess(canManage);
     }
 
     async function renderGames() {
+      const renderVersion = ++gamesRenderVersion;
       const gamesPath = leagueId
         ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}/games`
         : `/v1/seasons/${encodeURIComponent(seasonId)}/games`;
@@ -1993,10 +2151,14 @@
         gamesPath,
         leagueId ? legacyGamesPath : null,
         { method: "GET" },
-      );
+      ).catch((error) => {
+        if (renderVersion !== gamesRenderVersion) return null;
+        throw error;
+      });
+      if (renderVersion !== gamesRenderVersion) return;
 
       const games = (Array.isArray(payload?.games) ? payload.games : []).filter(
-        (game) => !leagueId || (game.leagueId === leagueId && game.seasonId === seasonId),
+        (game) => (!leagueId || (game.leagueId === leagueId && game.seasonId === seasonId)) && !confirmedDeletedGameIds.has(game.gameId),
       );
       const kickoffTime = (game) => {
         const parsed = Date.parse(game.gameStartTs);
@@ -2019,35 +2181,23 @@
           const statusIcon = status === "live" ? "activity" : status === "finished" ? "circle-check" : "calendar-clock";
           const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
           const gamePath = `/games/${encodeURIComponent(game.gameId)}`;
-          const kickoffLabel = formatLocalTimestamp(game.gameStartTs);
-          const deleteAction = status === "finished"
-            ? renderClientIconButton({
-              icon: "trash-2",
-              label: `Delete game unavailable: game at ${kickoffLabel} is finished`,
-              variant: "danger",
-              attributes: { disabled: "" },
-            })
-            : renderClientIconButton({
-              icon: "trash-2",
-              label: `Delete game at ${kickoffLabel}`,
-              variant: "danger",
-              attributes: { "data-action": "delete-game", "data-game-id": game.gameId },
-            });
+          const kickoffLabel = formatSeasonKickoff(game.gameStartTs);
+          const deleteAction = canManage ? renderManagementDelete(`game at ${kickoffLabel}`,
+            status === "finished" ? { "data-game-id": game.gameId } : { "data-action": "delete-game", "data-game-id": game.gameId, "data-kickoff-label": kickoffLabel },
+            status === "finished",
+          ) : "";
           return `<tr>
           <td data-label="Date"><a href="${gamePath}">${escapeHtml(kickoffLabel)}</a></td>
           <td data-label="Status"><span data-ui="status-chip" data-status="${escapeHtml(status)}">${renderClientIcon(statusIcon)}<span>${escapeHtml(statusLabel)}</span></span></td>
           <td data-label="Actions">
-            <div data-ui="row-action-buttons">
-              ${renderClientIconLink({ href: gamePath, icon: "eye", label: `View game at ${kickoffLabel}` })}
-              ${deleteAction}
-            </div>
+            ${deleteAction}
           </td>
         </tr>`;
         })
         .join("");
 
       const renderPanelGames = (panelGames, body, tableWrap, emptyState) => {
-        body.innerHTML = renderRows(panelGames);
+        replaceManagementRows(body, renderRows(panelGames));
         if (tableWrap instanceof HTMLElement) {
           tableWrap.hidden = panelGames.length === 0;
         }
@@ -2060,12 +2210,16 @@
       renderPanelGames(completedGames, completedGamesBody, completedGamesTableWrap, completedGamesEmpty);
     }
 
-    createGameButton.addEventListener("click", async () => {
+    let creationPending = false;
+    let creationAttempt = null;
+    const confirmedSessions = new Set();
+    attachFormSubmit("create-game-form", createGameButton, async () => {
+      if (!canManage || !leagueId || creationPending) return;
       clearError();
 
       const gameDate = gameDateInput.value.trim();
       const gameKickoff = gameKickoffInput.value.trim();
-      if (!gameDate) {
+      if (!creationAttempt && !gameDate) {
         setFieldMessage("game-date", "invalid", "Game date is required.");
         gameDateInput.focus();
         return;
@@ -2073,7 +2227,7 @@
       setFieldMessage("game-date");
 
       const kickoffIso = toIsoTimestamp(gameKickoff);
-      if (!kickoffIso) {
+      if (!creationAttempt && !kickoffIso) {
         setFieldMessage("game-kickoff", "invalid", "Kickoff time must be valid.");
         gameKickoffInput.focus();
         return;
@@ -2082,49 +2236,45 @@
 
       const sessionId = gameDate.replaceAll("-", "");
       const gameId = derivedGameId || `game-${sessionId}-${randomSuffix(6)}`;
-
+      if (!creationAttempt) {
+        const seasonPath = `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`;
+        creationAttempt = {
+          gameId, sessionConfirmed: confirmedSessions.has(sessionId), sessionId, uncertain: false,
+          session: freezeCreationRequest(`${seasonPath}/sessions`, {
+            sessionId, sessionDate: gameDate,
+          }, "create-session", `${leagueId}-${seasonId}-${sessionId}`),
+          game: freezeCreationRequest(`${seasonPath}/sessions/${encodeURIComponent(sessionId)}/games`, {
+            gameId, gameStartTs: kickoffIso, status: "scheduled",
+            thirdLengthMinutes: parseThirdLengthMinutes(gameThirdLengthInput.value),
+          }, "create-game", `${leagueId}-${seasonId}-${sessionId}-${gameId}`),
+        };
+      }
+      creationPending = true;
       createGameButton.disabled = true;
       setStatus("Creating game…", "default");
 
       try {
-        const createSessionPath = leagueId
-          ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}/sessions`
-          : `/v1/seasons/${encodeURIComponent(seasonId)}/sessions`;
-        await requestJsonOrThrow(createSessionPath, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Idempotency-Key": createIdempotencyKey("create-session", `${leagueId}-${seasonId}-${sessionId}`),
-          },
-          body: JSON.stringify({
-            sessionId,
-            sessionDate: gameDate,
-          }),
-        });
-
-        const createGamePath = leagueId
-          ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}/sessions/${encodeURIComponent(sessionId)}/games`
-          : `/v1/sessions/${encodeURIComponent(sessionId)}/games`;
-        await requestJsonOrThrow(createGamePath, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Idempotency-Key": createIdempotencyKey("create-game", `${sessionId}-${gameId}`),
-          },
-          body: JSON.stringify({
-            gameId,
-            gameStartTs: kickoffIso,
-            status: "scheduled",
-            thirdLengthMinutes: parseThirdLengthMinutes(gameThirdLengthInput.value),
-          }),
-        });
-
-        navigateTo(`/games/${encodeURIComponent(gameId)}`);
+        if (!creationAttempt.sessionConfirmed) {
+          await requestJsonOrThrow(creationAttempt.session.path, creationAttempt.session.init);
+          creationAttempt.sessionConfirmed = true;
+          confirmedSessions.add(creationAttempt.sessionId);
+          creationAttempt.uncertain = false;
+        }
+        await requestJsonOrThrow(creationAttempt.game.path, creationAttempt.game.init);
+        navigateTo(`/games/${encodeURIComponent(creationAttempt.gameId)}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not create game.";
-        showError(message);
-        setStatus("Game creation failed.", "error");
-      } finally {
+        // Existing game creation may commit before a later team-initialisation
+        // conflict returns 409. That response cannot release the game attempt.
+        if (isDefinitiveRequestRejection(error) && !creationAttempt.uncertain &&
+            !(creationAttempt.sessionConfirmed && error.statusCode === 409)) {
+          creationAttempt = null;
+          showError(error.message);
+          setStatus("Game could not be created.", "error");
+        } else {
+          creationAttempt.uncertain = true;
+          showError("Game creation could not be confirmed. Try again to resend the original details; changes to this draft will not be sent yet.", { includesOutcome: true });
+        }
+        creationPending = false;
         createGameButton.disabled = false;
       }
     });
@@ -2132,7 +2282,7 @@
     const handleGameListClick = async (event) => {
       const eventTarget = event.target;
       const target = eventTarget instanceof Element ? eventTarget.closest('[data-action="delete-game"]') : null;
-      if (!(target instanceof HTMLElement)) {
+      if (!(target instanceof HTMLButtonElement) || !canManage || target.disabled) {
         return;
       }
 
@@ -2141,26 +2291,34 @@
         return;
       }
 
-      if (!window.confirm(`Delete game ${gameId}?`)) {
+      if (!window.confirm(`Delete game at ${target.getAttribute("data-kickoff-label") || "this kickoff time"}?`)) {
         return;
       }
 
+      const finishFocus = trackDeletedRowFocus(target);
+      let committed = false;
       target.setAttribute("disabled", "true");
       clearError();
       setStatus(`Deleting game ${gameId}…`, "default");
 
       try {
-        await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
-          method: "DELETE",
-        });
-        await renderGames();
-        setStatus(`Game ${gameId} deleted.`, "success");
+        await deleteManagementEntity(`/v1/games/${encodeURIComponent(gameId)}`);
+        committed = true;
+        confirmedDeletedGameIds.add(gameId);
+        target.closest("tr")?.remove();
+        try {
+          await renderGames();
+          setStatus("Game deleted.", "success");
+        } catch {
+          showError("Game deleted. The list could not be refreshed. Reload this page to see the latest games.", { includesOutcome: true });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not delete game.";
         showError(message);
-        setStatus("Game deletion failed.", "error");
+        setStatus(isDefinitiveRequestRejection(error) ? "Game could not be deleted." : "Game deletion could not be confirmed. Reload the page before trying again.", "error");
       } finally {
         target.removeAttribute("disabled");
+        finishFocus(committed);
       }
     };
     upcomingGamesBody.addEventListener("click", handleGameListClick);
@@ -2168,7 +2326,8 @@
 
     if (deleteSeasonButton instanceof HTMLButtonElement) {
       deleteSeasonButton.addEventListener("click", async () => {
-        if (!window.confirm(`Delete season ${seasonId}? This only works when no games remain.`)) {
+        if (!canManage || !leagueId || deleteSeasonButton.disabled) return;
+        if (!window.confirm(`Delete ${seasonName}? This only works when no games remain.`)) {
           return;
         }
 
@@ -2177,17 +2336,13 @@
         setStatus(`Deleting season ${seasonId}…`, "default");
 
         try {
-          const deleteSeasonPath = leagueId
-            ? `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`
-            : `/v1/seasons/${encodeURIComponent(seasonId)}`;
-          await requestJsonOrThrow(deleteSeasonPath, {
-            method: "DELETE",
-          });
+          const deleteSeasonPath = `/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`;
+          await deleteManagementEntity(deleteSeasonPath);
           navigateTo(`/leagues/${encodeURIComponent(leagueId)}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete season.";
           showError(message);
-          setStatus("Season deletion failed.", "error");
+          setStatus(isDefinitiveRequestRejection(error) ? "Season could not be deleted." : "Season deletion could not be confirmed. Reload the page before trying again.", "error");
         } finally {
           deleteSeasonButton.disabled = false;
         }
@@ -2196,7 +2351,7 @@
 
     await loadSeason();
     await renderGames();
-    if (window.location.hash === "#create-game") {
+    if (canManage && window.location.hash === "#create-game") {
       setDisclosureState(toggleCreateGameButton, createGameRegion, true);
     }
     setStatus("");
@@ -5530,6 +5685,7 @@
   async function initialize() {
     mountSeasonShellForNestedLeagueRoute();
     initializeSignOut();
+    initializeMoreActions();
     clearError();
 
     if (page === "join") {

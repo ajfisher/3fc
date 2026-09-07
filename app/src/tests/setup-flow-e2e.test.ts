@@ -1845,6 +1845,12 @@ function expectedLocalTimestamp(isoTimestamp: string): string {
   return local.toISOString().slice(0, 16).replace("T", " ");
 }
 
+function expectedSeasonKickoff(isoTimestamp: string): string {
+  return new Intl.DateTimeFormat("en-AU", {
+    day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(new Date(isoTimestamp));
+}
+
 function expectedLocalDateHeading(isoTimestamp: string): string {
   return new Intl.DateTimeFormat(undefined, {
     weekday: "long",
@@ -2468,7 +2474,7 @@ test("sign out permits a different account to sign in without redirecting into t
       scriptFile: "setup-flow.js", apiState, fetch: accountScopedFetch,
     });
     openedPages.push(nextDashboard);
-    assert.equal(nextDashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome Next");
+    assert.equal(nextDashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome");
     assert.equal(nextDashboard.document.querySelectorAll("#dashboard-leagues-body tr").length, 0);
     assert.doesNotMatch(nextDashboard.document.body.textContent ?? "", /previous@example\.com|Three Sided Football Club/);
     const previousLeague = await accountScopedFetch("http://localhost:3001/v1/leagues/three-sided-football-club", { method: "GET" });
@@ -3212,7 +3218,7 @@ test("setup flow shows inline validation for blank required fields", async () =>
   assert(createLeagueToggle instanceof dashboard.window.HTMLButtonElement);
   assert(createLeagueRegion instanceof dashboard.window.HTMLElement);
   assert(leagueNameNotice instanceof dashboard.window.HTMLElement);
-  assert.equal(dashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome Organizer");
+  assert.equal(dashboard.document.getElementById("dashboard-welcome")?.textContent, "Welcome");
   assert.equal(createLeagueToggle.getAttribute("aria-expanded"), "true");
   assert.equal(createLeagueRegion.hidden, false);
   assert.notEqual(dashboard.document.activeElement?.id, "league-name");
@@ -3289,7 +3295,7 @@ test("setup flow shows inline validation for blank required fields", async () =>
   assert.equal(gameKickoffNotice.textContent, "Kickoff time must be valid.");
 });
 
-test("populated dashboard keeps league creation disclosed on demand and handles icon-child actions", async () => {
+test("populated dashboard keeps leagues view-only with creation below the list", async () => {
   const apiState = createMockApiState();
   apiState.session = {
     sessionId: "session-1",
@@ -3319,17 +3325,16 @@ test("populated dashboard keeps league creation disclosed on demand and handles 
   const region = page.document.getElementById("dashboard-create-league-region");
   assert(toggle instanceof page.window.HTMLButtonElement);
   assert(region instanceof page.window.HTMLElement);
-  assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome Aj");
+  assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome");
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(region.hidden, true);
   const leagueRow = page.document.querySelector("#dashboard-leagues-body tr");
   assert(leagueRow instanceof page.window.HTMLTableRowElement);
-  assert.equal(leagueRow.children.length, 2);
+  assert.equal(leagueRow.children.length, 1);
   assert.equal(leagueRow.children[0]?.getAttribute("data-label"), "League");
-  assert.equal(leagueRow.children[1]?.getAttribute("data-label"), "Actions");
   assert(leagueRow.children[0]?.querySelector('a[href="/leagues/autumn-league"]'));
-  assert(leagueRow.children[1]?.querySelector('[aria-label="View Autumn League"]'));
-  assert(leagueRow.children[1]?.querySelector('[aria-label="Delete Autumn League"]'));
+  assert.equal(leagueRow.querySelectorAll("a").length, 1);
+  assert.equal(leagueRow.querySelector("button"), null);
   assert.doesNotMatch(leagueRow.textContent ?? "", /autumn-league|friendly/i);
 
   dispatchClick(toggle);
@@ -3337,23 +3342,8 @@ test("populated dashboard keeps league creation disclosed on demand and handles 
   assert.equal(region.hidden, false);
   assert.equal(page.document.activeElement?.id, "league-name");
 
-  let confirmations = 0;
-  Object.defineProperty(page.window, "confirm", {
-    value: () => {
-      confirmations += 1;
-      return true;
-    },
-    configurable: true,
-  });
-  const deleteIcon = page.document.querySelector(
-    '[data-action="delete-league"][data-league-id="autumn-league"] [data-icon="trash-2"]',
-  );
-  assert(deleteIcon instanceof page.window.HTMLElement);
-  dispatchClick(deleteIcon);
-  await flushAsync();
-
-  assert.equal(confirmations, 1);
-  assert.equal(apiState.leagues.has("autumn-league"), false);
+  assert.equal(page.document.querySelector('[data-action="delete-league"]'), null);
+  assert.equal(apiState.leagues.has("autumn-league"), true);
 });
 
 test("empty dashboard does not reopen creation after a slow response overrides user choice", async () => {
@@ -3420,7 +3410,7 @@ test("empty dashboard does not reopen creation after a slow response overrides u
   assert.equal(activityStatus.textContent, "");
 });
 
-test("dashboard greeting falls back to the full email when no local-part token exists", async () => {
+test("dashboard uses a neutral greeting instead of guessing a name from email", async () => {
   const apiState = createMockApiState();
   apiState.session = {
     sessionId: "session-1",
@@ -3437,7 +3427,262 @@ test("dashboard greeting falls back to the full email when no local-part token e
     apiState,
   });
 
-  assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome ...@example.com");
+  assert.equal(page.document.getElementById("dashboard-welcome")?.textContent, "Welcome");
+  assert.doesNotMatch(page.document.body.textContent ?? "", /\.\.\.@example.com/);
+});
+
+test("organiser shell dashboard makes no per-league authority or summary requests", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const requests: string[] = [];
+  const baseFetch = createMockFetch(apiState);
+  const page = await bootPage({
+    html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      requests.push(`${init?.method ?? "GET"} ${new URL(String(input)).pathname}`);
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    assert.deepEqual(requests, ["GET /v1/auth/session", "GET /v1/leagues"]);
+    assert.equal(page.document.querySelector("#dashboard-leagues-body button"), null);
+    assert.equal(page.document.querySelectorAll('#dashboard-leagues-body a[href^="/leagues/"]').length, 1);
+    const list = page.document.getElementById("dashboard-leagues-body");
+    const create = page.document.querySelector('[data-action="toggle-create-league"]');
+    assert(list && create);
+    assert(list.compareDocumentPosition(create) & page.window.Node.DOCUMENT_POSITION_FOLLOWING);
+  } finally { page.dom.window.close(); }
+});
+
+for (const kind of ["league", "season"] as const) {
+  test(`organiser shell ${kind} creation latches native submit and SVG clicks and preserves uncertain attempts`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+    const baseFetch = createMockFetch(apiState);
+    const route = kind === "league" ? "/v1/leagues" : "/v1/leagues/three-sided-football-club/seasons";
+    const attempts: Array<{ path: string; body: string; key: string | null }> = [];
+    let loseResponse: (() => void) | undefined;
+    let committedBody: unknown;
+    const page = await bootPage({
+      html: kind === "league" ? renderSetupHomePage("http://localhost:3001") : renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+      url: `http://localhost:3000/${kind === "league" ? "setup" : "leagues/three-sided-football-club"}`,
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => {
+        if (new URL(String(input)).pathname !== route || init?.method !== "POST") return baseFetch(input, init);
+        attempts.push({ path: route, body: String(init.body), key: new Headers(init.headers).get("Idempotency-Key") });
+        if (attempts.length === 1) {
+          const response = await baseFetch(input, init);
+          committedBody = await response.json();
+          return new Promise<Response>((_resolve, reject) => { loseResponse = () => reject(new Error("lost response")); });
+        }
+        return createJsonResponse(201, committedBody);
+      },
+    });
+    try {
+      const form = page.document.getElementById(`create-${kind}-form`);
+      const name = page.document.getElementById(`${kind}-name`);
+      const submit = page.document.querySelector(`[data-action="create-${kind}"]`);
+      const toggle = page.document.querySelector(`[data-action="toggle-create-${kind}"]`);
+      assert(form instanceof page.window.HTMLFormElement);
+      assert(name instanceof page.window.HTMLInputElement);
+      assert(submit instanceof page.window.HTMLButtonElement);
+      assert(toggle instanceof page.window.HTMLButtonElement);
+      dispatchClick(toggle);
+      name.value = "Original name";
+      name.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      assert.equal(submit.type, "submit");
+      form.requestSubmit(); // Native form activation, also used by Enter in the browser.
+      submit.innerHTML = '<svg aria-hidden="true"><path d="M0 0h1"/></svg>';
+      const path = submit.querySelector("path");
+      assert(path);
+      path.dispatchEvent(new page.window.MouseEvent("click", { bubbles: true }));
+      form.requestSubmit();
+      await flushAsync();
+      assert.equal(attempts.length, 1);
+      assert.equal(submit.disabled, true);
+      assert(loseResponse);
+      name.value = "Edited while pending";
+      name.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      loseResponse();
+      await flushAsync();
+      assert.equal(submit.disabled, false);
+      assert.equal(name.value, "Edited while pending");
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed.*original details/);
+      form.requestSubmit();
+      await flushAsync();
+      assert.equal(attempts.length, 2);
+      assert.deepEqual(attempts[1], attempts[0]);
+      assert(attempts[0].key);
+      assert.equal(JSON.parse(attempts[0].body).name, "Original name");
+      assert.equal(page.navigations.length, 1);
+      assert.match(page.navigations[0].url, /original-name$/);
+      assert.equal(submit.disabled, true, "confirmed navigation retains the latch");
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const surface of ["league", "season"] as const) {
+  for (const role of ["admin", "scorekeeper", "viewer", "missing", "claimed-player", "cross-league-admin", "unavailable"] as const) {
+    test(`organiser shell ${surface} authority is fail-closed for ${role}`, async () => {
+      const apiState = createMockApiState();
+      seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: role === "admin" || role === "scorekeeper" ? role : "viewer" });
+      const baseFetch = createMockFetch(apiState);
+      const leaguePath = "/v1/leagues/three-sided-football-club";
+      let parentReads = 0;
+      let writes = 0;
+      if (role === "claimed-player") {
+        const player = apiState.players.get("player-ari");
+        assert(player && apiState.session);
+        player.claimedByUserId = apiState.session.email;
+      }
+      if (role === "cross-league-admin") {
+        assert(apiState.session);
+        grantMockLeagueAccess(apiState, "another-league", apiState.session.email, "admin");
+      }
+      const page = await bootPage({
+        html: surface === "league" ? renderLeaguePage("http://localhost:3001", "three-sided-football-club") : renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+        url: `http://localhost:3000/leagues/three-sided-football-club${surface === "season" ? "/seasons/autumn-cup#create-game" : ""}`,
+        scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          const path = new URL(String(input)).pathname;
+          if (init?.method === "POST" || init?.method === "DELETE") writes += 1;
+          if (path === leaguePath && (init?.method ?? "GET") === "GET") {
+            parentReads += 1;
+            if (role === "unavailable") return createJsonResponse(503, { error: "unavailable" });
+            if (role === "missing" || role === "claimed-player") return createJsonResponse(200, apiState.leagues.get("three-sided-football-club"));
+          }
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        assert.equal(parentReads, 1);
+        const toggle = page.document.querySelector(`[data-action="toggle-create-${surface === "league" ? "season" : "game"}"]`);
+        assert(toggle instanceof page.window.HTMLButtonElement);
+        assert.equal(toggle.disabled, role !== "admin");
+        assert.equal(toggle.hidden, role !== "admin");
+        assert.equal(page.document.querySelectorAll("tbody [data-action^='delete-']").length, role === "admin" ? 1 : 0);
+        if (role !== "admin") {
+          dispatchClick(toggle);
+          for (const form of page.document.querySelectorAll<HTMLFormElement>("form[data-ui='management-form']")) dispatchSubmit(form);
+          assert.equal(writes, 0);
+          assert.equal(toggle.getAttribute("aria-expanded"), "false");
+          assert.equal(page.document.getElementById(surface === "league" ? "league-create-season-region" : "season-create-game-region")?.hidden, true);
+        }
+        if (surface === "season") {
+          assert(page.document.querySelector('a[href="/games/shell-fixture"]'), "parent metadata failure must not prevent permitted game reads");
+          assert.equal(page.document.getElementById("season-breadcrumb-name")?.textContent, "Autumn Cup");
+          if (role !== "unavailable") assert.equal(page.document.getElementById("season-league-link")?.textContent, "Three Sided Football Club");
+          if (role === "unavailable") {
+            const error = page.document.getElementById("setup-error");
+            assert(error instanceof page.window.HTMLElement);
+            assert.equal(error.hidden, false);
+            assert.equal(error.textContent, "League details couldn’t be loaded. Reload this page to try again.");
+          }
+        }
+      } finally { page.dom.window.close(); }
+    });
+  }
+}
+
+test("organiser shell keeps authority hidden while the parent request is pending", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  let finish: (() => void) | undefined;
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup#create-game",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname === "/v1/leagues/three-sided-football-club") {
+        return new Promise<Response>((resolve) => { finish = () => { void baseFetch(input, init).then(resolve); }; });
+      }
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-create-game"]');
+    assert(toggle instanceof page.window.HTMLButtonElement);
+    assert.equal(toggle.hidden, true);
+    assert.equal(toggle.disabled, true);
+    assert.equal(page.document.getElementById("season-create-game-region")?.hidden, true);
+    assert(finish);
+    finish();
+    await flushAsync();
+    assert.equal(toggle.hidden, false);
+    assert.equal(toggle.disabled, false);
+    assert.equal(page.document.getElementById("season-create-game-region")?.hidden, false);
+  } finally { page.dom.window.close(); }
+});
+
+test("organiser shell disclosure cancellation preserves drafts, nested options and focus", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const page = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club", scriptFile: "setup-flow.js", apiState,
+  });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-create-season"]');
+    const region = page.document.getElementById("league-create-season-region");
+    const name = page.document.getElementById("season-name");
+    const cancel = region?.querySelector('[data-action="cancel-disclosure"]');
+    const options = region?.querySelector("details");
+    assert(toggle instanceof page.window.HTMLButtonElement && region instanceof page.window.HTMLElement);
+    assert(name instanceof page.window.HTMLInputElement && cancel instanceof page.window.HTMLButtonElement);
+    assert(options instanceof page.window.HTMLDetailsElement);
+    dispatchClick(toggle);
+    name.value = "An unfinished season";
+    options.open = true;
+    options.dispatchEvent(new page.window.Event("toggle"));
+    assert.equal(region.hidden, false);
+    cancel.focus();
+    dispatchClick(cancel);
+    assert.equal(region.hidden, true);
+    assert.equal(page.document.activeElement, toggle);
+    dispatchClick(toggle);
+    assert.equal(name.value, "An unfinished season");
+    assert.equal(options.open, true);
+    name.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(region.hidden, true);
+    assert.equal(page.document.activeElement, toggle);
+    const more = page.document.querySelector('details[data-ui="more-actions"]');
+    assert(more instanceof page.window.HTMLDetailsElement);
+    more.open = true;
+    const action = more.querySelector("button");
+    assert(action instanceof page.window.HTMLButtonElement);
+    action.focus();
+    action.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(more.open, false);
+    assert.equal(page.document.activeElement, more.querySelector("summary"));
+  } finally { page.dom.window.close(); }
+});
+
+test("organiser shell displays date-only ranges without timezone shifts or missing-date filler", async () => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "viewer" });
+  const season = apiState.seasons.get("autumn-cup");
+  assert(season);
+  apiState.seasons.clear();
+  for (const [id, startsOn, endsOn] of [
+    ["both", "2026-03-01", "2026-08-31"], ["start", "2026-03-01", null],
+    ["end", null, "2026-08-31"], ["none", null, null],
+  ]) apiState.seasons.set(String(id), { ...season, seasonId: String(id), name: String(id), startsOn, endsOn });
+  let page: Awaited<ReturnType<typeof bootPage>> | undefined;
+  try {
+    page = await bootPage({
+      html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+      url: "http://localhost:3000/leagues/three-sided-football-club", scriptFile: "setup-flow.js", apiState,
+    });
+    const dates = [...page.document.querySelectorAll('#league-seasons-body [data-label="Dates"]')].map((cell) => cell.textContent);
+    assert.deepEqual(dates, ["1 Mar 2026 – 31 Aug 2026", "Starts 1 Mar 2026", "Ends 31 Aug 2026", "Dates not set"]);
+  } finally {
+    page?.dom.window.close();
+    if (previousTimezone === undefined) delete process.env.TZ; else process.env.TZ = previousTimezone;
+  }
 });
 
 test("league page loads reusable organiser share invites and sends direct email invites", async () => {
@@ -3501,7 +3746,7 @@ test("league page loads reusable organiser share invites and sends direct email 
     ["Season name", "Dates", "Actions"],
   );
   assert(seasonRow.querySelector('a[href="/leagues/autumn-league/seasons/autumn-2026"]'));
-  assert(seasonRow.querySelector('[aria-label="View Autumn 2026"] [data-icon="eye"]'));
+  assert.equal(seasonRow.querySelectorAll("a").length, 1);
   assert(seasonRow.querySelector('[aria-label="Delete Autumn 2026"] [data-icon="trash-2"]'));
   assert.doesNotMatch(seasonRow.textContent ?? "", /autumn-2026|friendly/i);
 
@@ -4060,6 +4305,7 @@ test("season page renders game kickoff times in the user local timezone", async 
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, {
     gameId: "game-season-local-time",
+    role: "admin",
   });
   const scheduledGame = apiState.games.get("game-season-local-time");
   assert(scheduledGame);
@@ -4095,23 +4341,23 @@ test("season page renders game kickoff times in the user local timezone", async 
   assert(upcomingGamesBody instanceof page.window.HTMLElement);
   assert(completedGamesBody instanceof page.window.HTMLElement);
   assert(game);
-  assert.match(upcomingGamesBody.textContent ?? "", new RegExp(expectedLocalTimestamp(game.gameStartTs)));
+  assert((upcomingGamesBody.textContent ?? "").includes(expectedSeasonKickoff(game.gameStartTs)));
   assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /game-season-local-time/);
   assert.doesNotMatch(upcomingGamesBody.textContent ?? "", /Z\b|UTC/);
   const kickoffLink = upcomingGamesBody.querySelector('a[href="/games/game-season-local-time"]');
   assert(kickoffLink instanceof page.window.HTMLAnchorElement);
-  assert.equal(kickoffLink.textContent, expectedLocalTimestamp(game.gameStartTs));
+  assert.equal(kickoffLink.textContent, expectedSeasonKickoff(game.gameStartTs));
   const statusChip = upcomingGamesBody.querySelector('[data-ui="status-chip"][data-status="scheduled"]');
   assert(statusChip instanceof page.window.HTMLElement);
   assert.match(statusChip.textContent ?? "", /Scheduled/);
   assert(statusChip.querySelector('[data-icon="calendar-clock"]'));
-  assert(upcomingGamesBody.querySelector('[aria-label^="View game at"] [data-icon="eye"]'));
+  assert.equal(upcomingGamesBody.querySelector('[data-icon="eye"]'), null);
   assert(upcomingGamesBody.querySelector('[aria-label^="Delete game at"] [data-icon="trash-2"]'));
   assert(upcomingGamesBody.querySelector('[data-status="live"] [data-icon="activity"]'));
   assert.equal(upcomingGamesBody.querySelector('[data-status="finished"]'), null);
   assert.equal(completedGamesBody.querySelector('[data-status="scheduled"]'), null);
   assert.equal(completedGamesBody.querySelectorAll('[data-status="finished"] [data-icon="circle-check"]').length, 2);
-  assert.equal(completedGamesBody.querySelectorAll('button[disabled][aria-label^="Delete game unavailable:"]').length, 2);
+  assert.equal(completedGamesBody.querySelectorAll('button[disabled][aria-label^="Delete unavailable:"]').length, 2);
   assert.equal(completedGamesBody.querySelector('[data-action="delete-game"]'), null);
   assert.deepEqual(
     [...upcomingGamesBody.querySelectorAll('a[href^="/games/"]')].filter((link) => !link.getAttribute("aria-label")).map((link) => link.getAttribute("href")),
@@ -4133,7 +4379,7 @@ test("season page renders game kickoff times in the user local timezone", async 
 
 test("season game groups expose accurate empty states and preserve finished-game delete locking", async () => {
   const apiState = createMockApiState();
-  seedGoalScoringGame(apiState, { gameId: "game-delete-upcoming", status: "scheduled" });
+  seedGoalScoringGame(apiState, { gameId: "game-delete-upcoming", status: "scheduled", role: "admin" });
   const upcomingGame = apiState.games.get("game-delete-upcoming");
   assert(upcomingGame);
   apiState.games.set("game-delete-completed", {
@@ -4185,9 +4431,18 @@ test("season game groups expose accurate empty states and preserve finished-game
   assert(page.document.querySelector('#season-completed-games-body a[href="/games/game-delete-completed"]'));
 
   const completedDeleteButton = page.document.querySelector(
-    '#season-completed-games-body button[disabled][aria-label^="Delete game unavailable:"]',
+    '#season-completed-games-body button[disabled][aria-label^="Delete unavailable:"]',
   );
   assert(completedDeleteButton instanceof page.window.HTMLButtonElement);
+  const more = completedDeleteButton.closest("details");
+  assert(more instanceof page.window.HTMLDetailsElement);
+  more.open = true;
+  const reasonId = completedDeleteButton.getAttribute("aria-describedby");
+  assert(reasonId);
+  const reason = page.document.getElementById(reasonId);
+  assert(reason instanceof page.window.HTMLElement);
+  assert.equal(reason.textContent, "Finished games can’t be deleted.");
+  assert.equal(page.window.getComputedStyle(reason).display === "none", false);
   assert.equal(completedDeleteButton.hasAttribute("data-action"), false);
   const completedDeleteIcon = completedDeleteButton.querySelector('[data-icon="trash-2"]');
   assert(completedDeleteIcon instanceof page.window.HTMLElement);
@@ -4219,7 +4474,7 @@ test("season kickoff links use the next local calendar date across a UTC boundar
 
     const kickoffLink = page.document.querySelector('a[href="/games/game-date-boundary"]');
     assert(kickoffLink instanceof page.window.HTMLAnchorElement);
-    assert.equal(kickoffLink.textContent, "2026-03-29 03:30");
+    assert.equal(kickoffLink.textContent, "29 Mar 2026, 3:30 am");
 
     const gamePage = await bootPage({
       html: renderGamePage("http://localhost:3001", { gameId: "game-date-boundary" }),
@@ -4551,7 +4806,7 @@ test("setup happy path runs from sign-in to created game context", async () => {
 
 test("season create-game hash opens and focuses the hidden form", async () => {
   const apiState = createMockApiState();
-  seedGoalScoringGame(apiState, { gameId: "existing-game" });
+  seedGoalScoringGame(apiState, { gameId: "existing-game", role: "admin" });
 
   const page = await bootPage({
     html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
@@ -4569,6 +4824,466 @@ test("season create-game hash opens and focuses the hidden form", async () => {
   assert.equal(page.document.activeElement?.id, "game-date");
 });
 
+for (const stage of ["session", "game"] as const) {
+  for (const committed of [false, true]) {
+    test(`organiser shell game creation recovers ${stage} ${committed ? "lost response" : "network failure"} using frozen requests`, async () => {
+      const apiState = createMockApiState();
+      seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+      const baseFetch = createMockFetch(apiState);
+      const requests: Array<{ stage: "session" | "game"; path: string; body: string; key: string | null }> = [];
+      let failAttempt: (() => void) | undefined;
+      let failed = false;
+      let committedResponse: unknown;
+      const page = await bootPage({
+        html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+        url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup#create-game",
+        scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          const path = new URL(String(input)).pathname;
+          if (init?.method !== "POST" || !path.startsWith("/v1/leagues/")) return baseFetch(input, init);
+          const requestStage = path.endsWith("/sessions") ? "session" : "game";
+          requests.push({ stage: requestStage, path, body: String(init.body), key: new Headers(init.headers).get("Idempotency-Key") });
+          if (requestStage === stage && !failed) {
+            failed = true;
+            if (committed) committedResponse = await (await baseFetch(input, init)).json();
+            return new Promise<Response>((_resolve, reject) => { failAttempt = () => reject(new Error("connection lost")); });
+          }
+          if (requestStage === stage && committed) return createJsonResponse(201, committedResponse);
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        const form = page.document.getElementById("create-game-form");
+        const date = page.document.getElementById("game-date");
+        const kickoff = page.document.getElementById("game-kickoff");
+        const length = page.document.getElementById("game-third-length");
+        const submit = page.document.querySelector('[data-action="create-game"]');
+        assert(form instanceof page.window.HTMLFormElement);
+        assert(date instanceof page.window.HTMLInputElement && kickoff instanceof page.window.HTMLInputElement);
+        assert(length instanceof page.window.HTMLSelectElement && submit instanceof page.window.HTMLButtonElement);
+        date.value = "2026-09-13";
+        date.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+        kickoff.value = "2026-09-13T09:30";
+        kickoff.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+        length.value = "25";
+        form.requestSubmit();
+        form.requestSubmit();
+        await flushAsync();
+        assert(failAttempt);
+        assert.equal(submit.disabled, true);
+        date.value = "2026-09-20";
+        date.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+        kickoff.value = "2026-09-20T11:30";
+        kickoff.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+        length.value = "30";
+        failAttempt();
+        await flushAsync();
+        assert.equal(submit.disabled, false);
+        assert.equal(date.value, "2026-09-20");
+        assert.equal(length.value, "30");
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed.*original details/);
+        form.requestSubmit();
+        await flushAsync();
+        const sessionRequests = requests.filter((request) => request.stage === "session");
+        const gameRequests = requests.filter((request) => request.stage === "game");
+        assert.equal(sessionRequests.length, stage === "session" ? 2 : 1, "do not repeat a confirmed session write");
+        assert.equal(gameRequests.length, stage === "game" ? 2 : 1);
+        const retriedRequests = stage === "session" ? sessionRequests : gameRequests;
+        assert.deepEqual(retriedRequests[1], retriedRequests[0]);
+        assert(retriedRequests[0].key);
+        assert.deepEqual(JSON.parse(sessionRequests[0].body), { sessionId: "20260913", sessionDate: "2026-09-13" });
+        const gamePayload = JSON.parse(gameRequests[0].body);
+        assert.equal(gamePayload.gameStartTs, new Date("2026-09-13T09:30").toISOString());
+        assert.equal(gamePayload.thirdLengthMinutes, 25, "game payload must be frozen before awaiting session creation");
+        assert.match(gamePayload.gameId, /^game-20260913-0930-/);
+        assert.equal(page.navigations.at(-1)?.url, `/games/${gamePayload.gameId}`);
+        assert.equal(apiState.sessions.size, 1);
+        assert.equal([...apiState.games.keys()].filter((id) => id !== "shell-fixture").length, 1);
+        assert.equal(submit.disabled, true);
+      } finally { page.dom.window.close(); }
+    });
+  }
+}
+
+test("organiser shell definitive game rejection allows correction without repeating its confirmed session", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  let sessionPosts = 0;
+  const gameBodies: string[] = [];
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup#create-game",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (init?.method === "POST" && path.endsWith("/sessions")) sessionPosts += 1;
+      if (init?.method === "POST" && path.endsWith("/games")) {
+        gameBodies.push(String(init.body));
+        if (gameBodies.length === 1) return createJsonResponse(400, { error: "invalid_game", message: "Choose a supported third length." });
+      }
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    const form = page.document.getElementById("create-game-form");
+    const length = page.document.getElementById("game-third-length");
+    assert(form instanceof page.window.HTMLFormElement && length instanceof page.window.HTMLSelectElement);
+    form.requestSubmit();
+    await flushAsync();
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Game could not be created/);
+    length.value = "30";
+    form.requestSubmit();
+    await flushAsync();
+    assert.equal(sessionPosts, 1);
+    assert.equal(gameBodies.length, 2);
+    assert.equal(JSON.parse(gameBodies[1]).thirdLengthMinutes, 30);
+    assert.equal(page.navigations.length, 1);
+  } finally { page.dom.window.close(); }
+});
+
+test("organiser shell retains a committed game attempt when later team initialisation returns conflict", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  let sessionPosts = 0;
+  const games: Array<{ path: string; body: string; key: string | null }> = [];
+  let committedGame: unknown;
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup#create-game",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (init?.method === "POST" && path.endsWith("/sessions")) sessionPosts += 1;
+      if (init?.method === "POST" && path.endsWith("/games")) {
+        games.push({ path, body: String(init.body), key: new Headers(init.headers).get("Idempotency-Key") });
+        if (games.length === 1) {
+          committedGame = await (await baseFetch(input, init)).json();
+          return createJsonResponse(409, { error: "game_mutation_conflict", message: "Team setup conflict." });
+        }
+        return createJsonResponse(201, committedGame);
+      }
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    const form = page.document.getElementById("create-game-form");
+    const length = page.document.getElementById("game-third-length");
+    assert(form instanceof page.window.HTMLFormElement && length instanceof page.window.HTMLSelectElement);
+    form.requestSubmit();
+    await flushAsync();
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed.*original details/);
+    length.value = "30";
+    form.requestSubmit();
+    await flushAsync();
+    assert.equal(sessionPosts, 1);
+    assert.equal(games.length, 2);
+    assert.deepEqual(games[1], games[0]);
+    assert.equal(JSON.parse(games[1].body).thirdLengthMinutes, 20);
+    assert.equal([...apiState.games.keys()].filter((id) => id !== "shell-fixture").length, 1);
+    assert.equal(page.navigations.length, 1);
+  } finally { page.dom.window.close(); }
+});
+
+test("organiser shell season deletion stays scoped when season IDs repeat and refresh fails after commit", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const original = apiState.seasons.get("autumn-cup");
+  assert(original);
+  const otherLeagueSeason = { ...original, leagueId: "other-league", name: "Other league season" };
+  apiState.seasons.set("autumn-cup", otherLeagueSeason);
+  const baseFetch = createMockFetch(apiState);
+  const deletes: string[] = [];
+  let listReads = 0;
+  const page = await bootPage({
+    html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/leagues/three-sided-football-club/seasons" && (init?.method ?? "GET") === "GET") {
+        if (++listReads > 1) throw new Error("refresh offline");
+        return createJsonResponse(200, { seasons: [original] });
+      }
+      if (init?.method === "DELETE") {
+        deletes.push(path);
+        return new Response(null, { status: 204 });
+      }
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    const action = page.document.querySelector('#league-seasons-body [data-action="delete-season"]');
+    assert(action instanceof page.window.HTMLButtonElement);
+    const icon = action.querySelector('[data-icon="trash-2"]');
+    assert(icon instanceof page.window.HTMLElement);
+    dispatchClick(icon);
+    dispatchClick(icon);
+    await flushAsync();
+    assert.deepEqual(deletes, ["/v1/leagues/three-sided-football-club/seasons/autumn-cup"]);
+    assert.equal(page.document.querySelector("#league-seasons-body tr"), null);
+    assert.deepEqual(apiState.seasons.get("autumn-cup"), otherLeagueSeason);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Season deleted\. The list could not be refreshed/);
+    assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /deletion failed/);
+  } finally { page.dom.window.close(); }
+});
+
+test("organiser shell game deletion remains committed when a later game-list refresh fails", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  let listReads = 0;
+  let deletes = 0;
+  const page = await bootPage({
+    html: renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club/seasons/autumn-cup",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/games") && (init?.method ?? "GET") === "GET" && ++listReads > 1) return createJsonResponse(503, {});
+      if (init?.method === "DELETE") deletes += 1;
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    const action = page.document.querySelector('#season-upcoming-games-body [data-action="delete-game"]');
+    assert(action instanceof page.window.HTMLButtonElement);
+    dispatchClick(action);
+    dispatchClick(action);
+    await flushAsync();
+    assert.equal(deletes, 1);
+    assert.equal(apiState.games.has("shell-fixture"), false);
+    assert.equal(page.document.querySelector("#season-upcoming-games-body tr"), null);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Game deleted\. The list could not be refreshed/);
+    assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /deletion failed/);
+  } finally { page.dom.window.close(); }
+});
+
+function seedManagementDeletionRows(apiState: MockApiState, kind: "season" | "game", count: number) {
+  seedGoalScoringGame(apiState, { gameId: "shell-fixture", role: "admin" });
+  const season = apiState.seasons.get("autumn-cup");
+  const game = apiState.games.get("shell-fixture");
+  assert(season && game);
+  apiState.games.clear();
+  if (kind === "season") apiState.seasons.clear();
+  for (let index = 0; index < count; index += 1) {
+    const id = `row-${index}`;
+    if (kind === "season") apiState.seasons.set(id, { ...season, seasonId: id, name: `Season ${index}` });
+    else apiState.games.set(id, { ...game, gameId: id, gameStartTs: `2026-09-${String(10 + index).padStart(2, "0")}T09:30:00.000Z` });
+  }
+  return {
+    listPath: kind === "season" ? "/v1/leagues/three-sided-football-club/seasons" : "/v1/leagues/three-sided-football-club/seasons/autumn-cup/games",
+    bodyId: kind === "season" ? "league-seasons-body" : "season-upcoming-games-body",
+    html: kind === "season" ? renderLeaguePage("http://localhost:3001", "three-sided-football-club") : renderSeasonPage("http://localhost:3001", "autumn-cup", "three-sided-football-club"),
+    url: `http://localhost:3000/leagues/three-sided-football-club${kind === "game" ? "/seasons/autumn-cup" : ""}`,
+    viewPath: (id: string) => kind === "season" ? `/leagues/three-sided-football-club/seasons/${id}` : `/games/${id}`,
+  };
+}
+
+for (const kind of ["season", "game"] as const) {
+  for (const scenario of [
+    { count: 3, index: 1, next: "row-2", refreshFails: false },
+    { count: 3, index: 2, next: "row-1", refreshFails: false },
+    { count: 3, index: 1, next: "row-2", refreshFails: true },
+    { count: 1, index: 0, next: null, refreshFails: false },
+    { count: 1, index: 0, next: null, refreshFails: true },
+  ]) {
+    test(`organiser shell ${kind} deletion restores logical focus: ${scenario.index}/${scenario.count}, refresh ${scenario.refreshFails ? "failed" : "succeeded"}`, async () => {
+      const apiState = createMockApiState();
+      const fixture = seedManagementDeletionRows(apiState, kind, scenario.count);
+      const baseFetch = createMockFetch(apiState);
+      let listReads = 0;
+      const page = await bootPage({
+        html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          if (new URL(String(input)).pathname === fixture.listPath && (init?.method ?? "GET") === "GET") {
+            if (++listReads > 1 && scenario.refreshFails) throw new Error("offline refresh");
+          }
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        const body = page.document.getElementById(fixture.bodyId);
+        const action = body?.querySelector(`[data-${kind}-id="row-${scenario.index}"]`);
+        assert(body instanceof page.window.HTMLElement && action instanceof page.window.HTMLButtonElement);
+        const more = action.closest("details");
+        assert(more instanceof page.window.HTMLDetailsElement);
+        more.open = true;
+        action.focus();
+        assert.equal(page.document.activeElement, action);
+        dispatchClick(action);
+        await flushAsync();
+        assert.equal(body.querySelector(`[data-${kind}-id="row-${scenario.index}"]`), null);
+        if (scenario.next) {
+          assert.equal(page.document.activeElement?.getAttribute("href"), fixture.viewPath(scenario.next));
+        } else {
+          const heading = body.closest('[data-ui="panel"]')?.querySelector("h2");
+          assert(heading);
+          assert.equal(page.document.activeElement, heading);
+          assert.equal(heading.getAttribute("tabindex"), "-1");
+        }
+      } finally { page.dom.window.close(); }
+    });
+  }
+
+  for (const interaction of ["focus", "pointer"] as const) {
+    test(`organiser shell ${kind} deletion does not steal focus after the user moves ${interaction}`, async () => {
+      const apiState = createMockApiState();
+      const fixture = seedManagementDeletionRows(apiState, kind, 2);
+      const baseFetch = createMockFetch(apiState);
+      let finishDelete: (() => void) | undefined;
+      const page = await bootPage({
+        html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          if (init?.method === "DELETE") return new Promise<Response>((resolve) => {
+            finishDelete = () => { void baseFetch(input, init).then(resolve); };
+          });
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
+        const outside = page.document.querySelector('[data-ui="site-nav"] a');
+        assert(action instanceof page.window.HTMLButtonElement && outside instanceof page.window.HTMLAnchorElement);
+        const more = action.closest("details");
+        assert(more instanceof page.window.HTMLDetailsElement);
+        more.open = true;
+        action.focus();
+        dispatchClick(action);
+        if (interaction === "focus") outside.focus();
+        else outside.dispatchEvent(new page.window.Event("pointerdown", { bubbles: true }));
+        assert(finishDelete);
+        finishDelete();
+        await flushAsync();
+        if (interaction === "focus") assert.equal(page.document.activeElement, outside);
+        else assert.equal(page.document.activeElement, page.document.body);
+        assert.equal(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`), null);
+      } finally { page.dom.window.close(); }
+    });
+  }
+
+  for (const control of ["link", "closed-more", "open-more", "delete"] as const) {
+    test(`organiser shell ${kind} redraw preserves focus moved to a surviving row ${control}`, async () => {
+      const apiState = createMockApiState();
+      const fixture = seedManagementDeletionRows(apiState, kind, 2);
+      const baseFetch = createMockFetch(apiState);
+      let finishDelete: (() => void) | undefined;
+      const page = await bootPage({
+        html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          if (init?.method === "DELETE") return new Promise<Response>((resolve) => {
+            finishDelete = () => { void baseFetch(input, init).then(resolve); };
+          });
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
+        const survivor = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`)?.closest("tr");
+        assert(action instanceof page.window.HTMLButtonElement && survivor instanceof page.window.HTMLTableRowElement);
+        const oldMore = action.closest("details");
+        const survivorMore = survivor.querySelector("details");
+        assert(oldMore instanceof page.window.HTMLDetailsElement && survivorMore instanceof page.window.HTMLDetailsElement);
+        oldMore.open = true;
+        action.focus();
+        dispatchClick(action);
+        const shouldOpen = control === "open-more" || control === "delete";
+        survivorMore.open = shouldOpen;
+        const movedFocus = control === "link" ? survivor.querySelector("a[href]")
+          : control === "delete" ? survivor.querySelector("button") : survivorMore.querySelector("summary");
+        assert(movedFocus instanceof page.window.HTMLElement);
+        movedFocus.focus();
+        assert.equal(page.document.activeElement, movedFocus);
+        assert(finishDelete);
+        finishDelete();
+        await flushAsync();
+        const replacementRow = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`)?.closest("tr");
+        assert(replacementRow instanceof page.window.HTMLTableRowElement);
+        const replacementMore = replacementRow.querySelector("details");
+        assert(replacementMore instanceof page.window.HTMLDetailsElement);
+        const replacement = control === "link" ? replacementRow.querySelector("a[href]")
+          : control === "delete" ? replacementRow.querySelector("button") : replacementMore.querySelector("summary");
+        assert(replacement instanceof page.window.HTMLElement);
+        assert.notEqual(replacement, movedFocus, "the fixture exercises a real row replacement");
+        assert.equal(page.document.activeElement, replacement);
+        assert.equal(replacementMore.open, shouldOpen);
+        assert.equal(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`), null);
+      } finally { page.dom.window.close(); }
+    });
+  }
+
+  test(`organiser shell ${kind} deletion does not reinsert a confirmed row from a stale list response`, async () => {
+    const apiState = createMockApiState();
+    const fixture = seedManagementDeletionRows(apiState, kind, 2);
+    const originalRows = kind === "season" ? [...apiState.seasons.values()] : [...apiState.games.values()];
+    const baseFetch = createMockFetch(apiState);
+    const page = await bootPage({
+      html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => {
+        if (new URL(String(input)).pathname === fixture.listPath && (init?.method ?? "GET") === "GET") {
+          return createJsonResponse(200, { [kind === "season" ? "seasons" : "games"]: originalRows });
+        }
+        return baseFetch(input, init);
+      },
+    });
+    try {
+      Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+      const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
+      assert(action instanceof page.window.HTMLButtonElement);
+      dispatchClick(action);
+      await flushAsync();
+      assert.equal(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`), null);
+      assert(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`));
+      assert.equal(kind === "season" ? apiState.seasons.has("row-0") : apiState.games.has("row-0"), false);
+    } finally { page.dom.window.close(); }
+  });
+
+  test(`organiser shell ${kind} overlapping deletion refreshes cannot overwrite a newer list`, async () => {
+    const apiState = createMockApiState();
+    const fixture = seedManagementDeletionRows(apiState, kind, 3);
+    const originalRows = kind === "season" ? [...apiState.seasons.values()] : [...apiState.games.values()];
+    const baseFetch = createMockFetch(apiState);
+    let reads = 0;
+    const refreshes: Array<(response: Response) => void> = [];
+    const page = await bootPage({
+      html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => {
+        if (new URL(String(input)).pathname === fixture.listPath && (init?.method ?? "GET") === "GET" && ++reads > 1) {
+          return new Promise<Response>((resolve) => { refreshes.push(resolve); });
+        }
+        return baseFetch(input, init);
+      },
+    });
+    try {
+      Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+      for (const id of ["row-0", "row-1"]) {
+        const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="${id}"]`);
+        assert(action instanceof page.window.HTMLButtonElement);
+        dispatchClick(action);
+        await flushAsync();
+      }
+      assert.equal(refreshes.length, 2);
+      const key = kind === "season" ? "seasons" : "games";
+      refreshes[1](createJsonResponse(200, { [key]: [] }));
+      await flushAsync();
+      assert.equal(page.document.querySelectorAll(`#${fixture.bodyId} tr`).length, 0);
+      // An older response contains both deleted IDs plus a row no longer in
+      // the newer list. Tombstones protect IDs; the version guard protects all
+      // newer list contents, not only deletions initiated by this page.
+      refreshes[0](createJsonResponse(200, { [key]: originalRows }));
+      await flushAsync();
+      assert.equal(page.document.querySelectorAll(`#${fixture.bodyId} tr`).length, 0);
+      assert.equal(kind === "season" ? apiState.seasons.has("row-0") : apiState.games.has("row-0"), false);
+      assert.equal(kind === "season" ? apiState.seasons.has("row-1") : apiState.games.has("row-1"), false);
+    } finally { page.dom.window.close(); }
+  });
+}
+
 test("season page does not fall back to legacy create routes when scoped writes are unavailable", async () => {
   const apiState = createMockApiState();
   apiState.disableScopedSeasonApi = true;
@@ -4579,6 +5294,7 @@ test("season page does not fall back to legacy create routes when scoped writes 
     expiresAt: "2026-03-29T11:00:00.000Z",
   };
   apiState.cookieJar = "threefc_session=session-1";
+  grantMockLeagueAccess(apiState, "three-sided-football-club", apiState.session.email, "admin");
   apiState.leagues.set("three-sided-football-club", {
     leagueId: "three-sided-football-club",
     name: "Three Sided Football Club",
@@ -4622,7 +5338,7 @@ test("season page does not fall back to legacy create routes when scoped writes 
   assert.equal(apiState.sessions.size, 0);
   assert.equal(apiState.games.size, 0);
   assert.equal(seasonPage.navigations.length, 0);
-  assert.equal(seasonPage.document.getElementById("setup-status")?.textContent, "Game creation failed.");
+  assert.equal(seasonPage.document.getElementById("setup-status")?.textContent, "Game could not be created.");
 });
 
 test("league page header delete button deletes an empty league", async () => {
@@ -4634,6 +5350,7 @@ test("league page header delete button deletes an empty league", async () => {
     expiresAt: "2026-03-29T11:00:00.000Z",
   };
   apiState.cookieJar = "threefc_session=session-1";
+  grantMockLeagueAccess(apiState, "empty-league", apiState.session.email, "admin");
   apiState.leagues.set("empty-league", {
     leagueId: "empty-league",
     name: "Empty League",
@@ -4672,6 +5389,7 @@ test("season page header delete button deletes an empty season", async () => {
     expiresAt: "2026-03-29T11:00:00.000Z",
   };
   apiState.cookieJar = "threefc_session=session-1";
+  grantMockLeagueAccess(apiState, "three-sided-football-club", apiState.session.email, "admin");
   apiState.leagues.set("three-sided-football-club", {
     leagueId: "three-sided-football-club",
     name: "Three Sided Football Club",
@@ -4728,6 +5446,7 @@ test("season page delete does not fall back to legacy API during site-first scop
     expiresAt: "2026-03-29T11:00:00.000Z",
   };
   apiState.cookieJar = "threefc_session=session-1";
+  grantMockLeagueAccess(apiState, "three-sided-football-club", apiState.session.email, "admin");
   apiState.leagues.set("three-sided-football-club", {
     leagueId: "three-sided-football-club",
     name: "Three Sided Football Club",
@@ -4766,7 +5485,7 @@ test("season page delete does not fall back to legacy API during site-first scop
   assert.equal(apiState.seasons.has("autumn-cup"), true);
   assert.deepEqual(apiState.seasonDeleteRequests, []);
   assert.equal(page.navigations.length, 0);
-  assert.equal(page.document.getElementById("setup-status")?.textContent, "Season deletion failed.");
+  assert.equal(page.document.getElementById("setup-status")?.textContent, "Season could not be deleted.");
 });
 
 test("game page quick-creates and assigns roster players", async () => {
