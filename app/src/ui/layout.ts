@@ -59,95 +59,47 @@ function renderAuthScriptTag(): string {
 }
 
 function renderSetupFoundationPanels(): string {
-  const leaguePanel = renderPanel(
-    "League setup",
-    "Start with league identity and visibility defaults.",
-    [
-      renderInputField({
-        id: "league-name",
-        label: "League name",
-        placeholder: "Three Sided Football Club",
-        required: true,
-      }),
-      renderInputField({
-        id: "league-slug",
-        label: "League friendly URL",
-        placeholder: "three-sided-fc",
-        hint: "Used for readable public URLs.",
-      }),
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Save League", "primary", { "data-testid": "save-league" })}${renderButton("Reset", "ghost", { "data-testid": "reset-league" })}${renderButton("Cancel", "danger", { "data-testid": "cancel-league" })}</div>`,
-    "panel-league",
-  );
-
-  const seasonPanel = renderPanel(
-    "Season setup",
-    "Define season window and progression context.",
-    [
-      renderInputField({
-        id: "season-name",
-        label: "Season name",
-        placeholder: "2026 Season",
-        required: true,
-      }),
-      renderInputField({
-        id: "season-start",
-        label: "Starts on",
-        type: "date",
-      }),
-      renderInputField({
-        id: "season-end",
-        label: "Ends on",
-        type: "date",
-      }),
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Save Season", "secondary", { "data-testid": "save-season" })}</div>`,
-    "panel-season",
-  );
-
-  const sessionPanel = renderPanel(
-    "Session setup",
-    "Configure the day block where games are played.",
-    [
-      renderInputField({
-        id: "session-name",
-        label: "Session label",
-        placeholder: "Saturday Morning",
-        required: true,
-      }),
-      renderInputField({
-        id: "session-date",
-        label: "Session date",
-        type: "date",
-        required: true,
-      }),
-    ].join(""),
-    "",
-    "panel-session",
-  );
-
-  const gamePanel = renderPanel(
-    "Game setup",
-    "Pick kickoff and prepare scorekeeper-ready context.",
-    [
-      renderInputField({
-        id: "game-id",
-        label: "Game ID",
-        placeholder: "gm_2026_02_24_01",
-        required: true,
-      }),
-      renderInputField({
-        id: "game-kickoff",
-        label: "Kickoff time",
-        type: "datetime-local",
-        required: true,
-      }),
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Create Game", "primary", { "data-testid": "create-game" })}${renderButton("Preview", "secondary", { "data-testid": "preview-game" })}</div>`,
-    "panel-game",
-  );
-
-  return `<section data-ui="panel-grid">${leaguePanel}${seasonPanel}${sessionPanel}${gamePanel}</section>`;
+  return `<div data-ui="auth-form" data-testid="fixture-fields">
+    ${renderInputField({
+      id: "fixture-league-name",
+      label: "League name",
+      value: "North Melbourne Three-Sided Football Club",
+    })}
+    ${renderValidatedField({
+      id: "fixture-email",
+      label: "Email address",
+      type: "email",
+      value: "organiser@example.com",
+      inputAttributes: { autocomplete: "email", inputmode: "email", autocapitalize: "none" },
+    })}
+    ${renderInputField({
+      id: "fixture-season-start",
+      label: "Season starts",
+      type: "date",
+      value: "2026-09-13",
+    })}
+    ${renderInputField({
+      id: "fixture-kickoff",
+      label: "Kickoff time",
+      type: "datetime-local",
+      value: "2026-09-13T09:30",
+    })}
+    <div data-ui="field">
+      <label for="fixture-status">Game status</label>
+      <select data-ui="input" id="fixture-status" name="fixture-status">
+        <option value="scheduled">Scheduled</option>
+        <option value="live">Live</option>
+        <option value="finished">Finished</option>
+      </select>
+    </div>
+    <label data-ui="check-row" for="fixture-own-goal"><input id="fixture-own-goal" type="checkbox" />Own goal</label>
+    ${renderValidatedField({
+      id: "fixture-disabled-field",
+      label: "Finished game example",
+      value: "13 September 2026",
+      inputAttributes: { disabled: "" },
+    })}
+  </div>`;
 }
 
 function renderTableShell(input: {
@@ -323,7 +275,6 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         placeholder: "coach@example.com",
         hint: "Sends a one-time invite restricted to this email.",
       })}
-      <p data-ui="status-note" id="organiser-invite-email-status" aria-live="polite"></p>
     </section>`,
     `<div data-ui="button-row">${renderButton("Send email invite", "primary", {
       type: "button",
@@ -392,6 +343,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
           <section id="league-organiser-invite-region" data-ui="disclosure-panel" hidden>
             ${organiserInvitePanel}
           </section>
+          <p data-ui="status-note" id="organiser-invite-email-status" role="status" aria-live="polite" hidden></p>
         </section>
       </section>
     </main>
@@ -634,14 +586,14 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
 
 export function renderComponentShowcasePage(apiBaseUrl: string): string {
   const navigationPanel = renderPanel(
-    "Navigation items",
-    "Top-level route selection with active state styling.",
+    "Component examples",
+    "Development fixtures only. These names, dates and scores are examples; no account or game data is loaded or saved.",
     renderNavigation(
       [
-        { label: "Setup", href: "/setup", active: true },
-        { label: "Live Game", href: "/games/live" },
-        { label: "Standings", href: "/standings" },
-        { label: "Profile", href: "/profile" },
+        { label: "Controls", href: "#fixture-controls" },
+        { label: "Players", href: "#fixture-players" },
+        { label: "Match totals", href: "#fixture-totals" },
+        { label: "Feedback", href: "#fixture-feedback" },
       ],
       "component-nav",
     ),
@@ -650,43 +602,63 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   );
 
   const playersPanel = renderPanel(
-    "Player representation",
-    "Avatar + name rows suitable for roster and score events.",
+    "Players and team choices",
+    "Try choosing a team. Yellow is unavailable in this example.",
     `<div data-ui="player-grid" data-testid="player-grid">${[
       renderPlayerCard({ name: "Ari Fisher", subtitle: "Red Team" }, "player-ari"),
       renderPlayerCard({ name: "Mina G", subtitle: "Blue Team" }, "player-mina"),
-      renderPlayerCard({ name: "Chris Long", subtitle: "Yellow Team" }, "player-chris"),
-    ].join("")}</div>`,
+      renderPlayerCard({ name: "Alexandra van der Westhuizen-Smith", subtitle: "Yellow Team" }, "player-chris"),
+    ].join("")}</div>
+    <fieldset data-ui="field">
+      <legend>Example team</legend>
+      <div data-ui="button-row" data-testid="fixture-team-choices">
+        <label data-ui="team-chip" style="--team-color: #d43d3d"><input type="radio" name="fixture-team" value="red" checked /><span data-ui="team-chip-visual"><span>Red</span></span></label>
+        <label data-ui="team-chip" style="--team-color: #377cd6"><input type="radio" name="fixture-team" value="blue" /><span data-ui="team-chip-visual"><span>Blue</span></span></label>
+        <label data-ui="team-chip" style="--team-color: #d6ad22"><input type="radio" name="fixture-team" value="yellow" disabled /><span data-ui="team-chip-visual"><span>Yellow</span></span></label>
+      </div>
+    </fieldset>
+    <div data-ui="button-row" data-testid="fixture-claim-badges">
+      <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderIcon("circle-user-round")}</span>
+      <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="Claimed" title="Claimed">${renderIcon("user-round-check")}</span>
+    </div>`,
     "",
     "panel-player",
   );
 
   const tablePanel = renderPanel(
-    "Information table",
-    "Reusable table for standings, results, and summaries.",
-    renderDataTable({
-      tableId: "standings-table",
-      caption: "Season standings",
-      columns: ["Team", "P", "W", "D", "L", "GF", "GA"],
+    "Match totals",
+    "",
+    `${renderDataTable({
+      tableId: "fixture-match-totals",
+      caption: "Example finished game",
+      columns: ["Team", "Conceded", "Scored"],
       rows: [
-        ["Red", 8, 5, 2, 1, 19, 10],
-        ["Blue", 8, 4, 3, 1, 17, 11],
-        ["Yellow", 8, 2, 1, 5, 11, 18],
+        ["Red", 2, 4],
+        ["Blue", 4, 3],
+        ["Yellow", 3, 2],
       ],
-    }),
+    })}
+    <div data-ui="button-row" data-testid="fixture-status-chips">
+      <span data-ui="status-chip" data-status="scheduled">${renderIcon("calendar-clock")}<span>Scheduled</span></span>
+      <span data-ui="status-chip" data-status="live">${renderIcon("activity")}<span>Live</span></span>
+      <span data-ui="status-chip" data-status="finished">${renderIcon("circle-check")}<span>Finished</span></span>
+    </div>
+    <div data-ui="button-row" data-testid="fixture-thirds">
+      ${[1, 2, 3].map((third) => `<span data-ui="third-indicator" data-third="${third}" role="img" aria-label="Third ${third} of 3"></span>`).join("")}
+    </div>`,
     "",
     "panel-table",
   );
 
   const validationPanel = renderPanel(
-    "Field validation",
-    "Inline notice state for valid/invalid input feedback.",
+    "Validation and feedback",
+    "Example states, shown together for review.",
     `<div data-ui="validation-stack">
       <section data-ui="validation-card" data-state="invalid" data-testid="validation-invalid">
         <h3>Invalid email example</h3>
         ${renderValidatedField({
           id: "organizer-email-invalid",
-          label: "Organizer email",
+          label: "Organiser email",
           type: "email",
           value: "player-at-example.com",
           error: "Please provide a valid email address.",
@@ -696,67 +668,89 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
         <h3>Valid email example</h3>
         ${renderValidatedField({
           id: "organizer-email-valid",
-          label: "Organizer email",
+          label: "Organiser email",
           type: "email",
-          value: "organizer@example.com",
+          value: "organiser@example.com",
           success: "Email format looks valid.",
         })}
       </section>
+    </div>
+    <div data-ui="section-stack" data-testid="fixture-feedback-states">
+      <p data-ui="status-note" data-state="loading" role="status">Loading games…</p>
+      <p data-ui="status-note" data-state="success" role="status">Player added.</p>
+      <p data-ui="status-note" data-state="error">Couldn’t load the teams. Try again.</p>
+      <p data-ui="status-note" data-state="uncertain">We couldn’t confirm whether the goal was saved. Your details are still here.</p>
+      <p data-ui="status-note" data-state="empty">No upcoming games.</p>
     </div>`,
     "",
     "panel-validation",
   );
 
   const rowActionsPanel = renderPanel(
-    "Row action list",
-    "List rows with add/edit/delete style actions.",
-    renderRowActionList(
+    "Actions",
+    "Action examples open the confirmation prompt below. They do not change a game.",
+    `${renderRowActionList(
       [
         {
-          title: "Game 01 - Saturday AM",
-          subtitle: "Kickoff 10:00, Red vs Blue vs Yellow",
-          actions: [
-            { label: "Edit", action: "edit-game" },
-            { label: "Clone", action: "clone-game" },
-            { label: "Delete", action: "delete-game", tone: "danger" },
-          ],
+          title: "Sunday 13 September 2026",
+          subtitle: "9:30 am · North Melbourne Three-Sided Football Club",
+          actions: [],
         },
         {
-          title: "Game 02 - Saturday PM",
-          subtitle: "Kickoff 14:30, Red vs Blue vs Yellow",
-          actions: [
-            { label: "Edit", action: "edit-game-2" },
-            { label: "Delete", action: "delete-game-2", tone: "danger" },
-          ],
+          title: "Sunday 20 September 2026",
+          subtitle: "9:30 am · Spring 2026",
+          actions: [],
         },
       ],
       "game-row-actions",
-    ),
+    )}
+    <div data-ui="button-row" data-testid="fixture-button-variants">
+      ${(["primary", "secondary", "ghost", "danger"] as const).map((variant) => renderButton(`${variant[0]?.toUpperCase()}${variant.slice(1)} example`, variant, { type: "button", "data-modal-open": "confirm-delete-game" })).join("")}
+    </div>
+    <div data-ui="header-actions" role="group" aria-label="Example icon actions">
+      ${renderIconLink({ href: "#fixture-totals", icon: "eye", label: "View example match totals" })}
+      ${renderIconButton({ icon: "pencil", label: "Open example edit prompt", attributes: { "data-modal-open": "confirm-delete-game" } })}
+      ${renderIconButton({ icon: "trash-2", label: "Open example delete prompt", variant: "danger", attributes: { "data-modal-open": "confirm-delete-game" } })}
+    </div>
+    <div data-ui="button-row" data-testid="fixture-disabled-actions">
+      ${renderButton("Save", "primary", { type: "button", disabled: "", "aria-label": "Save example, disabled" })}
+      ${renderIconButton({ icon: "loader-circle", label: "Saving example", text: "Saving…", variant: "primary", attributes: { disabled: "", "aria-busy": "true" } })}
+    </div>`,
     "",
     "panel-row-actions",
   );
 
   const modalPanel = renderPanel(
-    "Popover modal prompt",
-    "Overlay prompt for destructive actions with confirm and cancel paths.",
+    "Confirmation prompt",
+    "Open, confirm, cancel or press Escape. No data is changed.",
     `${renderModalPrompt({
       id: "confirm-delete-game",
-      triggerLabel: "Open delete prompt",
-      title: "Delete game?",
-      message: "This action removes game timeline and scores for this game.",
-      cancelLabel: "Keep game",
-      confirmLabel: "Delete game",
-    })}<p data-ui="status-note" id="modal-note">No modal action has been confirmed yet.</p>`,
+      triggerLabel: "Open example prompt",
+      title: "Delete example game?",
+      message: "This is a component example. Confirming will not delete a game.",
+      cancelLabel: "Cancel",
+      confirmLabel: "Confirm example",
+    })}<p data-ui="status-note" id="modal-note" role="status"></p>`,
     "",
     "panel-modal",
   );
 
   const setupFoundationPanel = renderPanel(
-    "Setup shell composition",
-    "How primitives come together in the M1-07 setup journey.",
+    "Form controls",
+    "Try the native controls. These example values are not submitted.",
     renderSetupFoundationPanels(),
     "",
     "panel-setup-composition",
+  );
+
+  const hiddenStatesPanel = renderPanel(
+    "Hidden states",
+    "The form, claim panel and reference IDs below must remain invisible and out of the keyboard order.",
+    `<div data-ui="auth-form" data-testid="fixture-hidden-auth-form" hidden>${renderInputField({ id: "fixture-hidden-email", label: "Hidden email", type: "email" })}</div>
+    <section data-ui="claim-panel" data-testid="fixture-hidden-claim-panel" hidden>${renderButton("Hidden claim action", "primary", { type: "button" })}</section>
+    <dl data-ui="id-preview" data-testid="fixture-hidden-id-preview" hidden><div><dt>Example game ID</dt><dd>fixture-hidden-game</dd></div></dl>`,
+    "",
+    "panel-hidden-states",
   );
 
   return `<!doctype html>
@@ -769,16 +763,16 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   </head>
   <body>
     <main data-ui="app-shell" data-testid="component-showcase">
-      ${renderDashboardHero()}
+      <section data-ui="hero"><h1>Design fixtures</h1></section>
       <div data-ui="section-stack">
         ${navigationPanel}
         <section data-ui="panel-grid" data-testid="component-grid">
-          ${playersPanel}
-          ${tablePanel}
-          ${validationPanel}
-          ${rowActionsPanel}
-          ${modalPanel}
-          ${setupFoundationPanel}
+          <section id="fixture-controls" tabindex="-1">${rowActionsPanel}${setupFoundationPanel}</section>
+          <section id="fixture-players" tabindex="-1">${playersPanel}</section>
+          <section id="fixture-totals" tabindex="-1">${tablePanel}</section>
+          <section id="fixture-feedback" tabindex="-1">${validationPanel}</section>
+          <section id="fixture-modal" tabindex="-1">${modalPanel}</section>
+          <section id="fixture-hidden-states" tabindex="-1">${hiddenStatesPanel}</section>
         </section>
       </div>
     </main>

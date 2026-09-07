@@ -2849,7 +2849,7 @@ test("empty dashboard does not reopen creation after a slow response overrides u
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(region.hidden, true);
   assert.equal(page.document.activeElement, toggle);
-  assert.equal(activityStatus.hidden, false);
+  assert.equal(activityStatus.hidden, true);
   assert.equal(activityStatus.textContent, "");
 });
 
@@ -3069,7 +3069,7 @@ test("league page reuses organiser invite idempotency key until a retry succeeds
   dispatchClick(createInviteButton);
   await flushAsync();
 
-  assert.equal(leaguePage.document.getElementById("setup-status")?.textContent, "Organiser invite failed.");
+  assert.equal(leaguePage.document.getElementById("setup-status")?.hidden, true);
   assert.equal(
     leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
     "Invite failed: Temporary failure.",
@@ -3088,7 +3088,7 @@ test("league page reuses organiser invite idempotency key until a retry succeeds
     apiState.storage.has("threefc-idempotency:organiser-invite:autumn-league-coach%40example.com"),
     false,
   );
-  assert.equal(leaguePage.document.getElementById("setup-status")?.textContent, "Organiser invite sent.");
+  assert.equal(leaguePage.document.getElementById("setup-status")?.hidden, true);
   assert.equal(
     leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
     "Sent to coach@example.com.",
@@ -3246,7 +3246,7 @@ test("league page shows manual invite link when organiser email delivery is unco
 
   assert.equal(
     leaguePage.document.getElementById("setup-status")?.textContent,
-    "Organiser invite created; email delivery unconfirmed.",
+    "",
   );
   assert.equal(
     leaguePage.document.getElementById("organiser-invite-email-status")?.textContent,
@@ -3266,6 +3266,165 @@ test("league page shows manual invite link when organiser email delivery is unco
   );
   assert.equal(uncertainKeys.length, 1);
 });
+
+for (const outcome of ["sent", "unknown", "failure"] as const) {
+  for (const disclosureAction of ["close", "close and reopen", "open create season"] as const) {
+    test(`pending organiser email ${outcome} remains visible after ${disclosureAction}`, async (t) => {
+      const apiState = createMockApiState();
+      apiState.session = {
+        sessionId: "session-admin",
+        email: "organizer@3fc.football",
+        createdAt: "2026-03-28T11:00:00.000Z",
+        expiresAt: "2026-03-29T11:00:00.000Z",
+      };
+      apiState.cookieJar = "threefc_session=session-admin";
+      apiState.leagues.set("autumn-league", {
+        leagueId: "autumn-league",
+        name: "Autumn League",
+        slug: "autumn-league",
+        createdByUserId: apiState.session.email,
+        createdAt: "2026-03-28T11:00:00.000Z",
+        updatedAt: "2026-03-28T11:00:00.000Z",
+      });
+      grantMockLeagueAccess(apiState, "autumn-league", apiState.session.email, "admin");
+
+      const defaultFetch = createMockFetch(apiState);
+      const requestedKeys: string[] = [];
+      let finishInvite: (() => Promise<void>) | undefined;
+      let recoveryHref: string | undefined;
+      const deferredFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+        const target = typeof input === "string" || input instanceof URL ? new URL(String(input)) : new URL(input.url);
+        if ((init.method ?? "GET").toUpperCase() === "POST" && target.pathname === "/v1/leagues/autumn-league/organiser-invites") {
+          const body = typeof init.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+          if (typeof body.email === "string" && body.email.trim()) {
+            const key = readInitHeader(init, "idempotency-key");
+            assert(key);
+            requestedKeys.push(key);
+            if (requestedKeys.length === 1) {
+              return new Promise<Response>((resolveResponse) => {
+                finishInvite = async () => {
+                  if (outcome === "failure") {
+                    resolveResponse(createJsonResponse(503, { error: "temporary_failure", message: "Temporary failure." }));
+                    return;
+                  }
+                  const response = await defaultFetch(input, init);
+                  if (outcome === "unknown") {
+                    const payload = await response.json() as { inviteLink: string; emailDelivery: { status: string } };
+                    recoveryHref = payload.inviteLink;
+                    payload.emailDelivery.status = "unknown";
+                    resolveResponse(createJsonResponse(202, payload));
+                    return;
+                  }
+                  resolveResponse(response);
+                };
+              });
+            }
+          }
+        }
+        return defaultFetch(input, init);
+      };
+
+      const page = await bootPage({
+        html: renderLeaguePage("http://localhost:3001", "autumn-league"),
+        url: "http://localhost:3000/leagues/autumn-league",
+        scriptFile: "setup-flow.js",
+        apiState,
+        fetch: deferredFetch,
+      });
+      t.after(() => page.window.close());
+      const inviteToggle = page.document.querySelector('[data-testid="toggle-organiser-invite"]');
+      const seasonToggle = page.document.querySelector('[data-testid="toggle-create-season"]');
+      const sendButton = page.document.querySelector('[data-testid="create-organiser-invite"]');
+      const inviteRegion = page.document.getElementById("league-organiser-invite-region");
+      const seasonRegion = page.document.getElementById("league-create-season-region");
+      const emailInput = page.document.getElementById("organiser-invite-email");
+      const status = page.document.getElementById("organiser-invite-email-status");
+      assert(inviteToggle instanceof page.window.HTMLButtonElement);
+      assert(seasonToggle instanceof page.window.HTMLButtonElement);
+      assert(sendButton instanceof page.window.HTMLButtonElement);
+      assert(inviteRegion instanceof page.window.HTMLElement);
+      assert(seasonRegion instanceof page.window.HTMLElement);
+      assert(emailInput instanceof page.window.HTMLInputElement);
+      assert(status instanceof page.window.HTMLElement);
+
+      const assertSingleVisibleOutcome = (expected: string): void => {
+        assert.equal(status.textContent, expected);
+        assert.equal(status.closest("[hidden]"), null, "Invite feedback must not inherit a hidden disclosure");
+        assert.equal(status.getAttribute("role"), "status");
+        assert.equal(status.getAttribute("aria-live"), "polite");
+        assert.equal(page.document.querySelectorAll("#organiser-invite-email-status").length, 1);
+        const visibleOutcomeRegions = [...page.document.querySelectorAll('[role="status"], [role="alert"], [aria-live]')]
+          .filter((element) => element.closest("[hidden]") === null && element.textContent === expected);
+        assert.deepEqual(visibleOutcomeRegions, [status], "The outcome must have exactly one live announcement owner");
+        assert.equal(page.document.getElementById("setup-status")?.hidden, true);
+        assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+      };
+
+      dispatchClick(inviteToggle);
+      await flushAsync();
+      emailInput.value = "Coach@Example.COM";
+      emailInput.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      dispatchClick(sendButton);
+      await flushAsync();
+      assert.equal(requestedKeys.length, 1);
+      assert.equal(sendButton.disabled, true);
+      assertSingleVisibleOutcome("Sending invite…");
+
+      dispatchClick(disclosureAction === "open create season" ? seasonToggle : inviteToggle);
+      assert.equal(inviteRegion.hidden, true);
+      assert.equal(seasonRegion.hidden, disclosureAction !== "open create season");
+      assertSingleVisibleOutcome("Sending invite…");
+      if (disclosureAction === "close and reopen") {
+        dispatchClick(inviteToggle);
+        await flushAsync();
+        assert.equal(inviteRegion.hidden, false);
+        assert.equal(sendButton.disabled, true);
+        assertSingleVisibleOutcome("Sending invite…");
+      }
+
+      assert(finishInvite);
+      await finishInvite();
+      await flushAsync();
+      const expectedOutcome = outcome === "sent"
+        ? "Sent to coach@example.com."
+        : outcome === "unknown"
+          ? "Delivery unconfirmed. Open the email-restricted recovery link."
+          : "Invite failed: Temporary failure.";
+      assertSingleVisibleOutcome(expectedOutcome);
+      assert.equal(sendButton.disabled, false);
+      assert.equal(inviteRegion.hidden, disclosureAction !== "close and reopen");
+
+      if (inviteRegion.hidden) {
+        dispatchClick(inviteToggle);
+        await flushAsync();
+      }
+      assert.equal(inviteRegion.hidden, false);
+      assert.equal(seasonRegion.hidden, true);
+      assertSingleVisibleOutcome(expectedOutcome);
+
+      const storageKey = "threefc-idempotency:organiser-invite:autumn-league-coach%40example.com";
+      if (outcome === "unknown") {
+        const recoveryLink = status.querySelector(".inline-recovery-link");
+        assert(recoveryLink instanceof page.window.HTMLAnchorElement);
+        assert.equal(recoveryLink.href, recoveryHref);
+        assert.equal(recoveryLink.closest("[hidden]"), null);
+      } else {
+        assert.equal(status.querySelector(".inline-recovery-link"), null);
+      }
+      if (outcome === "failure") {
+        assert.equal(emailInput.value, "Coach@Example.COM");
+        assert.equal(apiState.storage.get(storageKey), requestedKeys[0]);
+        dispatchClick(sendButton);
+        await flushAsync();
+        assert.equal(requestedKeys.length, 2);
+        assert.equal(requestedKeys[1], requestedKeys[0]);
+        assertSingleVisibleOutcome("Sent to coach@example.com.");
+      }
+      assert.equal(emailInput.value, "");
+      assert.equal(apiState.storage.has(storageKey), false);
+    });
+  }
+}
 
 test("invite page accepts organiser codes after confirmation and grants league admin access", async () => {
   const apiState = createMockApiState();
@@ -3308,7 +3467,7 @@ test("invite page accepts organiser codes after confirmation and grants league a
   assert.equal(apiState.leagueAccess.get(leagueAccessKey("autumn-league", "coach@example.com")), undefined);
   assert.equal(apiState.leagueInvites.get("ABCD2345")?.acceptedByUserId, null);
   assert.equal(invitePage.document.getElementById("setup-status")?.textContent, "");
-  assert.equal(invitePage.document.getElementById("setup-status")?.hidden, false);
+  assert.equal(invitePage.document.getElementById("setup-status")?.hidden, true);
   assert.equal(invitePage.document.getElementById("organiser-invite-code-form")?.hidden, true);
   assert.equal(invitePage.document.getElementById("organiser-invite-accept-code")?.textContent, "ABCD2345");
 
@@ -3580,8 +3739,8 @@ test("league static shell remounts nested league season routes as scoped season 
   assert.equal(activityStatus.getAttribute("role"), "status");
   assert.equal(activityStatus.getAttribute("aria-live"), "polite");
   assert(activityStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
-  assert(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
-  assert.equal(activityStatus.hidden, false);
+  assert.equal(activityStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"), false);
+  assert.equal(activityStatus.hidden, true);
   assert.equal(activityStatus.textContent, "");
 });
 
@@ -5297,7 +5456,8 @@ test("game page remains usable when goal timeline load fails", async () => {
     false,
   );
   assert.equal(error.hidden, false);
-  assert.equal(error.textContent, "Goal feed unavailable.");
+  assert.equal(status.hidden, true, "the detailed failure is the only visible global announcement");
+  assert.equal(error.textContent, "Could not load goal timeline. Goal feed unavailable.");
   assert.match(rosterTeams.textContent ?? "", /Red/);
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.equal(resultSummary.hidden, false);
@@ -5854,6 +6014,9 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   assert.match(status.textContent ?? "", /earlier goal save is still unconfirmed/);
+  assert.equal(status.hidden, true);
+  assert.equal(page.document.getElementById("setup-error")?.hidden, false);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /earlier goal save is still unconfirmed\. Restore access and retry the same details\./);
   dispatchClick(saveGoalButton);
   await flushAsync();
 
@@ -5879,6 +6042,9 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   assert.match(status.textContent ?? "", /earlier deletion is still unconfirmed/);
+  assert.equal(status.hidden, true);
+  assert.equal(page.document.getElementById("setup-error")?.hidden, false);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /earlier deletion is still unconfirmed.*retry/i);
   const replayDeleteGoalButton = page.document.querySelector(
     '[data-action="delete-goal"][data-event-id="goal-1"]',
   );
@@ -5903,6 +6069,9 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   assert.match(status.textContent ?? "", /earlier undo is still unconfirmed/);
+  assert.equal(status.hidden, true);
+  assert.equal(page.document.getElementById("setup-error")?.hidden, false);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /earlier undo is still unconfirmed.*retry/i);
   dispatchClick(undoLastGoalButton);
   await flushAsync();
 
@@ -8188,8 +8357,9 @@ test("game page serializes goal corrections through the finished-result refresh"
   assert.equal(completedStatus.getAttribute("data-activity"), "message");
   assert.equal(
     completedStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"),
-    true,
+    false,
   );
+  assert.equal(completedStatus.hidden, false, "confirmed mutations have visible feedback");
 });
 
 test("game page clears a committed finished-goal draft when timeline and result refresh fail", async () => {
@@ -8292,6 +8462,10 @@ test("game page clears a committed finished-goal draft when timeline and result 
   assert.match(status.textContent ?? "", /Goal added; timeline and result refresh failed/);
   assert.equal(status.getAttribute("data-state"), "error");
   assert.match(error.textContent ?? "", /neither the latest goal state nor the finished result/);
+  assert.equal(error.hidden, false);
+  assert.equal(status.hidden, true);
+  assert.match(error.textContent ?? "", /was saved.*could be refreshed\. Reload to try again/);
+  assert.doesNotMatch(error.textContent ?? "", /Goal added; timeline and result refresh failed/);
   assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
   assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
@@ -8530,7 +8704,7 @@ test("join page registers a player without organizer authentication", async () =
   assert.equal(joinPage.navigations.length, 0);
   assert.equal(joinPage.document.getElementById("join-code-value")?.textContent, "JOIN0001");
   assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "");
-  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, false);
+  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, true);
 
   const nicknameInput = joinPage.document.getElementById("join-player-nickname");
   const form = joinPage.document.getElementById("join-game-form");
@@ -8755,7 +8929,7 @@ test("join page keeps successful join state when signed-in claim fails", async (
   assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
   assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Ez");
   assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "Joined game. Player claim failed.");
-  assert.equal(joinPage.document.getElementById("setup-error")?.textContent, "Claim service unavailable.");
+  assert.equal(joinPage.document.getElementById("setup-error")?.textContent, "Joined game. Player claim failed. Claim service unavailable.");
   assert.equal(nicknameInput.disabled, true);
   assert.equal(joinButton.disabled, true);
 

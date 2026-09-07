@@ -68,12 +68,12 @@ test("component showcase routes render the setup shell", () => {
 
   const componentsResponse = executeRoute("GET", "/ui\/components");
   assert.equal(componentsResponse.statusCode, 200);
-  assert.match(componentsResponse.body, /Navigation items/);
-  assert.match(componentsResponse.body, /Player representation/);
-  assert.match(componentsResponse.body, /Information table/);
-  assert.match(componentsResponse.body, /Field validation/);
-  assert.match(componentsResponse.body, /Row action list/);
-  assert.match(componentsResponse.body, /Popover modal prompt/);
+  assert.match(componentsResponse.body, /Component examples/);
+  assert.match(componentsResponse.body, /Players and team choices/);
+  assert.match(componentsResponse.body, /Match totals/);
+  assert.match(componentsResponse.body, /Validation and feedback/);
+  assert.match(componentsResponse.body, /Actions/);
+  assert.match(componentsResponse.body, /Confirmation prompt/);
 });
 
 test("sign-in route renders dedicated auth page", () => {

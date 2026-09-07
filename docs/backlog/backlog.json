@@ -1942,7 +1942,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ]
     },
     {
@@ -1982,7 +1982,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",
@@ -2034,7 +2034,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",
@@ -2088,7 +2088,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",
@@ -2142,7 +2142,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",
@@ -2196,7 +2196,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",
@@ -2249,7 +2249,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",
@@ -2307,7 +2307,7 @@
       "reviewRequirements": [
         "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
         "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
         "asOf": "2026-09-07",

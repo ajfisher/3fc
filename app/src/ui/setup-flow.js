@@ -4,6 +4,8 @@
   let page = "dashboard";
   let statusElement = null;
   let errorElement = null;
+  let errorDetail = "";
+  let errorIncludesOutcome = false;
 
   function refreshShellReferences() {
     root = document.getElementById("setup-flow-root");
@@ -18,6 +20,8 @@
     page = root.getAttribute("data-page") ?? "dashboard";
     statusElement = document.getElementById("setup-status");
     errorElement = document.getElementById("setup-error");
+    errorDetail = errorElement?.textContent ?? "";
+    errorIncludesOutcome = false;
     return true;
   }
 
@@ -98,24 +102,45 @@
 
     const isLoading = state === "default" && /(?:…|\.{3})$/.test(text.trim());
     messageElement.textContent = text;
-    messageElement.classList.toggle("sr-only", state !== "error");
-    statusElement.hidden = false;
+    messageElement.classList.toggle("sr-only", isLoading);
     statusElement.setAttribute("data-activity", isLoading ? "loading" : "message");
     if (state === "default") {
       statusElement.removeAttribute("data-state");
-      return;
+    } else {
+      statusElement.setAttribute("data-state", state);
     }
-
-    statusElement.setAttribute("data-state", state);
+    syncFeedback();
   }
 
-  function showError(message) {
+  // Keep operation outcomes and recovery together in one visible live region.
+  // In particular, do not hide an uncertain-write instruction behind a generic
+  // network error, or announce the same failure from both global surfaces.
+  function syncFeedback() {
+    const message = statusElement?.querySelector('[data-ui="activity-message"]')?.textContent?.trim() ?? "";
+    const loading = statusElement?.getAttribute("data-activity") === "loading";
+    if (errorElement && !errorElement.hidden && errorDetail) {
+      errorElement.textContent = message && !loading && !errorIncludesOutcome && !errorDetail.includes(message)
+        ? `${message} ${errorDetail}`
+        : errorDetail;
+      if (statusElement) {
+        statusElement.hidden = true;
+      }
+      return;
+    }
+    if (statusElement) {
+      statusElement.hidden = !message;
+    }
+  }
+
+  function showError(message, { includesOutcome = false } = {}) {
     if (!errorElement) {
       return;
     }
 
-    errorElement.textContent = message;
+    errorDetail = message;
+    errorIncludesOutcome = includesOutcome;
     errorElement.hidden = false;
+    syncFeedback();
   }
 
   function clearError() {
@@ -125,6 +150,8 @@
 
     errorElement.hidden = true;
     errorElement.textContent = "";
+    errorDetail = "";
+    errorIncludesOutcome = false;
   }
 
   function setFieldMessage(fieldId, state = "default", message = null) {
@@ -1630,8 +1657,9 @@
 
       setFieldMessage("organiser-invite-email");
       createOrganiserInviteButton.disabled = true;
+      clearError();
+      setStatus("");
       setLocalStatus(organiserInviteEmailStatus, "Sending invite…", "default");
-      setStatus("Sending organiser invite…", "default");
       const idempotencyKey = idempotencyKeyForOrganiserInvite(leagueId, rawEmail);
 
       try {
@@ -1667,17 +1695,9 @@
 
         organiserInviteEmailInput.value = "";
         clearIdempotencyKeyForOrganiserInvite(leagueId, rawEmail);
-        setStatus(
-          payload.emailDelivery?.status === "unknown"
-            ? "Organiser invite created; email delivery unconfirmed."
-            : "Organiser invite sent.",
-          "success",
-        );
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not create organiser invite.";
         setLocalStatus(organiserInviteEmailStatus, `Invite failed: ${message}`, "error");
-        showError(message);
-        setStatus("Organiser invite failed.", "error");
       } finally {
         createOrganiserInviteButton.disabled = false;
       }
@@ -4001,7 +4021,7 @@
       renderLiveScoring();
 
       if (options.updateStatus !== false) {
-        setStatus("Game roster ready.", "success");
+        setStatus("");
       }
     }
 
@@ -4551,7 +4571,7 @@
         } catch (error) {
           refreshFailed = true;
           const message = error instanceof Error ? error.message : "Could not refresh the roster.";
-          showError(`Assignment was saved, but the latest roster could not be loaded. ${message}`);
+          showError(`Assignment was saved, but the latest roster could not be loaded. ${message}`, { includesOutcome: true });
           setStatus("Roster assignment saved; roster refresh failed.", "error");
         }
 
@@ -4714,6 +4734,7 @@
             if (!gameRefreshed) {
               showError(
                 `${savedLabel} was saved, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.`,
+                { includesOutcome: true },
               );
               setStatus(`${savedStatus}; timeline and result refresh failed.`, "error");
             } else if (finishedCorrection) {
@@ -4723,7 +4744,7 @@
                 "default",
               );
             } else {
-              showError(`${savedLabel} was saved, but the latest scores and goal timeline could not be loaded.`);
+              showError(`${savedLabel} was saved, but the latest scores and goal timeline could not be loaded.`, { includesOutcome: true });
               setStatus(`${savedStatus}; scores and timeline unavailable.`, "default");
             }
             return;
@@ -4734,6 +4755,7 @@
               eventId
                 ? "Goal was updated, but the finished result could not be refreshed."
                 : "Goal was added, but the finished result could not be refreshed.",
+              { includesOutcome: true },
             );
             setStatus(
               eventId
@@ -4815,6 +4837,7 @@
             if (!gameRefreshed) {
               showError(
                 "The latest goal was undone, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+                { includesOutcome: true },
               );
               setStatus("Latest goal undone; timeline and result refresh failed.", "error");
             } else if (isGameFinished()) {
@@ -4824,13 +4847,13 @@
                 "default",
               );
             } else {
-              showError("The latest goal was undone, but the latest scores and goal timeline could not be loaded.");
+              showError("The latest goal was undone, but the latest scores and goal timeline could not be loaded.", { includesOutcome: true });
               setStatus("Latest goal undone; scores and timeline unavailable.", "default");
             }
             return;
           }
           if (!gameRefreshed) {
-            showError("Latest goal was undone, but the finished result could not be refreshed.");
+            showError("Latest goal was undone, but the finished result could not be refreshed.", { includesOutcome: true });
             setStatus(
               "Latest goal undone. Run scores refreshed; Match Summary unavailable.",
               "default",
@@ -4948,19 +4971,20 @@
             if (!gameRefreshed) {
               showError(
                 "The goal was deleted, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
+                { includesOutcome: true },
               );
               setStatus("Goal deleted; timeline and result refresh failed.", "error");
             } else if (isGameFinished()) {
               showError("Goal details could not be loaded. Reload to try again.");
               setStatus("Goal deleted. Scores refreshed; goal timeline unavailable.", "default");
             } else {
-              showError("The goal was deleted, but the latest scores and goal timeline could not be loaded.");
+              showError("The goal was deleted, but the latest scores and goal timeline could not be loaded.", { includesOutcome: true });
               setStatus("Goal deleted; scores and timeline unavailable.", "default");
             }
             return;
           }
           if (!gameRefreshed) {
-            showError("Goal was deleted, but the finished result could not be refreshed.");
+            showError("Goal was deleted, but the finished result could not be refreshed.", { includesOutcome: true });
             setStatus("Goal deleted. Run scores refreshed; Match Summary unavailable.", "default");
             return;
           }

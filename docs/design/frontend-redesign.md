@@ -223,8 +223,13 @@ exit and verify cleanup. Stop abnormal groups; never blindly retry.
 
 Every PR preserves the versioned packet and maps criteria to evidence. Record
 risk, architecture/invariants, findings and rollback. Request GitHub Codex review
-on the exact head and verify its formal reviewed SHA; an advisory comment alone
-is not current-head review. Mark ready before adding/re-adding QA-ready. CI and
+on the exact head and verify its reviewed SHA. AJ clarified on 7 September 2026
+that a completed no-findings Codex comment identifying the current commit is
+also acceptable when the integration emits no formal review. Record its URL
+and matching commit honestly; do not describe it as a formal review. An unlinked,
+stale or still-running summary is not accepted, and all actual findings still
+require disposition. This does not change repository review policy.
+Mark ready before adding/re-adding QA-ready. CI and
 QA deploy must pass at that head. QA is shared, so serialize deployments and
 record evidence before another branch replaces it. Refresh the review gate and
 require review:ready plus current-head Codex evidence. Revisions/rebases require

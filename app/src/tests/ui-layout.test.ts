@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { JSDOM } from "jsdom";
+
 import {
   renderComponentShowcasePage,
   renderGamePage,
+  renderInvitePage,
   renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
   renderSignInPage,
   renderSetupHomePage,
+  renderStatusPage,
 } from "../ui/layout.js";
 import {
   renderButton,
@@ -26,6 +30,64 @@ import {
   renderStepChip,
   renderValidatedField,
 } from "../ui/primitives.js";
+
+test("customer page copy excludes every rejected design concept, including accessible descriptions", () => {
+  const apiBaseUrl = "https://qa-api.3fc.football";
+  const pages = [
+    ["dashboard", renderSetupHomePage(apiBaseUrl)],
+    ["league", renderLeaguePage(apiBaseUrl, "fixture-league")],
+    ["scoped season", renderSeasonPage(apiBaseUrl, "fixture-season", "fixture-league")],
+    ["legacy season", renderSeasonPage(apiBaseUrl, "fixture-season")],
+    ["game including all workflow panels", renderGamePage(apiBaseUrl, { gameId: "fixture-game" })],
+    ["join with code", renderJoinPage(apiBaseUrl, "ABCD2345")],
+    ["join without code", renderJoinPage(apiBaseUrl, "")],
+    ["invite with code", renderInvitePage(apiBaseUrl, "ABCD2345")],
+    ["invite without code", renderInvitePage(apiBaseUrl, "")],
+    ["sign in", renderSignInPage(apiBaseUrl, "/setup")],
+    ["magic-link completion", renderMagicLinkCallbackPage(apiBaseUrl)],
+    ["status", renderStatusPage("Page unavailable", "Please try again.")],
+  ] as const;
+  // Keep the complete rejected-copy contract from docs/design/frontend-redesign.md
+  // explicit. Split paired slogans/sentences so either half is caught on its own.
+  const rejectedCopy = [
+    "One account for playing and organising",
+    "Your context",
+    "Permissions follow the league and game you open",
+    "Your player history stays with your account",
+    "Your games, people and progress",
+    "Your week with 3FC",
+    "Only games linked to your player profile count towards your performance",
+    "Account access is managed separately from team assignment",
+    "Scoring tools for this game",
+    "Your access applies across this league",
+    "Organiser invitations and league-wide scorer access belong here, separate from player participation",
+  ];
+  const normalize = (copy: string): string => copy.toLowerCase().replace(/[\s.,;:!?–—-]+/g, " ").trim();
+
+  for (const [page, html] of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      const strings = [document.documentElement.textContent ?? ""];
+      // textContent deliberately includes hidden panels and sr-only descriptions.
+      // Read naming attributes separately: moving filler out of view must not
+      // silently reintroduce it for screen-reader or tooltip users.
+      for (const element of document.querySelectorAll("[aria-label], [aria-description], [title], [alt], [placeholder]")) {
+        for (const attribute of ["aria-label", "aria-description", "title", "alt", "placeholder"]) {
+          strings.push(element.getAttribute(attribute) ?? "");
+        }
+      }
+      for (const copy of strings) {
+        const normalized = normalize(copy);
+        for (const rejected of rejectedCopy) {
+          assert.equal(normalized.includes(normalize(rejected)), false, `${page} contains rejected copy: ${rejected}`);
+        }
+      }
+    } finally {
+      dom.window.close();
+    }
+  }
+});
 
 test("primitives render expected semantic and data-ui hooks", () => {
   const button = renderButton("Continue", "danger");
@@ -236,10 +298,13 @@ test("season page includes game create form and games table", () => {
   assert.doesNotMatch(html, /Season page ready|friendly URL/i);
 });
 
-test("component showcase page includes navigation, players, tables, validation, row actions, and modal", () => {
+test("component showcase uses labelled development data and working in-page destinations", () => {
   const html = renderComponentShowcasePage("https://qa-api.3fc.football");
 
   assert.match(html, /data-testid="component-showcase"/);
+  assert.match(html, /<h1>Design fixtures<\/h1>/);
+  assert.match(html, /Development fixtures only\./);
+  assert.match(html, /no account or game data is loaded or saved\./);
   assert.match(html, /data-testid="panel-navigation"/);
   assert.match(html, /data-testid="panel-player"/);
   assert.match(html, /data-testid="panel-table"/);
@@ -247,12 +312,81 @@ test("component showcase page includes navigation, players, tables, validation, 
   assert.match(html, /data-testid="panel-row-actions"/);
   assert.match(html, /data-testid="panel-modal"/);
   assert.match(html, /data-testid="panel-setup-composition"/);
-  assert.match(html, /data-testid="validation-invalid"/);
-  assert.match(html, /data-testid="validation-valid"/);
-  assert.match(html, /Delete game\\?/);
+  assert.match(html, /data-testid="panel-hidden-states"/);
+
+  const destinations = [...html.matchAll(/<a\b[^>]*href="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(destinations, [
+    "#fixture-controls", "#fixture-players", "#fixture-totals", "#fixture-feedback", "#fixture-totals",
+  ]);
+  for (const destination of destinations) {
+    assert.ok(html.includes(`id="${destination?.slice(1)}" tabindex="-1"`));
+  }
+  assert.doesNotMatch(html, /href="\/(?:standings|profile|games\/live)"/);
+  assert.doesNotMatch(html, /Season standings|Your context|Your games, people and progress/);
+  assert.doesNotMatch(html, /data-action="(?:edit|clone|delete)-game/);
+  assert.doesNotMatch(html, /<script[^>]+(?:setup-flow|auth-flow)\.js/);
+  assert.doesNotMatch(html, /<script[^>]+https?:\/\//);
+});
+
+test("component showcase includes native controls and functional or explicitly disabled action examples", () => {
+  const html = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+  for (const type of ["text", "email", "date", "datetime-local", "checkbox"]) {
+    assert.match(html, new RegExp(`type="${type}"`));
+  }
+  assert.match(html, /<label for="fixture-status">Game status<\/label>/);
+  assert.match(html, /<select data-ui="input" id="fixture-status" name="fixture-status">/);
+  assert.match(html, /autocomplete="email" inputmode="email" autocapitalize="none"/);
+  for (const variant of ["primary", "secondary", "ghost", "danger"]) {
+    assert.match(html, new RegExp(`data-variant="${variant}" type="button" data-modal-open="confirm-delete-game"`));
+  }
+  assert.match(html, /disabled="" aria-label="Save example, disabled"/);
+  assert.match(html, /disabled="" aria-busy="true"[^>]*aria-label="Saving example"/);
+  assert.match(html, /aria-label="View example match totals"/);
+  assert.match(html, /aria-label="Open example edit prompt"/);
+  assert.match(html, /aria-label="Open example delete prompt"/);
+  assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
   assert.match(html, /data-modal-open="confirm-delete-game"/);
   assert.match(html, /data-modal-confirm="confirm-delete-game"/);
+  assert.match(html, /Delete example game\?/);
+  assert.match(html, /Confirming will not delete a game\./);
   assert.match(html, /<script src="\/ui\/modal\.js" defer><\/script>/);
+  assert.doesNotMatch(html, /\son(?:click|change|submit)=/);
+});
+
+test("component showcase covers long names, three teams, match statuses and all thirds", () => {
+  const html = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+  assert.match(html, /Alexandra van der Westhuizen-Smith/);
+  assert.match(html, /<caption>Example finished game<\/caption>/);
+  assert.match(html, /<th scope="col">Team<\/th><th scope="col">Conceded<\/th><th scope="col">Scored<\/th>/);
+  assert.match(html, /type="radio" name="fixture-team" value="red" checked/);
+  assert.match(html, /type="radio" name="fixture-team" value="blue" \/>/);
+  assert.match(html, /type="radio" name="fixture-team" value="yellow" disabled/);
+  assert.match(html, /data-state="unclaimed" role="img" aria-label="Not claimed"/);
+  assert.match(html, /data-state="claimed" role="img" aria-label="Claimed"/);
+  for (const status of ["scheduled", "live", "finished"]) {
+    assert.match(html, new RegExp(`data-ui="status-chip" data-status="${status}"`));
+  }
+  for (const third of [1, 2, 3]) {
+    assert.match(html, new RegExp(`data-ui="third-indicator" data-third="${third}" role="img" aria-label="Third ${third} of 3"`));
+  }
+});
+
+test("component showcase exposes recovery copy and hidden-state fixtures for computed-visibility checks", () => {
+  const html = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+  assert.match(html, /data-testid="validation-invalid"/);
+  assert.match(html, /data-testid="validation-valid"/);
+  assert.match(html, /data-state="loading" role="status">Loading games…/);
+  assert.match(html, /data-state="success" role="status">Player added\./);
+  assert.match(html, /data-state="error">Couldn’t load the teams\. Try again\./);
+  assert.match(html, /data-state="uncertain">We couldn’t confirm whether the goal was saved\. Your details are still here\./);
+  assert.match(html, /data-state="empty">No upcoming games\./);
+  for (const ui of ["auth-form", "claim-panel", "id-preview"]) {
+    assert.match(html, new RegExp(`data-ui="${ui}" data-testid="fixture-hidden-${ui}" hidden`));
+  }
+  assert.match(html, /data-ui="prompt-overlay" data-modal="confirm-delete-game" hidden/);
 });
 
 test("magic-link callback page includes auth flow script and callback messaging", () => {
