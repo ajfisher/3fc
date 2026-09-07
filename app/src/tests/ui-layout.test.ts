@@ -517,7 +517,7 @@ test("sign-in page renders magic-link form and carries return path", () => {
   assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
 });
 
-test("game page renders editable game metadata view", () => {
+test("game page retains game, roster and scoring hooks within the readable match shell", () => {
   const html = renderGamePage("https://qa-api.3fc.football", {
     gameId: "game-20260223-a1b2c3d4",
   });
@@ -538,20 +538,22 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, />Save<\/span>/);
   assert.match(
     html,
-    /data-ui="game-details-actions">[\s\S]*data-testid="save-game"[\s\S]*data-testid="game-mode-next-players"[\s\S]*<\/div>/,
+    /data-ui="game-details-actions">[\s\S]*data-testid="save-game"[\s\S]*data-action="cancel-game-edit"[\s\S]*<\/div>/,
   );
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="delete-game"[^>]*disabled="disabled"/);
   assert.match(html, /id="game-delete-lock-reason" hidden/);
   assert.match(html, /data-testid="create-another-game"/);
-  assert.match(html, /role="toolbar" aria-label="Game actions"/);
+  assert.match(html, /data-ui="more-actions" data-game-capability="admin" aria-label="Game actions" hidden/);
   assert.ok(html.indexOf('aria-label="Game actions"') < html.indexOf('data-testid="setup-flow-root"'));
   assert.equal((html.match(/data-action="delete-game"/g) ?? []).length, 1);
   assert.match(html, /data-testid="player-create-row"/);
-  assert.match(html, /data-ui="inline-input-actions"/);
+  assert.doesNotMatch(html, /data-ui="inline-input-actions"/);
+  assert.match(html, /id="game-league-link">League/);
+  assert.match(html, /id="game-season-link">Season/);
   assert.match(html, /id="player-nickname"[\s\S]*data-testid="quick-create-player"/);
-  assert.match(html, /aria-label="Create player"/);
-  assert.match(html, /aria-label="Add players"/);
+  assert.match(html, /aria-label="Add player"/);
+  assert.match(html, /aria-label="View teams"/);
   assert.match(html, /data-testid="game-mode-nav"/);
   assert.match(html, /data-testid="game-mode-structure-tab"/);
   assert.match(html, /data-testid="game-mode-players-tab"/);
@@ -635,6 +637,108 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="panel-game-roster"/);
   assert.match(html, /data-testid="quick-create-player"/);
   assert.match(html, /data-testid="roster-teams"/);
+});
+
+test("match destinations are stable links and scoring is a separate permitted task", () => {
+  const dom = new JSDOM(renderGamePage("/api", { gameId: "opaque-game-id" }));
+  try {
+    const document = dom.window.document;
+    assert.equal(document.querySelector("h1")?.textContent, "Game");
+    assert.equal(document.querySelector('[data-ui="hero-kicker"]'), null);
+    assert.equal(document.querySelector('nav[aria-label="Primary"] a')?.getAttribute("href"), "/setup");
+    assert.equal(document.querySelector('[data-ui="breadcrumbs"]')?.tagName, "NAV");
+    assert.equal(document.querySelector('[data-ui="breadcrumbs"] ol')?.children.length, 4);
+    assert.equal(document.querySelectorAll("#game-league-link, #game-season-link").length, 2);
+    assert.equal(document.getElementById("game-subtitle")?.textContent, "");
+    assert.equal(document.getElementById("game-subtitle")?.hasAttribute("hidden"), true);
+
+    const destinations = [...document.querySelectorAll('[data-ui="game-mode-nav"] a')];
+    assert.deepEqual(destinations.map((anchor) => anchor.getAttribute("href")), ["#overview", "#teams", "#results"]);
+    assert.deepEqual(destinations.map((anchor) => anchor.textContent?.trim()), ["Overview", "Teams", "Results"]);
+    assert.equal(destinations[0]?.getAttribute("aria-current"), "page");
+    assert.equal(destinations[1]?.hasAttribute("aria-current"), false);
+    assert.equal(destinations[2]?.hasAttribute("hidden"), true, "results require a loaded finished game");
+    assert.equal(document.querySelectorAll('[role="tablist"], [role="tab"], [role="tabpanel"], [role="toolbar"]').length, 0);
+    assert.equal(document.querySelectorAll("[data-mode-meta]").length, 0);
+    const score = document.querySelector('[data-testid="game-mode-run-tab"]');
+    assert(score instanceof dom.window.HTMLButtonElement);
+    assert.equal(score.closest("nav"), null);
+    assert.equal(score.closest("#setup-flow-root") !== null, true);
+    assert.equal(score.textContent, "Score game");
+    assert.equal(score.hidden, true);
+    assert.equal(score.disabled, true);
+
+    const more = document.querySelector('[data-ui="more-actions"]');
+    assert(more instanceof dom.window.HTMLDetailsElement);
+    assert.equal(more.hidden, true);
+    assert.equal(more.open, false);
+    assert.equal(more.querySelector("summary")?.textContent, "More");
+    assert.equal(more.querySelector('[data-testid="delete-game"]') !== null, true);
+    assert.equal(more.querySelector('[data-testid="create-another-game"]') !== null, true);
+    assert.equal(more.querySelector("#game-delete-lock-reason")?.classList.contains("sr-only"), false);
+    assert.equal(more.querySelector("#game-delete-lock-reason")?.textContent, "Finished games can’t be deleted.");
+
+    const finish = document.querySelectorAll('[data-testid="finish-game"]');
+    assert.equal(finish.length, 1);
+    assert.equal(finish[0]?.closest("#game-mode-run") !== null, true);
+    assert.equal(document.querySelector('#game-mode-run [data-action="select-game-mode"][data-game-mode="structure"]')?.textContent, "Back to game");
+    const correction = document.querySelector('[data-action="correct-finished-result"]');
+    assert.equal(correction?.closest("#game-mode-final") !== null, true);
+    assert.equal(correction?.hasAttribute("hidden"), true);
+    assert.equal(correction?.getAttribute("data-game-capability"), "correct");
+    assert.equal(correction?.textContent?.trim(), "Correct result");
+    const ids = [...document.querySelectorAll("[id]")].map((element) => element.id);
+    assert.equal(new Set(ids).size, ids.length, "stable controller hooks are unique");
+  } finally { dom.window.close(); }
+});
+
+test("match overview is readable before intentional editing and roster entry is keyboard-submittable", () => {
+  const dom = new JSDOM(renderGamePage("/api", { gameId: "opaque-game-id" }));
+  try {
+    const document = dom.window.document;
+    for (const id of ["game-overview-kickoff", "game-overview-status", "game-overview-third-length"]) {
+      const value = document.getElementById(id);
+      assert.equal(value?.tagName, "DD");
+      assert.equal(value?.closest("form"), null);
+      assert.equal(value?.closest('[data-ui="game-overview"]') !== null, true);
+    }
+    for (const { formId, regionId, toggle, cancel, submit } of [
+      { formId: "game-edit-form", regionId: "game-edit-region", toggle: "toggle-game-edit", cancel: "cancel-game-edit", submit: "save-game" },
+      { formId: "player-create-form", regionId: "player-create-region", toggle: "toggle-player-create", cancel: "cancel-player-create", submit: "quick-create-player" },
+    ]) {
+      const form = document.getElementById(formId);
+      const opener = document.querySelector(`[data-action="${toggle}"]`);
+      assert(form instanceof dom.window.HTMLFormElement);
+      assert.equal(form.getAttribute("aria-label")?.length! > 0, true);
+      assert.equal(form.closest(`#${regionId}`)?.hasAttribute("hidden"), true);
+      assert.equal(form.closest(`#${regionId}`)?.hasAttribute("data-game-capability"), false, "disclosure state is independent of permission visibility");
+      assert.equal(form.querySelectorAll("form").length, 0);
+      assert.equal(form.querySelectorAll('button[type="submit"]').length, 1);
+      assert.equal(form.querySelector(`[data-action="${submit}"]`)?.getAttribute("type"), "submit");
+      assert.equal(form.querySelector(`[data-action="${submit}"] [data-ui="icon"]`)?.getAttribute("aria-hidden"), "true");
+      assert.equal(form.querySelector(`[data-action="${cancel}"]`)?.getAttribute("type"), "button");
+      assert.equal(opener?.getAttribute("aria-expanded"), "false");
+      assert.equal(opener?.getAttribute("aria-controls"), regionId);
+      assert.equal(opener?.hasAttribute("hidden"), true);
+    }
+    assert.equal(document.querySelector('label[for="player-nickname"]')?.textContent, "Player name");
+    assert.equal(document.querySelector('[data-testid="quick-create-player"]')?.textContent?.trim(), "Add player");
+    assert.equal(document.querySelectorAll("#player-search").length, 1);
+    assert.equal(document.querySelector("#player-pool-title")?.textContent, "Unassigned");
+    assert.equal(document.querySelector("#player-pool")?.textContent, "");
+    assert.equal(document.querySelector("#roster-teams")?.textContent, "");
+    assert.equal(document.querySelector('[data-action="edit-finished-teams"]')?.getAttribute("data-game-capability"), "correct");
+    assert.equal(document.querySelector('[data-action="edit-finished-teams"]')?.hasAttribute("hidden"), true);
+    for (const [selector, label] of [
+      ['[data-ui="join-disclosure"]', "Join game"], ['[data-ui="reference-ids"]', "Reference IDs"],
+    ]) {
+      const details = document.querySelector(selector);
+      assert(details instanceof dom.window.HTMLDetailsElement);
+      assert.equal(details.open, false);
+      assert.equal(details.querySelector("summary")?.textContent, label);
+    }
+    assert.doesNotMatch(document.body.textContent ?? "", /Roster setup|Create players and assign|Edit core game metadata|Review the final result and player statistics/);
+  } finally { dom.window.close(); }
 });
 
 test("join page renders player registration shell", () => {

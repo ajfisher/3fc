@@ -601,6 +601,9 @@ async function createAndAssignPlayer(
   teamId: "red" | "blue" | "yellow",
   onCreatedPlayerId: (playerId: string) => void,
 ): Promise<string> {
+  if (!(await page.locator("#player-create-region").isVisible())) {
+    await page.locator('[data-action="toggle-player-create"]').click();
+  }
   await page.locator("#player-nickname").fill(nickname);
   await page.getByTestId("quick-create-player").click();
 
@@ -948,6 +951,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("setup-shell")).toBeVisible();
 
       await page.locator("#league-name").fill(leagueName);
+      await page.locator('#create-league-form [data-ui="additional-options"] > summary').click();
       await page.locator("#league-friendly-url").fill(leagueSlug);
       await Promise.all([
         page.waitForURL(`**/leagues/${leagueSlug}`),
@@ -960,6 +964,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(createSeasonToggle).toHaveAttribute("aria-expanded", "true");
       await expect(page.locator("#season-name")).toBeFocused();
       await page.locator("#season-name").fill(seasonName);
+      await page.locator('#create-season-form [data-ui="additional-options"] > summary').click();
       await page.locator("#season-friendly-url").fill(seasonSlug);
       await Promise.all([
         page.waitForURL(`**/seasons/${seasonSlug}`),
@@ -984,6 +989,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.locator("#game-title")).not.toHaveText(gameId);
       await expect(page.getByTestId("game-mode-structure")).toBeVisible();
       await expect(page.getByTestId("game-mode-players")).toBeHidden();
+      await page.locator('[data-ui="join-disclosure"] > summary').click();
       const joinCodeValue = page.getByTestId("game-join-code-value");
       await expect(joinCodeValue).toHaveText(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
       const joinCode = (await joinCodeValue.innerText()).trim();
@@ -1071,10 +1077,14 @@ test.describe("M2 local-stack smoke", () => {
       await startThird(page, 3);
       await finishThird(page, 3);
 
-      await expect(page.getByTestId("game-mode-final")).toBeVisible();
+      // Finishing the last third is not finalisation. Stay in scoring until
+      // the organiser explicitly finishes the game and the API confirms it.
+      await expect(page.getByTestId("game-mode-run")).toBeVisible();
+      await expect(page.getByTestId("game-mode-final-tab")).toBeHidden();
       await expect(page.getByTestId("finish-game")).toBeEnabled();
       await page.getByTestId("finish-game").click();
 
+      await expect(page.getByTestId("game-mode-final")).toBeVisible();
       await expect(page.getByTestId("game-result-summary")).toBeVisible();
       await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match Summary" })).toBeVisible();
       await expect(page.getByTestId("finalisation-context").locator("dt")).toHaveText("Status");
@@ -1100,9 +1110,16 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
       await expect(page.getByTestId("delete-game")).toBeDisabled();
       await selectGameMode(page, "players");
+      await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
+      await page.locator('[data-action="edit-finished-teams"]').click();
+      if (!(await page.locator("#player-create-region").isVisible())) {
+        await page.locator('[data-action="toggle-player-create"]').click();
+      }
       await expect(page.getByTestId("quick-create-player")).toBeEnabled();
       await expectAllEnabled(page.locator('[data-action="assign-player"]'));
-      await selectGameMode(page, "run");
+      await selectGameMode(page, "final");
+      await page.locator('[data-action="correct-finished-result"]').click();
+      await expect(page.getByTestId("game-mode-run")).toBeVisible();
       await expect(page.locator("#goal-scoring-team")).toHaveValue("");
       await expect(page.locator("#goal-conceding-team")).toBeDisabled();
       await expect(page.locator("#goal-scorer")).toBeDisabled();

@@ -965,29 +965,75 @@ export interface GameContextPageInput {
 }
 
 function renderGameModeTab(input: {
-  mode: "structure" | "players" | "run" | "final";
+  mode: "structure" | "players" | "final";
   label: string;
-  meta: string;
+  destination: "overview" | "teams" | "results";
   active?: boolean;
 }): string {
   const tabId = `game-mode-tab-${input.mode}`;
-  const panelId = `game-mode-${input.mode}`;
-  const controls = input.mode === "final" ? "" : ` aria-controls="${panelId}"`;
-  return `<button data-ui="game-mode-tab" type="button" id="${tabId}"${controls} aria-pressed="${
-    input.active ? "true" : "false"
-  }" data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab">
+  return `<a data-ui="game-mode-tab" id="${tabId}" href="#${input.destination}"${input.active ? ' aria-current="page"' : ""} data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab"${input.mode === "final" ? " hidden" : ""}>
     <span data-mode-label="${input.mode}">${escapeHtml(input.label)}</span>
-    <small data-mode-meta="${input.mode}">${escapeHtml(input.meta)}</small>
-  </button>`;
+  </a>`;
 }
 
 export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput): string {
   const gameId = escapeHtml(input.gameId);
   const gameHeading = "Game";
   const gameDetailsPanel = renderPanel(
-    "Game details",
+    "Overview",
     "",
-    `<section data-ui="join-details" data-testid="game-join-details" aria-label="Join game details">
+    `<dl data-ui="game-overview">
+      <div><dt>Kickoff</dt><dd id="game-overview-kickoff">Loading…</dd></div>
+      <div><dt>Status</dt><dd id="game-overview-status">Loading…</dd></div>
+      <div><dt>Third length</dt><dd id="game-overview-third-length">Loading…</dd></div>
+    </dl>
+    <div data-ui="game-overview-actions">
+      ${renderIconButton({
+        icon: "pencil", label: "Edit game", text: "Edit game",
+        attributes: {
+          "data-action": "toggle-game-edit", "data-game-capability": "admin", hidden: "", disabled: "",
+          "aria-expanded": "false", "aria-controls": "game-edit-region",
+        },
+      })}
+      ${renderIconButton({
+        icon: "users", label: "View teams", text: "View teams",
+        attributes: {
+          "data-action": "select-game-mode", "data-game-mode": "players", "data-testid": "game-mode-next-players",
+        },
+      })}
+    </div>
+    <div id="game-edit-region" data-ui="disclosure-panel" hidden>
+      <form id="game-edit-form" data-ui="management-form" aria-label="Edit game" novalidate>
+        <div data-ui="game-fields">
+          ${renderValidatedField({
+            id: "game-edit-kickoff", label: "Kickoff time", type: "datetime-local", required: true,
+          })}
+          <div data-ui="field">
+            <label for="game-edit-status">Status</label>
+            <select id="game-edit-status" name="game-edit-status" data-ui="input" data-testid="game-edit-status">
+              <option value="scheduled">Scheduled</option>
+              <option value="live">Live</option>
+              <option value="finished" disabled>Finished</option>
+            </select>
+          </div>
+          <div data-ui="field">
+            <label for="game-edit-third-length">Third length</label>
+            <select id="game-edit-third-length" name="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length">
+              <option value="20">20 minutes</option>
+              <option value="25">25 minutes</option>
+              <option value="30">30 minutes</option>
+            </select>
+          </div>
+        </div>
+        <div data-ui="game-details-actions">
+          <button type="submit" data-ui="icon-button" data-variant="primary" aria-label="Save game" data-action="save-game" data-testid="save-game">${renderIcon("save")}<span data-ui="button-text">Save</span></button>
+          ${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-game-edit" })}
+        </div>
+      </form>
+    </div>
+    <details data-ui="join-disclosure">
+      <summary>Join game</summary>
+      <section data-ui="join-details" data-testid="game-join-details" aria-label="Join game details">
       <div data-ui="join-qr-block">
         <h3>Join QR</h3>
         <div id="game-join-qr" data-ui="join-qr" data-testid="game-join-qr">Loading…</div>
@@ -996,7 +1042,8 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
         <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
       </dl>
-    </section>
+      </section>
+    </details>
     <details data-ui="reference-ids" data-testid="game-reference-ids">
       <summary>Reference IDs</summary>
       <dl data-ui="id-preview" data-testid="game-context-details">
@@ -1004,53 +1051,8 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
         <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
       </dl>
-    </details>
-    <div data-ui="game-fields">
-      ${renderValidatedField({
-      id: "game-edit-kickoff",
-      label: "Kickoff time",
-      type: "datetime-local",
-      required: true,
-    })}
-    <div data-ui="field">
-      <label for="game-edit-status">Status</label>
-      <select id="game-edit-status" data-ui="input" data-testid="game-edit-status">
-        <option value="scheduled">Scheduled</option>
-        <option value="live">Live</option>
-        <option value="finished" disabled>Finished</option>
-      </select>
-    </div>
-    <div data-ui="field">
-      <label for="game-edit-third-length">Third length</label>
-      <select id="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length">
-        <option value="20">20 minutes</option>
-        <option value="25">25 minutes</option>
-        <option value="30">30 minutes</option>
-      </select>
-    </div>
-    </div>`,
-    `<div data-ui="game-details-actions">
-      ${renderIconButton({
-        icon: "save",
-        label: "Save game",
-        text: "Save",
-        variant: "primary",
-        attributes: {
-          "data-action": "save-game",
-          "data-testid": "save-game",
-        },
-      })}
-      ${renderIconButton({
-        icon: "users",
-        label: "Add players",
-        text: "Add players",
-        attributes: {
-          "data-action": "select-game-mode",
-          "data-game-mode": "players",
-          "data-testid": "game-mode-next-players",
-        },
-      })}
-    </div>`,
+    </details>`,
+    "",
     "panel-game-details",
   );
   const timerPanel = `<section data-ui="run-timer-panel" data-testid="panel-game-timer" aria-labelledby="run-timer-heading">
@@ -1090,33 +1092,43 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </div>
   </section>`;
   const rosterPanel = renderPanel(
-    "Roster setup",
-    "Create players and assign them to game teams.",
-    `<div data-ui="inline-create" data-testid="player-create-row">
-      <div data-ui="field" data-validated="true">
-        <label for="player-nickname">Player nickname</label>
-        <div data-ui="inline-input-actions">
-          <input data-ui="input" data-state="default" id="player-nickname" name="player-nickname" type="text" placeholder="Ari" aria-describedby="player-nickname-notice" />
-          ${renderIconButton({
-            icon: "circle-plus",
-            label: "Create player",
-            variant: "primary",
-            attributes: {
-              "data-action": "quick-create-player",
-              "data-testid": "quick-create-player",
-            },
-          })}
+    "Teams",
+    "",
+    `<div data-ui="roster-actions">
+      ${renderIconButton({
+        icon: "circle-plus", label: "Add player", text: "Add player", variant: "primary",
+        attributes: {
+          "data-action": "toggle-player-create", "data-game-capability": "roster", hidden: "", disabled: "",
+          "aria-expanded": "false", "aria-controls": "player-create-region",
+        },
+      })}
+      ${renderIconButton({
+        icon: "pencil", label: "Edit teams", text: "Edit teams",
+        attributes: { "data-action": "edit-finished-teams", "data-game-capability": "correct", hidden: "", disabled: "" },
+      })}
+    </div>
+    <div id="player-create-region" data-ui="disclosure-panel" hidden>
+      <form id="player-create-form" data-ui="management-form" aria-label="Add player" novalidate>
+        <div data-ui="inline-create" data-testid="player-create-row">
+          <div data-ui="field" data-validated="true">
+            <label for="player-nickname">Player name</label>
+            <input data-ui="input" data-state="default" id="player-nickname" name="player-nickname" type="text" placeholder="Ari" autocomplete="off" aria-describedby="player-nickname-notice" />
+            <div data-ui="field-message"><p data-ui="field-hint" id="player-nickname-notice" data-default-message="" data-default-kind="empty"></p></div>
+          </div>
         </div>
-        <div data-ui="field-message"><p data-ui="field-hint" id="player-nickname-notice" data-default-message="" data-default-kind="empty"></p></div>
-      </div>
+        <div data-ui="game-details-actions">
+          <button type="submit" data-ui="icon-button" data-variant="primary" aria-label="Add player" data-action="quick-create-player" data-testid="quick-create-player">${renderIcon("circle-plus")}<span data-ui="button-text">Add player</span></button>
+          ${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-player-create" })}
+        </div>
+      </form>
     </div>
     <div data-ui="field">
       <label for="player-search">Search players</label>
-      <input data-ui="input" id="player-search" name="player-search" type="search" placeholder="Nickname" autocomplete="off" />
+      <input data-ui="input" id="player-search" name="player-search" type="search" autocomplete="off" />
     </div>
     <div data-ui="roster-workspace" data-testid="roster-workspace">
       <section data-ui="player-pool" aria-labelledby="player-pool-title">
-        <h3 id="player-pool-title">Players</h3>
+        <h3 id="player-pool-title">Unassigned</h3>
         <div id="player-pool" data-ui="player-list" data-testid="player-pool"></div>
       </section>
       <section data-ui="roster-board" aria-labelledby="roster-board-title">
@@ -1125,14 +1137,15 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       </section>
     </div>`,
     `<div data-ui="mode-actions">
-      ${renderButton("Game", "secondary", {
+      ${renderButton("Back to game", "secondary", {
         type: "button",
         "data-action": "select-game-mode",
         "data-game-mode": "structure",
         "data-testid": "game-mode-back-structure",
       })}
-      ${renderButton("Run", "primary", {
+      ${renderButton("Score game", "primary", {
         type: "button",
+        "data-game-capability": "score", hidden: "", disabled: "",
         "data-action": "select-game-mode",
         "data-game-mode": "run",
         "data-testid": "game-mode-next-run",
@@ -1196,26 +1209,21 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </details>`;
   const finalPanel = renderPanel(
     "Match Summary",
-    "Review the final result and player statistics.",
+    "",
     `<div data-ui="finalisation-board" data-testid="finalisation-board">
       <dl data-ui="final-summary-status" data-testid="finalisation-context">
         <div><dt>Status</dt><dd id="final-game-status">Loading…</dd></div>
       </dl>
       <div data-ui="game-result-summary" id="game-result-summary" data-testid="game-result-summary" hidden></div>
     </div>`,
-    `<div data-ui="button-row">
-      ${renderButton("Finish game", "primary", {
-        type: "button",
-        "data-action": "finish-game",
-        "data-testid": "finish-game",
-      })}
-    </div>
-    <div data-ui="mode-actions">
-      ${renderButton("Run", "secondary", {
-        type: "button",
-        "data-action": "select-game-mode",
-        "data-game-mode": "run",
+    `<div data-ui="mode-actions">
+      ${renderIconButton({
+        icon: "pencil", label: "Correct result", text: "Correct result",
+        attributes: {
+        "data-action": "correct-finished-result",
+        "data-game-capability": "correct", hidden: "", disabled: "",
         "data-testid": "game-mode-back-run",
+        },
       })}
     </div>`,
     "panel-game-final",
@@ -1232,15 +1240,18 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="game-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
-        ${renderAccountActions()}
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="game-league-link" href="/setup">League</a> / <a id="game-season-link" href="/setup">Season</a> / Game</span>
+        ${renderManagementNavigation()}
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><a id="game-league-link">League</a></li><li><a id="game-season-link">Season</a></li><li><span aria-current="page">Game</span></li></ol></nav>
         <h1 id="game-title">${gameHeading}</h1>
-        <p data-ui="hero-copy" id="game-subtitle">Loading game details…</p>
-        <div data-ui="header-actions" role="toolbar" aria-label="Game actions">
+        <p data-ui="hero-copy" id="game-subtitle" hidden></p>
+        <details data-ui="more-actions" data-game-capability="admin" aria-label="Game actions" hidden>
+          <summary>More</summary>
+          <div data-ui="game-management">
           ${renderIconLink({
             href: "/setup",
             icon: "calendar-plus",
             label: "Create another game",
+            text: "Create another game",
             attributes: {
               id: "create-another-game-link",
               "data-testid": "create-another-game",
@@ -1249,6 +1260,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           ${renderIconButton({
             icon: "trash-2",
             label: "Delete game",
+            text: "Delete game",
             variant: "danger",
             attributes: {
               "data-action": "delete-game",
@@ -1256,20 +1268,27 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               disabled: "disabled",
             },
           })}
-          <span class="sr-only" id="game-delete-lock-reason" hidden>Finished games cannot be deleted.</span>
-        </div>
+          <p data-ui="field-hint" id="game-delete-lock-reason" hidden>Finished games can’t be deleted.</p>
+          </div>
+        </details>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
         ${renderActivityStatus("Loading game data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
-        <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game workflow">
-          <div data-ui="game-mode-tabs" aria-label="Game workflow modes">
-            ${renderGameModeTab({ mode: "structure", label: "Game", meta: "Setup", active: true })}
-            ${renderGameModeTab({ mode: "players", label: "Players", meta: "Roster" })}
-            ${renderGameModeTab({ mode: "run", label: "Run", meta: "Timer" })}
-            ${renderGameModeTab({ mode: "final", label: "Final", meta: "Summary" })}
+        <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game">
+          <div data-ui="game-mode-tabs">
+            ${renderGameModeTab({ mode: "structure", label: "Overview", destination: "overview", active: true })}
+            ${renderGameModeTab({ mode: "players", label: "Teams", destination: "teams" })}
+            ${renderGameModeTab({ mode: "final", label: "Results", destination: "results" })}
           </div>
         </nav>
+        <div data-ui="match-task-actions">
+          ${renderButton("Score game", "primary", {
+            type: "button", id: "game-mode-tab-run",
+            "data-action": "select-game-mode", "data-game-mode": "run", "data-testid": "game-mode-run-tab",
+            "data-game-capability": "score", hidden: "", disabled: "",
+          })}
+        </div>
         <section data-ui="game-mode-panels" data-testid="game-grid">
           <section data-ui="game-mode-panel" id="game-mode-structure" aria-labelledby="game-mode-tab-structure" data-game-mode="structure" data-testid="game-mode-structure">
             ${gameDetailsPanel}
@@ -1278,11 +1297,22 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             ${rosterPanel}
           </section>
           <section data-ui="game-mode-panel" id="game-mode-run" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
+            <div data-ui="match-task-actions">
+              ${renderButton("Back to game", "secondary", {
+                type: "button", "data-action": "select-game-mode", "data-game-mode": "structure",
+              })}
+            </div>
             <div data-ui="run-console" data-testid="run-console">
               ${scorePanel}
               ${livePanel}
               ${timerPanel}
               ${latestGoalsPanel}
+            </div>
+            <div data-ui="mode-actions">
+              ${renderButton("Finish game", "primary", {
+                type: "button", "data-action": "finish-game", "data-testid": "finish-game",
+                "data-game-capability": "score", hidden: "", disabled: "",
+              })}
             </div>
           </section>
           <section data-ui="game-mode-panel" id="game-mode-final" aria-label="Match summary" data-game-mode="final" data-testid="game-mode-final" hidden>

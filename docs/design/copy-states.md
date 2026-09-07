@@ -43,3 +43,22 @@ own navigation, human dates, entry-flow and match-specific language refinement.
 Role presentation uses existing league access, not player claims or creator
 identity. Read-only league rows do not acquire admin actions through a home-page
 request fan-out. Existing sign-out and invitation outcome feedback remain.
+
+## Match overview and teams (UX-03)
+
+| Surface/state | Reviewed treatment |
+| --- | --- |
+| Match navigation | Stable Overview and Teams; Results after confirmed finish. Score game is an explicit task with Back to game, not a changing clock/navigation label. |
+| Overview | Actual date, kickoff, status and third length. Edit game opens only when requested and authorised. Join game and Reference IDs are optional details. |
+| Teams | Unassigned candidates when available, then Red, Blue and Yellow. Assigned identities appear once. Search players filters current-game names. |
+| Add player | Player name, Add player and Cancel. Native Enter submission; retained failed/uncertain input and safe consecutive additions. |
+| Capped search | “Search by name to find more players.” A capped candidate response is not described as the complete game population. |
+| Filtered empty state | “No matching players.” Do not turn a filtered list or unavailable enrichment into an assertion that nobody joined. |
+| Viewer roster | Existing public assigned names and teams, without fabricated Unassigned 0, claim status or management controls. |
+| Transfer | Familiar transfer action with an entity-specific accessible name, only other teams, preserved context on failure. An uncertain request says “Assignment could not be confirmed. Retry this team choice or reload to check.” |
+| Scorer promotion | Confirm “Allow {name} to score all games in {league}?” at the action. Co-organiser promotion also explains management access. No routine league-permission paragraph on the match page. |
+| Finished records | Readable Results and Teams. Correct result and Edit teams are explicit authorised editing entry points, not ordinary live actions. |
+
+Loading, committed, failed and uncertain outcomes retain the shared feedback
+contract. This slice does not promise attendance, public viewing, personal
+history, a player portal or match-only scorer permissions.
