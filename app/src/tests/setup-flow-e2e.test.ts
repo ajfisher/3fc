@@ -7992,6 +7992,8 @@ for (const resultRead of ["fresh", "unavailable"] as const) {
       assert.equal(page.document.getElementById("setup-error")?.hidden, true);
     } else {
       assert.match(result.textContent ?? "", /Result refresh required/);
+      assert.match(result.textContent ?? "", /The latest match result could not be loaded/);
+      assert.doesNotMatch(result.textContent ?? "", /goal change was saved/);
       assert.equal(result.querySelector('[data-testid="game-result-outcome"]'), null);
       assert.equal(page.document.querySelector('[data-ui="score-team"]'), null);
       assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Game finished\. The latest result could not be loaded/);
@@ -11177,7 +11179,7 @@ test("game page clears a committed finished-goal draft when timeline and result 
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.equal(resultSummary.hidden, false);
   assert.match(resultSummary.textContent ?? "", /Result refresh required/);
-  assert.match(resultSummary.textContent ?? "", /goal change was saved/);
+  assert.match(resultSummary.textContent ?? "", /The latest match result could not be loaded/);
   assert.equal(resultSummary.querySelector('[data-testid="game-result-outcome"]'), null);
   assert.equal(goalTeamValue(scoringTeamInput), "");
   assert.equal(goalTeamValue(concedingTeamInput), "");

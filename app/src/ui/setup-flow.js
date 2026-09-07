@@ -3405,7 +3405,7 @@
           ? "Checking the latest match result…"
           : resultUncertain
             ? "The correction outcome could not be confirmed. Retry the same action."
-            : "The goal change was saved, but the updated match result could not be loaded.";
+            : "The latest match result could not be loaded. Reload to try again.";
         gameResultSummaryElement.hidden = false;
         gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-state="unavailable">
           <header>

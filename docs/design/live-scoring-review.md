@@ -24,6 +24,7 @@ Existing rules, permissions and authenticated result behaviour remain intact.
 | QA | Fresh finished corrections must allow eligible assists; navigation/focus must survive delayed responses. | Capability-based controls and logical ownership regressions; final source/assertion review accepted the failure matrix. |
 | Independent UX/accessibility | Shared delete/undo recovery must not sit inside the Record goal form; team relationships must not split across lines. | Recovery moved outside the form, with correctly scoped focus ownership; dot-arrow-dot relationship kept together. |
 | Root integration review | Delete/undo must not clear an unrelated draft. | Only confirmed create/edit, or removal of the currently edited event, resets the draft. |
+| Final integration review | Unavailable result copy must not claim a goal was saved after finishing a game. | Neutral result-refresh copy; the separate operation feedback retains the confirmed goal/game outcome. Regression asserts no invented goal-save claim after finish. |
 
 ## Acceptance map
 
@@ -61,3 +62,9 @@ evidence and final cross-surface browser regression are recorded in the PR packe
 Final rebuilt-asset browser regression passed 88/88 (group38922,
 peak1815648KiB, exit0, no descendants remaining), including organiser lists,
 upcoming/completed game menus, game/player action menus, rosters and scoring.
+
+Final neutral-copy follow-up was independently re-reviewed with no findings.
+Refreshed evidence: isolated finish recovery1/1 (group39807, peak434464KiB),
+complete interactions254/254 (group39878, peak1195712KiB), full
+lint/tests/contracts/build (group40073, peak1744320KiB), and all88 browser
+regressions (group41381, peak1851984KiB). Each exited0 with no descendants.
