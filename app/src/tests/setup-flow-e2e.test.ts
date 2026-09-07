@@ -1985,6 +1985,54 @@ function dispatchSubmit(form: HTMLFormElement): void {
   form.dispatchEvent(new form.ownerDocument.defaultView!.Event("submit", { bubbles: true, cancelable: true }));
 }
 
+function goalTeamValue(group: HTMLFieldSetElement): string {
+  return group.querySelector<HTMLInputElement>('input[type="radio"]:checked')?.value ?? "";
+}
+
+function setGoalTeamValue(group: HTMLFieldSetElement, value: string): void {
+  for (const radio of group.querySelectorAll<HTMLInputElement>('input[type="radio"]')) radio.checked = radio.value === value;
+}
+
+function liveGoalControls(page: Awaited<ReturnType<typeof bootPage>>) {
+  const scoring = page.document.getElementById("goal-scoring-team");
+  const conceding = page.document.getElementById("goal-conceding-team");
+  const scorer = page.document.getElementById("goal-scorer");
+  const ownGoal = page.document.getElementById("goal-own-goal");
+  const form = page.document.getElementById("goal-form");
+  const save = page.document.querySelector('[data-action="save-goal"]');
+  const retry = page.document.querySelector('[data-action="retry-goal-operation"]');
+  const cancel = page.document.querySelector('[data-action="cancel-goal-edit"]');
+  const undo = page.document.querySelector('[data-action="undo-last-goal"]');
+  assert(scoring instanceof page.window.HTMLFieldSetElement);
+  assert(conceding instanceof page.window.HTMLFieldSetElement);
+  assert(scorer instanceof page.window.HTMLSelectElement);
+  assert(ownGoal instanceof page.window.HTMLInputElement);
+  assert(form instanceof page.window.HTMLFormElement);
+  assert(save instanceof page.window.HTMLButtonElement && retry instanceof page.window.HTMLButtonElement);
+  assert(cancel instanceof page.window.HTMLButtonElement && undo instanceof page.window.HTMLButtonElement);
+  const choose = (group: HTMLFieldSetElement, value: string) => {
+    setGoalTeamValue(group, value);
+    group.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  };
+  const draft = () => {
+    choose(scoring, "red");
+    choose(conceding, "blue");
+    scorer.value = "player-ari";
+    scorer.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  };
+  return { scoring, conceding, scorer, ownGoal, form, save, retry, cancel, undo, choose, draft };
+}
+
+function seedLiveGoalEvent(apiState: MockApiState, gameId: string, eventId: string, second = 30): void {
+  apiState.goalEvents.set(eventId, {
+    gameId, eventId, third: 1, thirdMinute: 1, gameMinute: 1, elapsedSeconds: second,
+    stoppageMinute: null, displayTime: "1'", scoringTeamId: "red", concedingTeamId: "blue",
+    scorerPlayerId: "player-ari", assistPlayerIds: [], ownGoal: false,
+    createdAt: `2026-03-28T11:01:${String(second).padStart(2, "0")}.000Z`,
+    updatedAt: `2026-03-28T11:01:${String(second).padStart(2, "0")}.000Z`,
+  });
+}
+
 function enterFinishedCorrections(page: Awaited<ReturnType<typeof bootPage>>, teams = false): void {
   const action = page.document.querySelector(`[data-action="${teams ? "edit-finished-teams" : "correct-finished-result"}"]`);
   assert(action instanceof page.window.HTMLButtonElement);
@@ -6255,8 +6303,8 @@ test("game page quick-creates and assigns roster players", async () => {
   assert.equal(quickCreateButton.parentElement, playerCreateActions);
   assert(playerPool instanceof gamePage.window.HTMLElement);
   assert(rosterTeams instanceof gamePage.window.HTMLElement);
-  assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof gamePage.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof gamePage.window.HTMLFieldSetElement);
   assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
   assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(goalFormNote instanceof gamePage.window.HTMLElement);
@@ -6311,14 +6359,14 @@ test("game page quick-creates and assigns roster players", async () => {
   assert.doesNotMatch(playerPool.textContent ?? "", /Assigned to/);
   assert.equal(playerPool.querySelector(`[data-player-id="${createdPlayer.playerId}"]`), null);
   assert.equal(rosterTeams.querySelectorAll(`[data-ui="roster-member"][data-player-id="${createdPlayer.playerId}"]`).length, 1);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(concedingTeamInput.disabled, true);
   assert.equal(scorerInput.value, "");
   assert.equal(scorerInput.disabled, true);
-  assert.equal(scorerInput.textContent, "Assign players first");
+  assert.equal(scorerInput.textContent, "Choose scorer");
   assert.equal(saveGoalButton.disabled, true);
-  assert.match(goalFormNote.textContent ?? "", /Choose a scoring team/);
+  assert.equal(goalFormNote.textContent, "");
 
   const redRoster = rosterTeams.querySelector('[data-ui="roster-team"][data-team-id="red"]');
   let transferButton = redRoster?.querySelector(
@@ -6378,9 +6426,9 @@ test("game page quick-creates and assigns roster players", async () => {
   await flushAsync();
   assert.equal(apiState.roster.get(`game-1:${createdPlayer.playerId}`)?.teamId, "red");
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   scorerInput.value = createdPlayer.playerId;
   scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -6388,7 +6436,7 @@ test("game page quick-creates and assigns roster players", async () => {
   await flushAsync();
   assert.equal(apiState.games.get("game-1")?.thirds[1].startedAt, "2026-03-28T11:00:10.000Z");
   assert.equal(saveGoalButton.disabled, false);
-  assert.match(goalFormNote.textContent ?? "", /third 2/);
+  assert.equal(goalFormNote.textContent, "");
 });
 
 test("game roster transfer remains open after assignment failure", async () => {
@@ -6902,17 +6950,17 @@ test("game page mode panels switch without resetting a goal draft", async () => 
   assert(playersMode instanceof page.window.HTMLElement);
   assert(playersTab instanceof page.window.HTMLAnchorElement);
   assert(runTab instanceof page.window.HTMLButtonElement);
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(assistsElement instanceof page.window.HTMLElement);
   assert.equal(runMode.hidden, true);
   dispatchClick(runTab);
   assert.equal(runMode.hidden, false);
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -6929,8 +6977,8 @@ test("game page mode panels switch without resetting a goal draft", async () => 
   dispatchClick(runTab);
   await flushAsync();
   assert.equal(runMode.hidden, false);
-  assert.equal(scoringTeamInput.value, "red");
-  assert.equal(concedingTeamInput.value, "blue");
+  assert.equal(goalTeamValue(scoringTeamInput), "red");
+  assert.equal(goalTeamValue(concedingTeamInput), "blue");
   assert.equal(scorerInput.value, "player-ari");
   const preservedAssist = assistsElement.querySelector('input[value="player-bea"]');
   assert(preservedAssist instanceof page.window.HTMLInputElement);
@@ -7030,18 +7078,21 @@ test("game page mode panels advance from overview through scoring to results", a
   assert.equal(page.document.activeElement, run);
   assert.equal(page.window.location.hash, "#score");
   for (let third = 1; third <= 3; third += 1) {
+    start.focus();
     dispatchClick(start);
     await flushAsync();
     assert.equal(apiState.games.get("game-mode-advance")?.status, "live");
     assert.equal(page.document.getElementById("game-overview-status")?.textContent, "Live");
     assert.equal(resultsTab.hidden, true);
     assert.equal(finish.disabled, false);
+    finish.focus();
     dispatchClick(finish);
     await flushAsync();
     assert.equal(run.hidden, false);
     assert.equal(results.hidden, true);
   }
   assert.equal(finishGame.disabled, false);
+  finishGame.focus();
   dispatchClick(finishGame);
   await flushAsync();
   assert.equal(apiState.games.get("game-mode-advance")?.status, "finished");
@@ -7649,7 +7700,510 @@ test("game page keeps edit goal helper text when no third is running", async () 
   dispatchClick(editGoalButton);
   await flushAsync();
 
-  assert.equal(note.textContent, "Editing keeps the original timer stamp.");
+  assert.equal(note.textContent, "Editing keeps the original time.");
+});
+
+for (const kind of ["create", "edit", "delete", "undo"] as const) {
+  for (const firstOutcome of ["lost-response", "idempotency_in_progress", "idempotency_conflict", "goal_already_created", "malformed-conflict"] as const) {
+    test(`live scoring freezes ${kind} after ${firstOutcome} through a later rejection`, async (t) => {
+      const apiState = createMockApiState();
+      const gameId = `frozen-${kind}-${firstOutcome}`;
+      const thirds = createDefaultThirdTimerSegments();
+      thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+      seedGoalScoringGame(apiState, { gameId, status: "live", thirds });
+      seedLiveGoalEvent(apiState, gameId, "original-goal", 30);
+      seedLiveGoalEvent(apiState, gameId, "original-latest", 40);
+      const baseFetch = createMockFetch(apiState);
+      const requests: Array<{ method: string; path: string; body: string; key: string | null }> = [];
+      let replay: unknown;
+      const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+        const target = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url);
+        const method = (init.method ?? "GET").toUpperCase();
+        if (method !== "GET" && target.pathname.startsWith(`/v1/games/${gameId}/`)) {
+          requests.push({ method, path: target.pathname, body: String(init.body ?? ""), key: readInitHeader(init, "idempotency-key") });
+          if (requests.length === 1) {
+            if (firstOutcome === "lost-response") {
+              const committed = await baseFetch(input, init);
+              assert.equal(committed.ok, true, "the lost-response case really commits");
+              replay = await committed.json();
+              seedLiveGoalEvent(apiState, gameId, "newer-external-goal", 50);
+              return createJsonResponse(503, { error: "unavailable", message: "Response lost." });
+            }
+            return createJsonResponse(409, firstOutcome === "malformed-conflict"
+              ? { error: "unknown", code: "game_finished", message: "Unknown conflict." }
+              : { error: firstOutcome, message: "Operation not confirmed." });
+          }
+          if (requests.length === 2) return createJsonResponse(403, { error: "forbidden", message: "Temporary access rejection." });
+          if (replay) return createJsonResponse(200, replay);
+        }
+        return baseFetch(input, init);
+      };
+      const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+      t.after(() => page.window.close());
+      Object.defineProperty(page.window, "confirm", { value: () => true });
+      const c = liveGoalControls(page);
+      c.draft();
+      const assist = page.document.querySelector('#goal-assists input[value="player-bea"]');
+      assert(assist instanceof page.window.HTMLInputElement);
+      assist.checked = true;
+      assist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+      if (kind === "edit") {
+        dispatchClick(page.document.querySelector('[data-action="edit-goal"][data-event-id="original-goal"]') as HTMLButtonElement);
+        c.draft();
+      }
+      if (kind === "create" || kind === "edit") dispatchSubmit(c.form);
+      else if (kind === "delete") dispatchClick(page.document.querySelector('[data-action="delete-goal"][data-event-id="original-goal"]') as HTMLButtonElement);
+      else dispatchClick(c.undo);
+      await flushAsync();
+      assert.equal(requests.length, 1);
+      assert.equal(c.retry.hidden, false);
+      assert.equal(c.retry.disabled, false);
+      assert.equal(page.document.getElementById("goal-operation-recovery")?.hidden, false);
+      assert.equal(c.form.contains(c.retry), false, "recovery is not a new-goal submission");
+      for (const field of [c.scoring, c.conceding, c.scorer, c.ownGoal, c.save, c.cancel, c.undo]) assert.equal(field.disabled, true);
+      const finishThird = page.document.querySelector('[data-action="finish-active-third"]');
+      assert(finishThird instanceof page.window.HTMLButtonElement && finishThird.disabled);
+      const originalScorer = c.scorer.value;
+      c.choose(c.scoring, "yellow");
+      assert.equal(goalTeamValue(c.scoring), "red", "a redraw cannot supersede the frozen draft");
+      c.scorer.value = "";
+      c.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+      assert.equal(c.scorer.value, originalScorer);
+      dispatchSubmit(c.form);
+      dispatchClick(c.cancel);
+      dispatchClick(c.undo);
+      dispatchClick(finishThird);
+      const otherDelete = page.document.querySelector('[data-action="delete-goal"][data-event-id="original-latest"]');
+      if (otherDelete instanceof page.window.HTMLButtonElement) dispatchClick(otherDelete);
+      await flushAsync();
+      assert.equal(requests.length, 1, "other mutations stay blocked");
+      dispatchClick(c.retry);
+      await flushAsync();
+      assert.equal(requests.length, 2);
+      assert.equal(c.retry.hidden, false, "a later403 cannot retire an uncertain operation");
+      assert.equal(c.save.disabled, true);
+      assert.equal(page.document.getElementById("setup-status")?.hidden, true);
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm/);
+      dispatchClick(c.retry);
+      await flushAsync();
+      assert.equal(requests.length, 3);
+      assert.ok(requests[0].key);
+      assert.deepEqual(requests[1], requests[0]);
+      assert.deepEqual(requests[2], requests[0]);
+      if (kind === "undo") assert.equal(JSON.parse(requests[0].body).expectedEventId, "original-latest");
+      if (kind === "edit" || kind === "delete") assert.match(requests[0].path, /\/original-goal$/);
+      assert.equal(c.retry.hidden, true);
+      assert.equal(page.document.getElementById("goal-operation-recovery")?.hidden, true);
+      if (firstOutcome === "lost-response") {
+        assert(apiState.goalEvents.has("newer-external-goal"));
+        assert(page.document.querySelector('[data-ui="goal-event"][data-event-id="newer-external-goal"]'), "fresh GET replaces stale replay timeline");
+      }
+      if (kind === "delete") assert.equal(apiState.goalEvents.has("original-goal"), false);
+      if (kind === "undo") assert.equal(apiState.goalEvents.has("original-latest"), false);
+      if (kind === "delete" || kind === "undo") {
+        assert.equal(goalTeamValue(c.scoring), "red", "an unrelated draft survives log changes");
+        assert.equal(goalTeamValue(c.conceding), "blue");
+        assert.equal(c.scorer.value, "player-ari");
+        assert.equal(page.document.querySelectorAll('#goal-assists input:checked').length, 1);
+      } else {
+        assert.equal(goalTeamValue(c.scoring), "");
+        assert.equal(goalTeamValue(c.conceding), "");
+        assert.equal(c.scorer.value, "");
+      }
+    });
+  }
+}
+
+test("live scoring submits native radios once and preserves focus ownership through a pending save", async (t) => {
+  const apiState = createMockApiState();
+  const gameId = "native-radio-save";
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+  seedGoalScoringGame(apiState, { gameId, status: "live", thirds });
+  const baseFetch = createMockFetch(apiState);
+  let release: (() => void) | undefined;
+  let writes = 0;
+  const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+    if (init.method === "POST" && path.endsWith("/goals")) {
+      writes += 1;
+      await new Promise<void>((resolve) => { release = resolve; });
+    }
+    return baseFetch(input, init);
+  };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+  t.after(() => page.window.close());
+  const c = liveGoalControls(page);
+  assert.equal(goalTeamValue(c.scoring), "");
+  assert.equal(c.conceding.disabled, true);
+  assert.equal(c.scorer.disabled, true);
+  assert.deepEqual([...c.scoring.querySelectorAll("input")].map((radio) => radio.value), ["red", "blue", "yellow"]);
+  assert.deepEqual([...page.document.querySelectorAll('[data-ui="score-team"]')].map((team) => team.getAttribute("data-team-id")), ["red", "blue", "yellow"]);
+  const red = c.scoring.querySelector('input[value="red"]');
+  assert(red instanceof page.window.HTMLInputElement);
+  red.focus();
+  dispatchClick(red);
+  assert.equal(page.document.activeElement?.getAttribute("name"), "goal-scoring-team");
+  assert.equal((page.document.activeElement as HTMLInputElement).value, "red");
+  assert.equal(c.conceding.querySelector('input[value="red"]')?.matches(":disabled"), true);
+  c.draft();
+  c.save.focus();
+  const child = page.document.createElement("span");
+  c.save.append(child);
+  dispatchClick(child);
+  dispatchSubmit(c.form);
+  dispatchClick(c.save);
+  await flushAsync();
+  assert.equal(writes, 1, "native submit and nested click share one synchronous latch");
+  assert(release);
+  const outside = page.document.querySelector('a[data-game-mode="structure"]');
+  assert(outside instanceof page.window.HTMLAnchorElement);
+  outside.focus();
+  release();
+  await flushAsync();
+  assert.equal(apiState.goalEvents.size, 1);
+  assert.equal(page.document.activeElement, outside, "late success must not steal later focus");
+  assert.equal(goalTeamValue(c.scoring), "");
+  assert.equal(c.scorer.value, "");
+  assert.equal(page.document.querySelector('[data-ui="goal-team-relationship"]')?.querySelectorAll('[data-ui="goal-team-chip"]').length, 2);
+  assert.doesNotMatch(page.document.getElementById("goal-timeline")?.textContent ?? "", /Assists: None|conceding tally only/);
+});
+
+for (const kind of ["start", "finish", "finish-game"] as const) {
+  test(`live scoring reconciles uncertain ${kind} using only reads until the original outcome is observed`, async (t) => {
+    const apiState = createMockApiState();
+    const gameId = `uncertain-clock-${kind}`;
+    const thirds = createDefaultThirdTimerSegments();
+    if (kind !== "start") thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+    if (kind === "finish-game") for (const third of thirds) { third.startedAt = "2026-03-28T11:00:10.000Z"; third.finishedAt = "2026-03-28T11:00:11.000Z"; }
+    seedGoalScoringGame(apiState, { gameId, status: kind === "start" ? "scheduled" : "live", thirds });
+    const before = structuredClone(apiState.games.get(gameId));
+    const baseFetch = createMockFetch(apiState);
+    const posts: string[] = [];
+    let readsAfterWrite = 0;
+    const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+      const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+      if (init.method === "POST") {
+        posts.push(path);
+        const committed = await baseFetch(input, init);
+        assert.equal(committed.ok, true);
+        return createJsonResponse(503, { error: "unavailable", message: "Response lost." });
+      }
+      if ((init.method ?? "GET") === "GET" && path === `/v1/games/${gameId}` && posts.length > 0) {
+        readsAfterWrite += 1;
+        if (readsAfterWrite === 2) return createJsonResponse(503, { message: "Read unavailable." });
+        if (readsAfterWrite <= 3) return createJsonResponse(200, before);
+      }
+      return baseFetch(input, init);
+    };
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+    t.after(() => page.window.close());
+    const c = liveGoalControls(page);
+    const action = page.document.querySelector(`[data-action="${kind === "finish-game" ? kind : `${kind}-active-third`}"]`);
+    const check = page.document.querySelector('[data-action="refresh-game-state"]');
+    assert(action instanceof page.window.HTMLButtonElement && check instanceof page.window.HTMLButtonElement);
+    dispatchClick(action);
+    await flushAsync();
+    assert.equal(posts.length, 1);
+    assert.equal(readsAfterWrite, 1);
+    assert.equal(check.hidden, false);
+    assert.equal(c.save.disabled, true);
+    assert.equal(c.scoring.disabled, true);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      dispatchClick(check);
+      await flushAsync();
+      assert.equal(posts.length, 1, "a failed or negative read never repeats a POST");
+      assert.equal(check.hidden, false, "negative state does not settle the unknown write");
+      assert.equal(c.save.disabled, true);
+      assert.equal(page.window.location.hash, "#score");
+    }
+    dispatchClick(check);
+    await flushAsync();
+    assert.equal(posts.length, 1);
+    assert.equal(check.hidden, true);
+    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    if (kind === "finish-game") assert.equal(page.window.location.hash, "#results");
+    else {
+      const next = page.document.querySelector(`[data-action="${kind === "start" ? "finish" : "start"}-active-third"]`);
+      assert(next instanceof page.window.HTMLButtonElement && !next.disabled);
+      assert.equal(next.getAttribute("data-third"), kind === "start" ? "1" : "2");
+    }
+  });
+}
+
+for (const resultRead of ["fresh", "unavailable"] as const) {
+  test(`live scoring replays finish with the same key and treats ${resultRead} result independently`, async (t) => {
+    const apiState = createMockApiState();
+    const gameId = `finish-replay-${resultRead}`;
+    const thirds = createDefaultThirdTimerSegments().map((third) => ({ ...third, startedAt: "2026-03-28T11:00:10.000Z", finishedAt: "2026-03-28T11:00:11.000Z" }));
+    seedGoalScoringGame(apiState, { gameId, status: "live", thirds, role: "admin" });
+    seedLiveGoalEvent(apiState, gameId, "red-goal");
+    const baseFetch = createMockFetch(apiState);
+    const requests: Array<{ path: string; key: string | null }> = [];
+    let replay: unknown;
+    const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+      const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+      if (init.method === "POST" && path.endsWith("/finish")) {
+        requests.push({ path, key: readInitHeader(init, "idempotency-key") });
+        if (requests.length === 1) {
+          const committed = await baseFetch(input, init);
+          assert(committed.ok);
+          replay = await committed.json();
+          const goal = apiState.goalEvents.get("red-goal");
+          const game = apiState.games.get(gameId);
+          assert(goal && game);
+          apiState.goalEvents.set("red-goal", { ...goal, scoringTeamId: "blue", concedingTeamId: "red", scorerPlayerId: "player-cy" });
+          refreshMockFinishedResult(apiState, game, "2026-03-28T11:05:00.000Z");
+          return createJsonResponse(503, { message: "Finish response lost." });
+        }
+        if (requests.length === 2) return createJsonResponse(403, { error: "forbidden", message: "Temporary rejection." });
+        return createJsonResponse(200, replay);
+      }
+      if ((init.method ?? "GET") === "GET" && path === `/v1/games/${gameId}` && requests.length > 0 && (requests.length < 3 || resultRead === "unavailable")) return createJsonResponse(503, { message: "Result read unavailable." });
+      return baseFetch(input, init);
+    };
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+    t.after(() => page.window.close());
+    const finish = page.document.querySelector('[data-action="finish-game"]');
+    assert(finish instanceof page.window.HTMLButtonElement);
+    dispatchClick(finish);
+    await flushAsync();
+    assert.equal(requests.length, 1);
+    assert.equal(finish.disabled, false);
+    assert.equal(finish.textContent, "Retry finish game");
+    dispatchClick(finish);
+    await flushAsync();
+    assert.equal(requests.length, 2);
+    assert.equal(finish.disabled, false, "later403 must retain the same finish request");
+    dispatchClick(finish);
+    await flushAsync();
+    assert.equal(requests.length, 3);
+    assert.ok(requests[0].key);
+    assert.deepEqual(requests[1], requests[0]);
+    assert.deepEqual(requests[2], requests[0]);
+    assert.equal(apiState.games.get(gameId)?.status, "finished");
+    assert.equal(page.window.location.hash, "#results");
+    assert.equal(finish.disabled, true);
+    const result = page.document.getElementById("game-result-summary");
+    assert(result instanceof page.window.HTMLElement);
+    if (resultRead === "fresh") {
+      assert.equal(result.querySelector('[data-testid="game-result-outcome"]')?.textContent, "Blue win");
+      assert.doesNotMatch(result.textContent ?? "", /Red win/);
+      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    } else {
+      assert.match(result.textContent ?? "", /Result refresh required/);
+      assert.equal(result.querySelector('[data-testid="game-result-outcome"]'), null);
+      assert.equal(page.document.querySelector('[data-ui="score-team"]'), null);
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Game finished\. The latest result could not be loaded/);
+      assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /finish failed/i);
+    }
+  });
+}
+
+for (const kind of ["start", "finish-game"] as const) {
+  for (const navigation of ["away", "away-back"] as const) {
+    test(`live scoring does not let delayed ${kind} replace ${navigation} navigation or focus`, async (t) => {
+      const apiState = createMockApiState();
+      const gameId = `clock-navigation-${kind}-${navigation}`;
+      const thirds = createDefaultThirdTimerSegments();
+      if (kind === "finish-game") for (const third of thirds) { third.startedAt = "2026-03-28T11:00:10.000Z"; third.finishedAt = "2026-03-28T11:00:11.000Z"; }
+      seedGoalScoringGame(apiState, { gameId, status: kind === "start" ? "scheduled" : "live", thirds, role: "admin" });
+      const baseFetch = createMockFetch(apiState);
+      let release: (() => void) | undefined;
+      const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+        if (init.method === "POST") await new Promise<void>((resolve) => { release = resolve; });
+        return baseFetch(input, init);
+      };
+      const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+      t.after(() => page.window.close());
+      const action = page.document.querySelector(`[data-action="${kind === "start" ? "start-active-third" : kind}"]`);
+      assert(action instanceof page.window.HTMLButtonElement);
+      action.focus();
+      dispatchClick(action);
+      await flushAsync();
+      assert(release);
+      const teams = page.document.getElementById("game-mode-tab-players");
+      assert(teams instanceof page.window.HTMLAnchorElement);
+      dispatchClick(teams);
+      if (navigation === "away-back") {
+        const score = page.document.getElementById("game-mode-tab-run");
+        assert(score instanceof page.window.HTMLButtonElement);
+        dispatchClick(score);
+      }
+      const expectedHash = navigation === "away" ? "#teams" : "#score";
+      assert.equal(page.window.location.hash, expectedHash);
+      const outside = page.document.querySelector('[data-ui="site-nav"] a');
+      assert(outside instanceof page.window.HTMLAnchorElement);
+      outside.focus();
+      release();
+      await flushAsync();
+      assert.equal(page.window.location.hash, expectedHash, "late clock completion cannot choose a new destination");
+      assert.equal(page.document.activeElement, outside);
+      assert.equal(apiState.games.get(gameId)?.status, kind === "start" ? "live" : "finished");
+    });
+  }
+}
+
+test("live scoring allows any-team assists on a fresh finished own-goal correction without inventing scored totals", async (t) => {
+  const apiState = createMockApiState();
+  const gameId = "fresh-finished-assists";
+  const thirds = createDefaultThirdTimerSegments().map((third) => ({ ...third, startedAt: "2026-03-28T11:00:10.000Z", finishedAt: "2026-03-28T11:00:11.000Z" }));
+  seedGoalScoringGame(apiState, { gameId, status: "finished", thirds, role: "admin" });
+  const ari = apiState.players.get("player-ari");
+  const link = apiState.gamePlayers.get(`${gameId}:player-ari`);
+  const roster = apiState.roster.get(`${gameId}:player-ari`);
+  const game = apiState.games.get(gameId);
+  assert(ari && link && roster && game);
+  for (const nickname of ["Dax", "Eli"]) {
+    const playerId = `player-${nickname.toLowerCase()}`;
+    apiState.players.set(playerId, { ...ari, playerId, nickname });
+    apiState.gamePlayers.set(`${gameId}:${playerId}`, { ...link, playerId });
+    apiState.roster.set(`${gameId}:${playerId}`, { ...roster, playerId, teamId: "yellow" });
+  }
+  refreshMockFinishedResult(apiState, game, "2026-03-28T11:01:00.000Z");
+  const baseFetch = createMockFetch(apiState);
+  const payloads: Array<Record<string, unknown>> = [];
+  const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    if (init.method === "POST" && new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname.endsWith("/goals")) payloads.push(JSON.parse(String(init.body)));
+    return baseFetch(input, init);
+  };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}`, scriptFile: "setup-flow.js", apiState, fetch });
+  t.after(() => page.window.close());
+  enterFinishedCorrections(page);
+  const c = liveGoalControls(page);
+  c.ownGoal.checked = true;
+  c.ownGoal.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  c.choose(c.conceding, "red");
+  c.scorer.value = "player-ari";
+  c.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  assert.equal(c.scoring.hidden, false);
+  assert.equal(c.scoring.disabled, true);
+  assert.equal(goalTeamValue(c.scoring), "");
+  assert.equal(page.document.querySelector('#goal-assists input[value="player-ari"]'), null);
+  for (const playerId of ["player-bea", "player-cy", "player-dax"]) {
+    const assist = page.document.querySelector(`#goal-assists input[value="${playerId}"]`);
+    assert(assist instanceof page.window.HTMLInputElement);
+    assert.equal(assist.disabled, false, "fresh corrections use the same assist rights as edits");
+    assist.checked = true;
+    assist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  }
+  assert.equal(page.document.querySelector('#goal-assists input[value="player-eli"]')?.matches(":disabled"), true);
+  assert.equal(page.document.getElementById("goal-assists-summary")?.textContent, "3 selected: Bea, Cy, Dax");
+  dispatchSubmit(c.form);
+  await flushAsync();
+  assert.equal(payloads.length, 1);
+  assert.deepEqual(payloads[0], { scoringTeamId: null, concedingTeamId: "red", scorerPlayerId: "player-ari", assistPlayerIds: ["player-bea", "player-cy", "player-dax"], ownGoal: true });
+  const event = [...apiState.goalEvents.values()][0];
+  assert.equal(event.ownGoal, true);
+  assert.equal(event.scoringTeamId, null);
+  const red = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
+  assert.deepEqual([...red!.querySelectorAll("dl div")].map((row) => row.textContent?.replace(/\s/g, "")), ["Conceded1", "Scored0"]);
+  const relation = page.document.querySelector('[data-ui="goal-team-relationship"]');
+  assert(relation);
+  assert.equal(relation.querySelector('[data-ui="own-goal-marker"]')?.textContent, "OG");
+  assert.equal(relation.querySelectorAll('[data-ui="goal-team-chip"]').length, 1);
+  assert.equal(relation.querySelector('[data-ui="goal-team-chip"]')?.getAttribute("aria-label"), "Conceding team: Red");
+  assert.equal(c.ownGoal.checked, false);
+  assert.equal(page.document.querySelectorAll('#goal-assists input:checked').length, 0);
+});
+
+for (const code of ["game_finished", "game_state_changed", "goal_state_changed", "no_active_third"]) {
+  test(`live scoring retires a first documented ${code} rejection and preserves an editable draft`, async (t) => {
+    const apiState = createMockApiState();
+    const gameId = `known-goal-${code}`;
+    const thirds = createDefaultThirdTimerSegments();
+    thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+    seedGoalScoringGame(apiState, { gameId, status: "live", thirds });
+    const baseFetch = createMockFetch(apiState);
+    const keys: Array<string | null> = [];
+    const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+      if (init.method === "POST" && new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname.endsWith("/goals")) {
+        keys.push(readInitHeader(init, "idempotency-key"));
+        if (keys.length === 1) return createJsonResponse(409, { error: "conflict", code, message: code === "no_active_third" ? "A goal can only be created while a third is running." : "The game changed." });
+      }
+      return baseFetch(input, init);
+    };
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+    t.after(() => page.window.close());
+    const c = liveGoalControls(page);
+    c.draft();
+    dispatchSubmit(c.form);
+    await flushAsync();
+    assert.equal(apiState.goalEvents.size, 0);
+    assert.equal(c.retry.hidden, true);
+    assert.equal(c.save.disabled, false);
+    assert.equal(goalTeamValue(c.scoring), "red");
+    assert.equal(goalTeamValue(c.conceding), "blue");
+    assert.equal(c.scorer.value, "player-ari");
+    assert.equal(c.scoring.disabled, false);
+    if (code === "no_active_third") assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /A goal can only be created while a third is running\./);
+    c.choose(c.conceding, "yellow");
+    dispatchSubmit(c.form);
+    await flushAsync();
+    assert.equal(apiState.goalEvents.size, 1);
+    assert.equal([...apiState.goalEvents.values()][0].concedingTeamId, "yellow");
+    assert.equal(keys.length, 2);
+    assert.ok(keys[0] && keys[1]);
+    assert.notEqual(keys[0], keys[1], "a definitive rejection permits a genuinely new request");
+  });
+}
+
+test("live scoring retains a lost goal create when its retry reports no_active_third", async (t) => {
+  const apiState = createMockApiState();
+  const gameId = "lost-create-no-active-third";
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+  seedGoalScoringGame(apiState, { gameId, status: "live", thirds });
+  const baseFetch = createMockFetch(apiState);
+  const requests: Array<{ path: string; key: string | null; body: string }> = [];
+  let replay: unknown;
+  const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+    if (init.method === "POST" && path === `/v1/games/${gameId}/goals`) {
+      requests.push({ path, key: readInitHeader(init, "idempotency-key"), body: String(init.body) });
+      if (requests.length === 1) {
+        const committed = await baseFetch(input, init);
+        assert(committed.ok);
+        replay = await committed.json();
+        return createJsonResponse(503, { message: "The committed response was lost." });
+      }
+      if (requests.length === 2) return createJsonResponse(409, { error: "conflict", code: "no_active_third", message: "A goal can only be created while a third is running." });
+      return createJsonResponse(200, replay);
+    }
+    return baseFetch(input, init);
+  };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#score`, scriptFile: "setup-flow.js", apiState, fetch });
+  t.after(() => page.window.close());
+  const c = liveGoalControls(page);
+  c.draft();
+  dispatchSubmit(c.form);
+  await flushAsync();
+  assert.equal(apiState.goalEvents.size, 1, "the first response really was lost after commit");
+  assert.equal(c.retry.hidden, false);
+  dispatchClick(c.retry);
+  await flushAsync();
+  assert.equal(requests.length, 2);
+  assert.equal(c.retry.hidden, false);
+  assert.equal(c.retry.disabled, false);
+  assert.equal(c.save.disabled, true);
+  assert.equal(c.scoring.disabled, true);
+  assert.equal(goalTeamValue(c.scoring), "red");
+  assert.equal(goalTeamValue(c.conceding), "blue");
+  assert.equal(c.scorer.value, "player-ari");
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm whether the goal was saved/);
+  dispatchSubmit(c.form);
+  await flushAsync();
+  assert.equal(requests.length, 2, "the later conflict cannot unlock a replacement write");
+  dispatchClick(c.retry);
+  await flushAsync();
+  assert.equal(requests.length, 3);
+  assert.ok(requests[0].key);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.deepEqual(requests[2], requests[0]);
+  assert.equal(apiState.goalEvents.size, 1);
+  assert.equal(c.retry.hidden, true);
+  assert.equal(goalTeamValue(c.scoring), "");
+  assert.equal(c.scorer.value, "");
 });
 
 test("game page reuses create goal idempotency key for unchanged retry", async () => {
@@ -7699,14 +8253,14 @@ test("game page reuses create goal idempotency key for unchanged retry", async (
   const concedingTeamInput = page.document.getElementById("goal-conceding-team");
   const scorerInput = page.document.getElementById("goal-scorer");
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -7718,28 +8272,28 @@ test("game page reuses create goal idempotency key for unchanged retry", async (
   dispatchClick(saveGoalButton);
   await flushAsync();
   assert.equal(apiState.goalEvents.size, 0);
-  assert.equal(scoringTeamInput.value, "red");
-  assert.equal(concedingTeamInput.value, "blue");
+  assert.equal(goalTeamValue(scoringTeamInput), "red");
+  assert.equal(goalTeamValue(concedingTeamInput), "blue");
   assert.equal(scorerInput.value, "player-ari");
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 1);
 
-  dispatchClick(saveGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(apiState.goalEvents.size, 1);
   assert.equal(createGoalIdempotencyKeys.length, 2);
   assert.ok(createGoalIdempotencyKeys[0]);
   assert.equal(createGoalIdempotencyKeys[0], createGoalIdempotencyKeys[1]);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.equal(concedingTeamInput.disabled, true);
   assert.equal(scorerInput.disabled, true);
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -7813,7 +8367,8 @@ test("game page preserves authoritative scores and retires retry keys after reje
     if (method === "POST" && target.pathname === `${goalsPath}/undo-last`) {
       undoKeys.push(readInitHeader(init, "idempotency-key"));
       return createJsonResponse(409, {
-        error: "goal_conflict",
+        error: "conflict",
+        code: "latest_goal_changed",
         message: "The latest goal cannot be undone.",
       });
     }
@@ -7858,8 +8413,8 @@ test("game page preserves authoritative scores and retires retry keys after reje
   assert(status instanceof page.window.HTMLElement);
   assert(error instanceof page.window.HTMLElement);
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
@@ -7885,9 +8440,9 @@ test("game page preserves authoritative scores and retires retry keys after reje
   assertAuthoritativeRedResult();
   dispatchClick(editGoalButton);
   await flushAsync();
-  scoringTeamInput.value = "blue";
+  setGoalTeamValue(scoringTeamInput, "blue");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "red";
+  setGoalTeamValue(concedingTeamInput, "red");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -7897,8 +8452,8 @@ test("game page preserves authoritative scores and retires retry keys after reje
   assertAuthoritativeRedResult();
   assert.match(status.textContent ?? "", /Goal was not saved/);
   assert.match(error.textContent ?? "", /Goal correction is not permitted/);
-  assert.equal(scoringTeamInput.value, "blue");
-  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(goalTeamValue(scoringTeamInput), "blue");
+  assert.equal(goalTeamValue(concedingTeamInput), "red");
   assert.equal(scorerInput.value, "player-cy");
   dispatchClick(saveGoalButton);
   await flushAsync();
@@ -7912,6 +8467,7 @@ test("game page preserves authoritative scores and retires retry keys after reje
   await flushAsync();
   assertAuthoritativeRedResult();
   assert.match(status.textContent ?? "", /latest goal was not undone/i);
+  assert.equal(page.document.querySelector('[data-action="retry-goal-operation"]')?.hasAttribute("hidden"), true);
   assert.match(error.textContent ?? "", /latest goal cannot be undone/i);
   dispatchClick(undoLastGoalButton);
   await flushAsync();
@@ -8124,16 +8680,16 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   const scoreboard = page.document.getElementById("live-scoreboard");
   const status = page.document.getElementById("setup-status");
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(scoreboard instanceof page.window.HTMLElement);
   assert(status instanceof page.window.HTMLElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -8141,14 +8697,14 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   dispatchClick(saveGoalButton);
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
-  dispatchClick(saveGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
-  assert.match(status.textContent ?? "", /earlier goal save is still unconfirmed/);
+  assert.equal(saveGoalButton.disabled, true);
   assert.equal(status.hidden, true);
   assert.equal(page.document.getElementById("setup-error")?.hidden, false);
-  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /earlier goal save is still unconfirmed\. Restore access and retry the same details\./);
-  dispatchClick(saveGoalButton);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm whether the goal was saved\. Retry with the same details\./);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(createAttempts, 3);
@@ -8166,18 +8722,18 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   const retryDeleteGoalButton = page.document.querySelector(
-    '[data-action="delete-goal"][data-event-id="goal-1"]',
+    '[data-action="retry-goal-operation"]',
   );
   assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
   dispatchClick(retryDeleteGoalButton);
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
-  assert.match(status.textContent ?? "", /earlier deletion is still unconfirmed/);
+  assert.equal(saveGoalButton.disabled, true);
   assert.equal(status.hidden, true);
   assert.equal(page.document.getElementById("setup-error")?.hidden, false);
-  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /earlier deletion is still unconfirmed.*retry/i);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm the deletion.*retry/i);
   const replayDeleteGoalButton = page.document.querySelector(
-    '[data-action="delete-goal"][data-event-id="goal-1"]',
+    '[data-action="retry-goal-operation"]',
   );
   assert(replayDeleteGoalButton instanceof page.window.HTMLButtonElement);
   dispatchClick(replayDeleteGoalButton);
@@ -8196,14 +8752,14 @@ test("game page reconciles authoritative goals after replayed create, delete, an
   dispatchClick(undoLastGoalButton);
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
-  dispatchClick(undoLastGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
-  assert.match(status.textContent ?? "", /earlier undo is still unconfirmed/);
+  assert.equal(undoLastGoalButton.disabled, true);
   assert.equal(status.hidden, true);
   assert.equal(page.document.getElementById("setup-error")?.hidden, false);
-  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /earlier undo is still unconfirmed.*retry/i);
-  dispatchClick(undoLastGoalButton);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm the undo.*retry/i);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(undoAttempts, 3);
@@ -8304,8 +8860,8 @@ test("game page hides finished scores until a lost correction response is replay
   const resultSummary = page.document.getElementById("game-result-summary");
   const status = page.document.getElementById("setup-status");
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(scoreboard instanceof page.window.HTMLElement);
@@ -8315,9 +8871,9 @@ test("game page hides finished scores until a lost correction response is replay
 
   dispatchClick(editGoalButton);
   await flushAsync();
-  scoringTeamInput.value = "blue";
+  setGoalTeamValue(scoringTeamInput, "blue");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "red";
+  setGoalTeamValue(concedingTeamInput, "red");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -8331,29 +8887,30 @@ test("game page hides finished scores until a lost correction response is replay
   assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
   assert.match(resultSummary.textContent ?? "", /Result may have changed/);
   assert.doesNotMatch(resultSummary.textContent ?? "", /Red win|Blue win|Draw/);
-  assert.match(status.textContent ?? "", /Retry with the same details/);
-  assert.equal(scoringTeamInput.value, "blue");
-  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(status.hidden, true);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Retry with the same details/);
+  assert.equal(goalTeamValue(scoringTeamInput), "blue");
+  assert.equal(goalTeamValue(concedingTeamInput), "red");
   assert.equal(scorerInput.value, "player-cy");
 
-  dispatchClick(saveGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(updateAttempts, 2);
   assert.match(scoreboard.textContent ?? "", /Scores may have changed/);
   assert.match(resultSummary.textContent ?? "", /Result may have changed/);
-  assert.equal(scoringTeamInput.value, "blue");
-  assert.equal(concedingTeamInput.value, "red");
+  assert.equal(goalTeamValue(scoringTeamInput), "blue");
+  assert.equal(goalTeamValue(concedingTeamInput), "red");
   assert.equal(scorerInput.value, "player-cy");
-  dispatchClick(saveGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(updateAttempts, 3);
   assert.ok(updateKeys[0]);
   assert.equal(updateKeys[0], updateKeys[1]);
   assert.equal(updateKeys[1], updateKeys[2]);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.match(resultSummary.textContent ?? "", /Blue win/);
   assert.doesNotMatch(resultSummary.textContent ?? "", /Result may have changed|Result refresh required/);
@@ -8434,8 +8991,8 @@ test("game page clears an open edit draft after a committed delete or undo", asy
   const scorerInput = page.document.getElementById("goal-scorer");
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
   const undoLastGoalButton = page.document.querySelector('[data-action="undo-last-goal"]');
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
@@ -8446,7 +9003,7 @@ test("game page clears an open edit draft after a committed delete or undo", asy
   assert(deleteGoalOne instanceof page.window.HTMLButtonElement);
   dispatchClick(editGoalOne);
   await flushAsync();
-  assert.equal(scoringTeamInput.value, "red");
+  assert.equal(goalTeamValue(scoringTeamInput), "red");
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 1);
 
   const refreshedDeleteGoalOne = page.document.querySelector(
@@ -8456,25 +9013,25 @@ test("game page clears an open edit draft after a committed delete or undo", asy
   dispatchClick(refreshedDeleteGoalOne);
   await flushAsync();
   assert.equal(apiState.goalEvents.has("goal-1"), false);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 0);
-  assert.match(saveGoalButton.textContent ?? "", /Add goal/);
+  assert.match(saveGoalButton.textContent ?? "", /Record goal/);
 
   const editGoalTwo = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-2"]');
   assert(editGoalTwo instanceof page.window.HTMLButtonElement);
   dispatchClick(editGoalTwo);
   await flushAsync();
-  assert.equal(scoringTeamInput.value, "blue");
+  assert.equal(goalTeamValue(scoringTeamInput), "blue");
 
   dispatchClick(undoLastGoalButton);
   await flushAsync();
   assert.equal(apiState.goalEvents.has("goal-2"), false);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
-  assert.match(saveGoalButton.textContent ?? "", /Add goal/);
+  assert.match(saveGoalButton.textContent ?? "", /Record goal/);
 });
 
 test("game page treats later created same-second goals as latest", async () => {
@@ -8664,17 +9221,17 @@ test("game page reuses correction idempotency keys for unchanged retries", async
   dispatchClick(editGoalButton);
   await flushAsync();
   assert.equal(assistsDropdown.open, false);
-  assert.equal(assistsSummary.textContent, "Bea, Cy");
+  assert.equal(assistsSummary.textContent, "2 selected: Bea, Cy");
   assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy");
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 2);
   assistsDropdown.open = true;
   dispatchClick(saveGoalButton);
   await flushAsync();
   assert.equal(assistsDropdown.open, true);
-  assert.equal(assistsSummary.textContent, "Bea, Cy");
+  assert.equal(assistsSummary.textContent, "2 selected: Bea, Cy");
   assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy");
   assert.equal(page.document.querySelectorAll('#goal-assists input[type="checkbox"]:checked').length, 2);
-  dispatchClick(saveGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(updateKeys.length, 2);
@@ -8690,7 +9247,7 @@ test("game page reuses correction idempotency keys for unchanged retries", async
   assert(deleteGoalButton instanceof page.window.HTMLButtonElement);
   dispatchClick(deleteGoalButton);
   await flushAsync();
-  const retryDeleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
+  const retryDeleteGoalButton = page.document.querySelector('[data-action="retry-goal-operation"]');
   assert(retryDeleteGoalButton instanceof page.window.HTMLButtonElement);
   dispatchClick(retryDeleteGoalButton);
   await flushAsync();
@@ -8701,7 +9258,7 @@ test("game page reuses correction idempotency keys for unchanged retries", async
 
   dispatchClick(undoLastGoalButton);
   await flushAsync();
-  dispatchClick(undoLastGoalButton);
+  dispatchClick(page.document.querySelector('[data-action="retry-goal-operation"]') as HTMLButtonElement);
   await flushAsync();
 
   assert.equal(undoKeys.length, 2);
@@ -8831,7 +9388,7 @@ test("game page clears a historical scorer after changing the goal context", asy
   const scorerSelect = page.document.getElementById("goal-scorer");
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
   assert(ownGoalInput instanceof page.window.HTMLInputElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerSelect instanceof page.window.HTMLSelectElement);
 
   dispatchClick(editGoalButton);
@@ -8841,7 +9398,7 @@ test("game page clears a historical scorer after changing the goal context", asy
 
   ownGoalInput.checked = true;
   ownGoalInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
 
   assert.equal(scorerSelect.value, "");
@@ -8900,6 +9457,7 @@ test("game page reconciles current goals after stale correction replay", async (
 
   const defaultFetch = createMockFetch(apiState);
   let patchCalls = 0;
+  const patchRequests: Array<{ key: string | null; body: string }> = [];
   const staleReplayFetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
     const target =
       typeof input === "string" || input instanceof URL
@@ -8908,6 +9466,7 @@ test("game page reconciles current goals after stale correction replay", async (
     const method = (init.method ?? "GET").toUpperCase();
     if (method === "PATCH" && target.pathname === "/v1/games/game-stale-correction/goals/goal-1") {
       patchCalls += 1;
+      patchRequests.push({ key: readInitHeader(init, "idempotency-key"), body: String(init.body) });
       if (patchCalls === 1) {
         apiState.goalEvents.set("goal-1", updatedGoal);
         return createJsonResponse(503, {
@@ -8948,12 +9507,18 @@ test("game page reconciles current goals after stale correction replay", async (
   dispatchClick(saveGoalButton);
   await flushAsync();
   apiState.goalEvents.set("goal-2", newerGoal);
+  assert.equal(saveGoalButton.disabled, true);
+  const retryGoalButton = page.document.querySelector('[data-action="retry-goal-operation"]');
+  assert(retryGoalButton instanceof page.window.HTMLButtonElement);
+  assert.equal(retryGoalButton.hidden, false);
 
-  dispatchClick(saveGoalButton);
+  dispatchClick(retryGoalButton);
   await flushAsync();
   await flushAsync();
 
   assert.equal(patchCalls, 2);
+  assert.ok(patchRequests[0].key);
+  assert.deepEqual(patchRequests[1], patchRequests[0]);
   assert.match(timeline.textContent ?? "", /Cy\s*→/);
 });
 
@@ -9059,8 +9624,8 @@ test("game page invalidates current goals when correction replay refresh fails",
   assert(timeline instanceof page.window.HTMLElement);
   assert(scoreboard instanceof page.window.HTMLElement);
   assert(status instanceof page.window.HTMLElement);
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert.match(timeline.textContent ?? "", /Cy\s*→/);
 
@@ -9070,14 +9635,17 @@ test("game page invalidates current goals when correction replay refresh fails",
   await flushAsync();
   await flushAsync();
 
-  assert.match(status.textContent ?? "", /Goal updated; scores and timeline unavailable/);
-  assert.equal(status.hasAttribute("data-state"), false);
+  assert.equal(status.hidden, true);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Goal updated, but the latest scores and goal timeline could not be loaded/);
+  assert.equal(page.document.getElementById("setup-error")?.hidden, false);
+  assert.equal(page.document.getElementById("setup-error")?.getAttribute("role"), "status");
+  assert.equal(page.document.getElementById("setup-error")?.getAttribute("aria-live"), "polite");
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.doesNotMatch(timeline.textContent ?? "", /Cy\s*→/);
   assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
   assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.equal(saveGoalButton.disabled, true);
   assert.equal(undoLastGoalButton.disabled, true);
@@ -9198,8 +9766,8 @@ test("game page refreshes the finished result when a committed edit timeline rel
   const error = page.document.getElementById("setup-error");
   const resultSummary = page.document.getElementById("game-result-summary");
   assert(editGoalButton instanceof page.window.HTMLButtonElement);
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(timeline instanceof page.window.HTMLElement);
@@ -9210,9 +9778,9 @@ test("game page refreshes the finished result when a committed edit timeline rel
 
   dispatchClick(editGoalButton);
   await flushAsync();
-  scoringTeamInput.value = "blue";
+  setGoalTeamValue(scoringTeamInput, "blue");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "red";
+  setGoalTeamValue(concedingTeamInput, "red");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -9237,8 +9805,8 @@ test("game page refreshes the finished result when a committed edit timeline rel
 
   assert.equal(failedGoalRefreshes, 1);
   assert.equal(successfulGameRefreshes, 1);
-  assert.match(status.textContent ?? "", /Goal updated\. Scores refreshed; goal timeline unavailable/);
-  assert.match(error.textContent ?? "", /Goal details could not be loaded\. Reload to try again/);
+  assert.equal(status.hidden, true);
+  assert.match(error.textContent ?? "", /Goal updated\. Scores refreshed; goal timeline unavailable\. Reload to try again/);
   assert.match(timeline.textContent ?? "", /Goal timeline unavailable/);
   assert.equal(resultSummary.hidden, false);
   assert.equal(
@@ -9688,8 +10256,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
 
   assert(startThirdButton instanceof gamePage.window.HTMLButtonElement);
   assert(scoreboard instanceof gamePage.window.HTMLElement);
-  assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof gamePage.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof gamePage.window.HTMLFieldSetElement);
   assert(ownGoalInput instanceof gamePage.window.HTMLInputElement);
   assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
   assert(assistsDropdown instanceof gamePage.window.HTMLDetailsElement);
@@ -9701,8 +10269,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
 
   assert.match(scoreboard.textContent ?? "", /Red/);
   assert.match(timeline.textContent ?? "", /No goals yet/);
-  assert.equal(scoringTeamInput.options[0]?.textContent, "Choose Team");
-  assert.equal(concedingTeamInput.options[0]?.textContent, "Choose Team");
+  assert.equal(scoringTeamInput.querySelector("legend")?.textContent, "Scoring team");
+  assert.equal(concedingTeamInput.querySelector("legend")?.textContent, "Conceding team");
   assert.equal(assistsDropdown.open, false);
   assert.equal(assistsSummary.textContent, "Choose assists");
   assert.equal(undoLastGoalButton.disabled, true);
@@ -9716,9 +10284,9 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   dispatchClick(startThirdButton);
   await flushAsync();
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -9733,16 +10301,16 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert(focusedBeaAssist instanceof gamePage.window.HTMLInputElement);
   assert(cyAssist instanceof gamePage.window.HTMLInputElement);
   assert.equal(gamePage.document.activeElement, focusedBeaAssist);
-  assert.equal(assistsSummary.textContent, "Bea");
+  assert.equal(assistsSummary.textContent, "1 selected: Bea");
   cyAssist.checked = true;
   cyAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  assert.equal(assistsSummary.textContent, "Bea, Cy");
+  assert.equal(assistsSummary.textContent, "2 selected: Bea, Cy");
   assert.equal(assistsElement.querySelectorAll('input[type="checkbox"]:checked').length, 2);
   const daxAssist = assistsElement.querySelector('input[value="player-dax"]');
   assert(daxAssist instanceof gamePage.window.HTMLInputElement);
   daxAssist.checked = true;
   daxAssist.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  assert.equal(assistsSummary.textContent, "Bea, Cy, Dax");
+  assert.equal(assistsSummary.textContent, "3 selected: Bea, Cy, Dax");
   assert.equal(assistsSummary.getAttribute("title"), "Bea, Cy, Dax");
   const eveAssist = assistsElement.querySelector('input[value="player-eve"]');
   assert(eveAssist instanceof gamePage.window.HTMLInputElement);
@@ -9763,8 +10331,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert.deepEqual(apiState.goalEvents.get("goal-1")?.assistPlayerIds, ["player-bea", "player-cy", "player-dax"]);
   assert.match(timeline.textContent ?? "", /Assists: Bea, Cy, Dax/);
   assert.equal(undoLastGoalButton.disabled, false);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.equal(ownGoalInput.checked, false);
   assert.equal(concedingTeamInput.disabled, true);
@@ -9823,7 +10391,7 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   await flushAsync();
   ownGoalInput.checked = true;
   ownGoalInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -9835,8 +10403,8 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
   assert.match(scoreboard.querySelector('[data-team-id="red"]')?.textContent ?? "", /Scored\s*0/);
   assert.match(scoreboard.querySelector('[data-team-id="blue"]')?.textContent ?? "", /Conceded\s*1/);
   assert.match(timeline.textContent ?? "", /Cy\s*OG\s*→/);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.equal(ownGoalInput.checked, false);
   const ownGoalEvent = timeline.querySelector('[data-ui="goal-event"][data-event-id="goal-1"]');
@@ -9851,9 +10419,9 @@ test("game page runs live goal scoring, corrections, undo, and delete", async ()
 
   ownGoalInput.checked = false;
   ownGoalInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  scoringTeamInput.value = "blue";
+  setGoalTeamValue(scoringTeamInput, "blue");
   scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "red";
+  setGoalTeamValue(concedingTeamInput, "red");
   concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -9908,8 +10476,8 @@ test("game page enables and creates a fresh own goal after the timeline loads", 
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
   const scoreboard = page.document.getElementById("live-scoreboard");
   assert(ownGoalInput instanceof page.window.HTMLInputElement);
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(scoreboard instanceof page.window.HTMLElement);
@@ -9918,9 +10486,9 @@ test("game page enables and creates a fresh own goal after the timeline loads", 
   ownGoalInput.click();
   assert.equal(ownGoalInput.checked, true);
   assert.equal(scoringTeamInput.disabled, true);
-  assert.equal(scoringTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
 
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -10022,8 +10590,8 @@ test("setup smoke completes live game through finish", async () => {
   assert(startThirdButton instanceof gamePage.window.HTMLButtonElement);
   assert(finishThirdButton instanceof gamePage.window.HTMLButtonElement);
   assert(finishGameButton instanceof gamePage.window.HTMLButtonElement);
-  assert(scoringTeamInput instanceof gamePage.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof gamePage.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof gamePage.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof gamePage.window.HTMLFieldSetElement);
   assert(scorerInput instanceof gamePage.window.HTMLSelectElement);
   assert(saveGoalButton instanceof gamePage.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof gamePage.window.HTMLButtonElement);
@@ -10093,9 +10661,9 @@ test("setup smoke completes live game through finish", async () => {
   dispatchClick(startThirdButton);
   await flushAsync();
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
   scorerInput.value = ari.playerId;
   scorerInput.dispatchEvent(new gamePage.window.Event("change", { bubbles: true }));
@@ -10269,8 +10837,8 @@ test("game page allows admins to correct finished goals and refresh result", asy
   const quickCreateButton = page.document.querySelector('[data-action="quick-create-player"]');
   const editGoalButton = page.document.querySelector('[data-action="edit-goal"][data-event-id="goal-1"]');
   const deleteGoalButton = page.document.querySelector('[data-action="delete-goal"][data-event-id="goal-1"]');
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
   assert(undoLastGoalButton instanceof page.window.HTMLButtonElement);
@@ -10289,10 +10857,10 @@ test("game page allows admins to correct finished goals and refresh result", asy
   dispatchClick(editGoalButton);
   await flushAsync();
   assert.equal(saveGoalButton.disabled, false);
-  assert.match(goalFormNote.textContent ?? "", /Finished-game correction/);
-  scoringTeamInput.value = "blue";
+  assert.equal(goalFormNote.textContent, "Editing keeps the original time.");
+  setGoalTeamValue(scoringTeamInput, "blue");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "red";
+  setGoalTeamValue(concedingTeamInput, "red");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-cy";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -10339,14 +10907,14 @@ test("game page allows admins to correct finished goals and refresh result", asy
   await flushAsync();
   assert.equal(apiState.roster.get(`game-admin-finished-correction:${dee.playerId}`)?.teamId, "red");
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = dee.playerId;
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   assert.equal(saveGoalButton.disabled, false);
-  assert.match(goalFormNote.textContent ?? "", /correct the finished result/);
+  assert.equal(goalFormNote.textContent, "");
   assert.doesNotMatch(goalFormNote.textContent ?? "", /final whistle/);
   dispatchClick(saveGoalButton);
   await flushAsync();
@@ -10355,8 +10923,8 @@ test("game page allows admins to correct finished goals and refresh result", asy
   assert.equal([...apiState.goalEvents.values()][0]?.scorerPlayerId, dee.playerId);
   assert.equal(apiState.games.get("game-admin-finished-correction")?.result?.winnerTeamId, "red");
   assert.match(resultSummary.textContent ?? "", /Red win/);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
 });
 
@@ -10425,14 +10993,14 @@ test("game page serializes goal corrections through the finished-result refresh"
   const concedingTeamInput = page.document.getElementById("goal-conceding-team");
   const scorerInput = page.document.getElementById("goal-scorer");
   const saveGoalButton = page.document.querySelector('[data-action="save-goal"]');
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -10452,7 +11020,7 @@ test("game page serializes goal corrections through the finished-result refresh"
   assert.equal(pendingStatus.getAttribute("aria-live"), "polite");
   assert.equal(pendingStatus.getAttribute("data-activity"), "loading");
   assert.equal(pendingStatus.getAttribute("data-state"), null);
-  assert.equal(pendingStatus.textContent, "Adding goal…");
+  assert.equal(pendingStatus.textContent, "Saving goal…");
   assert(pendingStatus.querySelector('[data-icon="loader-circle"][aria-hidden="true"]'));
   assert(pendingStatus.querySelector('[data-ui="activity-message"]')?.classList.contains("sr-only"));
 
@@ -10490,7 +11058,7 @@ test("game page serializes goal corrections through the finished-result refresh"
   assert.equal(restoredDelete.disabled, false);
   const completedStatus = page.document.getElementById("setup-status");
   assert(completedStatus instanceof page.window.HTMLElement);
-  assert.equal(completedStatus.textContent, "Goal added.");
+  assert.equal(completedStatus.textContent, "Goal recorded.");
   assert.equal(completedStatus.getAttribute("data-state"), "success");
   assert.equal(completedStatus.getAttribute("data-activity"), "message");
   assert.equal(
@@ -10577,8 +11145,8 @@ test("game page clears a committed finished-goal draft when timeline and result 
   const resultSummary = page.document.getElementById("game-result-summary");
   const scoreboard = page.document.getElementById("live-scoreboard");
   const timeline = page.document.getElementById("goal-timeline");
-  assert(scoringTeamInput instanceof page.window.HTMLSelectElement);
-  assert(concedingTeamInput instanceof page.window.HTMLSelectElement);
+  assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
+  assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
   assert(ownGoalInput instanceof page.window.HTMLInputElement);
   assert(saveGoalButton instanceof page.window.HTMLButtonElement);
@@ -10588,9 +11156,9 @@ test("game page clears a committed finished-goal draft when timeline and result 
   assert(scoreboard instanceof page.window.HTMLElement);
   assert(timeline instanceof page.window.HTMLElement);
 
-  scoringTeamInput.value = "red";
+  setGoalTeamValue(scoringTeamInput, "red");
   scoringTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
-  concedingTeamInput.value = "blue";
+  setGoalTeamValue(concedingTeamInput, "blue");
   concedingTeamInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
   scorerInput.value = "player-ari";
   scorerInput.dispatchEvent(new page.window.Event("change", { bubbles: true }));
@@ -10598,12 +11166,11 @@ test("game page clears a committed finished-goal draft when timeline and result 
   await flushAsync();
 
   assert.equal(apiState.goalEvents.size, 1);
-  assert.match(status.textContent ?? "", /Goal added; timeline and result refresh failed/);
-  assert.equal(status.getAttribute("data-state"), "error");
+  assert.equal(status.hidden, true);
   assert.match(error.textContent ?? "", /neither the latest goal state nor the finished result/);
   assert.equal(error.hidden, false);
   assert.equal(status.hidden, true);
-  assert.match(error.textContent ?? "", /was saved.*could be refreshed\. Reload to try again/);
+  assert.match(error.textContent ?? "", /Goal recorded, but neither.*could be refreshed\. Reload to try again/);
   assert.doesNotMatch(error.textContent ?? "", /Goal added; timeline and result refresh failed/);
   assert.match(scoreboard.textContent ?? "", /Scores unavailable/);
   assert.equal(scoreboard.querySelector('[data-ui="score-team"]'), null);
@@ -10612,8 +11179,8 @@ test("game page clears a committed finished-goal draft when timeline and result 
   assert.match(resultSummary.textContent ?? "", /Result refresh required/);
   assert.match(resultSummary.textContent ?? "", /goal change was saved/);
   assert.equal(resultSummary.querySelector('[data-testid="game-result-outcome"]'), null);
-  assert.equal(scoringTeamInput.value, "");
-  assert.equal(concedingTeamInput.value, "");
+  assert.equal(goalTeamValue(scoringTeamInput), "");
+  assert.equal(goalTeamValue(concedingTeamInput), "");
   assert.equal(scorerInput.value, "");
   assert.equal(ownGoalInput.checked, false);
   assert.equal(concedingTeamInput.disabled, true);
@@ -10726,8 +11293,11 @@ test("game page treats committed undo as success when finished result refresh fa
   assert.equal(apiState.games.get("game-undo-refresh-fail")?.result?.winnerTeamId, "red");
   assert.match(timeline.textContent ?? "", /Ari\s*→/);
   assert.doesNotMatch(timeline.textContent ?? "", /Cy\s*→/);
-  assert.match(status.textContent ?? "", /Latest goal undone\. Run scores refreshed; Match Summary unavailable/);
-  assert.equal(status.hasAttribute("data-state"), false);
+  assert.equal(status.hidden, true);
+  assert.match(error.textContent ?? "", /Latest goal undone, but the finished result could not be refreshed/);
+  assert.equal(error.hidden, false);
+  assert.equal(error.getAttribute("role"), "status");
+  assert.equal(error.getAttribute("aria-live"), "polite");
   assert.match(error.textContent ?? "", /finished result could not be refreshed/);
   const redScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="red"]');
   const blueScoreCard = page.document.querySelector('[data-ui="score-team"][data-team-id="blue"]');

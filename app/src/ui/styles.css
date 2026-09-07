@@ -999,10 +999,37 @@ body {
 
 [data-ui="run-console"] {
   display: grid;
-  /* At most two usable columns; enlarged text can return to document order. */
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(17rem, calc((100% - 0.75rem) / 2))), 1fr));
-  gap: 0.75rem;
+  /* Tablet stacks; form and log pair only with room for names and touch targets. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(26rem, calc((100% - 1rem) / 2))), 1fr));
+  gap: 1rem;
   min-width: 0;
+}
+
+[data-ui="run-match-summary"] {
+  container-type: inline-size;
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+[data-ui="run-recovery"] {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+
+  p { margin: 0; }
 }
 
 [data-ui="roster-workspace"],
@@ -1016,17 +1043,21 @@ body {
   }
 }
 
-[data-ui="run-scoring-panel"],
-[data-ui="run-timer-panel"] {
+[data-ui="run-scoring-panel"] {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.75rem;
+  gap: 1rem;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  background: var(--surface-elevated);
-  padding: 0.75rem;
+  background: var(--surface);
+  padding: 1rem;
+}
 
+[data-ui="run-timer-panel"] {
+  min-width: 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
 }
 
 [data-ui="section-heading"] {
@@ -1050,29 +1081,21 @@ body {
 }
 
 [data-ui="run-score-strip"] {
-  grid-column: 1 / -1;
   align-self: start;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  padding: 0.45rem;
-
+  min-width: 0;
 }
 
 [data-ui="live-scoreboard"] {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 4.75rem), 1fr));
-  gap: 0.45rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
 }
 
 [data-ui="score-team"] {
   --team-color: var(--team-neutral);
   display: grid;
-  gap: 0.45rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 0.375rem;
-  background: var(--surface);
+  gap: 0.5rem;
+  min-width: 0;
 
   header {
     display: grid;
@@ -1082,33 +1105,38 @@ body {
 
     strong {
       font-size: 0.875rem;
-      overflow-wrap: anywhere;
+      overflow-wrap: break-word;
     }
   }
 
   dl {
     display: grid;
-    gap: 0.25rem;
+    gap: 0.75rem;
     margin: 0;
   }
 
   div {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 4rem), 1fr));
-    gap: 0.25rem;
+    gap: 0.125rem;
     align-items: baseline;
   }
 
   dt {
     color: var(--ink-soft);
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
   }
 
   dd {
     margin: 0;
-    font-weight: 850;
-    font-size: 1.1rem;
+    font-weight: 750;
+    font-size: 1.125rem;
     font-variant-numeric: tabular-nums;
+  }
+
+  dl > div:first-child dd {
+    font-size: 2.25rem;
+    line-height: 1.15;
+    font-weight: 850;
   }
 
   [data-ui="team-swatch"] {
@@ -1120,15 +1148,20 @@ body {
   }
 }
 
+/* Enlarged type/zoom may leave less room than three readable labelled totals. */
+@container (max-width: 15rem) {
+  [data-ui="live-scoreboard"] { grid-template-columns: minmax(0, 1fr); }
+  [data-ui="score-team"] {
+    padding-block: 0.5rem;
+    dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+}
+
 [data-ui="run-primary-scoring"] {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.65rem;
+  gap: 1rem;
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  padding: 0.7rem;
 
   > header {
     display: grid;
@@ -1137,7 +1170,7 @@ body {
     h2,
     h3 {
       margin: 0;
-      font-size: 1rem;
+      font-size: 1.25rem;
       color: var(--ink-strong);
     }
   }
@@ -1190,9 +1223,9 @@ body {
 
 [data-ui="run-goal-form"] {
   display: grid;
-  /* Keep the two team fields paired only while their labels have room. */
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(6rem, calc((100% - 0.6rem) / 2))), 1fr));
-  gap: 0.6rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  min-width: 0;
 
   [data-ui="field"] {
     min-width: 0;
@@ -1203,14 +1236,58 @@ body {
   }
 }
 
-[data-ui="run-goal-form"] [data-ui="field"]:nth-of-type(3),
-[data-ui="run-goal-form"] > [data-ui="check-row"],
-[data-ui="run-secondary-scoring"] {
-  grid-column: 1 / -1;
+#goal-form-note:empty { display: none; }
+
+[data-ui="goal-team-field"] {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+
+  legend {
+    padding: 0;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 750;
+  }
+}
+
+[data-ui="goal-team-options"] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 4.5rem), 1fr));
+  gap: 0.5rem;
+}
+
+[data-ui="goal-team-choice"] {
+  --team-color: var(--team-neutral);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1875rem;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0.5rem 0.25rem;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-control);
+  font-size: 0.875rem;
+  cursor: pointer;
+
+  input { margin: 0; width: 0.875rem; height: 0.875rem; flex: 0 0 auto; accent-color: var(--accent); }
+  [data-ui="team-swatch"] {
+    flex: 0 0 0.375rem;
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 50%;
+    background: var(--team-color);
+    border: 1px solid var(--control-line);
+  }
+  span { min-width: 0; overflow-wrap: break-word; }
+  &:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  &:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  &:has(input:disabled) { color: var(--ink-soft); cursor: default; }
 }
 
 [data-ui="run-secondary-scoring"],
-[data-ui="run-latest-goals"],
 [data-ui="run-third-history"],
 [data-ui="final-team-log"],
 [data-ui="final-full-log"] {
@@ -1230,7 +1307,7 @@ body {
 [data-ui="run-secondary-scoring"] {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: 0.55rem;
+  padding: 0.5rem 0.75rem;
   background: var(--surface);
 
   > summary {
@@ -1280,14 +1357,32 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  padding: 0.6rem;
+  padding: 1rem;
+}
+
+[data-ui="run-latest-goals"] { min-width: 0; }
+
+[data-ui="latest-goals-heading"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+
+  h2 { margin: 0; font-size: 1.25rem; }
+}
+
+[data-ui="run-third-history"] {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
 }
 
 [data-ui="run-timer-bar"] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
   min-width: 0;
-  gap: 0.6rem;
+  gap: 1rem;
   align-items: center;
 }
 
@@ -1555,10 +1650,6 @@ body {
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 0.2rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 0.6rem;
-  background: var(--surface);
 
   span {
     color: var(--ink-soft);
@@ -1893,16 +1984,20 @@ body {
 [data-ui="assist-list"] {
   display: grid;
   gap: 0.35rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 0.5rem;
-  background: var(--surface);
+  min-width: 0;
+  max-block-size: min(20rem, 55dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.25rem;
+
+  [data-ui="check-row"] { min-height: 3rem; }
+  small { display: block; }
 }
 
 [data-ui="goal-timeline"] {
   display: grid;
   gap: 0.55rem;
-  margin: 0.75rem 0 0;
+  margin: 1rem 0 0;
   padding: 0;
   list-style: none;
 }
@@ -1910,14 +2005,16 @@ body {
 [data-ui="goal-event"] {
   display: grid;
   gap: 0.5rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 0.6rem;
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0.75rem 0;
   background: var(--surface);
 
   &[data-state="latest"] {
-    border-color: var(--accent);
     background: var(--accent-soft);
+    padding: 0.75rem;
+    border-radius: var(--radius-lg);
+    border-bottom: 0;
   }
 }
 
@@ -1963,40 +2060,18 @@ body {
   }
 }
 
-@media (max-width: 359px) {
-  [data-ui="goal-primary-row"] {
-    flex-wrap: nowrap;
-    gap: 0.12rem;
+[data-ui="goal-primary-row"] [data-ui="goal-scorer"] {
+  min-width: 0;
+  overflow-wrap: break-word;
+  white-space: normal;
+}
 
-    [data-ui="goal-time"],
-    [data-ui="goal-scorer"] {
-      font-size: 0.875rem;
-    }
-
-    [data-ui="goal-time"],
-    [data-ui="goal-team-arrow"],
-    [data-ui="own-goal-marker"],
-    [data-ui="third-indicator"] {
-      flex-shrink: 0;
-    }
-
-    [data-ui="goal-scorer"] {
-      min-width: 0;
-      max-width: 4.5rem;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    [data-ui="goal-team-chip"] {
-      flex: 0 0 auto;
-    }
-
-    [data-ui="third-indicator"] {
-      width: 1.15rem;
-      height: 1.15rem;
-    }
-  }
+[data-ui="goal-team-relationship"] {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
 }
 
 [data-ui="goal-team-chip"] {
@@ -2011,7 +2086,6 @@ body {
   border-radius: 999px;
   padding: 0;
   background: var(--team-color);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--team-color) 18%, var(--surface));
 
   [data-ui="team-swatch"] {
     width: 100%;
@@ -2870,12 +2944,6 @@ code {
 
   [data-ui="run-console"] {
     align-items: start;
-  }
-
-  [data-ui="run-goal-form"] [data-ui="field"]:nth-of-type(3),
-  [data-ui="run-goal-form"] > [data-ui="check-row"],
-  [data-ui="run-secondary-scoring"] {
-    grid-column: 1 / -1;
   }
 
   [data-ui="context-grid"] {

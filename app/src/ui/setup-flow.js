@@ -2605,6 +2605,9 @@
     const cancelGoalEditButton = root.querySelector('[data-action="cancel-goal-edit"]');
     const undoLastGoalButton = root.querySelector('[data-action="undo-last-goal"]');
     const goalTimelineElement = document.getElementById("goal-timeline");
+    const goalForm = document.getElementById("goal-form");
+    const retryGoalButton = root.querySelector('[data-action="retry-goal-operation"]');
+    const refreshGameStateButton = root.querySelector('[data-action="refresh-game-state"]');
 
     if (
       !(kickoffInput instanceof HTMLInputElement) ||
@@ -2658,8 +2661,9 @@
     const pendingCreatedPlayers = new Map();
     const pendingAssignments = new Map();
     let manualGameModeSelected = false;
-    let pendingCreateGoalIdempotency = null;
-    const pendingGoalMutationIdempotency = new Map();
+    let goalOperation = null;
+    let clockOperation = null;
+    let gameNavigationRevision = 0;
     const gameModes = ["structure", "players", "run", "final"];
     const gameModeTabs = [...root.querySelectorAll('[data-ui="game-mode-tab"][data-game-mode]')];
     const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
@@ -2717,7 +2721,7 @@
       for (const element of document.querySelectorAll("[data-game-capability]")) {
         if (!(element instanceof HTMLElement)) continue;
         const allowed = capabilities[element.getAttribute("data-game-capability")] === true;
-        element.hidden = !allowed;
+        element.hidden = !allowed || (element.id === "game-mode-tab-run" && gameModePanels.some((panel) => panel.getAttribute("data-game-mode") === "run" && !panel.hidden));
         if (element instanceof HTMLButtonElement) {
           if (!allowed) {
             element.disabled = true;
@@ -2737,10 +2741,6 @@
       if (correctionTeams instanceof HTMLElement) correctionTeams.hidden = !capabilities.correct || finishedRosterEditing;
       const correctionResult = root.querySelector('[data-action="correct-finished-result"]');
       if (correctionResult instanceof HTMLElement) correctionResult.hidden = !capabilities.correct || finishedResultEditing;
-    }
-
-    function isFinishedGoalCorrection() {
-      return isGameFinished() && isEditingGoal() && canCorrectFinishedGoals();
     }
 
     function humanGameStatus(value) {
@@ -2781,6 +2781,7 @@
     }
 
     function setGameMode(mode, options = {}) {
+      gameNavigationRevision += 1;
       closeActionMenu();
       if (!isGameMode(mode)) {
         mode = isGameFinished() ? "final" : "structure";
@@ -2811,6 +2812,7 @@
           continue;
         }
         const active = tab.getAttribute("data-game-mode") === mode;
+        if (tab.id === "game-mode-tab-run") tab.hidden = active || !canScoreGame();
         if (tab instanceof HTMLAnchorElement) {
           if (active) tab.setAttribute("aria-current", "page"); else tab.removeAttribute("aria-current");
           tab.removeAttribute("aria-pressed");
@@ -3019,12 +3021,17 @@
           .join("");
       }
 
-      startThirdButton.disabled = timerMutationPending || !canScoreGame() || gameFinished || nextThird === null;
-      finishThirdButton.disabled = timerMutationPending || !canScoreGame() || gameFinished || !activeSegment;
-      finishGameButton.disabled = timerMutationPending || !canScoreGame() || gameFinished || !allThirdsFinished;
+      const clockBlocked = timerMutationPending || goalMutationInFlight || goalOperation !== null;
+      startThirdButton.disabled = clockBlocked || clockOperation !== null || !canScoreGame() || gameFinished || nextThird === null;
+      finishThirdButton.disabled = clockBlocked || clockOperation !== null || !canScoreGame() || gameFinished || !activeSegment;
+      finishGameButton.disabled = clockBlocked || (clockOperation !== null && clockOperation.kind !== "finish-game") || !canScoreGame() || gameFinished || !allThirdsFinished;
       startThirdButton.textContent = nextThird ? `Start Third ${nextThird}` : "Start Third";
       finishThirdButton.textContent = activeSegment ? `Finish Third ${activeSegment.third}` : "Finish Third";
-      finishGameButton.textContent = gameFinished ? "Game finished" : "Finish game";
+      finishGameButton.textContent = gameFinished ? "Game finished" : clockOperation?.kind === "finish-game" ? "Retry finish game" : "Finish game";
+      if (refreshGameStateButton instanceof HTMLButtonElement) {
+        refreshGameStateButton.hidden = !clockOperation?.uncertain;
+        refreshGameStateButton.disabled = timerMutationPending || !clockOperation?.uncertain;
+      }
       if (nextThird) {
         startThirdButton.setAttribute("data-third", String(nextThird));
       } else {
@@ -3063,8 +3070,8 @@
     function liveControlsAvailable() {
       return (
         liveScoreboardElement instanceof HTMLElement &&
-        goalScoringTeamInput instanceof HTMLSelectElement &&
-        goalConcedingTeamInput instanceof HTMLSelectElement &&
+        goalScoringTeamInput instanceof HTMLFieldSetElement &&
+        goalConcedingTeamInput instanceof HTMLFieldSetElement &&
         goalOwnGoalInput instanceof HTMLInputElement &&
         goalScorerInput instanceof HTMLSelectElement &&
         goalAssistsDropdown instanceof HTMLDetailsElement &&
@@ -3074,7 +3081,9 @@
         saveGoalButton instanceof HTMLButtonElement &&
         cancelGoalEditButton instanceof HTMLButtonElement &&
         undoLastGoalButton instanceof HTMLButtonElement &&
-        goalTimelineElement instanceof HTMLElement
+        goalTimelineElement instanceof HTMLElement &&
+        goalForm instanceof HTMLFormElement &&
+        retryGoalButton instanceof HTMLButtonElement
       );
     }
 
@@ -3179,10 +3188,32 @@
         .filter(Boolean);
 
       if (ordered.length > 0) {
-        return ordered;
+        return teamsInMatchOrder(ordered);
       }
 
-      return scoreboardTeams;
+      return teamsInMatchOrder(scoreboardTeams);
+    }
+
+    function teamsInMatchOrder(teams) {
+      const order = new Map([["red", 0], ["blue", 1], ["yellow", 2]]);
+      return [...teams].sort((left, right) => (order.get(left.teamId) ?? 3) - (order.get(right.teamId) ?? 3));
+    }
+
+    function selectedGoalTeam(group) {
+      return group?.querySelector('input[type="radio"]:checked')?.value ?? "";
+    }
+
+    function renderGoalTeamChoices(group, selectedValue, disabledTeamId = null) {
+      const options = group.querySelector('[data-ui="goal-team-options"]');
+      if (!(options instanceof HTMLElement)) return;
+      options.innerHTML = teamsInMatchOrder(rosterTeams).map((team) => {
+        const disabled = team.teamId === disabledTeamId;
+        const checked = !disabled && team.teamId === selectedValue;
+        return `<label data-ui="goal-team-choice"${teamSwatchStyle(team)}>
+          <input type="radio" name="${escapeHtml(group.id)}" value="${escapeHtml(team.teamId)}"${checked ? " checked" : ""}${disabled ? " disabled" : ""} />
+          <span data-ui="team-swatch" aria-hidden="true"></span><span>${escapeHtml(team.name)}</span>
+        </label>`;
+      }).join("");
     }
 
     function sortGoalTimeline(timeline) {
@@ -3534,8 +3565,14 @@
       }
 
       const rostered = rosteredPlayers().filter((player) => player.playerId !== scorerPlayerId);
+      if (goalOperation) seedAssistPlayerIds = goalOperation.draft.assistPlayerIds;
       const seeded = seedAssistPlayerIds ?? selectedAssistPlayerIds();
       const selected = new Set(seeded.filter((playerId) => playerId !== scorerPlayerId).slice(0, 3));
+      // An unresolved request retains its original display as well as payload,
+      // even when a later roster read no longer contains an original assister.
+      for (const player of goalOperation?.assistPlayers ?? []) {
+        if (selected.has(player.playerId) && !rostered.some((candidate) => candidate.playerId === player.playerId)) rostered.push(player);
+      }
 
       if (rostered.length === 0) {
         goalAssistsElement.innerHTML = `<p data-ui="empty-note">No assist options yet.</p>`;
@@ -3549,7 +3586,7 @@
         .map((player) => player.nickname);
       goalAssistsSummaryElement.textContent = selectedNames.length === 0
         ? "Choose assists"
-        : selectedNames.join(", ");
+        : `${selectedNames.length} selected: ${selectedNames.join(", ")}`;
       if (selectedNames.length > 0) {
         goalAssistsSummaryElement.title = selectedNames.join(", ");
       } else {
@@ -3559,7 +3596,7 @@
       goalAssistsElement.innerHTML = rostered
         .map((player) => {
           const checked = selected.has(player.playerId);
-          const disabled = (isGameFinished() && !isFinishedGoalCorrection()) || (!checked && selected.size >= 3);
+          const disabled = !canScoreGame() || goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null || !scorerPlayerId || (!checked && selected.size >= 3);
           return `<label data-ui="check-row">
             <input type="checkbox" value="${escapeHtml(player.playerId)}"${checked ? " checked" : ""}${
               disabled ? " disabled" : ""
@@ -3575,40 +3612,18 @@
         return;
       }
 
+      if (goalOperation) seed = goalOperation.draft;
       const ownGoal = seed.ownGoal ?? goalOwnGoalInput.checked;
-      const teamOptions = rosterTeams.map((team) => ({
-        value: team.teamId,
-        label: team.name,
-      }));
-      const previousScoringTeamId = seed.scoringTeamId ?? goalScoringTeamInput.value;
-      const previousConcedingTeamId = seed.concedingTeamId ?? goalConcedingTeamInput.value;
+      const previousScoringTeamId = seed.scoringTeamId ?? selectedGoalTeam(goalScoringTeamInput);
+      const previousConcedingTeamId = seed.concedingTeamId ?? selectedGoalTeam(goalConcedingTeamInput);
 
       goalOwnGoalInput.checked = ownGoal;
-      if (ownGoal) {
-        goalScoringTeamInput.innerHTML = `<option value="">Own goal</option>`;
-        goalScoringTeamInput.value = "";
-        goalScoringTeamInput.disabled = true;
-      } else {
-        renderSelectOptions(goalScoringTeamInput, teamOptions, previousScoringTeamId, "Choose Team", null, true);
-      }
-
-      const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
-      const concedingOptions = ownGoal
-        ? teamOptions
-        : teamOptions.filter((team) => team.value !== scoringTeamId);
-      renderSelectOptions(
-        goalConcedingTeamInput,
-        concedingOptions,
-        previousConcedingTeamId,
-        "Choose Team",
-        null,
-        true,
-      );
-      if (!ownGoal && !scoringTeamId) {
-        goalConcedingTeamInput.disabled = true;
-      }
-
-      const concedingTeamId = goalConcedingTeamInput.value;
+      renderGoalTeamChoices(goalScoringTeamInput, ownGoal ? "" : previousScoringTeamId);
+      goalScoringTeamInput.disabled = ownGoal;
+      const scoringTeamId = ownGoal ? null : selectedGoalTeam(goalScoringTeamInput);
+      renderGoalTeamChoices(goalConcedingTeamInput, previousConcedingTeamId, scoringTeamId);
+      goalConcedingTeamInput.disabled = !ownGoal && !scoringTeamId;
+      const concedingTeamId = selectedGoalTeam(goalConcedingTeamInput);
       const scorerPool = ownGoal
         ? rosteredPlayersForTeam(concedingTeamId)
         : rosteredPlayersForTeam(scoringTeamId);
@@ -3626,14 +3641,14 @@
         ownGoal === Boolean(editingGoal.ownGoal) &&
         scoringTeamId === (editingGoal.scoringTeamId ?? null) &&
         concedingTeamId === editingGoal.concedingTeamId;
-      const selectedScorerLabel = selectedScorerId && canPreserveHistoricalScorer
+      const selectedScorerLabel = selectedScorerId && (canPreserveHistoricalScorer || goalOperation !== null)
         ? `${playerNickname(selectedScorerId)} (not currently rostered)`
         : null;
       renderSelectOptions(
         goalScorerInput,
         scorerOptions,
         selectedScorerId,
-        "Assign players first",
+        "Choose scorer",
         selectedScorerLabel,
         true,
       );
@@ -3646,17 +3661,26 @@
       const gameFinished = isGameFinished();
       const finishedCorrectionsAllowed = canCorrectFinishedGoals();
       const creatingFinishedCorrection = gameFinished && finishedCorrectionsAllowed && !isEditingGoal();
-      saveGoalButton.textContent = editingGoalId ? "Save goal" : "Add goal";
+      saveGoalButton.textContent = editingGoalId ? "Save changes" : "Record goal";
       cancelGoalEditButton.hidden = editingGoalId === null;
       cancelGoalEditButton.disabled = editingGoalId === null;
       undoLastGoalButton.disabled =
         goalMutationInFlight ||
+        goalOperation !== null || timerMutationPending || clockOperation !== null ||
         !goalTimelineLoaded ||
         goalTimeline.length === 0 ||
         !canScoreGame();
-      undoLastGoalButton.textContent = "Undo last";
+      undoLastGoalButton.textContent = "Undo last goal";
+      retryGoalButton.hidden = goalOperation?.uncertain !== true;
+      retryGoalButton.disabled = goalMutationInFlight || timerMutationPending || clockOperation !== null || !canScoreGame() || goalOperation?.uncertain !== true;
+      retryGoalButton.textContent = goalOperation?.kind === "delete" ? "Retry goal deletion" : goalOperation?.kind === "undo" ? "Retry undo" : "Retry goal save";
+      const recovery = document.getElementById("goal-operation-recovery");
+      if (recovery instanceof HTMLElement) recovery.hidden = retryGoalButton.hidden;
+      const recoveryNote = document.getElementById("goal-operation-note");
+      if (recoveryNote instanceof HTMLElement) recoveryNote.textContent = goalOperation?.kind === "delete" ? "Retry targets the same goal."
+        : goalOperation?.kind === "undo" ? "Retry targets the original goal, even if another has been recorded." : "Retry uses the original goal details.";
 
-      if (goalMutationInFlight) {
+      if (goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null) {
         goalScoringTeamInput.disabled = true;
         goalConcedingTeamInput.disabled = true;
         goalOwnGoalInput.disabled = true;
@@ -3668,7 +3692,9 @@
             input.disabled = true;
           }
         }
-        goalFormNote.textContent = "Saving goal change…";
+        goalFormNote.textContent = goalOperation?.uncertain ? "The goal change is unconfirmed. Retry the same action."
+          : clockOperation?.uncertain ? "Check the clock before recording another goal."
+            : goalMutationInFlight ? "Saving goal change…" : "Updating clock…";
         return;
       }
 
@@ -3721,42 +3747,40 @@
         return;
       }
 
-      if (!goalOwnGoalInput.checked && !goalScoringTeamInput.value) {
+      if (!goalOwnGoalInput.checked && !selectedGoalTeam(goalScoringTeamInput)) {
         saveGoalButton.disabled = true;
-        goalFormNote.textContent = "Choose a scoring team before adding a goal.";
+        goalFormNote.textContent = "";
         return;
       }
 
-      if (!goalConcedingTeamInput.value) {
+      if (!selectedGoalTeam(goalConcedingTeamInput)) {
         saveGoalButton.disabled = true;
-        goalFormNote.textContent = "Choose a conceding team before adding a goal.";
+        goalFormNote.textContent = "";
         return;
       }
 
       if (!goalScorerInput.value) {
         saveGoalButton.disabled = true;
-        goalFormNote.textContent = "Choose a scorer before adding a goal.";
+        goalFormNote.textContent = "";
         return;
       }
 
       if (editingGoalId) {
         saveGoalButton.disabled = false;
-        goalFormNote.textContent = gameFinished
-          ? "Finished-game correction keeps the original timer stamp."
-          : "Editing keeps the original timer stamp.";
+        goalFormNote.textContent = "Editing keeps the original time.";
         return;
       }
 
       if (!activeThird) {
         saveGoalButton.disabled = !creatingFinishedCorrection;
         goalFormNote.textContent = creatingFinishedCorrection
-          ? "Choose the goal details to correct the finished result."
-          : "Start a third before adding goals.";
+          ? ""
+          : "Start a third before recording goals.";
         return;
       }
 
       saveGoalButton.disabled = false;
-      goalFormNote.textContent = `Goal will be added to third ${activeThird}.`;
+      goalFormNote.textContent = "";
     }
 
     function renderThirdIndicator(third) {
@@ -4016,7 +4040,7 @@
 
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
       const finishedActionsDisabled =
-        goalMutationInFlight || !canScoreGame();
+        goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null || !canScoreGame();
       const disabledAttribute = finishedActionsDisabled ? " disabled" : "";
       goalTimelineElement.innerHTML = [...goalTimeline]
         .reverse()
@@ -4024,7 +4048,7 @@
           const assists =
             Array.isArray(goal.assistPlayerIds) && goal.assistPlayerIds.length > 0
               ? goal.assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")
-              : "None";
+              : "";
           const latest = goal.eventId === latestEventId;
           const displayTime = goalDisplayTime(goal);
           const scorer = String(playerNickname(goal.scorerPlayerId));
@@ -4039,13 +4063,13 @@
               <div data-ui="goal-primary-row">
                 <strong data-ui="goal-time">${escapeHtml(displayTime)}</strong>
                 <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${escapeHtml(scorer)}</span>
-                ${scoringContext}
-                <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
-                ${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
+                <span data-ui="goal-team-relationship">${scoringContext}
+                  <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
+                  ${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
+                </span>
                 ${renderThirdIndicator(goal.third)}
               </div>
-              <small>Assists: ${escapeHtml(assists)}</small>
-              ${goal.ownGoal ? `<small>Own goal: conceding tally only</small>` : ""}
+              ${assists ? `<small>Assists: ${escapeHtml(assists)}</small>` : ""}
             </div>
             <div data-ui="row-action-buttons">
               <button data-ui="icon-button" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
@@ -4069,11 +4093,32 @@
         return;
       }
 
+      const focus = captureScoringFocus();
       renderLiveScoreboard();
       renderGoalControls(seed);
       renderGoalTimeline();
       renderGameResult();
       syncGameModeState();
+      restoreScoringFocus(focus);
+    }
+
+    function captureScoringFocus() {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || (!goalForm?.contains(active) && !goalTimelineElement?.contains(active))) return null;
+      return {
+        id: active.id, action: active.getAttribute("data-action"), eventId: active.getAttribute("data-event-id"),
+        group: active.closest('[data-ui="goal-team-options"]')?.parentElement?.id,
+        value: active instanceof HTMLInputElement ? active.value : null,
+      };
+    }
+
+    function restoreScoringFocus(focus) {
+      if (!focus) return;
+      let target = focus.id ? document.getElementById(focus.id) : null;
+      if (focus.group) target = [...(document.getElementById(focus.group)?.querySelectorAll('input[type="radio"]') ?? [])].find((input) => input.value === focus.value);
+      else if (!target && focus.value) target = [...goalAssistsElement.querySelectorAll('input[type="checkbox"]')].find((input) => input.value === focus.value);
+      else if (!target && focus.action) target = [...root.querySelectorAll('button[data-action]')].find((button) => button.getAttribute("data-action") === focus.action && button.getAttribute("data-event-id") === focus.eventId);
+      if (target instanceof HTMLElement && !target.matches(":disabled") && actionElementVisible(target)) target.focus({ preventScroll: true });
     }
 
     function applyGoalMutationResult(result, fallback = {}) {
@@ -4095,7 +4140,6 @@
         goalTimeline = goalTimeline.filter((goal) => goal.eventId !== fallback.deletedEventId);
       }
 
-      editingGoalId = null;
       renderLiveScoring();
     }
 
@@ -4104,12 +4148,7 @@
       if (goalOwnGoalInput instanceof HTMLInputElement) {
         goalOwnGoalInput.checked = false;
       }
-      if (goalScoringTeamInput instanceof HTMLSelectElement) {
-        goalScoringTeamInput.value = "";
-      }
-      if (goalConcedingTeamInput instanceof HTMLSelectElement) {
-        goalConcedingTeamInput.value = "";
-      }
+      for (const input of root.querySelectorAll('#goal-scoring-team input, #goal-conceding-team input')) input.checked = false;
       if (goalScorerInput instanceof HTMLSelectElement) {
         goalScorerInput.value = "";
       }
@@ -4159,8 +4198,8 @@
       }
 
       const ownGoal = goalOwnGoalInput.checked;
-      const scoringTeamId = ownGoal ? null : goalScoringTeamInput.value;
-      const concedingTeamId = goalConcedingTeamInput.value;
+      const scoringTeamId = ownGoal ? null : selectedGoalTeam(goalScoringTeamInput);
+      const concedingTeamId = selectedGoalTeam(goalConcedingTeamInput);
       const scorerPlayerId = goalScorerInput.value;
       const assistPlayerIds = selectedAssistPlayerIds().filter((playerId) => playerId !== scorerPlayerId).slice(0, 3);
 
@@ -4199,44 +4238,167 @@
       };
     }
 
-    function goalCreatePayloadFingerprint(payload) {
-      return JSON.stringify({
-        scoringTeamId: payload.scoringTeamId,
-        concedingTeamId: payload.concedingTeamId,
-        scorerPlayerId: payload.scorerPlayerId,
-        assistPlayerIds: Array.isArray(payload.assistPlayerIds) ? payload.assistPlayerIds : [],
-        ownGoal: payload.ownGoal === true,
-      });
+    function currentGoalDraft() {
+      return {
+        ownGoal: goalOwnGoalInput.checked,
+        scoringTeamId: selectedGoalTeam(goalScoringTeamInput),
+        concedingTeamId: selectedGoalTeam(goalConcedingTeamInput),
+        scorerPlayerId: goalScorerInput.value,
+        assistPlayerIds: selectedAssistPlayerIds(),
+      };
     }
 
-    function idempotencyKeyForGoalMutation(prefix, stablePart, fingerprint) {
-      const cacheKey = `${prefix}:${stablePart}`;
-      const existing = pendingGoalMutationIdempotency.get(cacheKey);
-      if (!existing || existing.fingerprint !== fingerprint) {
-        const next = {
-          fingerprint,
-          key: createIdempotencyKey(prefix, stablePart),
-          uncertain: false,
-        };
-        pendingGoalMutationIdempotency.set(cacheKey, next);
-        return next.key;
-      }
-
-      return existing.key;
+    function isDefinitiveScoringRejection(error, kind) {
+      if (!isDefinitiveRequestRejection(error) || error.statusCode === 408) return false;
+      if (error.statusCode !== 409) return true;
+      // Ambiguous/idempotency conflicts can follow a committed request. Only
+      // documented pre-commit goal conflicts retire a first attempt; clock
+      // conflicts are reconciled against the original third instead.
+      if (!["create", "edit", "delete", "undo"].includes(kind)) return false;
+      if (kind === "create" && error.responseError === "conflict" && error.responseCode === "no_active_third") return true;
+      return error.responseError === "conflict" && [
+        "game_finished", "game_state_changed", "goal_state_changed", "latest_goal_changed", "not_latest_goal",
+      ].includes(error.responseCode);
     }
 
-    function clearGoalMutationIdempotency(prefix, stablePart) {
-      pendingGoalMutationIdempotency.delete(`${prefix}:${stablePart}`);
+    function newGoalOperation(kind, eventId = null, payload = null) {
+      const path = `/v1/games/${encodeURIComponent(gameId)}/goals${kind === "undo" ? "/undo-last" : eventId ? `/${encodeURIComponent(eventId)}` : ""}`;
+      const method = kind === "delete" ? "DELETE" : kind === "edit" ? "PATCH" : "POST";
+      const prefix = kind === "edit" ? "update-goal" : `${kind}-goal`;
+      const requestPayload = kind === "undo" ? { expectedEventId: eventId } : payload;
+      const draft = currentGoalDraft();
+      return {
+        kind, eventId, path, editingGoalId,
+        request: Object.freeze({ method, headers: Object.freeze({
+          ...(method === "DELETE" ? {} : { "Content-Type": "application/json" }),
+          "Idempotency-Key": createIdempotencyKey(prefix, `${gameId}-${eventId ?? "new"}`),
+        }), ...(requestPayload ? { body: JSON.stringify(requestPayload) } : {}) }),
+        draft: Object.freeze({ ...draft, assistPlayerIds: Object.freeze([...draft.assistPlayerIds]) }),
+        assistPlayers: rosteredPlayers().filter((player) => draft.assistPlayerIds.includes(player.playerId)).map((player) => Object.freeze({ ...player })),
+        previousScoreboardState: scoreboardState,
+        previousFinishedResultState: finishedResultState,
+        uncertain: false,
+      };
     }
 
-    function isGoalMutationIdempotencyUncertain(prefix, stablePart) {
-      return pendingGoalMutationIdempotency.get(`${prefix}:${stablePart}`)?.uncertain === true;
+    function trackScoringOperationFocus(initiator) {
+      const revision = gameNavigationRevision;
+      const scope = initiator === saveGoalButton ? goalForm
+        : initiator === retryGoalButton ? document.getElementById("goal-operation-recovery") ?? initiator : initiator;
+      const action = initiator?.getAttribute("data-action");
+      const eventId = initiator?.getAttribute("data-event-id");
+      const inside = (element) => scope?.contains(element) || (element instanceof Element &&
+        element.closest("button[data-action]")?.getAttribute("data-action") === action &&
+        element.closest("button[data-action]")?.getAttribute("data-event-id") === eventId);
+      let ownsFocus = inside(document.activeElement);
+      const onFocus = (event) => { if (event.target !== document.body && !inside(event.target)) ownsFocus = false; };
+      const onPointer = (event) => { if (!inside(event.target)) ownsFocus = false; };
+      document.addEventListener("focusin", onFocus, true);
+      document.addEventListener("pointerdown", onPointer, true);
+      return () => {
+        document.removeEventListener("focusin", onFocus, true);
+        document.removeEventListener("pointerdown", onPointer, true);
+        return ownsFocus && revision === gameNavigationRevision;
+      };
     }
 
-    function markGoalMutationIdempotencyUncertain(prefix, stablePart) {
-      const entry = pendingGoalMutationIdempotency.get(`${prefix}:${stablePart}`);
-      if (entry) {
-        entry.uncertain = true;
+    function focusNextGoal() {
+      const target = goalScoringTeamInput.querySelector('input[type="radio"]:not(:disabled)') ?? goalOwnGoalInput;
+      if (target instanceof HTMLElement && !target.matches(":disabled") && actionElementVisible(target)) target.focus();
+    }
+
+    function focusGoalLogAction(operation) {
+      const action = operation.kind === "delete" ? "delete-goal" : "undo-last-goal";
+      const candidates = [...root.querySelectorAll('button[data-action]')].filter((button) =>
+        button.getAttribute("data-action") === action && !button.disabled && actionElementVisible(button));
+      const target = candidates.find((button) => button.getAttribute("data-event-id") === operation.eventId) ?? candidates[0];
+      if (target instanceof HTMLElement) target.focus();
+      else if (!undoLastGoalButton.disabled && actionElementVisible(undoLastGoalButton)) undoLastGoalButton.focus();
+      else focusNextGoal();
+    }
+
+    async function performGoalOperation(operation, initiator) {
+      if (goalMutationInFlight || operation !== goalOperation || timerMutationPending || clockOperation || !canScoreGame()) return;
+      const finishFocus = trackScoringOperationFocus(initiator);
+      const saved = operation.kind === "create" ? "Goal recorded" : operation.kind === "edit" ? "Goal updated" : operation.kind === "delete" ? "Goal deleted" : "Latest goal undone";
+      const progress = operation.kind === "delete" ? "Deleting goal" : operation.kind === "undo" ? "Undoing latest goal" : "Saving goal";
+      goalMutationInFlight = true;
+      scoreboardState = "refreshing";
+      if (isGameFinished()) finishedResultState = "refreshing";
+      clearError();
+      setStatus(`${progress}…`, "default");
+      renderLiveScoring();
+      renderTimer();
+      let committed = false;
+      try {
+        let result;
+        try {
+          // Replay this exact operation: no re-reading fields, current latest
+          // event, or roster membership, and never mint a replacement key.
+          result = await requestJsonOrThrow(operation.path, operation.request);
+        } catch (error) {
+          if (!operation.uncertain && isDefinitiveScoringRejection(error, operation.kind)) {
+            goalOperation = null;
+            scoreboardState = operation.previousScoreboardState;
+            finishedResultState = operation.previousFinishedResultState;
+            showError(error instanceof Error ? error.message : "The goal change was rejected.");
+            setStatus(operation.kind === "delete" ? "The goal was not deleted. Review the error and try again."
+              : operation.kind === "undo" ? "The latest goal was not undone. Review the error and try again."
+                : "Goal was not saved. Review the error and try again.", "error");
+          } else {
+            operation.uncertain = true;
+            scoreboardState = "uncertain";
+            if (isGameFinished()) finishedResultState = "uncertain";
+            const message = operation.kind === "delete" ? "Could not confirm the deletion. Retry the same action."
+              : operation.kind === "undo" ? "Could not confirm the undo. Retry the same action."
+                : "Could not confirm whether the goal was saved. Retry with the same details.";
+            showError(message, { includesOutcome: true });
+          }
+          return;
+        }
+
+        committed = true;
+        goalOperation = null;
+        const finishedCorrection = isGameFinished();
+        if (finishedCorrection) finishedResultState = "saved-unavailable";
+        applyGoalMutationResult(result, { deletedEventId: operation.eventId });
+        if (operation.kind === "create" || operation.kind === "edit" || (operation.editingGoalId && operation.editingGoalId === operation.eventId)) resetGoalForm();
+        else {
+          editingGoalId = operation.editingGoalId;
+          renderLiveScoring(operation.draft);
+        }
+        // A successful mutation or replay proves the commit, not that its old
+        // response snapshot is the latest scoreboard. Always refresh reads.
+        const goalsLoaded = await loadGameGoals();
+        const gameRefreshed = await refreshGameAfterFinishedCorrection();
+        if (!goalsLoaded && scoreboardState !== "authoritative") scoreboardState = "unavailable";
+        if (!goalsLoaded && !gameRefreshed) {
+          showError(`${saved}, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.`, { includesOutcome: true });
+        } else if (!goalsLoaded) {
+          showError(finishedCorrection
+            ? `${saved}. Scores refreshed; goal timeline unavailable. Reload to try again.`
+            : `${saved}, but the latest scores and goal timeline could not be loaded. Reload to try again.`, { includesOutcome: true });
+        } else if (!gameRefreshed) {
+          showError(`${saved}, but the finished result could not be refreshed.`, { includesOutcome: true });
+        } else setStatus(`${saved}.`, "success");
+      } catch {
+        // Refresh/render failure after a confirmed commit is not a failed write.
+        if (committed) {
+          scoreboardState = "unavailable";
+          if (isGameFinished()) finishedResultState = "saved-unavailable";
+          showError(`${saved}, but the latest game details could not be loaded. Reload to try again.`, { includesOutcome: true });
+        }
+      } finally {
+        goalMutationInFlight = false;
+        const ownsFocus = finishFocus();
+        renderLiveScoring(committed ? {} : operation.draft);
+        renderTimer();
+        if (ownsFocus) {
+          if (operation.uncertain && !retryGoalButton.disabled) retryGoalButton.focus();
+          else if (committed && (operation.kind === "create" || operation.kind === "edit")) focusNextGoal();
+          else if ((operation.kind === "create" || operation.kind === "edit") && !saveGoalButton.disabled) saveGoalButton.focus();
+          else focusGoalLogAction(operation);
+        }
       }
     }
 
@@ -4254,27 +4416,6 @@
         setStatus("Finished result refresh failed.", "error");
         return false;
       }
-    }
-
-    function idempotencyKeyForGoalSave(eventId, payload) {
-      if (eventId) {
-        return idempotencyKeyForGoalMutation(
-          "update-goal",
-          `${gameId}-${eventId}`,
-          goalCreatePayloadFingerprint(payload),
-        );
-      }
-
-      const fingerprint = goalCreatePayloadFingerprint(payload);
-      if (!pendingCreateGoalIdempotency || pendingCreateGoalIdempotency.fingerprint !== fingerprint) {
-        pendingCreateGoalIdempotency = {
-          fingerprint,
-          key: createIdempotencyKey("create-goal", `${gameId}-new`),
-          uncertain: false,
-        };
-      }
-
-      return pendingCreateGoalIdempotency.key;
     }
 
     function assignmentButton(playerId, team, currentTeamId = null, context = "assign") {
@@ -4817,130 +4958,161 @@
       }
     });
 
-    startThirdButton.addEventListener("click", async () => {
-      if (!canScoreGame() || isGameFinished() || timerMutationPending || startThirdButton.disabled) {
-        return;
-      }
+    function newClockOperation(kind, third = null) {
+      return {
+        kind, third, uncertain: false,
+        path: "/v1/games/" + encodeURIComponent(gameId) + (kind === "finish-game" ? "/finish" : "/thirds/" + encodeURIComponent(third) + "/" + kind),
+        request: Object.freeze({ method: "POST", ...(kind === "finish-game" ? {
+          headers: Object.freeze({ "Idempotency-Key": createIdempotencyKey("finish-game", gameId) }),
+        } : {}) }),
+      };
+    }
 
-      const third = startThirdButton.getAttribute("data-third");
-      if (!third) {
-        return;
-      }
+    function clockOutcomeObserved(operation) {
+      if (isGameFinished()) return true;
+      if (operation.kind === "finish-game") return false;
+      const third = buildTimerState(currentGame).thirds.find((segment) => segment.third === Number(operation.third));
+      return operation.kind === "start" ? Boolean(third?.startedAt) : Boolean(third?.finishedAt);
+    }
 
-      timerMutationPending = true;
-      startThirdButton.disabled = true;
-      clearError();
-      setStatus(`Starting third ${third}…`, "default");
-
+    async function reconcileClockOperation(operation) {
       try {
-        currentGame = await requestJsonOrThrow(
-          `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/start`,
-          { method: "POST" },
-        );
-        setGameMode("run");
-        renderTimer();
-        renderLiveScoring();
-        statusInput.value = currentGame.status;
-        setStatus(`Third ${third} started.`, "success");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not start third.";
-        showError(message);
-        setStatus("Third start failed.", "error");
-      } finally {
-        timerMutationPending = false;
-        startThirdButton.disabled = false;
-        renderTimer();
-        renderLiveScoring();
-      }
-    });
-
-    finishThirdButton.addEventListener("click", async () => {
-      if (!canScoreGame() || isGameFinished() || timerMutationPending || finishThirdButton.disabled) {
-        return;
-      }
-
-      const third = finishThirdButton.getAttribute("data-third");
-      if (!third) {
-        return;
-      }
-
-      timerMutationPending = true;
-      finishThirdButton.disabled = true;
-      clearError();
-      setStatus(`Finishing third ${third}…`, "default");
-
-      try {
-        currentGame = await requestJsonOrThrow(
-          `/v1/games/${encodeURIComponent(gameId)}/thirds/${encodeURIComponent(third)}/finish`,
-          { method: "POST" },
-        );
-        if (buildTimerState(currentGame).status === "complete") {
-          setGameMode("final");
+        const game = await requestJsonOrThrow("/v1/games/" + encodeURIComponent(gameId), { method: "GET", cache: "no-store" });
+        currentGame = game;
+        if (clockOutcomeObserved(operation)) {
+          clockOperation = null;
+          return true;
         }
-        renderTimer();
-        renderLiveScoring();
-        statusInput.value = currentGame.status;
-        setStatus(`Third ${third} finished.`, "success");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not finish third.";
-        showError(message);
-        setStatus("Third finish failed.", "error");
-      } finally {
-        timerMutationPending = false;
-        finishThirdButton.disabled = false;
-        renderTimer();
-        renderLiveScoring();
+      } catch {
+        // A failed or negative read does not prove a lost POST never committed.
       }
-    });
+      return false;
+    }
 
-    finishGameButton.addEventListener("click", async () => {
-      if (!currentGame || !canScoreGame() || isGameFinished() || timerMutationPending || finishGameButton.disabled) {
-        return;
+    async function acceptClockOutcome(operation) {
+      let accessAvailable = true;
+      let resultAvailable = true;
+      if (operation.kind === "finish-game") {
+        try {
+          // A finish replay can predate later authorised corrections. It proves
+          // the finish committed, but only a fresh read supplies current results.
+          const latest = await requestJsonOrThrow("/v1/games/" + encodeURIComponent(gameId), { method: "GET", cache: "no-store" });
+          if (latest?.status !== "finished") throw new Error("Finished result is not available yet.");
+          currentGame = latest;
+        } catch {
+          resultAvailable = false;
+        }
       }
-
-      const timer = buildTimerState(currentGame);
-      if (timer.status !== "complete") {
-        return;
-      }
-
-      timerMutationPending = true;
-      finishGameButton.disabled = true;
-      clearError();
-      setStatus("Finishing game…", "default");
-
-      try {
-        currentGame = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/finish`, {
-          method: "POST",
-          headers: {
-            "Idempotency-Key": createIdempotencyKey("finish-game", gameId),
-          },
-        });
-        if (Array.isArray(currentGame?.result?.teams)) {
+      if (isGameFinished()) {
+        finishedResultState = resultAvailable ? "authoritative" : "saved-unavailable";
+        if (!resultAvailable) scoreboardState = "unavailable";
+        else if (Array.isArray(currentGame?.result?.teams)) {
           scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
           scoreboardState = "authoritative";
         }
-        if (isGameFinished()) {
-          await loadLeagueAccess();
-          await loadPlayerSearch();
-        }
         finishedResultEditing = false;
         finishedRosterEditing = false;
-        setGameMode("final", { focusPanel: true });
-        statusInput.value = currentGame.status;
-        renderTimer();
-        renderRosterSetup();
-        renderLiveScoring();
-        setStatus("Game finished.", "success");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not finish game.";
-        showError(message);
-        setStatus("Game finish failed.", "error");
+        try {
+          await loadLeagueAccess();
+          await loadPlayerSearch();
+          accessAvailable = currentLeagueRole !== null && playerSearchState !== "unavailable";
+        } catch {
+          accessAvailable = false;
+        }
+      }
+      statusInput.value = currentGame.status;
+      const success = operation.kind === "finish-game" ? "Game finished." : "Third " + operation.third + (operation.kind === "start" ? " started." : " finished.");
+      if (!resultAvailable) showError("Game finished. The latest result could not be loaded. Reload to try again.", { includesOutcome: true });
+      else if (!accessAvailable) showError("Game finished. Player details could not be refreshed. Reload to try again.", { includesOutcome: true });
+      else { clearError(); setStatus(success, "success"); }
+    }
+
+    async function performClockOperation(operation, initiator, readOnly = false) {
+      if (timerMutationPending || goalMutationInFlight || goalOperation || (!readOnly && !canScoreGame())) return;
+      const finishFocus = trackScoringOperationFocus(initiator);
+      const navigationRevision = gameNavigationRevision;
+      timerMutationPending = true;
+      clearError();
+      setStatus(readOnly ? "Checking clock…" : operation.kind === "finish-game" ? "Finishing game…" : (operation.kind === "start" ? "Starting third " : "Finishing third ") + operation.third + "…", "default");
+      renderTimer();
+      renderLiveScoring();
+      let confirmed = false;
+      try {
+        if (readOnly) {
+          confirmed = await reconcileClockOperation(operation);
+        } else {
+          try {
+            currentGame = await requestJsonOrThrow(operation.path, operation.request);
+            clockOperation = null;
+            confirmed = true;
+          } catch (error) {
+            if (!operation.uncertain && isDefinitiveScoringRejection(error, operation.kind)) {
+              clockOperation = null;
+              showError(error instanceof Error ? error.message : "The clock change was rejected.");
+              setStatus(operation.kind === "finish-game" ? "Game finish failed." : operation.kind === "start" ? "Third start failed." : "Third finish failed.", "error");
+              return;
+            }
+            operation.uncertain = true;
+            confirmed = await reconcileClockOperation(operation);
+          }
+        }
+        if (confirmed) await acceptClockOutcome(operation);
+        else {
+          operation.uncertain = true;
+          showError(operation.kind === "finish-game"
+            ? "Game finish could not be confirmed. Check the clock or retry finishing this game."
+            : "The clock change could not be confirmed. Check the clock before continuing.", { includesOutcome: true });
+        }
       } finally {
         timerMutationPending = false;
+        const ownsFocus = finishFocus();
         renderTimer();
         renderRosterSetup();
         renderLiveScoring();
+        if (confirmed && navigationRevision === gameNavigationRevision) {
+          if (isGameFinished()) setGameMode("final", { focusPanel: ownsFocus });
+          else if (operation.kind === "start") {
+            setGameMode("run");
+            if (ownsFocus) focusNextGoal();
+          } else if (ownsFocus) {
+            const next = !startThirdButton.disabled ? startThirdButton : !finishGameButton.disabled ? finishGameButton : null;
+            next?.focus();
+          }
+        } else if (ownsFocus) {
+          if (operation.uncertain && refreshGameStateButton instanceof HTMLButtonElement && !refreshGameStateButton.disabled) refreshGameStateButton.focus();
+          else if (!initiator.disabled && actionElementVisible(initiator)) initiator.focus();
+        }
       }
+    }
+
+    startThirdButton.addEventListener("click", () => {
+      if (startThirdButton.disabled || clockOperation || goalOperation || goalMutationInFlight || timerMutationPending || !canScoreGame() || isGameFinished()) return;
+      const third = startThirdButton.getAttribute("data-third");
+      if (!third) return;
+      clockOperation = newClockOperation("start", third);
+      void performClockOperation(clockOperation, startThirdButton);
+    });
+
+    finishThirdButton.addEventListener("click", () => {
+      if (finishThirdButton.disabled || clockOperation || goalOperation || goalMutationInFlight || timerMutationPending || !canScoreGame() || isGameFinished()) return;
+      const third = finishThirdButton.getAttribute("data-third");
+      if (!third) return;
+      clockOperation = newClockOperation("finish", third);
+      void performClockOperation(clockOperation, finishThirdButton);
+    });
+
+    finishGameButton.addEventListener("click", () => {
+      if (finishGameButton.disabled || goalOperation || goalMutationInFlight || timerMutationPending || !canScoreGame() || isGameFinished()) return;
+      if (clockOperation && clockOperation.kind !== "finish-game") return;
+      if (!clockOperation) {
+        if (buildTimerState(currentGame).status !== "complete") return;
+        clockOperation = newClockOperation("finish-game");
+      }
+      void performClockOperation(clockOperation, finishGameButton);
+    });
+
+    if (refreshGameStateButton instanceof HTMLButtonElement) refreshGameStateButton.addEventListener("click", () => {
+      if (clockOperation?.uncertain) void performClockOperation(clockOperation, refreshGameStateButton, true);
     });
 
     root.addEventListener("click", (event) => {
@@ -5309,12 +5481,9 @@
         goalAssistsDropdown.querySelector("summary")?.focus();
       });
 
-      saveGoalButton.addEventListener("click", async () => {
-        if (goalMutationInFlight || !canScoreGame()) {
-          renderLiveScoring();
-          return;
-        }
-
+      goalForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (goalMutationInFlight || goalOperation || timerMutationPending || clockOperation || !canScoreGame() || !goalTimelineLoaded) return;
         clearError();
         const draft = buildGoalPayload();
         if (draft.error || !draft.payload) {
@@ -5322,381 +5491,45 @@
           setStatus("Goal validation failed.", "error");
           return;
         }
+        goalOperation = newGoalOperation(editingGoalId ? "edit" : "create", editingGoalId, draft.payload);
+        void performGoalOperation(goalOperation, saveGoalButton);
+      });
 
-        const eventId = editingGoalId;
-        const actionLabel = eventId ? "Saving goal edit" : "Adding goal";
-        const previousScoreboardState = scoreboardState;
-        const previousFinishedResultState = finishedResultState;
-        const saveStablePart = eventId ? `${gameId}-${eventId}` : null;
-        const saveIdempotencyKey = idempotencyKeyForGoalSave(eventId, draft.payload);
-        const wasUncertainRetry = eventId
-          ? isGoalMutationIdempotencyUncertain("update-goal", saveStablePart)
-          : pendingCreateGoalIdempotency?.uncertain === true;
-        setStatus(`${actionLabel}…`, "default");
-        goalMutationInFlight = true;
-        scoreboardState = "refreshing";
-        if (isGameFinished()) {
-          finishedResultState = "refreshing";
-        }
-        renderLiveScoring();
-
-        try {
-          const path = eventId
-            ? `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`
-            : `/v1/games/${encodeURIComponent(gameId)}/goals`;
-          let result;
-          try {
-            result = await requestJsonOrThrow(path, {
-              method: eventId ? "PATCH" : "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Idempotency-Key": saveIdempotencyKey,
-              },
-              body: JSON.stringify(draft.payload),
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : "Could not save goal.";
-            showError(message);
-            if (isDefinitiveRequestRejection(error)) {
-              scoreboardState = previousScoreboardState;
-              finishedResultState = previousFinishedResultState;
-              if (!wasUncertainRetry) {
-                if (eventId) {
-                  clearGoalMutationIdempotency("update-goal", saveStablePart);
-                } else {
-                  pendingCreateGoalIdempotency = null;
-                }
-              }
-              setStatus(
-                wasUncertainRetry
-                  ? "The retry was rejected, but the earlier goal save is still unconfirmed. Restore access and retry the same details."
-                  : "Goal was not saved. Review the error and try again.",
-                "error",
-              );
-              return;
-            }
-            if (eventId) {
-              markGoalMutationIdempotencyUncertain("update-goal", saveStablePart);
-            } else if (pendingCreateGoalIdempotency) {
-              pendingCreateGoalIdempotency.uncertain = true;
-            }
-            scoreboardState = "uncertain";
-            if (isGameFinished()) {
-              finishedResultState = "uncertain";
-            }
-            setStatus(
-              "Could not confirm whether the goal was saved. Retry with the same details.",
-              "error",
-            );
-            return;
-          }
-
-          const finishedCorrection = isGameFinished();
-          if (finishedCorrection) {
-            finishedResultState = "saved-unavailable";
-          }
-          applyGoalMutationResult(result);
-          resetGoalForm();
-
-          const goalsLoaded = await loadGameGoals();
-          if (eventId) {
-            clearGoalMutationIdempotency("update-goal", `${gameId}-${eventId}`);
-          } else {
-            pendingCreateGoalIdempotency = null;
-          }
-
-          const gameRefreshed = await refreshGameAfterFinishedCorrection();
-          if (!goalsLoaded) {
-            if (scoreboardState !== "authoritative") {
-              scoreboardState = "unavailable";
-            }
-            const savedLabel = eventId ? "Goal update" : "Goal addition";
-            const savedStatus = eventId ? "Goal updated" : "Goal added";
-            if (!gameRefreshed) {
-              showError(
-                `${savedLabel} was saved, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.`,
-                { includesOutcome: true },
-              );
-              setStatus(`${savedStatus}; timeline and result refresh failed.`, "error");
-            } else if (finishedCorrection) {
-              showError("Goal details could not be loaded. Reload to try again.");
-              setStatus(
-                `${savedStatus}. Scores refreshed; goal timeline unavailable.`,
-                "default",
-              );
-            } else {
-              showError(`${savedLabel} was saved, but the latest scores and goal timeline could not be loaded.`, { includesOutcome: true });
-              setStatus(`${savedStatus}; scores and timeline unavailable.`, "default");
-            }
-            return;
-          }
-
-          if (!gameRefreshed) {
-            showError(
-              eventId
-                ? "Goal was updated, but the finished result could not be refreshed."
-                : "Goal was added, but the finished result could not be refreshed.",
-              { includesOutcome: true },
-            );
-            setStatus(
-              eventId
-                ? "Goal updated. Run scores refreshed; Match Summary unavailable."
-                : "Goal added. Run scores refreshed; Match Summary unavailable.",
-              "default",
-            );
-            return;
-          }
-
-          setStatus(eventId ? "Goal updated." : "Goal added.", "success");
-        } finally {
-          goalMutationInFlight = false;
-          renderLiveScoring();
-        }
+      retryGoalButton.addEventListener("click", () => {
+        if (goalOperation?.uncertain) void performGoalOperation(goalOperation, retryGoalButton);
       });
 
       cancelGoalEditButton.addEventListener("click", () => {
-        if (goalMutationInFlight) {
-          return;
-        }
+        if (goalMutationInFlight || goalOperation || timerMutationPending || clockOperation) return;
         resetGoalForm();
         setStatus("Goal edit cancelled.", "default");
+        focusNextGoal();
       });
 
-      undoLastGoalButton.addEventListener("click", async () => {
-        if (goalMutationInFlight || !canScoreGame()) {
-          renderLiveScoring();
-          return;
-        }
-
+      undoLastGoalButton.addEventListener("click", () => {
+        if (goalMutationInFlight || goalOperation || timerMutationPending || clockOperation || !canScoreGame() || !goalTimelineLoaded) return;
         const latest = goalTimeline.at(-1);
-        if (!latest) {
-          return;
-        }
-
-        const previousScoreboardState = scoreboardState;
-        const previousFinishedResultState = finishedResultState;
-        goalMutationInFlight = true;
-        scoreboardState = "refreshing";
-        if (isGameFinished()) {
-          finishedResultState = "refreshing";
-        }
-        clearError();
-        setStatus("Undoing latest goal…", "default");
-        renderLiveScoring();
-
-        const stablePart = `${gameId}-${latest.eventId}`;
-        const undoIdempotencyKey = idempotencyKeyForGoalMutation(
-          "undo-goal",
-          stablePart,
-          latest.eventId,
-        );
-        const wasUncertainRetry = isGoalMutationIdempotencyUncertain("undo-goal", stablePart);
-        try {
-          const result = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals/undo-last`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Idempotency-Key": undoIdempotencyKey,
-            },
-            body: JSON.stringify({
-              expectedEventId: latest.eventId,
-            }),
-          });
-
-          if (isGameFinished()) {
-            finishedResultState = "saved-unavailable";
-          }
-          applyGoalMutationResult(result, { deletedEventId: latest.eventId });
-          resetGoalForm();
-          const goalsLoaded = await loadGameGoals();
-          clearGoalMutationIdempotency("undo-goal", stablePart);
-          const gameRefreshed = await refreshGameAfterFinishedCorrection();
-          if (!goalsLoaded) {
-            if (scoreboardState !== "authoritative") {
-              scoreboardState = "unavailable";
-            }
-            if (!gameRefreshed) {
-              showError(
-                "The latest goal was undone, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
-                { includesOutcome: true },
-              );
-              setStatus("Latest goal undone; timeline and result refresh failed.", "error");
-            } else if (isGameFinished()) {
-              showError("Goal details could not be loaded. Reload to try again.");
-              setStatus(
-                "Latest goal undone. Scores refreshed; goal timeline unavailable.",
-                "default",
-              );
-            } else {
-              showError("The latest goal was undone, but the latest scores and goal timeline could not be loaded.", { includesOutcome: true });
-              setStatus("Latest goal undone; scores and timeline unavailable.", "default");
-            }
-            return;
-          }
-          if (!gameRefreshed) {
-            showError("Latest goal was undone, but the finished result could not be refreshed.", { includesOutcome: true });
-            setStatus(
-              "Latest goal undone. Run scores refreshed; Match Summary unavailable.",
-              "default",
-            );
-            return;
-          }
-          setStatus("Latest goal undone.", "success");
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Could not undo latest goal.";
-          showError(message);
-          if (isDefinitiveRequestRejection(error)) {
-            scoreboardState = previousScoreboardState;
-            finishedResultState = previousFinishedResultState;
-            if (!wasUncertainRetry) {
-              clearGoalMutationIdempotency("undo-goal", stablePart);
-            }
-            setStatus(
-              wasUncertainRetry
-                ? "The retry was rejected, but the earlier undo is still unconfirmed. Restore access and retry the same action."
-                : "The latest goal was not undone. Review the error and try again.",
-              "error",
-            );
-            return;
-          }
-          markGoalMutationIdempotencyUncertain("undo-goal", stablePart);
-          scoreboardState = "uncertain";
-          if (isGameFinished()) {
-            finishedResultState = "uncertain";
-          }
-          setStatus("Could not confirm the undo. Retry the same action.", "error");
-        } finally {
-          goalMutationInFlight = false;
-          renderLiveScoring();
-        }
+        if (!latest) return;
+        goalOperation = newGoalOperation("undo", latest.eventId);
+        void performGoalOperation(goalOperation, undoLastGoalButton);
       });
 
-      root.addEventListener("click", async (event) => {
-        const eventTarget = event.target;
-        const target = eventTarget instanceof Element ? eventTarget.closest("button[data-action]") : null;
-        if (!(target instanceof HTMLButtonElement)) {
-          return;
-        }
-
+      root.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target.closest("button[data-action]") : null;
+        if (!(target instanceof HTMLButtonElement)) return;
         const action = target.getAttribute("data-action");
-        if (action !== "edit-goal" && action !== "delete-goal") {
-          return;
-        }
-
+        if (action !== "edit-goal" && action !== "delete-goal") return;
+        if (target.disabled || goalMutationInFlight || goalOperation || timerMutationPending || clockOperation || !canScoreGame() || !goalTimelineLoaded) return;
         const eventId = target.getAttribute("data-event-id");
-        if (!eventId) {
-          return;
-        }
-
         const goal = goalTimeline.find((item) => item.eventId === eventId);
-        if (!goal) {
-          return;
-        }
-
-        if (goalMutationInFlight || !canScoreGame()) {
-          renderLiveScoring();
-          return;
-        }
-
+        if (!goal) return;
         if (action === "edit-goal") {
           populateGoalForm(goal);
-          setStatus("Goal ready to edit.", "default");
           return;
         }
-
-        if (!window.confirm(`Delete goal ${eventId}?`)) {
-          return;
-        }
-
-        const previousScoreboardState = scoreboardState;
-        const previousFinishedResultState = finishedResultState;
-        goalMutationInFlight = true;
-        scoreboardState = "refreshing";
-        if (isGameFinished()) {
-          finishedResultState = "refreshing";
-        }
-        clearError();
-        setStatus("Deleting goal…", "default");
-        renderLiveScoring();
-
-        const stablePart = `${gameId}-${eventId}`;
-        const deleteIdempotencyKey = idempotencyKeyForGoalMutation(
-          "delete-goal",
-          stablePart,
-          eventId,
-        );
-        const wasUncertainRetry = isGoalMutationIdempotencyUncertain("delete-goal", stablePart);
-        try {
-          const result = await requestJsonOrThrow(
-            `/v1/games/${encodeURIComponent(gameId)}/goals/${encodeURIComponent(eventId)}`,
-            {
-              method: "DELETE",
-              headers: {
-                "Idempotency-Key": deleteIdempotencyKey,
-              },
-            },
-          );
-
-          if (isGameFinished()) {
-            finishedResultState = "saved-unavailable";
-          }
-          applyGoalMutationResult(result, { deletedEventId: eventId });
-          resetGoalForm();
-          const goalsLoaded = await loadGameGoals();
-          clearGoalMutationIdempotency("delete-goal", stablePart);
-          const gameRefreshed = await refreshGameAfterFinishedCorrection();
-          if (!goalsLoaded) {
-            if (scoreboardState !== "authoritative") {
-              scoreboardState = "unavailable";
-            }
-            if (!gameRefreshed) {
-              showError(
-                "The goal was deleted, but neither the latest goal state nor the finished result could be refreshed. Reload to try again.",
-                { includesOutcome: true },
-              );
-              setStatus("Goal deleted; timeline and result refresh failed.", "error");
-            } else if (isGameFinished()) {
-              showError("Goal details could not be loaded. Reload to try again.");
-              setStatus("Goal deleted. Scores refreshed; goal timeline unavailable.", "default");
-            } else {
-              showError("The goal was deleted, but the latest scores and goal timeline could not be loaded.", { includesOutcome: true });
-              setStatus("Goal deleted; scores and timeline unavailable.", "default");
-            }
-            return;
-          }
-          if (!gameRefreshed) {
-            showError("Goal was deleted, but the finished result could not be refreshed.", { includesOutcome: true });
-            setStatus("Goal deleted. Run scores refreshed; Match Summary unavailable.", "default");
-            return;
-          }
-          setStatus("Goal deleted.", "success");
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Could not delete goal.";
-          showError(message);
-          if (isDefinitiveRequestRejection(error)) {
-            scoreboardState = previousScoreboardState;
-            finishedResultState = previousFinishedResultState;
-            if (!wasUncertainRetry) {
-              clearGoalMutationIdempotency("delete-goal", stablePart);
-            }
-            setStatus(
-              wasUncertainRetry
-                ? "The retry was rejected, but the earlier deletion is still unconfirmed. Restore access and retry the same action."
-                : "The goal was not deleted. Review the error and try again.",
-              "error",
-            );
-            return;
-          }
-          markGoalMutationIdempotencyUncertain("delete-goal", stablePart);
-          scoreboardState = "uncertain";
-          if (isGameFinished()) {
-            finishedResultState = "uncertain";
-          }
-          setStatus("Could not confirm the deletion. Retry the same action.", "error");
-        } finally {
-          goalMutationInFlight = false;
-          renderLiveScoring();
-        }
+        if (!window.confirm("Delete " + playerNickname(goal.scorerPlayerId) + " goal at " + goalDisplayTime(goal) + "?")) return;
+        goalOperation = newGoalOperation("delete", eventId);
+        void performGoalOperation(goalOperation, target);
       });
     }
 

@@ -1067,10 +1067,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     "panel-game-details",
   );
   const timerPanel = `<section data-ui="run-timer-panel" data-testid="panel-game-timer" aria-labelledby="run-timer-heading">
-    <header data-ui="section-heading">
-      <h2 id="run-timer-heading">Clock</h2>
-      <p>Start or stop the current third.</p>
-    </header>
+    <h2 id="run-timer-heading" class="sr-only">Clock</h2>
     <div data-ui="timer-board" data-testid="third-timer">
       <div data-ui="run-timer-bar" data-testid="run-timer-bar">
         <div data-ui="timer-display" id="timer-display" data-testid="timer-display" tabindex="-1">
@@ -1088,6 +1085,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             type: "button",
             "data-action": "finish-active-third",
             "data-testid": "finish-third",
+          })}
+          ${renderButton("Refresh game", "secondary", {
+            type: "button", hidden: "", disabled: "",
+            "data-action": "refresh-game-state", "data-testid": "refresh-game-state",
           })}
         </div>
       </div>
@@ -1164,7 +1165,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </div>`,
     "panel-game-roster",
   );
-  const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip">
+  const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip" role="group" aria-label="Team scores">
     <div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
   </div>`;
   const livePanel = `<div data-ui="run-scoring-panel" data-testid="panel-game-live">
@@ -1172,32 +1173,32 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <header>
         <h2 id="run-goal-form-heading">Record goal</h2>
       </header>
-      <div data-ui="run-goal-form">
-        <div data-ui="field">
-          <label for="goal-scoring-team">Scoring team</label>
-          <select id="goal-scoring-team" data-ui="input" data-testid="goal-scoring-team"></select>
-        </div>
-        <div data-ui="field">
-          <label for="goal-conceding-team">Conceding team</label>
-          <select id="goal-conceding-team" data-ui="input" data-testid="goal-conceding-team"></select>
-        </div>
+      <form id="goal-form" data-ui="run-goal-form" aria-labelledby="run-goal-form-heading" novalidate>
+        <label data-ui="check-row" for="goal-own-goal">
+          <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
+          <span>Own goal</span>
+        </label>
+        <fieldset id="goal-scoring-team" data-ui="goal-team-field" data-testid="goal-scoring-team" disabled>
+          <legend>Scoring team</legend>
+          <div data-ui="goal-team-options"></div>
+        </fieldset>
+        <fieldset id="goal-conceding-team" data-ui="goal-team-field" data-testid="goal-conceding-team" disabled>
+          <legend>Conceding team</legend>
+          <div data-ui="goal-team-options"></div>
+        </fieldset>
         <div data-ui="field">
           <label for="goal-scorer">Scorer</label>
           <select id="goal-scorer" data-ui="input" data-testid="goal-scorer"></select>
         </div>
-        <label data-ui="check-row" data-density="secondary" for="goal-own-goal">
-          <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
-          <span>Own goal</span>
-        </label>
         <details id="goal-assists-dropdown" data-ui="run-secondary-scoring" data-testid="goal-assists-dropdown">
           <summary><span>Assists</span><span id="goal-assists-summary" data-ui="assist-summary">Choose assists</span>${renderIcon("chevron-down")}</summary>
+          <p data-ui="field-hint">Up to 3 players</p>
           <div id="goal-assists" data-ui="assist-list" data-testid="goal-assists"></div>
         </details>
-      </div>
       <p data-ui="field-hint" id="goal-form-note">Start a third and assign players before scoring.</p>
       <div data-ui="button-row" data-priority="scoring">
-        ${renderButton("Add goal", "primary", {
-          type: "button",
+        ${renderButton("Record goal", "primary", {
+          type: "submit",
           "data-action": "save-goal",
           "data-testid": "add-goal",
         })}
@@ -1206,18 +1207,19 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           "data-action": "cancel-goal-edit",
           "data-testid": "cancel-goal-edit",
         })}
-        ${renderButton("Undo last", "danger", {
-          type: "button",
-          "data-action": "undo-last-goal",
-          "data-testid": "undo-last-goal",
-        })}
       </div>
+      </form>
     </section>
   </div>`;
-  const latestGoalsPanel = `<details data-ui="run-latest-goals" data-testid="run-latest-goals" open>
-      <summary>Latest goals</summary>
+  const latestGoalsPanel = `<section data-ui="run-latest-goals" data-testid="run-latest-goals" aria-labelledby="latest-goals-heading">
+      <header data-ui="latest-goals-heading">
+        <h2 id="latest-goals-heading">Latest goals</h2>
+        ${renderButton("Undo last goal", "secondary", {
+          type: "button", "data-action": "undo-last-goal", "data-testid": "undo-last-goal",
+        })}
+      </header>
       <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>
-    </details>`;
+    </section>`;
   const finalPanel = renderPanel(
     "Match Summary",
     "",
@@ -1316,9 +1318,19 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               })}
             </div>
             <div data-ui="run-console" data-testid="run-console">
-              ${scorePanel}
+              <section data-ui="run-match-summary" data-testid="run-match-summary" aria-label="Score and clock">
+                ${scorePanel}
+                ${timerPanel}
+              </section>
+              <section id="goal-operation-recovery" data-ui="run-recovery" aria-label="Goal recovery" hidden>
+                <p id="goal-operation-note">Retry uses the original goal change.</p>
+                ${renderButton("Retry goal save", "secondary", {
+                  type: "button", hidden: "", disabled: "",
+                  "data-action": "retry-goal-operation", "data-testid": "retry-goal-operation",
+                  "aria-describedby": "goal-operation-note",
+                })}
+              </section>
               ${livePanel}
-              ${timerPanel}
               ${latestGoalsPanel}
             </div>
             <div data-ui="mode-actions">

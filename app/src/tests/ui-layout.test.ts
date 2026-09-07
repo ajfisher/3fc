@@ -708,8 +708,8 @@ test("game page retains game, roster and scoring hooks within the readable match
     "Roster setup should appear before live scoring in the game workflow.",
   );
   assert.ok(
-    html.indexOf('data-testid="panel-game-live"') < html.indexOf('data-testid="panel-game-timer"'),
-    "Run mode should prioritize live scoring before timer controls.",
+    html.indexOf('data-testid="panel-game-timer"') < html.indexOf('data-testid="panel-game-live"'),
+    "Run mode coordinates scores and clock before goal entry.",
   );
   assert.ok(
     html.indexOf('data-testid="panel-game-timer"') < html.indexOf('data-testid="run-latest-goals"'),
@@ -732,6 +732,58 @@ test("game page retains game, roster and scoring hooks within the readable match
   assert.match(html, /data-testid="panel-game-roster"/);
   assert.match(html, /data-testid="quick-create-player"/);
   assert.match(html, /data-testid="roster-teams"/);
+});
+
+test("scoring uses one score/clock surface and a labelled native goal form", () => {
+  const dom = new JSDOM(renderGamePage("/api", { gameId: "fictional-live-game" }));
+  try {
+    const document = dom.window.document;
+    const summary = document.querySelector('[data-testid="run-match-summary"]');
+    assert.equal(summary?.getAttribute("aria-label"), "Score and clock");
+    assert.ok(summary?.querySelector('[data-testid="live-scoreboard"]'));
+    assert.ok(summary?.querySelector('[data-testid="panel-game-timer"]'));
+    assert.equal(document.querySelectorAll('[data-testid="panel-game-timer"]').length, 1);
+    assert.equal(document.querySelectorAll('[data-testid="live-scoreboard"]').length, 1);
+    assert.doesNotMatch(document.body.textContent ?? "", /Start or stop the current third\./);
+
+    const form = document.querySelector("#goal-form");
+    assert.equal(form?.tagName, "FORM");
+    assert.equal(form?.getAttribute("aria-labelledby"), "run-goal-form-heading");
+    for (const [id, label] of [["goal-scoring-team", "Scoring team"], ["goal-conceding-team", "Conceding team"]]) {
+      const field: Element | null | undefined = form?.querySelector(`#${id}`);
+      assert.equal(field?.tagName, "FIELDSET");
+      assert.equal(field?.querySelector("legend")?.textContent, label);
+      assert.equal(field?.hasAttribute("disabled"), true);
+      assert.ok(field?.querySelector('[data-ui="goal-team-options"]'));
+      assert.equal(field?.querySelector("select"), null);
+    }
+    const formChildren = [...(form?.children ?? [])];
+    assert.ok(formChildren.findIndex(el => el.querySelector("#goal-own-goal")) < formChildren.findIndex(el => el.id === "goal-scoring-team"));
+    const save = form?.querySelector('[data-testid="add-goal"]');
+    assert.equal(save?.getAttribute("type"), "submit");
+    assert.equal(save?.textContent, "Record goal");
+    assert.equal(form?.querySelector('[data-testid="cancel-goal-edit"]')?.getAttribute("type"), "button");
+    assert.equal(document.querySelector('[data-testid="undo-last-goal"]')?.closest("form"), null);
+    assert.equal(document.querySelector('[data-testid="undo-last-goal"]')?.closest('[data-testid="run-latest-goals"]')?.tagName, "SECTION");
+    assert.equal(document.querySelector('[data-testid="undo-last-goal"]')?.textContent, "Undo last goal");
+    for (const action of ["retry-goal-operation", "refresh-game-state"]) {
+      const button = document.querySelector(`[data-action="${action}"]`);
+      assert.equal(button?.getAttribute("type"), "button");
+      assert.equal(button?.hasAttribute("hidden"), true);
+      assert.equal(button?.hasAttribute("disabled"), true);
+      assert.equal(button?.closest("form"), null);
+    }
+    const recovery = document.querySelector("#goal-operation-recovery");
+    assert.equal(recovery?.hasAttribute("hidden"), true);
+    assert.equal(recovery?.querySelector('[data-action="retry-goal-operation"]')?.getAttribute("aria-describedby"), "goal-operation-note");
+    assert.ok(recovery?.querySelector("#goal-operation-note"));
+    const assists = form?.querySelector("#goal-assists-dropdown");
+    assert.equal(assists?.tagName, "DETAILS");
+    assert.equal(assists?.hasAttribute("open"), false);
+    assert.match(assists?.textContent ?? "", /Up to 3 players/);
+  } finally {
+    dom.window.close();
+  }
 });
 
 test("match destinations are stable links and scoring is a separate permitted task", () => {

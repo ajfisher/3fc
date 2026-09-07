@@ -62,3 +62,21 @@ request fan-out. Existing sign-out and invitation outcome feedback remain.
 Loading, committed, failed and uncertain outcomes retain the shared feedback
 contract. This slice does not promise attendance, public viewing, personal
 history, a player portal or match-only scorer permissions.
+
+## Live scoring (UX-04)
+
+| Surface/state | Reviewed treatment |
+| --- | --- |
+| Score and clock | Stable Red, Blue and Yellow; Conceded primary and Scored secondary. Actual third/time/status, without a second clock panel or a repeated instruction. |
+| Goal entry | Record goal; Own goal; Scoring team; Conceding team; Scorer. Native labelled team choices start unselected and preserve prerequisites. |
+| Assist chooser | Assists; Choose assists when empty, selected names/count when populated. “Up to 3 players” inside the chooser. No “Assists: None” in the log. |
+| Editing | Save changes and Cancel edit. Completed edits return to a blank Record goal form. |
+| Uncertain goal operation | Keep its exact draft/target and offer Retry goal save, Retry goal deletion or Retry undo. Do not claim that a lost response means failure. |
+| Clock uncertainty | Refresh game checks the current state; it does not silently repeat a start/finish-third request. Retry finish game preserves the existing request identity. |
+| Latest goals | Full player names, compact time, dot-only team relationship, optional assists and accessible thirds. Own goal remains explicit; no repeated arithmetic explanation. |
+| Undo | Undo last goal, tied to the originally captured expected goal during a retry. |
+
+Confirmed commits and failed refreshes are separate outcomes. Keep useful
+constraints and recovery, without promising offline recovery or concurrent
+scorekeeper editing. Results composition and existing entry journeys belong to
+the next slice.
