@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -89,6 +89,109 @@ async function verifySitePage(page: Page, head: string) {
   const assets = await page.locator('link[href*="/ui/styles.css"], script[src*="/ui/"]').evaluateAll(elements =>
     elements.map(element => element.getAttribute("href") ?? element.getAttribute("src") ?? ""));
   assertSiteAssetRevision(head, assets);
+}
+
+function isReadOnlyQaMethod(method: string) {
+  return ["GET", "HEAD", "OPTIONS"].includes(method);
+}
+
+test("QA Home guard admits only read methods and blocks mutation methods", () => {
+  for (const method of ["GET", "HEAD", "OPTIONS"]) expect(isReadOnlyQaMethod(method)).toBe(true);
+  for (const method of ["POST", "PUT", "PATCH", "DELETE", "CONNECT", "TRACE", "get", ""]) {
+    expect(isReadOnlyQaMethod(method)).toBe(false);
+  }
+});
+
+async function verifySignedInEmptyHome(page: Page, head: string) {
+  // Only this synthetic account's real empty read is inspected. Do not create
+  // leagues, seasons, games, invitations or ACLs for deployed visual acceptance.
+  // The temporary guard also prevents an accidental form submission from writing.
+  let attemptedMutation = false;
+  let transportFailed = false;
+  const guard = async (route: Route) => {
+    try {
+      if (!isReadOnlyQaMethod(route.request().method())) {
+        attemptedMutation = true;
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    } catch {
+      transportFailed = true;
+      // No raw route exception may reach the reporter with request/cookie detail.
+      try { await route.abort(); } catch { /* Already completed or closed. */ }
+    }
+  };
+  const guardedApi = `${api}/v1/**`;
+  await page.route(guardedApi, guard);
+  try {
+    const [leaguesResponse] = await Promise.all([
+      page.waitForResponse(response => {
+        const url = new URL(response.url());
+        return url.origin === api && url.pathname === "/v1/leagues" && response.request().method() === "GET";
+      }, { timeout: 15000 }),
+      page.goto(`${site}/setup`),
+    ]);
+    expect(leaguesResponse.status()).toBe(200);
+    const payload = await leaguesResponse.json();
+    // Assert a boolean, never include returned entity or account data in evidence.
+    expect(Array.isArray(payload?.leagues) && payload.leagues.length === 0).toBe(true);
+    await verifySitePage(page, head);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
+    await expect(page.getByRole("heading", { level: 1, name: "Welcome", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Home", exact: true })).toHaveAttribute("href", "/setup");
+    await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    await expect(page.getByText("No leagues to show.", { exact: true })).toBeVisible();
+    const region = page.locator("#dashboard-create-league-region");
+    const form = page.getByRole("form", { name: "Create league", exact: true });
+    const name = page.getByLabel("League name", { exact: true });
+    const trigger = page.getByRole("button", { name: "Create a new league", exact: true });
+    await expect(region).toBeVisible();
+    await expect(name).not.toBeFocused();
+    await name.fill("Unsent QA layout draft");
+
+    const assertGeometry = async () => {
+      const geometry = await page.evaluate(() => {
+        const controls = [...document.querySelectorAll<HTMLElement>("button, a[href], input:not([type=hidden]), select, summary")]
+          .filter(element => element.checkVisibility({ checkVisibilityCSS: true }));
+        return {
+          noOverflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth,
+          usableTargets: controls.every(element => {
+            const box = element.getBoundingClientRect();
+            return box.width >= 43.9 && box.height >= 43.9 && box.left >= -0.1 && box.right <= innerWidth + 0.1;
+          }),
+        };
+      });
+      expect(geometry.noOverflow).toBe(true);
+      expect(geometry.usableTargets).toBe(true);
+    };
+
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      for (const width of [320, 390, 1280]) {
+        await page.setViewportSize({ width, height: 900 });
+        await assertGeometry();
+        await form.getByRole("button", { name: "Cancel", exact: true }).focus();
+        await page.keyboard.press("Enter");
+        await expect(region).toBeHidden();
+        await expect(trigger).toBeFocused();
+        await expect(trigger).toHaveAttribute("aria-expanded", "false");
+        await assertGeometry();
+        await page.keyboard.press("Enter");
+        await expect(region).toBeVisible();
+        await expect(name).toBeFocused();
+        await expect(name).toHaveValue("Unsent QA layout draft");
+        await expect(trigger).toHaveAttribute("aria-expanded", "true");
+      }
+    }
+    expect(attemptedMutation).toBe(false);
+    expect(transportFailed).toBe(false);
+    await page.setViewportSize({ width: 390, height: 844 });
+  } finally {
+    // Remove only this read-only acceptance guard. Existing logout transport and
+    // fixture cleanup retain their original behaviour after this helper returns.
+    await page.unroute(guardedApi, guard);
+  }
 }
 
 test("QA site provenance rejects mixed or replaced assets on later pages", () => {
@@ -278,8 +381,9 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     const complete = await authRequest("/v1/auth/magic/complete", { token: first.token });
     expect(complete.status).toBe(200);
     const originalCookie = await installSessionCookie(context, complete.headers);
+    phase = "signed-in empty Home and unsent draft acceptance";
+    await verifySignedInEmptyHome(page, expectedHead);
     phase = "keyboard sign-out and cookie expiry";
-    await page.goto(`${site}/setup`);
     const signOut = page.getByRole("button", { name: "Sign out", exact: true });
     await expect(signOut).toBeVisible();
     await verifySitePage(page, expectedHead);
@@ -318,7 +422,7 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     await verifySitePage(page, expectedHead);
     await verifyApiProvenance(expectedHead, runId);
     // Only safe evidence is emitted: assertions, exact deployment SHA/run, counts.
-    console.log(`QA sign-out PASS head=${expectedHead} run=${runId}; live API fingerprint, isolated account switch, cookie expiry, revoked replay, protected re-entry verified`);
+    console.log(`QA sign-out PASS head=${expectedHead} run=${runId}; live API fingerprint, empty Home at 320/390/1280 light/dark, unsent draft keyboard recovery, isolated account switch, cookie expiry, revoked replay, protected re-entry verified`);
   } catch {
     // Never forward a browser/SDK exception with credential-bearing call logs.
     throw new Error(`QA sign-out failed during ${phase}; sensitive diagnostic detail suppressed`);
