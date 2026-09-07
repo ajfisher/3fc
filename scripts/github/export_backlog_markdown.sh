@@ -12,7 +12,7 @@ fi
 jq empty "$BACKLOG_FILE" >/dev/null
 
 {
-  echo "# 3FC Backlog (M0-M4 + Review System)"
+  echo "# 3FC Backlog"
   echo
   echo "Generated from \`$BACKLOG_FILE\`."
   echo
@@ -32,6 +32,14 @@ jq empty "$BACKLOG_FILE" >/dev/null
       (if (.dependsOn | length) == 0 then "-" else (.dependsOn | map("`" + . + "`") | join(", ")) end) +
       " |"
   ' "$BACKLOG_FILE"
+  echo
+  echo "## Delivery Tracking"
+  echo
+  echo 'As-of planning metadata, not fresh test results or issue-closure evidence. See [frontend redesign](../design/frontend-redesign.md).'
+  echo
+  echo '| ID | Wave | Status | GitHub | Branch |'
+  echo '|---|---|---|---|---|'
+  jq -r '.issues[] | select(.delivery) | "| `\(.id)` | \(.delivery.wave) | \(.delivery.status) | " + (if .delivery.githubIssue then "[#\(.delivery.githubIssue)](https://github.com/ajfisher/3fc/issues/\(.delivery.githubIssue))" else "Pending reconciliation" end) + " | \(.delivery.branch // "-") |"' "$BACKLOG_FILE"
   echo
   echo "## Global Test Scenarios"
   echo
