@@ -30,6 +30,20 @@ locals {
   google_oauth_client_secret            = var.google_oauth_client_secret != null && trimspace(var.google_oauth_client_secret) != "" ? trimspace(var.google_oauth_client_secret) : null
   google_identity_provider_enabled      = local.google_oauth_client_id != null
   shared_ses_domain_identity_enabled    = var.create_baseline_resources && var.manage_shared_ses_domain_identity
+  site_content_security_policy = join("; ", [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data:",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    local.api_custom_domain_enabled ? "connect-src 'self' https://${var.api_domain}" : "connect-src 'self'",
+  ])
+  site_referrer_policies = {
+    default       = "strict-origin-when-cross-origin"
+    auth_callback = "no-referrer"
+  }
 
   app_tags = merge(
     {
@@ -93,6 +107,54 @@ resource "aws_cloudfront_function" "site_router" {
   code    = file("${path.module}/cloudfront-site-router.js")
 }
 
+resource "aws_cloudfront_response_headers_policy" "site_security" {
+  for_each = var.create_baseline_resources ? local.site_referrer_policies : {}
+
+  name    = "${local.name_prefix}-${replace(each.key, "_", "-")}-security"
+  comment = "Security headers for the static 3FC ${replace(each.key, "_", " ")} responses"
+
+  security_headers_config {
+    content_security_policy {
+      content_security_policy = local.site_content_security_policy
+      override                = true
+    }
+
+    content_type_options {
+      override = true
+    }
+
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+
+    referrer_policy {
+      referrer_policy = each.value
+      override        = true
+    }
+  }
+
+  custom_headers_config {
+    items {
+      header   = "Permissions-Policy"
+      override = true
+      value    = "camera=(), microphone=(), geolocation=()"
+    }
+
+    items {
+      header   = "Cross-Origin-Opener-Policy"
+      override = true
+      value    = "same-origin"
+    }
+
+    items {
+      header   = "Cross-Origin-Resource-Policy"
+      override = true
+      value    = "same-site"
+    }
+  }
+}
+
 resource "aws_cloudfront_distribution" "site" {
   count = var.create_baseline_resources ? 1 : 0
 
@@ -113,7 +175,30 @@ resource "aws_cloudfront_distribution" "site" {
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "${local.name_prefix}-site-origin"
 
-    viewer_protocol_policy = "redirect-to-https"
+    viewer_protocol_policy     = "redirect-to-https"
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.site_security["default"].id
+
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.site_router[0].arn
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern     = "/auth/callback*"
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "${local.name_prefix}-site-origin"
+
+    viewer_protocol_policy     = "redirect-to-https"
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.site_security["auth_callback"].id
 
     forwarded_values {
       query_string = false

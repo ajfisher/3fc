@@ -15,6 +15,7 @@ export interface InputFieldInput {
   hint?: string;
   required?: boolean;
   type?: "text" | "date" | "datetime-local" | "email";
+  inputAttributes?: Record<string, string>;
 }
 
 export interface ValidatedFieldInput extends InputFieldInput {
@@ -217,10 +218,13 @@ export function renderValidatedField(input: ValidatedFieldInput): string {
 
   const noticeAttr = notice ? ` aria-describedby="${noticeId}"` : "";
   const invalidAttr = error ? " aria-invalid=\"true\"" : "";
+  const inputAttributes = Object.entries(input.inputAttributes ?? {})
+    .map(([name, value]) => ` ${escapeHtml(name)}="${escapeHtml(value)}"`)
+    .join("");
 
   return `<div data-ui="field" data-validated="true">
   <label for="${escapeHtml(input.id)}">${escapeHtml(input.label)}</label>
-  <input data-ui="input" data-state="${state}" id="${escapeHtml(input.id)}" name="${escapeHtml(input.id)}" type="${type}"${value}${placeholder}${required}${noticeAttr}${invalidAttr} />
+  <input data-ui="input" data-state="${state}" id="${escapeHtml(input.id)}" name="${escapeHtml(input.id)}" type="${type}"${value}${placeholder}${required}${noticeAttr}${invalidAttr}${inputAttributes} />
   <div data-ui="field-message">${notice}</div>
 </div>`;
 }

@@ -53,6 +53,13 @@ test("buildStaticSite exports static route shells and ui assets", () => {
 
     const signInHtml = readFileSync(resolve(outputDir, "sign-in/index.html"), "utf8");
     assert.match(signInHtml, /id="auth-magic-form"/);
+    assert.match(signInHtml, /League organiser sign in/);
+    assert.doesNotMatch(signInHtml, /3FC Auth/);
+
+    const callbackHtml = readFileSync(resolve(outputDir, "auth/callback/index.html"), "utf8");
+    assert.match(callbackHtml, /Complete your sign-in/);
+    assert.match(callbackHtml, /data-testid="complete-magic-link"/);
+    assert.doesNotMatch(callbackHtml, /3FC Auth/);
 
     const leagueHtml = readFileSync(resolve(outputDir, "leagues/index.html"), "utf8");
     assert.match(leagueHtml, /data-page="league"/);

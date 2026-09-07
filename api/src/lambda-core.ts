@@ -27,6 +27,8 @@ import {
   MagicLinkAuthError,
   MagicLinkService,
   normalizeMagicLinkEmail,
+  normalizeMagicLinkTimeZone,
+  type MagicLinkStartOptions,
 } from "./auth/magic-link.js";
 import {
   AuthRateLimiter,
@@ -129,10 +131,7 @@ interface SessionLookup {
 }
 
 interface MagicLinkServiceContract extends SessionLookup {
-  start(
-    email: string,
-    options?: { returnTo?: string | null; subject?: string; introLines?: string[] },
-  ): Promise<{
+  start(email: string, options?: MagicLinkStartOptions): Promise<{
     email: string;
     expiresAt: string;
     messageId: string | null;
@@ -2720,7 +2719,11 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         }
 
         try {
-          const startResult = await dependencies.magicLinkService.start(email);
+          const timeZone = normalizeMagicLinkTimeZone(rawBody.timeZone);
+          const startResult = await dependencies.magicLinkService.start(
+            email,
+            timeZone === null ? undefined : { timeZone },
+          );
           status = 202;
           logMagicLinkEvent({
             requestId: details.requestId,

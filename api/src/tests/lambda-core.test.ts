@@ -399,7 +399,12 @@ function createHarness(config: HarnessConfig = {}) {
   const linkedGamePlayers: Array<{ gameId: string; playerId: string }> = [];
   const magicLinkStarts: Array<{
     email: string;
-    options?: { returnTo?: string | null; subject?: string; introLines?: string[] };
+    options?: {
+      returnTo?: string | null;
+      subject?: string;
+      introLines?: string[];
+      timeZone?: string | null;
+    };
   }> = [];
   const magicLinkCompletes: string[] = [];
   const magicLinkRateLimitChecks: Array<{ email: string; clientIp: string }> = [];
@@ -2288,6 +2293,51 @@ test("core lambda starts magic-link auth without requiring a session", async () 
     expiresAt: "2026-02-24T00:00:00.000Z",
     messageId: "msg-1",
   });
+});
+
+test("core lambda normalizes a valid magic-link timezone without returning it", async () => {
+  const harness = createHarness();
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/start",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      sourceIp: "203.0.113.10",
+      body: {
+        email: "player@example.com",
+        timeZone: " Australia/Melbourne ",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(harness.magicLinkStarts, [
+    { email: "player@example.com", options: { timeZone: "Australia/Melbourne" } },
+  ]);
+  assert.equal(Object.hasOwn(JSON.parse(response.body), "timeZone"), false);
+});
+
+test("core lambda treats invalid magic-link timezone as an absent presentation hint", async () => {
+  const harness = createHarness();
+  const response = await harness.handler(
+    createEvent({
+      method: "POST",
+      path: "/v1/auth/magic/start",
+      headers: {
+        Origin: "https://qa.3fc.football",
+      },
+      sourceIp: "203.0.113.10",
+      body: {
+        email: "player@example.com",
+        timeZone: "Mars/Olympus",
+      },
+    }),
+  );
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(harness.magicLinkStarts, [{ email: "player@example.com", options: undefined }]);
 });
 
 test("core lambda rejects magic-link start without an allowed origin", async () => {

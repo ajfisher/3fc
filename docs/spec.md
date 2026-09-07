@@ -153,6 +153,12 @@ POST  /v1/leagues/{leagueId}/organiser-invites
 POST  /v1/invites/{inviteCode}/accept
 ```
 
+`POST /v1/auth/magic/start` accepts a required `email` and an optional IANA
+`timeZone` presentation hint. The timezone is used only to render the token's
+persisted expiry in the sign-in email; it is not persisted, logged, returned,
+or used for token lifetime, identity, authorization, or rate limiting. Missing
+or invalid hints fall back to a human-readable UTC expiry.
+
 ## 8. Timer + thirds
 
 - Thirds reset each period; timer runs into stoppage; explicit Finish Third.
