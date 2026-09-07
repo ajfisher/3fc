@@ -39,6 +39,7 @@
   }
 
   function navigateTo(url, mode = "assign") {
+    closeActionMenu();
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
       window.__THREEFC_NAVIGATE__(url, mode);
       return;
@@ -66,6 +67,7 @@
     const actions = document.getElementById("account-actions");
     const button = document.getElementById("sign-out");
     const authenticated = typeof session?.email === "string" && session.email.trim().length > 0;
+    if (!authenticated) closeActionMenu();
     hasAuthenticatedAccount = authenticated;
     if (actions instanceof HTMLElement) {
       // Once requested, sign-out owns its pending/recovery surface. A later
@@ -115,6 +117,7 @@
       // Latch before awaiting: repeated activation must not start parallel
       // revocations. Keep this feedback separate from page-data refreshes.
       const restoreFocusOnFailure = document.activeElement === button;
+      closeActionMenu();
       signOutPending = true;
       signOutUnconfirmed = false;
       button.disabled = true;
@@ -456,6 +459,7 @@
   }
 
   function closeOtherDisclosures(activeTrigger) {
+    closeActionMenu();
     for (const trigger of document.querySelectorAll('button[aria-controls][aria-expanded="true"]')) {
       if (!(trigger instanceof HTMLButtonElement) || trigger === activeTrigger) {
         continue;
@@ -499,6 +503,7 @@
   }
 
   function setManagementAccess(canManage) {
+    if (!canManage) closeActionMenu();
     for (const element of document.querySelectorAll("[data-management-only]")) {
       if (!(element instanceof HTMLElement)) continue;
       element.hidden = !canManage;
@@ -540,7 +545,15 @@
   function trackDeletedRowFocus(button) {
     const body = button.closest("tbody");
     const row = button.closest("tr");
-    const ownedFocus = button === document.activeElement || button.contains(document.activeElement);
+    const menuTrigger = button.closest('[data-ui="action-menu"]')?.querySelector('[data-action="toggle-action-menu"]');
+    const rowHref = row?.querySelector("a[href]")?.getAttribute("href");
+    // Selecting an action closes its surface before the entity handler runs.
+    // Its trigger owns that same interaction through confirmation and refresh.
+    const ownsTarget = (target) => button.contains(target) || target === menuTrigger || (
+      target instanceof HTMLElement && target.getAttribute("data-action") === "toggle-action-menu" && rowHref &&
+      target.closest("tr")?.querySelector("a[href]")?.getAttribute("href") === rowHref
+    );
+    const ownedFocus = ownsTarget(document.activeElement);
     if (!ownedFocus || !(body instanceof HTMLElement) || !(row instanceof HTMLElement)) return () => {};
     const rows = Array.from(body.querySelectorAll("tr"));
     const index = rows.indexOf(row);
@@ -550,10 +563,10 @@
     const heading = body.closest('[data-ui="panel"]')?.querySelector("h2");
     let userMoved = false;
     const onFocus = (event) => {
-      if (event.target !== document.body && event.target instanceof Element && !button.contains(event.target)) userMoved = true;
+      if (event.target !== document.body && event.target instanceof Element && !ownsTarget(event.target)) userMoved = true;
     };
     const onPointer = (event) => {
-      if (event.target instanceof Element && !button.contains(event.target)) userMoved = true;
+      if (event.target instanceof Element && !ownsTarget(event.target)) userMoved = true;
     };
     document.addEventListener("focusin", onFocus, true);
     document.addEventListener("pointerdown", onPointer, true);
@@ -581,48 +594,205 @@
     const rowHref = oldRow?.querySelector("a[href]")?.getAttribute("href");
     const controlKind = focused instanceof HTMLAnchorElement ? "link"
       : focused instanceof HTMLButtonElement ? "button"
-        : focused instanceof HTMLElement && focused.tagName === "SUMMARY" ? "summary" : null;
+        : focused instanceof HTMLElement && focused.getAttribute("data-ui") === "action-menu-surface" ? "surface" : null;
     const action = focused instanceof HTMLElement ? focused.getAttribute("data-action") : null;
     const focusedHref = focused instanceof HTMLAnchorElement ? focused.getAttribute("href") : null;
-    const moreWasOpen = oldRow?.querySelector('details[data-ui="more-actions"]')?.hasAttribute("open") ?? false;
+    const menuWasOpen = oldRow?.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded") === "true";
+    if (openActionMenu && body.contains(openActionMenu.menu)) closeActionMenu();
     body.innerHTML = html;
     if (!rowHref || !controlKind) return;
     const row = Array.from(body.querySelectorAll("tr"))
       .find((candidate) => candidate.querySelector("a[href]")?.getAttribute("href") === rowHref);
     if (!(row instanceof HTMLElement)) return;
-    const more = row.querySelector('details[data-ui="more-actions"]');
-    if (more instanceof HTMLDetailsElement) more.open = moreWasOpen;
+    const menu = row.querySelector('[data-ui="action-menu"]');
+    if (menuWasOpen) openActions(menu, { focus: false });
     const replacement = controlKind === "link"
       ? Array.from(row.querySelectorAll("a[href]")).find((link) => link.getAttribute("href") === focusedHref)
-      : controlKind === "summary" ? more?.querySelector("summary")
+      : controlKind === "surface" ? menu?.querySelector('[data-ui="action-menu-surface"]')
         : Array.from(row.querySelectorAll("button[data-action]")).find((button) => button.getAttribute("data-action") === action);
     if (replacement instanceof HTMLElement) replacement.focus({ preventScroll: true });
   }
 
-  function renderManagementDelete(label, attributes, disabled = false) {
-    const reasonId = `delete-lock-${encodeURIComponent(attributes["data-game-id"] ?? label)}`;
-    return `<details data-ui="more-actions"><summary aria-label="${escapeHtml(`More actions for ${label}`)}">More</summary>${renderClientIconButton({
-      icon: "trash-2", label: disabled ? `Delete unavailable: ${label} is finished` : `Delete ${label}`, text: "Delete",
-      variant: "danger", attributes: { ...attributes, ...(disabled ? { disabled: "", "aria-describedby": reasonId } : {}) },
-    })}${disabled ? `<p data-ui="action-reason" id="${escapeHtml(reasonId)}">Finished games can’t be deleted.</p>` : ""}</details>`;
+  function renderClientActionMenu(id, label, content, attributes = {}) {
+    const wrapperAttributes = Object.entries(attributes)
+      .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`).join(" ");
+    return `<div data-ui="action-menu" ${wrapperAttributes}>${renderClientIconButton({
+      icon: "ellipsis-vertical", label: `Actions for ${label}`, variant: "ghost",
+      attributes: { "data-action": "toggle-action-menu", "aria-expanded": "false", "aria-controls": id },
+    })}<div data-ui="action-menu-surface" id="${escapeHtml(id)}" role="group" aria-label="${escapeHtml(`Actions for ${label}`)}" tabindex="-1" popover="manual" hidden>${content}</div></div>`;
   }
 
-  function initializeMoreActions() {
-    document.addEventListener("toggle", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLDetailsElement) || target.getAttribute("data-ui") !== "more-actions" || !target.open) return;
-      for (const other of document.querySelectorAll('details[data-ui="more-actions"][open]')) {
-        if (other !== target) other.removeAttribute("open");
+  function renderManagementDelete(label, attributes, disabled = false, pending = false) {
+    const reasonId = `delete-lock-${encodeURIComponent(attributes["data-game-id"] ?? label)}`;
+    const id = `row-actions-${encodeURIComponent(attributes["data-game-id"] ?? attributes["data-season-id"] ?? label)}`;
+    return renderClientActionMenu(id, label, `${renderClientIconButton({
+      icon: "trash-2", label: disabled ? `Delete unavailable: ${label} is finished` : `Delete ${label}`, text: "Delete",
+      variant: "danger", attributes: { ...attributes, ...(disabled || pending ? { disabled: "" } : {}), ...(disabled ? { "aria-describedby": reasonId } : {}) },
+    })}${disabled ? `<p data-ui="action-reason" id="${escapeHtml(reasonId)}">Finished games can’t be deleted.</p>` : ""}`);
+  }
+
+  let openActionMenu = null;
+
+  function actionMenuParts(menu) {
+    if (!(menu instanceof HTMLElement)) return null;
+    const trigger = menu.querySelector('[data-action="toggle-action-menu"]');
+    const surface = trigger ? document.getElementById(trigger.getAttribute("aria-controls")) : null;
+    return trigger instanceof HTMLButtonElement && surface instanceof HTMLElement && surface.closest('[data-ui="action-menu"]') === menu
+      ? { menu, trigger, surface } : null;
+  }
+
+  function actionElementVisible(element) {
+    for (let current = element; current instanceof HTMLElement; current = current.parentElement) {
+      if (current.hidden || current.hasAttribute("inert")) return false;
+      const style = window.getComputedStyle(current);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+    return element.isConnected;
+  }
+
+  function closeActionMenu({ restoreFocus = false } = {}) {
+    if (!openActionMenu) return;
+    const { trigger, surface } = openActionMenu;
+    openActionMenu = null;
+    trigger.setAttribute("aria-expanded", "false");
+    if (typeof surface.hidePopover === "function") {
+      try { surface.hidePopover(); } catch { /* A fallback or detached surface is already closed. */ }
+    }
+    surface.hidden = true;
+    if (restoreFocus && !trigger.disabled && actionElementVisible(trigger)) trigger.focus({ preventScroll: true });
+  }
+
+  function positionActionMenu(event) {
+    if (!openActionMenu) return;
+    const { trigger, surface } = openActionMenu;
+    if (event?.type === "scroll" && event.target instanceof Element && surface.contains(event.target)) return;
+    if (!actionElementVisible(trigger) || trigger.disabled) { closeActionMenu(); return; }
+    const viewport = window.visualViewport;
+    const leftEdge = viewport?.offsetLeft ?? 0;
+    const topEdge = viewport?.offsetTop ?? 0;
+    const width = viewport?.width || window.innerWidth;
+    const height = viewport?.height || window.innerHeight;
+    const gutter = 8;
+    const rect = trigger.getBoundingClientRect();
+    if (rect.bottom < topEdge || rect.top > topEdge + height || rect.right < leftEdge || rect.left > leftEdge + width) {
+      closeActionMenu();
+      return;
+    }
+    // Client rects include CSS zoom; fixed offsets/sizes are pre-zoom CSS units.
+    // Page zoom already changes viewport units and needs no extra conversion.
+    let cssZoom = 1;
+    for (let element = surface; element instanceof HTMLElement; element = element.parentElement) {
+      const value = window.getComputedStyle(element).zoom;
+      const factor = Number.parseFloat(value);
+      if (Number.isFinite(factor) && factor > 0) cssZoom *= value.endsWith("%") ? factor / 100 : factor;
+    }
+    surface.style.maxWidth = `${Math.max(0, width - gutter * 2) / cssZoom}px`;
+    surface.style.maxHeight = `${Math.max(0, height - gutter * 2) / cssZoom}px`;
+    const box = surface.getBoundingClientRect();
+    const surfaceWidth = Math.min(box.width, Math.max(0, width - gutter * 2));
+    const surfaceHeight = Math.min(box.height, Math.max(0, height - gutter * 2));
+    const bottomEdge = topEdge + height;
+    const below = rect.bottom + gutter;
+    const above = rect.top - gutter - surfaceHeight;
+    const preferredTop = below + surfaceHeight <= bottomEdge - gutter || bottomEdge - rect.bottom >= rect.top - topEdge ? below : above;
+    const desiredLeft = Math.max(leftEdge + gutter, Math.min(rect.right - surfaceWidth, leftEdge + width - gutter - surfaceWidth));
+    const desiredTop = Math.max(topEdge + gutter, Math.min(preferredTop, bottomEdge - gutter - surfaceHeight));
+    surface.style.left = `${desiredLeft / cssZoom}px`;
+    surface.style.top = `${desiredTop / cssZoom}px`;
+    if (!openActionMenu.topLayer) {
+      // Size containment may establish a fixed containing block. Correct its
+      // offset without moving the menu DOM or disabling responsive containers.
+      let hasContainingBlock = false;
+      for (let element = surface.parentElement; element instanceof HTMLElement; element = element.parentElement) {
+        const style = window.getComputedStyle(element);
+        if ((style.containerType && style.containerType !== "normal") || /layout|paint|strict|content/.test(style.contain) ||
+          (style.transform && style.transform !== "none") || (style.filter && style.filter !== "none") ||
+          (style.perspective && style.perspective !== "none")) {
+          hasContainingBlock = true;
+          break;
+        }
       }
+      if (hasContainingBlock) {
+        const actual = surface.getBoundingClientRect();
+        surface.style.left = `${Number.parseFloat(surface.style.left) + (desiredLeft - actual.left) / cssZoom}px`;
+        surface.style.top = `${Number.parseFloat(surface.style.top) + (desiredTop - actual.top) / cssZoom}px`;
+      }
+    }
+  }
+
+  function openActions(menu, { focus = true } = {}) {
+    const parts = actionMenuParts(menu);
+    if (!parts || parts.trigger.disabled || !actionElementVisible(parts.trigger)) return;
+    closeActionMenu();
+    openActionMenu = parts;
+    parts.topLayer = false;
+    parts.trigger.setAttribute("aria-expanded", "true");
+    parts.surface.hidden = false;
+    if (typeof parts.surface.showPopover === "function") {
+      try { parts.surface.showPopover({ source: parts.trigger }); parts.topLayer = true; } catch { parts.surface.removeAttribute("popover"); }
+    } else parts.surface.removeAttribute("popover");
+    positionActionMenu();
+    if (openActionMenu !== parts) return;
+    if (focus) {
+      const first = [...parts.surface.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]')]
+        .find((element) => element instanceof HTMLElement && element.getAttribute("aria-disabled") !== "true" && actionElementVisible(element));
+      (first ?? parts.surface).focus({ preventScroll: true });
+    }
+  }
+
+  function initializeActionMenus() {
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const trigger = target?.closest('[data-action="toggle-action-menu"]');
+      if (trigger instanceof HTMLButtonElement) {
+        event.preventDefault();
+        if (trigger.disabled) return;
+        if (openActionMenu?.trigger === trigger) closeActionMenu({ restoreFocus: true });
+        else openActions(trigger.closest('[data-ui="action-menu"]'));
+        return;
+      }
+      if (!openActionMenu) return;
+      const action = target?.closest('button, a[href]');
+      if (action && openActionMenu.surface.contains(action)) {
+        if ((action instanceof HTMLButtonElement && action.disabled) || action.getAttribute("aria-disabled") === "true") {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        closeActionMenu({ restoreFocus: openActionMenu.menu.contains(document.activeElement) });
+      } else if (!target || !openActionMenu.menu.contains(target)) closeActionMenu();
     }, true);
+    document.addEventListener("pointerdown", (event) => {
+      if (openActionMenu && event.target instanceof Element && !openActionMenu.menu.contains(event.target)) closeActionMenu();
+    }, true);
+    document.addEventListener("focusin", (event) => {
+      if (openActionMenu && event.target instanceof Element && !openActionMenu.menu.contains(event.target)) closeActionMenu();
+    }, true);
+    document.addEventListener("focusout", (event) => {
+      // activeElement may temporarily be body between native blur/focus events.
+      // Use the actual next destination, not a microtask that can hide the next
+      // action before the browser has focused it during ordinary Tab traversal.
+      if (openActionMenu && event.relatedTarget instanceof Node && !openActionMenu.menu.contains(event.relatedTarget)) closeActionMenu();
+    }, true);
+    window.addEventListener("blur", () => closeActionMenu());
     document.addEventListener("keydown", (event) => {
-      const target = event.target instanceof Element ? event.target.closest('details[data-ui="more-actions"][open]') : null;
-      if (event.key !== "Escape" || !(target instanceof HTMLDetailsElement)) return;
+      if (event.key !== "Escape" || !openActionMenu) return;
       event.preventDefault();
       event.stopPropagation();
-      target.open = false;
-      target.querySelector("summary")?.focus();
+      closeActionMenu({ restoreFocus: true });
+    }, true);
+    window.addEventListener("resize", positionActionMenu);
+    document.addEventListener("scroll", positionActionMenu, true);
+    window.visualViewport?.addEventListener("resize", positionActionMenu);
+    window.visualViewport?.addEventListener("scroll", positionActionMenu);
+    window.addEventListener("pagehide", () => closeActionMenu());
+    window.addEventListener("hashchange", () => closeActionMenu());
+    window.addEventListener("popstate", () => closeActionMenu());
+    const observer = new MutationObserver(() => {
+      if (openActionMenu && (!openActionMenu.menu.isConnected || openActionMenu.trigger.disabled || !actionElementVisible(openActionMenu.trigger))) closeActionMenu();
     });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "disabled"] });
+    window.addEventListener("pagehide", () => observer.disconnect(), { once: true });
   }
 
   function formatSeasonDate(value) {
@@ -770,7 +940,7 @@
               "aria-expanded": "false",
             },
           })}
-          <details data-ui="more-actions" data-management-only hidden><summary>More</summary>${renderClientIconButton({
+          ${renderClientActionMenu("season-actions", "this season", renderClientIconButton({
             icon: "trash-2",
             label: "Delete season",
             text: "Delete season",
@@ -780,7 +950,7 @@
               "data-testid": "delete-season",
               "data-management-only": "", disabled: "",
             },
-          })}</details>
+          }), { "data-management-only": "", hidden: "" })}
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${safeApiBaseUrl}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
@@ -1632,6 +1802,7 @@
     let canManage = false;
     let leagueName = "League";
     const confirmedDeletedSeasonIds = new Set();
+    const pendingDeletedSeasonIds = new Set();
     let seasonsRenderVersion = 0;
     setManagementAccess(false);
 
@@ -1818,7 +1989,7 @@
             <td data-label="Actions">
               ${canManage ? renderManagementDelete(season.name, {
                 "data-action": "delete-season", "data-season-id": season.seasonId, "data-season-name": season.name,
-              }) : ""}
+              }, false, pendingDeletedSeasonIds.has(season.seasonId)) : ""}
             </td>
           </tr>`;
         })
@@ -1954,7 +2125,7 @@
       }
 
       const seasonId = target.getAttribute("data-season-id");
-      if (!seasonId) {
+      if (!seasonId || pendingDeletedSeasonIds.has(seasonId) || confirmedDeletedSeasonIds.has(seasonId)) {
         return;
       }
 
@@ -1965,6 +2136,7 @@
 
       const finishFocus = trackDeletedRowFocus(target);
       let committed = false;
+      pendingDeletedSeasonIds.add(seasonId);
       target.setAttribute("disabled", "true");
       clearError();
       setStatus(`Deleting season ${seasonId}…`, "default");
@@ -1973,7 +2145,9 @@
         await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`);
         committed = true;
         confirmedDeletedSeasonIds.add(seasonId);
-        target.closest("tr")?.remove();
+        for (const action of seasonsBody.querySelectorAll('[data-season-id]')) {
+          if (action.getAttribute("data-season-id") === seasonId) action.closest("tr")?.remove();
+        }
         try {
           await renderSeasons();
           setStatus("Season deleted.", "success");
@@ -1985,7 +2159,11 @@
         showError(message);
         setStatus(isDefinitiveRequestRejection(error) ? "Season could not be deleted." : "Season deletion could not be confirmed. Reload the page before trying again.", "error");
       } finally {
+        pendingDeletedSeasonIds.delete(seasonId);
         target.removeAttribute("disabled");
+        for (const action of seasonsBody.querySelectorAll('[data-action="delete-season"]')) {
+          if (action.getAttribute("data-season-id") === seasonId) action.removeAttribute("disabled");
+        }
         finishFocus(committed);
       }
     });
@@ -2063,6 +2241,7 @@
     let canManage = false;
     let seasonName = "this season";
     const confirmedDeletedGameIds = new Set();
+    const pendingDeletedGameIds = new Set();
     let gamesRenderVersion = 0;
     setManagementAccess(false);
     const gameIdNonce = randomSuffix(4);
@@ -2190,6 +2369,7 @@
           const deleteAction = canManage ? renderManagementDelete(`game at ${kickoffLabel}`,
             status === "finished" ? { "data-game-id": game.gameId } : { "data-action": "delete-game", "data-game-id": game.gameId, "data-kickoff-label": kickoffLabel },
             status === "finished",
+            pendingDeletedGameIds.has(game.gameId),
           ) : "";
           return `<tr>
           <td data-label="Date"><a href="${gamePath}">${escapeHtml(kickoffLabel)}</a></td>
@@ -2292,7 +2472,7 @@
       }
 
       const gameId = target.getAttribute("data-game-id");
-      if (!gameId) {
+      if (!gameId || pendingDeletedGameIds.has(gameId) || confirmedDeletedGameIds.has(gameId)) {
         return;
       }
 
@@ -2302,6 +2482,7 @@
 
       const finishFocus = trackDeletedRowFocus(target);
       let committed = false;
+      pendingDeletedGameIds.add(gameId);
       target.setAttribute("disabled", "true");
       clearError();
       setStatus(`Deleting game ${gameId}…`, "default");
@@ -2310,7 +2491,9 @@
         await deleteManagementEntity(`/v1/games/${encodeURIComponent(gameId)}`);
         committed = true;
         confirmedDeletedGameIds.add(gameId);
-        target.closest("tr")?.remove();
+        for (const action of document.querySelectorAll('tbody [data-game-id]')) {
+          if (action.getAttribute("data-game-id") === gameId) action.closest("tr")?.remove();
+        }
         try {
           await renderGames();
           setStatus("Game deleted.", "success");
@@ -2322,7 +2505,11 @@
         showError(message);
         setStatus(isDefinitiveRequestRejection(error) ? "Game could not be deleted." : "Game deletion could not be confirmed. Reload the page before trying again.", "error");
       } finally {
+        pendingDeletedGameIds.delete(gameId);
         target.removeAttribute("disabled");
+        for (const action of document.querySelectorAll('tbody [data-action="delete-game"]')) {
+          if (action.getAttribute("data-game-id") === gameId) action.removeAttribute("disabled");
+        }
         finishFocus(committed);
       }
     };
@@ -2454,6 +2641,7 @@
     let finishedRosterEditing = false;
     let finishedResultEditing = false;
     let gameMetadataPending = false;
+    let gameDeletionPending = false;
     let timerMutationPending = false;
     let rosterMutationPending = false;
     let playerCreatePending = false;
@@ -2519,6 +2707,7 @@
     }
 
     function syncGameCapabilities() {
+      if (currentLeagueRole !== "admin") closeActionMenu();
       const capabilities = {
         admin: Boolean(currentGame) && currentLeagueRole === "admin",
         roster: canManageRoster(),
@@ -2592,6 +2781,7 @@
     }
 
     function setGameMode(mode, options = {}) {
+      closeActionMenu();
       if (!isGameMode(mode)) {
         mode = isGameFinished() ? "final" : "structure";
       }
@@ -2770,7 +2960,7 @@
       statusInput.disabled = !canEditGame() || gameMetadataPending;
       saveButton.disabled = !canEditGame() || gameMetadataPending;
       deleteButton.hidden = currentLeagueRole !== "admin";
-      deleteButton.disabled = currentLeagueRole !== "admin";
+      deleteButton.disabled = currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
       if (gameFinished) {
         deleteButton.setAttribute("aria-disabled", "true");
         deleteButton.setAttribute("aria-describedby", "game-delete-lock-reason");
@@ -4174,10 +4364,10 @@
       const roleLabel =
         role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
       const pendingDisabled = rosterMutationPending ? " disabled" : "";
-      const actions = role === "admin" ? "" : `<details data-ui="player-management"><summary aria-label="${escapeHtml(`Manage ${player.nickname}`)}">Manage</summary><div data-ui="access-actions">
+      const actions = role === "admin" ? "" : renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname, `<div data-ui="access-actions">
           ${role !== "scorekeeper" ? `<button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(player.playerId)}" data-role="scorekeeper"${pendingDisabled}>Make scorer</button>` : ""}
           <button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(player.playerId)}" data-role="admin"${pendingDisabled}>Make co-organiser</button>
-        </div></details>`;
+        </div>`, { "data-player-management": "" });
 
       return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
         <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="${escapeHtml(
@@ -4268,6 +4458,7 @@
     function renderRosterSetup() {
       syncGameCapabilities();
       const focus = captureRosterFocus();
+      if (openActionMenu && (playerPoolElement?.contains(openActionMenu.menu) || rosterTeamsElement?.contains(openActionMenu.menu))) closeActionMenu();
       const rosterLocked = finishedRosterControlsLocked();
       if (rosterLocked) {
         openTransferPlayerId = null;
@@ -4291,7 +4482,8 @@
       if (!playerId) return null;
       return {
         playerId, action: active.getAttribute("data-action"), teamId: active.getAttribute("data-team-id"), role: active.getAttribute("data-role"),
-        summary: active.tagName === "SUMMARY", managementOpen: active.closest('[data-ui="roster-player"], [data-ui="roster-member"]')?.querySelector('details[data-ui="player-management"]')?.hasAttribute("open") ?? false,
+        surface: active.getAttribute("data-ui") === "action-menu-surface",
+        managementOpen: active.closest('[data-ui="roster-player"], [data-ui="roster-member"]')?.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded") === "true",
       };
     }
 
@@ -4300,9 +4492,9 @@
       const player = [...root.querySelectorAll('[data-ui="roster-player"][data-player-id], [data-ui="roster-member"][data-player-id]')]
         .find((element) => element.getAttribute("data-player-id") === focus.playerId);
       if (!(player instanceof HTMLElement)) return;
-      const management = player.querySelector('details[data-ui="player-management"]');
-      if (management instanceof HTMLDetailsElement) management.open = focus.managementOpen;
-      const target = focus.summary ? management?.querySelector("summary") : [...player.querySelectorAll("button[data-action]")]
+      const management = player.querySelector('[data-ui="action-menu"]');
+      if (focus.managementOpen) openActions(management, { focus: false });
+      const target = focus.surface ? management?.querySelector('[data-ui="action-menu-surface"]') : [...player.querySelectorAll("button[data-action]")]
         .find((button) => button.getAttribute("data-action") === focus.action && button.getAttribute("data-team-id") === focus.teamId && button.getAttribute("data-role") === focus.role);
       if (target instanceof HTMLElement) target.focus({ preventScroll: true });
     }
@@ -4599,16 +4791,13 @@
     });
 
     deleteButton.addEventListener("click", async () => {
-      if (currentLeagueRole !== "admin" || deleteButton.disabled) return;
-      if (isGameFinished()) {
-        setStatus("Finished games are locked.", "error");
-        return;
-      }
+      if (currentLeagueRole !== "admin" || deleteButton.disabled || gameDeletionPending || isGameFinished()) return;
 
       if (!window.confirm(`Delete game ${gameId}?`)) {
         return;
       }
 
+      gameDeletionPending = true;
       deleteButton.disabled = true;
       clearError();
       setStatus(`Deleting game ${gameId}…`, "default");
@@ -4623,7 +4812,8 @@
         showError(message);
         setStatus("Game deletion failed.", "error");
       } finally {
-        deleteButton.disabled = isGameFinished();
+        gameDeletionPending = false;
+        deleteButton.disabled = currentLeagueRole !== "admin" || isGameFinished();
       }
     });
 
@@ -4932,7 +5122,7 @@
             ? `Allow ${playerNickname(playerId)} to manage ${currentLeagueName} and score its games?`
             : `Allow ${playerNickname(playerId)} to score all games in ${currentLeagueName}?`)) return;
 
-          const finishAccessFocus = trackInteractionFocus(target.closest('[data-player-id]'));
+          const finishAccessFocus = trackInteractionFocus(target.closest('[data-ui="roster-player"], [data-ui="roster-member"]'));
           rosterMutationPending = true;
           ++playersReadVersion;
           target.disabled = true;
@@ -4976,7 +5166,7 @@
             if (ownsFocus) {
               const player = [...root.querySelectorAll('[data-ui="roster-player"][data-player-id], [data-ui="roster-member"][data-player-id]')]
                 .find((element) => element.getAttribute("data-player-id") === playerId);
-              const focusTarget = player?.querySelector('details[data-ui="player-management"] summary') ?? player;
+              const focusTarget = player?.querySelector('[data-action="toggle-action-menu"]') ?? player;
               if (focusTarget instanceof HTMLElement) {
                 if (focusTarget === player) focusTarget.setAttribute("tabindex", "-1");
                 focusTarget.focus({ preventScroll: true });
@@ -5909,7 +6099,7 @@
   async function initialize() {
     mountSeasonShellForNestedLeagueRoute();
     initializeSignOut();
-    initializeMoreActions();
+    initializeActionMenus();
     clearError();
 
     if (page === "join") {

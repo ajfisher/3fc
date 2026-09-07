@@ -1875,6 +1875,7 @@ async function bootPage(input: {
   apiState: MockApiState;
   fetch?: ReturnType<typeof createMockFetch>;
   flushOnBoot?: boolean;
+  captureInterval?: (callback: () => void) => number;
   sessionStorage?: Map<string, string>;
   timers?: ReturnType<typeof createManualTimers>;
 }) {
@@ -1942,7 +1943,7 @@ async function bootPage(input: {
     configurable: true,
   });
   Object.defineProperty(window, "setInterval", {
-    value: () => 0,
+    value: input.captureInterval ?? (() => 0),
     configurable: true,
   });
   Object.defineProperty(window, "clearInterval", {
@@ -1965,6 +1966,19 @@ async function bootPage(input: {
 
 function dispatchClick(element: HTMLElement): void {
   element.dispatchEvent(new element.ownerDocument.defaultView!.MouseEvent("click", { bubbles: true, cancelable: true }));
+}
+
+function openActionMenuFor(element: HTMLElement) {
+  const window = element.ownerDocument.defaultView!;
+  const menu = element.closest('[data-ui="action-menu"]');
+  const trigger = menu?.querySelector('[data-action="toggle-action-menu"]');
+  const surface = menu?.querySelector('[data-ui="action-menu-surface"]');
+  assert(menu instanceof window.HTMLElement && trigger instanceof window.HTMLButtonElement && surface instanceof window.HTMLElement);
+  if (trigger.getAttribute("aria-expanded") !== "true") dispatchClick(trigger);
+  assert.equal(trigger.getAttribute("aria-expanded"), "true");
+  assert.equal(surface.hidden, false);
+  assert.equal(trigger.getAttribute("aria-controls"), surface.id);
+  return { menu, trigger, surface };
 }
 
 function dispatchSubmit(form: HTMLFormElement): void {
@@ -3655,15 +3669,14 @@ test("organiser shell disclosure cancellation preserves drafts, nested options a
     name.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(region.hidden, true);
     assert.equal(page.document.activeElement, toggle);
-    const more = page.document.querySelector('details[data-ui="more-actions"]');
-    assert(more instanceof page.window.HTMLDetailsElement);
-    more.open = true;
-    const action = more.querySelector("button");
+    const action = page.document.querySelector('#league-actions button');
     assert(action instanceof page.window.HTMLButtonElement);
+    const { trigger, surface } = openActionMenuFor(action);
     action.focus();
     action.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    assert.equal(more.open, false);
-    assert.equal(page.document.activeElement, more.querySelector("summary"));
+    assert.equal(surface.hidden, true);
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(page.document.activeElement, trigger);
   } finally { page.dom.window.close(); }
 });
 
@@ -4442,9 +4455,8 @@ test("season game groups expose accurate empty states and preserve finished-game
     '#season-completed-games-body button[disabled][aria-label^="Delete unavailable:"]',
   );
   assert(completedDeleteButton instanceof page.window.HTMLButtonElement);
-  const more = completedDeleteButton.closest("details");
-  assert(more instanceof page.window.HTMLDetailsElement);
-  more.open = true;
+  const { surface: completedActions } = openActionMenuFor(completedDeleteButton);
+  assert.equal(page.document.activeElement, completedActions, "an all-disabled surface still exposes its reason to keyboard users");
   const reasonId = completedDeleteButton.getAttribute("aria-describedby");
   assert(reasonId);
   const reason = page.document.getElementById(reasonId);
@@ -5090,6 +5102,206 @@ function seedManagementDeletionRows(apiState: MockApiState, kind: "season" | "ga
   };
 }
 
+test("action menus share native groups, nested trigger clicks, one-open state and natural focus exit", async () => {
+  const apiState = createMockApiState();
+  const fixture = seedManagementDeletionRows(apiState, "season", 2);
+  const page = await bootPage({ html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState });
+  try {
+    const menus = [...page.document.querySelectorAll('#league-seasons-body [data-ui="action-menu"]')];
+    assert.equal(menus.length, 2);
+    assert.equal(page.document.querySelector('details[data-ui="more-actions"], details[data-ui="player-management"]'), null);
+    const firstTrigger = menus[0].querySelector('[data-action="toggle-action-menu"]');
+    const firstSurface = menus[0].querySelector('[data-ui="action-menu-surface"]');
+    const secondTrigger = menus[1].querySelector('[data-action="toggle-action-menu"]');
+    assert(firstTrigger instanceof page.window.HTMLButtonElement && firstSurface instanceof page.window.HTMLElement && secondTrigger instanceof page.window.HTMLButtonElement);
+    assert.equal(firstSurface.hidden, true);
+    assert.equal(firstSurface.getAttribute("role"), "group");
+    assert.equal(firstSurface.getAttribute("aria-label"), "Actions for Season 0");
+    assert.equal(firstTrigger.getAttribute("aria-label"), "Actions for Season 0");
+    assert.equal(firstSurface.querySelector('[role="menuitem"]'), null);
+    const icon = firstTrigger.querySelector('[data-icon="ellipsis-vertical"]');
+    assert(icon instanceof page.window.HTMLElement);
+    dispatchClick(icon);
+    assert.equal(firstTrigger.getAttribute("aria-expanded"), "true");
+    assert.equal(page.document.activeElement, firstSurface.querySelector("button"));
+    const svg = page.document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const path = page.document.createElementNS("http://www.w3.org/2000/svg", "path");
+    svg.append(path);
+    secondTrigger.append(svg);
+    path.dispatchEvent(new page.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    const secondSurface = menus[1].querySelector('[data-ui="action-menu-surface"]');
+    assert(secondSurface instanceof page.window.HTMLElement);
+    assert.equal(firstSurface.hidden, true);
+    assert.equal(firstTrigger.getAttribute("aria-expanded"), "false");
+    assert.equal(secondSurface.hidden, false);
+    assert.equal(page.document.querySelectorAll('[data-action="toggle-action-menu"][aria-expanded="true"]').length, 1);
+    const action = secondSurface.querySelector("button");
+    assert(action instanceof page.window.HTMLButtonElement);
+    action.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    assert.equal(secondSurface.hidden, false, "Tab itself is not trapped or prematurely hidden");
+    const outside = page.document.querySelector('[data-ui="site-nav"] a');
+    assert(outside instanceof page.window.HTMLAnchorElement);
+    outside.focus();
+    assert.equal(secondSurface.hidden, true);
+    assert.equal(page.document.activeElement, outside);
+    openActionMenuFor(secondTrigger);
+    action.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    assert.equal(secondSurface.hidden, true);
+    assert.equal(page.document.activeElement, secondTrigger);
+    openActionMenuFor(firstTrigger);
+    outside.dispatchEvent(new page.window.Event("pointerdown", { bubbles: true }));
+    outside.focus();
+    assert.equal(firstSurface.hidden, true);
+    assert.equal(page.document.activeElement, outside);
+  } finally { page.dom.window.close(); }
+});
+
+for (const nativePopover of [false, true]) {
+  test(`action menus clamp and flip within the visual viewport with ${nativePopover ? "native top-layer" : "hidden fallback"} ownership`, async () => {
+    const apiState = createMockApiState();
+    const fixture = seedManagementDeletionRows(apiState, "season", 1);
+    const page = await bootPage({ html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState });
+    try {
+      const action = page.document.querySelector('#league-seasons-body [data-action="delete-season"]');
+      assert(action instanceof page.window.HTMLButtonElement);
+      const menu = action.closest('[data-ui="action-menu"]');
+      const trigger = menu?.querySelector('[data-action="toggle-action-menu"]');
+      const surface = menu?.querySelector('[data-ui="action-menu-surface"]');
+      assert(menu instanceof page.window.HTMLElement && trigger instanceof page.window.HTMLButtonElement && surface instanceof page.window.HTMLElement);
+      let shown = 0;
+      let hidden = 0;
+      Object.defineProperty(surface, "showPopover", { configurable: true, value: nativePopover ? () => { shown += 1; } : undefined });
+      Object.defineProperty(surface, "hidePopover", { configurable: true, value: nativePopover ? () => { hidden += 1; } : undefined });
+      const viewport = new page.window.EventTarget();
+      Object.assign(viewport, { width: 320, height: 280, offsetLeft: 12, offsetTop: 40 });
+      Object.defineProperty(page.window, "visualViewport", { value: viewport, configurable: true });
+      let top = 270;
+      Object.defineProperty(trigger, "getBoundingClientRect", { value: () => ({ left: 280, right: 328, top, bottom: top + 48, width: 48, height: 48 }) });
+      Object.defineProperty(surface, "getBoundingClientRect", { value: () => ({ left: 0, right: 200, top: 0, bottom: 120, width: 200, height: 120 }) });
+      openActionMenuFor(action);
+      assert.equal(surface.style.left, "124px");
+      assert.equal(surface.style.top, "142px", "near-bottom action flips above its trigger");
+      assert.equal(surface.style.maxWidth, "304px");
+      assert.equal(surface.style.maxHeight, "264px");
+      assert.equal(shown, nativePopover ? 1 : 0);
+      assert.equal(surface.parentElement, menu, "the original delegated event owner is preserved");
+      top = -100;
+      surface.dispatchEvent(new page.window.Event("scroll", { bubbles: false }));
+      assert.equal(surface.hidden, false, "scrolling within the surface does not dismiss it");
+      page.window.dispatchEvent(new page.window.Event("resize"));
+      assert.equal(surface.hidden, true, "an offscreen trigger cannot leave an orphan action surface");
+      assert.equal(hidden, nativePopover ? 1 : 0);
+      top = 270;
+      openActionMenuFor(action);
+      menu.hidden = true;
+      await flushAsync();
+      assert.equal(surface.hidden, true);
+      assert.equal(trigger.getAttribute("aria-expanded"), "false");
+      assert.equal(hidden, nativePopover ? 2 : 0, "role hiding also dismisses the top-layer surface");
+      dispatchClick(trigger);
+      assert.equal(surface.hidden, true, "a hidden owner cannot be opened by synthetic activation");
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const kind of ["season", "game"] as const) {
+  for (const outcome of ["cancel", "rejected", "uncertain"] as const) {
+    test(`action menus ${kind} deletion ${outcome} closes and returns owned focus without changing data`, async () => {
+      const apiState = createMockApiState();
+      const fixture = seedManagementDeletionRows(apiState, kind, 1);
+      const baseFetch = createMockFetch(apiState);
+      let deletes = 0;
+      const page = await bootPage({ html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          if (init?.method === "DELETE") {
+            deletes += 1;
+            return createJsonResponse(outcome === "rejected" ? 403 : 503, { message: "Not available" });
+          }
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        Object.defineProperty(page.window, "confirm", { value: () => outcome !== "cancel", configurable: true });
+        const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
+        assert(action instanceof page.window.HTMLButtonElement);
+        const { trigger, surface } = openActionMenuFor(action);
+        const icon = action.querySelector('[data-icon="trash-2"]');
+        assert(icon instanceof page.window.HTMLElement);
+        dispatchClick(icon);
+        assert.equal(surface.hidden, true, "surface closes before confirmation/pending work");
+        await flushAsync();
+        assert.equal(deletes, outcome === "cancel" ? 0 : 1);
+        assert.equal(page.document.activeElement, trigger);
+        assert.equal(trigger.getAttribute("aria-expanded"), "false");
+        assert.equal(action.disabled, false);
+        assert.equal(kind === "season" ? apiState.seasons.has("row-0") : apiState.games.has("row-0"), true);
+        if (outcome !== "cancel") {
+          assert.match(page.document.getElementById("setup-error")?.textContent ?? "", outcome === "uncertain" ? /could not be confirmed/ : /could not be deleted/);
+        }
+        openActionMenuFor(action);
+        assert.equal(page.document.activeElement, action, "a fresh explicit retry remains available");
+      } finally { page.dom.window.close(); }
+    });
+  }
+
+  for (const refreshFails of [false, true]) {
+    test(`action menus ${kind} pending deletion survives redraw and ${refreshFails ? "failed" : "stale"} post-commit refresh`, async () => {
+      const apiState = createMockApiState();
+      const fixture = seedManagementDeletionRows(apiState, kind, 2);
+      const originalRows = kind === "season" ? [...apiState.seasons.values()] : [...apiState.games.values()];
+      const baseFetch = createMockFetch(apiState);
+      let releaseDelete: (() => void) | undefined;
+      let firstDeletes = 0;
+      let firstCommitted = false;
+      const page = await bootPage({ html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
+        fetch: async (input, init) => {
+          const path = new URL(String(input)).pathname;
+          if (init?.method === "DELETE" && path.endsWith("/row-0")) {
+            firstDeletes += 1;
+            return new Promise<Response>((resolve) => { releaseDelete = () => { firstCommitted = true; void baseFetch(input, init).then(resolve); }; });
+          }
+          if (path === fixture.listPath) {
+            if (firstCommitted && refreshFails) throw new Error("refresh unavailable");
+            return createJsonResponse(200, { [kind === "season" ? "seasons" : "games"]: originalRows });
+          }
+          return baseFetch(input, init);
+        },
+      });
+      try {
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        const original = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
+        const other = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`);
+        assert(original instanceof page.window.HTMLButtonElement && other instanceof page.window.HTMLButtonElement);
+        openActionMenuFor(original);
+        dispatchClick(original);
+        openActionMenuFor(other);
+        dispatchClick(other);
+        await flushAsync();
+        const replacement = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
+        assert(replacement instanceof page.window.HTMLButtonElement);
+        assert.notEqual(replacement, original, "another confirmed delete causes a real list redraw");
+        assert.equal(replacement.disabled, true, "pending state belongs to the entity, not its detached button");
+        const { surface } = openActionMenuFor(replacement);
+        assert.equal(page.document.activeElement, surface);
+        dispatchClick(replacement);
+        replacement.disabled = false;
+        dispatchClick(replacement);
+        await flushAsync();
+        assert.equal(firstDeletes, 1, "entity latch protects even a stale enabled node");
+        replacement.disabled = true;
+        openActionMenuFor(replacement);
+        assert(releaseDelete);
+        releaseDelete();
+        await flushAsync();
+        assert.equal(kind === "season" ? apiState.seasons.has("row-0") : apiState.games.has("row-0"), false);
+        assert.equal(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`), null);
+        assert.equal(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`), null);
+        assert.equal(surface.hidden, true, "removing its owner closes any pending row popover");
+      } finally { page.dom.window.close(); }
+    });
+  }
+}
+
 for (const kind of ["season", "game"] as const) {
   for (const scenario of [
     { count: 3, index: 1, next: "row-2", refreshFails: false },
@@ -5117,9 +5329,7 @@ for (const kind of ["season", "game"] as const) {
         const body = page.document.getElementById(fixture.bodyId);
         const action = body?.querySelector(`[data-${kind}-id="row-${scenario.index}"]`);
         assert(body instanceof page.window.HTMLElement && action instanceof page.window.HTMLButtonElement);
-        const more = action.closest("details");
-        assert(more instanceof page.window.HTMLDetailsElement);
-        more.open = true;
+        openActionMenuFor(action);
         action.focus();
         assert.equal(page.document.activeElement, action);
         dispatchClick(action);
@@ -5157,9 +5367,7 @@ for (const kind of ["season", "game"] as const) {
         const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
         const outside = page.document.querySelector('[data-ui="site-nav"] a');
         assert(action instanceof page.window.HTMLButtonElement && outside instanceof page.window.HTMLAnchorElement);
-        const more = action.closest("details");
-        assert(more instanceof page.window.HTMLDetailsElement);
-        more.open = true;
+        openActionMenuFor(action);
         action.focus();
         dispatchClick(action);
         if (interaction === "focus") outside.focus();
@@ -5174,17 +5382,20 @@ for (const kind of ["season", "game"] as const) {
     });
   }
 
-  for (const control of ["link", "closed-more", "open-more", "delete"] as const) {
+  for (const control of ["link", "closed-more", "open-more", "delete", "surface"] as const) {
     test(`organiser shell ${kind} redraw preserves focus moved to a surviving row ${control}`, async () => {
       const apiState = createMockApiState();
       const fixture = seedManagementDeletionRows(apiState, kind, 2);
       const baseFetch = createMockFetch(apiState);
       let finishDelete: (() => void) | undefined;
+      let finishSurvivorDelete: (() => void) | undefined;
       const page = await bootPage({
         html: fixture.html, url: fixture.url, scriptFile: "setup-flow.js", apiState,
         fetch: async (input, init) => {
           if (init?.method === "DELETE") return new Promise<Response>((resolve) => {
-            finishDelete = () => { void baseFetch(input, init).then(resolve); };
+            if (control === "surface" && new URL(String(input)).pathname.endsWith("/row-1")) {
+              finishSurvivorDelete = () => resolve(createJsonResponse(403, { message: "Delete rejected" }));
+            } else finishDelete = () => { void baseFetch(input, init).then(resolve); };
           });
           return baseFetch(input, init);
         },
@@ -5194,34 +5405,54 @@ for (const kind of ["season", "game"] as const) {
         const action = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`);
         const survivor = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`)?.closest("tr");
         assert(action instanceof page.window.HTMLButtonElement && survivor instanceof page.window.HTMLTableRowElement);
-        const oldMore = action.closest("details");
-        const survivorMore = survivor.querySelector("details");
-        assert(oldMore instanceof page.window.HTMLDetailsElement && survivorMore instanceof page.window.HTMLDetailsElement);
-        oldMore.open = true;
+        openActionMenuFor(action);
+        const survivorMenu = survivor.querySelector('[data-ui="action-menu"]');
+        assert(survivorMenu instanceof page.window.HTMLElement);
         action.focus();
         dispatchClick(action);
-        const shouldOpen = control === "open-more" || control === "delete";
-        survivorMore.open = shouldOpen;
+        if (control === "surface") {
+          const survivorDelete = survivorMenu.querySelector('[data-action^="delete-"]');
+          assert(survivorDelete instanceof page.window.HTMLButtonElement);
+          openActionMenuFor(survivorDelete);
+          dispatchClick(survivorDelete);
+          assert.equal(survivorDelete.disabled, true);
+          assert(finishSurvivorDelete);
+        }
+        const shouldOpen = control === "open-more" || control === "delete" || control === "surface";
+        if (shouldOpen) openActionMenuFor(survivorMenu);
         const movedFocus = control === "link" ? survivor.querySelector("a[href]")
-          : control === "delete" ? survivor.querySelector("button") : survivorMore.querySelector("summary");
+          : control === "surface" ? survivorMenu.querySelector('[data-ui="action-menu-surface"]')
+          : control === "delete" ? survivorMenu.querySelector('[data-action^="delete-"]') : survivorMenu.querySelector('[data-action="toggle-action-menu"]');
         assert(movedFocus instanceof page.window.HTMLElement);
         movedFocus.focus();
         assert.equal(page.document.activeElement, movedFocus);
         assert(finishDelete);
         finishDelete();
+        finishDelete = undefined;
         await flushAsync();
         const replacementRow = page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-1"]`)?.closest("tr");
         assert(replacementRow instanceof page.window.HTMLTableRowElement);
-        const replacementMore = replacementRow.querySelector("details");
-        assert(replacementMore instanceof page.window.HTMLDetailsElement);
+        const replacementMenu = replacementRow.querySelector('[data-ui="action-menu"]');
+        assert(replacementMenu instanceof page.window.HTMLElement);
         const replacement = control === "link" ? replacementRow.querySelector("a[href]")
-          : control === "delete" ? replacementRow.querySelector("button") : replacementMore.querySelector("summary");
+          : control === "surface" ? replacementMenu.querySelector('[data-ui="action-menu-surface"]')
+          : control === "delete" ? replacementMenu.querySelector('[data-action^="delete-"]') : replacementMenu.querySelector('[data-action="toggle-action-menu"]');
         assert(replacement instanceof page.window.HTMLElement);
         assert.notEqual(replacement, movedFocus, "the fixture exercises a real row replacement");
         assert.equal(page.document.activeElement, replacement);
-        assert.equal(replacementMore.open, shouldOpen);
+        assert.equal(replacementMenu.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded"), String(shouldOpen));
+        assert.equal((replacementMenu.querySelector('[data-ui="action-menu-surface"]') as HTMLElement).hidden, !shouldOpen);
+        if (control === "surface") {
+          assert.equal(replacement.getAttribute("role"), "group");
+          assert.equal(replacement.querySelector("button:not(:disabled)"), null);
+        }
         assert.equal(page.document.querySelector(`#${fixture.bodyId} [data-${kind}-id="row-0"]`), null);
-      } finally { page.dom.window.close(); }
+      } finally {
+        finishDelete?.();
+        finishSurvivorDelete?.();
+        await flushAsync();
+        page.dom.window.close();
+      }
     });
   }
 
@@ -6454,6 +6685,70 @@ test("game page lets league admins promote claimed players to scorers", async ()
   assert.equal(page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-delegate"][data-role="scorekeeper"]'), null);
 });
 
+for (const focusDestination of ["surface", "outside"] as const) {
+  test(`action menus roster redraw preserves pending surface ownership after moving to ${focusDestination}`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "game-pending-menu-focus", role: "admin" });
+    for (const [id, email] of [["player-ari", "ari@example.com"], ["player-bea", "bea@example.com"]] as const) {
+      const player = apiState.players.get(id);
+      assert(player);
+      player.claimedByUserId = email;
+    }
+    const baseFetch = createMockFetch(apiState);
+    let releaseAccess: (() => void) | undefined;
+    let writes = 0;
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "game-pending-menu-focus" }),
+      url: "http://localhost:3000/games/game-pending-menu-focus#teams", scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => {
+        if (init?.method === "POST" && new URL(String(input)).pathname.endsWith("/access")) {
+          writes += 1;
+          return new Promise<Response>((resolve) => { releaseAccess = () => { void baseFetch(input, init).then(resolve); }; });
+        }
+        return baseFetch(input, init);
+      },
+    });
+    try {
+      Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+      const promoteAri = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-ari"][data-role="scorekeeper"]');
+      assert(promoteAri instanceof page.window.HTMLButtonElement);
+      openActionMenuFor(promoteAri);
+      dispatchClick(promoteAri);
+      assert(releaseAccess);
+      const beaAction = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-bea"]');
+      assert(beaAction instanceof page.window.HTMLButtonElement);
+      const { surface: pendingSurface } = openActionMenuFor(beaAction);
+      assert.equal(pendingSurface.querySelector("button:not(:disabled)"), null);
+      assert.equal(page.document.activeElement, pendingSurface, "the all-disabled group itself receives focus");
+      const outside = page.document.querySelector('[data-ui="site-nav"] a');
+      assert(outside instanceof page.window.HTMLAnchorElement);
+      if (focusDestination === "outside") outside.focus();
+      releaseAccess();
+      releaseAccess = undefined;
+      await flushAsync();
+      const replacement = page.document.getElementById("player-actions-player-bea");
+      assert(replacement instanceof page.window.HTMLElement);
+      assert.notEqual(replacement, pendingSurface, "post-promotion player reads and pending-state cleanup redraw real roster markup");
+      assert.equal(writes, 1);
+      assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "ari@example.com")), "scorekeeper");
+      assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "bea@example.com")), undefined);
+      if (focusDestination === "surface") {
+        assert.equal(page.document.activeElement, replacement);
+        assert.equal(replacement.hidden, false);
+        assert.equal(replacement.closest('[data-ui="action-menu"]')?.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded"), "true");
+        assert(replacement.querySelector("button:not(:disabled)"), "the completed operation releases the other player's actions");
+      } else {
+        assert.equal(page.document.activeElement, outside);
+        assert.equal(replacement.hidden, true);
+      }
+    } finally {
+      releaseAccess?.();
+      await flushAsync();
+      page.dom.window.close();
+    }
+  });
+}
+
 for (const outcome of ["scorer", "admin", "failure", "uncertain", "outside"] as const) {
   test(`match promotion preserves keyboard ownership after ${outcome}`, async () => {
     const apiState = createMockApiState();
@@ -6479,9 +6774,7 @@ for (const outcome of ["scorer", "admin", "failure", "uncertain", "outside"] as 
     Object.defineProperty(page.window, "confirm", { value: () => true });
     const action = page.document.querySelector(`[data-action="grant-player-access"][data-player-id="player-ari"][data-role="${outcome === "admin" ? "admin" : "scorekeeper"}"]`);
     assert(action instanceof page.window.HTMLButtonElement);
-    const details = action.closest("details");
-    assert(details instanceof page.window.HTMLDetailsElement);
-    details.open = true;
+    openActionMenuFor(action);
     action.focus();
     dispatchClick(action);
     dispatchClick(action);
@@ -6502,10 +6795,11 @@ for (const outcome of ["scorer", "admin", "failure", "uncertain", "outside"] as 
     if (outcome === "outside") assert.equal(page.document.activeElement, outside);
     else if (outcome === "admin") {
       assert.equal(page.document.activeElement?.getAttribute("data-player-id"), "player-ari");
-      assert.equal(page.document.activeElement?.querySelector('[data-ui="player-management"]'), null);
+      assert.equal(page.document.activeElement?.querySelector('[data-player-management]'), null);
     } else {
-      assert.equal(page.document.activeElement?.tagName, "SUMMARY");
-      assert.equal(page.document.activeElement?.getAttribute("aria-label"), "Manage Ari");
+      assert.equal(page.document.activeElement?.getAttribute("data-action"), "toggle-action-menu");
+      assert.equal(page.document.activeElement?.getAttribute("aria-label"), "Actions for Ari");
+      assert.equal(page.document.activeElement?.getAttribute("aria-expanded"), "false");
     }
   });
 }
@@ -6816,14 +7110,58 @@ test("game page keeps delete locked while a finished game is loading", async () 
   resolveGameResponse(createJsonResponse(200, game));
   await flushAsync();
 
-  assert.equal(deleteButton.disabled, false);
+  assert.equal(deleteButton.disabled, true);
   assert.equal(deleteButton.getAttribute("aria-disabled"), "true");
   assert.equal(deleteReason.hidden, false);
+  const statusBefore = page.document.getElementById("setup-status")?.textContent;
+  openActionMenuFor(deleteButton);
   deleteButton.focus();
-  assert.equal(page.document.activeElement, deleteButton);
+  assert.notEqual(page.document.activeElement, deleteButton);
   dispatchClick(deleteButton);
   assert.equal(deleteRequests, 0);
-  assert.equal(page.document.getElementById("setup-status")?.textContent, "Finished games are locked.");
+  assert.equal(page.document.getElementById("setup-status")?.textContent, statusBefore);
+});
+
+test("action menus keep game deletion pending through timer redraws and repeated activation", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments();
+  thirds[0].startedAt = "2026-03-28T11:00:00.000Z";
+  seedGoalScoringGame(apiState, { gameId: "game-delete-menu-pending", status: "live", role: "admin", thirds });
+  const baseFetch = createMockFetch(apiState);
+  let writes = 0;
+  let tick: (() => void) | undefined;
+  let resolveDelete: ((response: Response) => void) | undefined;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "game-delete-menu-pending" }),
+    url: "http://localhost:3000/games/game-delete-menu-pending", scriptFile: "setup-flow.js", apiState,
+    captureInterval: callback => { tick = callback; return 1; },
+    fetch: async (input, init) => {
+      if (init?.method === "DELETE") {
+        writes += 1;
+        return new Promise<Response>(resolve => { resolveDelete = resolve; });
+      }
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    Object.defineProperty(page.window, "confirm", { configurable: true, value: () => true });
+    const action = page.document.querySelector('[data-testid="delete-game"]');
+    assert(action instanceof page.window.HTMLButtonElement);
+    openActionMenuFor(action);
+    dispatchClick(action);
+    assert.equal(writes, 1);
+    assert(tick);
+    tick();
+    assert.equal(action.disabled, true, "timer rendering must not release the pending request");
+    openActionMenuFor(action);
+    dispatchClick(action);
+    assert.equal(writes, 1);
+    assert(resolveDelete);
+    resolveDelete(createJsonResponse(503, { message: "Delete could not be confirmed" }));
+    await flushAsync();
+    assert.equal(action.disabled, false);
+    assert.equal(page.navigations.length, 0);
+  } finally { page.dom.window.close(); }
 });
 
 test("game page keeps early scoring unavailable until game authority has loaded", async () => {

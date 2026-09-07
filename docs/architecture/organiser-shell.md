@@ -48,11 +48,13 @@ prevent older responses replacing a newer view. Keyboard focus moves to the
 next/previous remaining link or the list heading only while the deletion still
 owns focus; external focus or pointer movement relinquishes that ownership.
 Synchronous row redraw captures the currently focused surviving row/control at
-the moment of replacement and restores its equivalent node and More state.
+the moment of replacement and restores its equivalent node and action-surface state.
 This does not restore an earlier request-time focus over a later user choice.
 Uncertain DELETE outcomes do not trigger automatic mutation retries. Existing
 confirmation and finished-game locks remain. Rare destructive actions live in
-More, with a visible reason when a finished game cannot be deleted.
+a kebab-triggered action surface, with a visible reason when a finished game
+cannot be deleted. See [action ownership](action-menus.md) for the later UX-07
+replacement of the original inline More disclosure.
 
 ## Deployment, failure and rollback
 

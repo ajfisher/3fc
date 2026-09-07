@@ -12,7 +12,7 @@ Generated from `docs/backlog/backlog.json`.
 | `EPIC-M3` | Public Results and Season Stats | M3 Public Results and Season Stats | 9 |
 | `EPIC-M4` | Notifications and Product Polish | M4 Notifications and Product Polish | 5 |
 | `EPIC-REV` | Risk-Based Pull Request Review System | Review System Rollout | 6 |
-| `EPIC-UX` | Mobile-First Frontend Redesign | UX Mobile-First Frontend Redesign | 7 |
+| `EPIC-UX` | Mobile-First Frontend Redesign | UX Mobile-First Frontend Redesign | 8 |
 
 ## Child Issues
 
@@ -67,9 +67,10 @@ Generated from `docs/backlog/backlog.json`.
 | `UX-01` | Establish mobile design, content and visibility foundation | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-00` |
 | `UX-02` | Redesign organiser shell, lists and creation forms | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-01`, `M1-13` |
 | `UX-03` | Redesign game overview, navigation and teams-first roster | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-02` |
-| `UX-04` | Redesign focused live scoring and goal feedback | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-03` |
+| `UX-07` | Replace management accordions with consistent kebab action menus | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-03` |
+| `UX-04` | Redesign focused live scoring and goal feedback | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-07` |
 | `UX-05` | Redesign authenticated results and existing entry journeys | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-04` |
-| `UX-06` | Complete cross-stack mobile, role and release-readiness acceptance | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-01`, `M1-13`, `UX-02`, `UX-03`, `UX-04`, `UX-05` |
+| `UX-06` | Complete cross-stack mobile, role and release-readiness acceptance | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-01`, `M1-13`, `UX-02`, `UX-03`, `UX-07`, `UX-04`, `UX-05` |
 | `M3-07` | Harden player ownership eligibility before portal expansion | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M2-02`, `M1-04` |
 | `M3-08` | Add bounded linked-player history and participant home | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-05`, `M3-01` |
 | `M3-09` | Add safe join and organiser-invite context reads | 5 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-07`, `M3-01` |
@@ -98,6 +99,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-01` | frontend-stack | planned | [#132](https://github.com/ajfisher/3fc/issues/132) | codex/design-foundation |
 | `UX-02` | frontend-stack | planned | [#133](https://github.com/ajfisher/3fc/issues/133) | codex/design-organiser-shell |
 | `UX-03` | frontend-stack | planned | [#134](https://github.com/ajfisher/3fc/issues/134) | codex/design-match-roster |
+| `UX-07` | frontend-stack | planned | [#147](https://github.com/ajfisher/3fc/issues/147) | codex/design-action-menus |
 | `UX-04` | frontend-stack | planned | [#135](https://github.com/ajfisher/3fc/issues/135) | codex/design-live-scoring |
 | `UX-05` | frontend-stack | planned | [#136](https://github.com/ajfisher/3fc/issues/136) | codex/design-results-entry |
 | `UX-06` | frontend-stack | planned | [#137](https://github.com/ajfisher/3fc/issues/137) | codex/design-results-entry |

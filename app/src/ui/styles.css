@@ -312,16 +312,15 @@ body {
   [data-ui="form-fields"] { padding-block: 0.5rem; }
 }
 
-[data-ui="more-actions"] {
+[data-ui="action-menu"] {
+  display: inline-flex;
+  flex: 0 0 auto;
   min-width: 0;
-  font-size: 0.875rem;
-
-  summary { cursor: pointer; min-height: 44px; padding-inline: 0.75rem; align-content: center; color: var(--ink-soft); }
-  &[open] { display: grid; gap: 0.5rem; }
-  [data-ui="icon-button"] { white-space: normal; }
 }
 
-:is([data-ui="more-actions"], [data-ui="additional-options"], [data-ui="reference-details"]) > summary:focus-visible {
+[data-ui="header-actions"] > [data-ui="action-menu"] { margin-inline-start: auto; }
+
+:is([data-ui="additional-options"], [data-ui="reference-details"]) > summary:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
   border-radius: var(--radius-control);
@@ -735,6 +734,98 @@ body {
     cursor: not-allowed;
     opacity: 0.5;
     transform: none;
+  }
+}
+
+[data-ui="action-menu"] > [data-action="toggle-action-menu"] {
+  width: 3rem;
+  min-width: 3rem;
+  height: 3rem;
+  min-height: 3rem;
+  padding: 0.75rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-soft);
+
+  &:hover,
+  &[aria-expanded="true"] {
+    background: var(--accent-soft);
+    color: var(--ink-strong);
+  }
+
+  [data-ui="icon"] { width: 1.25rem; height: 1.25rem; }
+}
+
+/* The controller clamps/flips fixed coordinates to the visual viewport. A
+   manual popover escapes list containment without moving controls from the DOM
+   that owns their events; hidden remains the fallback on older browsers. */
+[data-ui="action-menu-surface"] {
+  position: fixed;
+  inset: auto;
+  z-index: 1000;
+  display: grid;
+  gap: 0.125rem;
+  width: max-content;
+  min-width: 0;
+  max-width: min(20rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: 0;
+  padding: 0.375rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--ink-strong);
+  font-size: 1rem;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: break-word;
+
+  &::backdrop { background: transparent; pointer-events: none; }
+
+  &:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+  :is(button, a) {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
+    min-height: 3rem;
+    padding: 0.625rem 0.75rem;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--ink-strong);
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.5;
+    text-align: left;
+    text-decoration: none;
+    white-space: normal;
+    overflow-wrap: break-word;
+
+    &:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-soft); }
+    &:focus-visible { outline-offset: -3px; }
+    &[data-variant="danger"] { color: var(--danger); background: transparent; }
+    &[data-variant="danger"]:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--danger-soft); }
+    &:disabled,
+    &[aria-disabled="true"] { opacity: 1; color: var(--ink-soft); background: transparent; }
+  }
+
+  [data-ui="button-text"] { min-width: 0; line-height: 1.5; }
+  [data-ui="icon"] { flex-shrink: 0; }
+  [data-ui="access-actions"] { display: grid; min-width: 0; gap: 0.125rem; }
+  :is([data-ui="action-reason"], [data-ui="field-hint"]) {
+    margin: 0;
+    padding: 0.25rem 0.75rem 0.625rem;
+    color: var(--ink-soft);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    white-space: normal;
   }
 }
 
@@ -2088,18 +2179,7 @@ body {
     td:nth-child(2):not(:last-child) { grid-column: 1; color: var(--ink-soft); padding-top: 0.25rem; font-size: 0.875rem; }
     td:last-child:not(:first-child) { grid-column: 2; grid-row: 1 / span 2; width: auto; white-space: normal; align-self: start; }
     td:last-child [data-ui="row-action-buttons"] { flex-wrap: wrap; }
-    /* Expanded recovery/restriction copy needs a full row, not the narrow
-       action column beside the date or season name. */
-    td:last-child:has([data-ui="more-actions"][open]) {
-      grid-column: 1 / -1;
-      grid-row: 3;
-      padding-top: 0.25rem;
-      text-align: left;
-      [data-ui="more-actions"] { justify-items: start; }
-      [data-ui="action-reason"] { margin: 0; }
-    }
     tr:last-child { border-bottom: 0; }
-    [data-ui="more-actions"] > [data-ui="icon-button"] { max-width: 8rem; }
   }
 
   [data-testid="dashboard-leagues-table"] {
@@ -2144,9 +2224,6 @@ body {
   :is([data-testid="league-shell"], [data-testid="season-shell"]) [data-ui="header-actions"] {
     align-items: flex-start;
     > [data-ui="icon-button"] { min-height: 48px; }
-    > [data-ui="more-actions"] {
-      margin-inline-start: auto;
-    }
   }
 }
 
@@ -2507,14 +2584,11 @@ body {
   [data-ui="header-actions"] { justify-content: flex-start; }
   [data-ui="header-actions"]:not(:has(> :not([hidden]))) { display: none; }
   [data-ui="hero-copy"]:empty { display: none; }
-
-  [data-ui="game-management"] {
-    display: flex;
-    flex-wrap: wrap;
+  [data-ui="hero"] > [data-ui="hero-title-row"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 0.75rem;
-
-    > p { flex-basis: 100%; margin: 0; }
   }
 
   [data-ui="game-overview"] {
@@ -2631,9 +2705,6 @@ body {
   }
 
   [data-ui="player-access"] { flex-wrap: wrap; }
-  [data-ui="player-management"] { min-width: 0; }
-  [data-ui="player-management"][open] { flex-basis: 100%; }
-  [data-ui="player-management"] .sr-only { white-space: nowrap; }
 }
 
 @media (max-width: 767px) {

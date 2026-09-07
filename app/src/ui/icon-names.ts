@@ -8,6 +8,7 @@ export const ICON_NAMES = [
   "circle-check",
   "circle-plus",
   "circle-user-round",
+  "ellipsis-vertical",
   "eye",
   "loader-circle",
   "pencil",

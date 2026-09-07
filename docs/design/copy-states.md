@@ -31,7 +31,7 @@ own navigation, human dates, entry-flow and match-specific language refinement.
 | Home | Neutral “Welcome”; “Leagues” first; “Create a new league” below the existing list. No email-local-part name guess or speculative cross-league game summary. |
 | Empty league list | “No leagues to show.” Only after the authorised list responds, with the creation form opened once without stealing focus. |
 | League/season navigation | Home plus actual league/season names. On phones, omit the duplicate breadcrumb Home from display/tab order and visually hide its non-interactive current item; the H1 supplies the full name. Season retains its real parent link. Full breadcrumbs remain on desktop. Generic League/Season only while loading, never an opaque route ID as the heading. |
-| Management actions | Visible Create season, Invite organiser and Create game verbs; Delete under More after confirmed organiser access. No management controls while authority is unknown. |
+| Management actions | Visible Create season, Invite organiser and Create game verbs. Rare actions sit behind a vertical-three-dot button named “Actions for {entity}”; the floating surface uses visible action verbs. No More/Manage action accordions, or management controls while authority is unknown. |
 | Reference data | “Reference ID” collapsed in the heading area; “Additional options” contains friendly URL and creation IDs. |
 | Native forms | Visible label, Create/Send action and Cancel. Cancel preserves the draft and returns focus to the opener. |
 | Invite by email | “Only this email address can accept.” This material restriction stays at the choice, unlike routine permission narration. |

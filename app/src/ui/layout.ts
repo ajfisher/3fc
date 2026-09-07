@@ -1,6 +1,7 @@
 import { APP_RETURN_TARGET_PATTERN_SOURCES } from "@3fc/contracts";
 
 import {
+  renderActionMenu,
   renderButton,
   renderDataTable,
   renderInputField,
@@ -361,17 +362,22 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
               "aria-expanded": "false",
             },
           })}
-          <details data-ui="more-actions" data-management-only hidden><summary>More</summary>${renderIconButton({
-            icon: "trash-2",
-            label: "Delete league",
-            text: "Delete league",
-            variant: "danger",
-            attributes: {
-              "data-action": "delete-league",
-              "data-testid": "delete-league",
-              "data-management-only": "", disabled: "",
-            },
-          })}</details>
+          ${renderActionMenu({
+            id: "league-actions",
+            label: "Actions for this league",
+            attributes: { "data-management-only": "", hidden: "" },
+            content: renderIconButton({
+              icon: "trash-2",
+              label: "Delete league",
+              text: "Delete league",
+              variant: "danger",
+              attributes: {
+                "data-action": "delete-league",
+                "data-testid": "delete-league",
+                "data-management-only": "", disabled: "",
+              },
+            }),
+          })}
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="league" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-league-id="${safeLeagueId}">
@@ -557,17 +563,22 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
               "aria-expanded": "false",
             },
           })}
-          <details data-ui="more-actions" data-management-only hidden><summary>More</summary>${renderIconButton({
-            icon: "trash-2",
-            label: "Delete season",
-            text: "Delete season",
-            variant: "danger",
-            attributes: {
-              "data-action": "delete-season",
-              "data-testid": "delete-season",
-              "data-management-only": "", disabled: "",
-            },
-          })}</details>
+          ${renderActionMenu({
+            id: "season-actions",
+            label: "Actions for this season",
+            attributes: { "data-management-only": "", hidden: "" },
+            content: renderIconButton({
+              icon: "trash-2",
+              label: "Delete season",
+              text: "Delete season",
+              variant: "danger",
+              attributes: {
+                "data-action": "delete-season",
+                "data-testid": "delete-season",
+                "data-management-only": "", disabled: "",
+              },
+            }),
+          })}
         </div>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="season" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
@@ -1242,12 +1253,13 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <section data-ui="hero">
         ${renderManagementNavigation()}
         <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><a id="game-league-link">League</a></li><li><a id="game-season-link">Season</a></li><li><span aria-current="page">Game</span></li></ol></nav>
+        <div data-ui="hero-title-row">
         <h1 id="game-title">${gameHeading}</h1>
-        <p data-ui="hero-copy" id="game-subtitle" hidden></p>
-        <details data-ui="more-actions" data-game-capability="admin" aria-label="Game actions" hidden>
-          <summary>More</summary>
-          <div data-ui="game-management">
-          ${renderIconLink({
+        ${renderActionMenu({
+          id: "game-actions",
+          label: "Actions for this game",
+          attributes: { "data-game-capability": "admin", hidden: "" },
+          content: `${renderIconLink({
             href: "/setup",
             icon: "calendar-plus",
             label: "Create another game",
@@ -1268,9 +1280,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               disabled: "disabled",
             },
           })}
-          <p data-ui="field-hint" id="game-delete-lock-reason" hidden>Finished games can’t be deleted.</p>
-          </div>
-        </details>
+          <p data-ui="field-hint" id="game-delete-lock-reason" hidden>Finished games can’t be deleted.</p>`,
+        })}
+        </div>
+        <p data-ui="hero-copy" id="game-subtitle" hidden></p>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
         ${renderActivityStatus("Loading game data…")}

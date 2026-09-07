@@ -2,6 +2,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { renderGamePage } from "../../app/dist/ui/layout.js";
+import { expectActionSurfaceFits } from "./action-menu-helpers.js";
 
 // Built production renderer/controller/styles, with all transport intercepted.
 // These fictional accounts and rosters never contact QA, send email or use AWS.
@@ -402,6 +403,89 @@ test("unknown authority cannot briefly expose match administration or scoring", 
   fixture.releaseAuthority();
   await expectReady(page);
   await expectOnlyMode(page, "run");
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("match and player actions use the same keyboard-friendly kebab surfaces", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const fixture = await installMatchFixture(page);
+  await page.goto(`${origin}${gamePath}#overview`);
+  await expectReady(page);
+  const header = page.locator('[data-ui="hero"] [data-ui="action-menu"]');
+  const headerTrigger = header.locator('[data-action="toggle-action-menu"]');
+  await headerTrigger.focus();
+  await page.keyboard.press("Space");
+  const headerSurface = header.locator('[data-ui="action-menu-surface"]');
+  const create = page.getByTestId("create-another-game");
+  await expect(create).toBeFocused();
+  await expect(create).toHaveAttribute("href", `/leagues/${leagueId}/seasons/${seasonId}#create-game`);
+  await expectActionSurfaceFits(page, headerSurface);
+  await page.keyboard.press("Tab");
+  await expect(page.getByTestId("delete-game")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(headerTrigger).toBeFocused();
+  await expect(headerSurface).toBeHidden();
+
+  await page.getByTestId("game-mode-players-tab").click();
+  const player = page.locator(`[data-ui="roster-player"][data-player-id="${fixture.players[0].playerId}"]`);
+  const playerTrigger = player.locator('[data-action="toggle-action-menu"]');
+  await playerTrigger.scrollIntoViewIfNeeded();
+  const height = (await player.boundingBox())!.height;
+  await playerTrigger.locator('[data-icon="ellipsis-vertical"]').click();
+  const playerSurface = player.locator('[data-ui="action-menu-surface"]');
+  await expect(playerSurface.locator('[data-action="grant-player-access"]').first()).toBeFocused();
+  await expect(playerSurface.locator('[data-action="grant-player-access"]')).toHaveCount(2);
+  await expectActionSurfaceFits(page, playerSurface);
+  expect((await player.boundingBox())!.height).toBeCloseTo(height, 1);
+  await expectMatchGeometry(page);
+  await capture(page, testInfo, "player-kebab-open-dark-320");
+  await page.keyboard.press("Escape");
+  await expect(playerTrigger).toBeFocused();
+  await expect(playerSurface).toBeHidden();
+  await expect(page.locator('[data-ui="more-actions"], details[data-ui="player-management"]')).toHaveCount(0);
+  expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("assigned-player action surfaces fit without native Popover support", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.addInitScript(() => {
+    Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+    Object.defineProperty(HTMLElement.prototype, "hidePopover", { configurable: true, value: undefined });
+  });
+  const fixture = await installMatchFixture(page);
+  await page.goto(`${origin}${gamePath}#teams`);
+  await expectReady(page);
+  const member = page.locator(`[data-ui="roster-member"][data-player-id="${fixture.players[4].playerId}"]`);
+  const trigger = member.locator('[data-action="toggle-action-menu"]');
+  for (const zoom of [1, 2]) {
+    await page.locator("html").evaluate((element, scale) => { element.style.zoom = String(scale); }, zoom);
+    await trigger.scrollIntoViewIfNeeded();
+    const height = (await member.boundingBox())!.height;
+    await trigger.click();
+    await expectActionSurfaceFits(page, member.locator('[data-ui="action-menu-surface"]'));
+    expect((await member.boundingBox())!.height).toBeCloseTo(height, 1);
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+  }
+  expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("finished match action menu retains an accessible inert delete reason", async ({ page }) => {
+  const fixture = await installMatchFixture(page, { status: "finished" });
+  await page.goto(`${origin}${gamePath}`);
+  await expectReady(page);
+  await page.locator('[data-ui="hero"] [data-action="toggle-action-menu"]').click();
+  const surface = page.locator('[data-ui="hero"] [data-ui="action-menu-surface"]');
+  await expect(page.getByTestId("create-another-game")).toBeFocused();
+  await expect(page.getByTestId("delete-game")).toBeDisabled();
+  await expect(page.getByTestId("delete-game")).toHaveAttribute("aria-describedby", "game-delete-lock-reason");
+  await expect(page.locator("#game-delete-lock-reason")).toBeVisible();
+  await expectActionSurfaceFits(page, surface);
+  await page.keyboard.press("Escape");
+  expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
 

@@ -122,8 +122,13 @@ announced twice by separate status and alert surfaces.
 Use a restrained shared header with home/account entry and actual breadcrumb
 names. Do not copy the prototype's future Home/Games/Performance navigation.
 Desktop lists use aligned columns; phone rows prioritise the main name/date link
-over rare actions. Put destructive actions in a labelled More/management surface
-while preserving existing confirmations and disabled reasons.
+over rare actions. Rare actions use a vertical-three-dot kebab button opening a
+compact, plain action surface, never a More/Manage accordion. Apply this across
+league/season/game headers, season/game rows and player management. The labelled
+native button and grouped native actions preserve confirmations and disabled
+reasons; only one surface opens, without changing row geometry. Escape restores
+trigger focus; outside interaction and Tab retain normal navigation. Keep
+informational and form disclosures unchanged.
 
 Use stable Overview and Teams destinations, and Results once finished. Scoring
 is an explicit task with Back to game, not a state-changing fourth tab. Default
@@ -188,8 +193,9 @@ a device identity model or promise isolation between copies of one session.
 | 2 | codex/auth-sign-out | M1-13 (#114) | Complete current-session logout before shell integration. |
 | 3 | codex/design-organiser-shell | UX-02 | Home/account, league/season lists and focused forms. |
 | 4 | codex/design-match-roster | UX-03 | Match/navigation, existing viewer reads, roster and transfers. |
-| 5 | codex/design-live-scoring | UX-04 | Clock/scoreboard, goal entry, log and mutation feedback. |
-| 6 | codex/design-results-entry | UX-05, UX-06 | Authenticated report, existing entry journeys, final acceptance. |
+| 5 | codex/design-action-menus | UX-07 | Consistent kebab action surfaces across headers, lists and player management, following AJ's QA feedback. |
+| 6 | codex/design-live-scoring | UX-04 | Clock/scoreboard, goal entry, log and mutation feedback. |
+| 7 | codex/design-results-entry | UX-05, UX-06 | Authenticated report, existing entry journeys, final acceptance. |
 
 The first branch targets main; each child targets its predecessor. Each head must
 work independently and complete review before child implementation begins. Link

@@ -16,6 +16,7 @@ import {
   renderStatusPage,
 } from "../ui/layout.js";
 import {
+  renderActionMenu,
   renderButton,
   renderDataTable,
   renderIcon,
@@ -190,6 +191,98 @@ test("primitives render expected semantic and data-ui hooks", () => {
   assert.throws(() => renderIcon("missing-icon" as never), /Unsupported icon/);
 });
 
+test("action menu primitive renders a hidden native action group with an escaped labelled kebab", () => {
+  const id = 'actions-"<&';
+  const label = 'Actions for A < B & "friends"';
+  const dom = new JSDOM(renderActionMenu({
+    id,
+    label,
+    content: renderButton("Delete", "danger", { type: "button", "data-action": "delete-example" }),
+    attributes: { "data-management-only": "", hidden: "", "data-entity-name": label },
+  }));
+  try {
+    const document = dom.window.document;
+    const wrapper = document.querySelector('[data-ui="action-menu"]');
+    const trigger = wrapper?.querySelector('[data-action="toggle-action-menu"]');
+    const surface = document.getElementById(id);
+    assert(wrapper instanceof dom.window.HTMLDivElement);
+    assert(trigger instanceof dom.window.HTMLButtonElement);
+    assert(surface instanceof dom.window.HTMLDivElement);
+    assert.equal(wrapper.hidden, true);
+    assert.equal(wrapper.hasAttribute("data-management-only"), true);
+    assert.equal(wrapper.getAttribute("data-entity-name"), label);
+    assert.equal(trigger.type, "button");
+    assert.equal(trigger.getAttribute("aria-label"), label);
+    assert.equal(trigger.getAttribute("title"), label);
+    assert.equal(trigger.getAttribute("aria-controls"), surface.id);
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(trigger.textContent, "");
+    assert.equal(trigger.querySelector('[data-icon="ellipsis-vertical"]')?.getAttribute("aria-hidden"), "true");
+    assert.equal(surface.hidden, true);
+    assert.equal(surface.getAttribute("popover"), "manual");
+    assert.equal(surface.getAttribute("role"), "group");
+    assert.equal(surface.getAttribute("aria-label"), label);
+    assert.equal(surface.tabIndex, -1);
+    assert.equal(surface.parentElement, wrapper, "actions retain their delegated event owner");
+    assert.equal(surface.querySelector('[data-action="delete-example"]')?.textContent, "Delete");
+    assert.equal(document.querySelectorAll('details, summary, [role="menu"], [role="menuitem"], [aria-haspopup]').length, 0);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("league, season and game headers expose deletion only inside closed permission-gated action popovers", () => {
+  const pages = [
+    { html: renderLeaguePage("/api", "league"), id: "league-actions", action: "delete-league", label: "Actions for this league" },
+    { html: renderSeasonPage("/api", "season", "league"), id: "season-actions", action: "delete-season", label: "Actions for this season" },
+    { html: renderSeasonPage("/api", "season"), id: "season-actions", action: "delete-season", label: "Actions for this season" },
+    { html: renderGamePage("/api", { gameId: "game" }), id: "game-actions", action: "delete-game", label: "Actions for this game" },
+  ];
+  for (const { html, id, action, label } of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      const surface = document.getElementById(id);
+      const wrapper = surface?.closest('[data-ui="action-menu"]');
+      const trigger = wrapper?.querySelector('[data-action="toggle-action-menu"]');
+      const deletion = document.querySelector(`[data-action="${action}"]`);
+      assert(surface instanceof dom.window.HTMLDivElement);
+      assert(wrapper instanceof dom.window.HTMLDivElement);
+      assert(trigger instanceof dom.window.HTMLButtonElement);
+      assert(deletion instanceof dom.window.HTMLButtonElement);
+      assert.equal(document.querySelectorAll(`[id="${id}"]`).length, 1);
+      assert.equal(document.querySelectorAll(`[data-action="${action}"]`).length, 1);
+      assert.equal(wrapper.hidden, true);
+      assert.equal(wrapper.hasAttribute("data-management-only") || wrapper.getAttribute("data-game-capability") === "admin", true);
+      assert.equal(wrapper.closest('[data-ui="hero"]') !== null, true);
+      assert.equal(surface.hidden, true);
+      assert.equal(surface.getAttribute("role"), "group");
+      assert.equal(surface.getAttribute("aria-label"), label);
+      assert.equal(trigger.getAttribute("aria-label"), label);
+      assert.equal(trigger.getAttribute("aria-controls"), id);
+      assert.equal(trigger.getAttribute("aria-expanded"), "false");
+      assert.equal(trigger.textContent?.trim(), "");
+      assert.equal(trigger.querySelector('[data-icon="ellipsis-vertical"][aria-hidden="true"]') !== null, true);
+      assert.equal(deletion.closest('[data-ui="action-menu-surface"]'), surface);
+      assert.equal(deletion.disabled, true);
+      assert.equal(deletion.closest("details"), null);
+      assert.equal(document.querySelectorAll('[data-ui="more-actions"], [role="menu"], [role="menuitem"]').length, 0);
+      if (id === "game-actions") {
+        assert.deepEqual([...surface.querySelectorAll("button, a")].map((control) => control.textContent?.trim()), ["Create another game", "Delete game"]);
+        assert.equal(document.getElementById("game-title")?.parentElement, wrapper.parentElement);
+        for (const selector of ['[data-ui="reference-ids"]', '[data-ui="join-disclosure"]', '#goal-assists-dropdown']) {
+          // Informational and form disclosures retain native details semantics.
+          const disclosure = document.querySelector(selector);
+          assert(disclosure instanceof dom.window.HTMLDetailsElement);
+          assert.equal(disclosure.open, false);
+        }
+      }
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
 test("setup home page includes stepwise setup panels and setup-flow script", () => {
   const html = renderSetupHomePage("https://qa-api.3fc.football");
 
@@ -273,12 +366,14 @@ test("organiser shells use real navigation, intentional forms and no authority b
       for (const control of document.querySelectorAll("button[data-management-only]")) {
         assert.equal((control as HTMLButtonElement).disabled, true);
       }
-      const more = document.querySelector('[data-ui="more-actions"]');
-      if (more) {
-        assert.equal(more.hasAttribute("hidden"), true);
-        assert.equal(more.querySelector("summary")?.textContent, "More");
-        assert.equal(more.querySelectorAll('[data-variant="danger"]').length, 1);
+      const actions = document.querySelector('[data-ui="action-menu"]');
+      if (actions) {
+        assert.equal(actions.hasAttribute("hidden"), true);
+        assert.equal(actions.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded"), "false");
+        assert.equal(actions.querySelector('[data-ui="action-menu-surface"]')?.hasAttribute("hidden"), true);
+        assert.equal(actions.querySelectorAll('[data-variant="danger"]').length, 1);
       }
+      assert.equal(document.querySelectorAll('[data-ui="more-actions"], details:has([data-action^="delete-"])').length, 0);
       for (const reference of document.querySelectorAll('[data-ui="reference-id"]')) {
         assert.equal(reference.closest("details")?.hasAttribute("open"), false);
       }
@@ -544,8 +639,8 @@ test("game page retains game, roster and scoring hooks within the readable match
   assert.match(html, /data-testid="delete-game"[^>]*disabled="disabled"/);
   assert.match(html, /id="game-delete-lock-reason" hidden/);
   assert.match(html, /data-testid="create-another-game"/);
-  assert.match(html, /data-ui="more-actions" data-game-capability="admin" aria-label="Game actions" hidden/);
-  assert.ok(html.indexOf('aria-label="Game actions"') < html.indexOf('data-testid="setup-flow-root"'));
+  assert.match(html, /data-ui="action-menu" data-game-capability="admin" hidden/);
+  assert.ok(html.indexOf('aria-label="Actions for this game"') < html.indexOf('data-testid="setup-flow-root"'));
   assert.equal((html.match(/data-action="delete-game"/g) ?? []).length, 1);
   assert.match(html, /data-testid="player-create-row"/);
   assert.doesNotMatch(html, /data-ui="inline-input-actions"/);
@@ -668,15 +763,15 @@ test("match destinations are stable links and scoring is a separate permitted ta
     assert.equal(score.hidden, true);
     assert.equal(score.disabled, true);
 
-    const more = document.querySelector('[data-ui="more-actions"]');
-    assert(more instanceof dom.window.HTMLDetailsElement);
-    assert.equal(more.hidden, true);
-    assert.equal(more.open, false);
-    assert.equal(more.querySelector("summary")?.textContent, "More");
-    assert.equal(more.querySelector('[data-testid="delete-game"]') !== null, true);
-    assert.equal(more.querySelector('[data-testid="create-another-game"]') !== null, true);
-    assert.equal(more.querySelector("#game-delete-lock-reason")?.classList.contains("sr-only"), false);
-    assert.equal(more.querySelector("#game-delete-lock-reason")?.textContent, "Finished games can’t be deleted.");
+    const actions = document.querySelector('[data-ui="action-menu"]');
+    assert(actions instanceof dom.window.HTMLDivElement);
+    assert.equal(actions.hidden, true);
+    assert.equal(actions.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded"), "false");
+    assert.equal(actions.querySelector('[data-ui="action-menu-surface"]')?.hasAttribute("hidden"), true);
+    assert.equal(actions.querySelector('[data-testid="delete-game"]') !== null, true);
+    assert.equal(actions.querySelector('[data-testid="create-another-game"]') !== null, true);
+    assert.equal(actions.querySelector("#game-delete-lock-reason")?.classList.contains("sr-only"), false);
+    assert.equal(actions.querySelector("#game-delete-lock-reason")?.textContent, "Finished games can’t be deleted.");
 
     const finish = document.querySelectorAll('[data-testid="finish-game"]');
     assert.equal(finish.length, 1);

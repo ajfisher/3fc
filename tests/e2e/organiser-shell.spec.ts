@@ -2,6 +2,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { renderLeaguePage, renderSeasonPage, renderSetupHomePage } from "../../app/dist/ui/layout.js";
+import { expectActionSurfaceFits } from "./action-menu-helpers.js";
 
 // Real production markup, CSS, icons and controller; only transport/data is fake.
 // No QA requests, email, credentials, real games or local API workers are used.
@@ -21,7 +22,8 @@ const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.j
 
 type Role = "admin" | "scorekeeper" | "viewer" | "unknown";
 type FixtureRequest = { method: string; path: string; body: Record<string, unknown> | null; key?: string };
-type FixtureOptions = { role?: Role; empty?: boolean; delayAuthority?: boolean; parentUnavailable?: boolean; dynamicSeason?: boolean };
+type FixtureSeason = { leagueId: string; seasonId: string; name: string; slug: string | null; startsOn: string | null; endsOn: string | null };
+type FixtureOptions = { role?: Role; empty?: boolean; delayAuthority?: boolean; parentUnavailable?: boolean; dynamicSeason?: boolean; largeGameList?: boolean };
 
 function deferred() {
   let release: () => void = () => {};
@@ -38,7 +40,7 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
     leagueId, name: leagueName, slug: leagueId, createdByUserId: "fictional-organiser",
     createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
   };
-  const seasons = [
+  const seasons: FixtureSeason[] = [
     { leagueId, seasonId, name: seasonName, slug: seasonId, startsOn: "2026-09-06", endsOn: "2027-02-28" },
     { leagueId, seasonId: "fixture-dates-pending", name: "Sunday Community Season — Dates To Be Announced", slug: null, startsOn: null, endsOn: null },
   ];
@@ -49,6 +51,10 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
     { gameId: "fixture-live", leagueId, seasonId, gameStartTs: "2026-09-05T23:30:00.000Z", status: "live" },
     { gameId: "fixture-finished-newer", leagueId, seasonId, gameStartTs: "2026-08-30T23:30:00.000Z", status: "finished" },
   ];
+  if (options.largeGameList) games.push(...Array.from({ length: 20 }, (_, index) => ({
+    gameId: `fixture-later-game-${index}`, leagueId, seasonId,
+    gameStartTs: new Date(Date.UTC(2026, 9, 4 + index * 7, 0, 30)).toISOString(), status: "scheduled",
+  })));
   const createdLeagues = new Map<string, typeof league>();
   const createdSeasons = new Map<string, (typeof seasons)[number]>();
 
@@ -259,13 +265,16 @@ for (const colorScheme of ["light", "dark"] as const) {
       await expect(page.getByTestId("delete-league")).toBeHidden();
       await expectGeometry(page);
       if (shouldCapture) await capture(page, testInfo, `league-${colorScheme}-${width}`);
-      const more = page.locator('[data-ui="header-actions"] [data-ui="more-actions"] > summary');
+      const more = page.locator('[data-ui="header-actions"] [data-action="toggle-action-menu"]');
       await more.focus();
       await page.keyboard.press("Enter");
       await expect(page.getByTestId("delete-league")).toBeVisible();
+      await expect(page.getByTestId("delete-league")).toBeFocused();
+      await expectActionSurfaceFits(page, page.locator('[data-ui="header-actions"] [data-ui="action-menu-surface"]'));
       await expectGeometry(page);
-      await page.keyboard.press("Enter");
+      await page.keyboard.press("Escape");
       await expect(page.getByTestId("delete-league")).toBeHidden();
+      await expect(more).toBeFocused();
 
       await seasonLink.click();
       await expectSharedShell(page, seasonName);
@@ -290,16 +299,26 @@ for (const colorScheme of ["light", "dark"] as const) {
       if (shouldCapture) await capture(page, testInfo, `season-${colorScheme}-${width}`);
 
       const finishedRow = completed.locator("tbody tr").first();
-      const finishedMore = finishedRow.locator("summary");
+      const finishedMore = finishedRow.locator('[data-action="toggle-action-menu"]');
+      await finishedMore.scrollIntoViewIfNeeded();
+      const rowHeight = (await finishedRow.boundingBox())!.height;
+      const dateWidth = (await finishedRow.locator("td").first().boundingBox())!.width;
       await finishedMore.focus();
       await page.keyboard.press("Enter");
-      await expect(finishedRow.locator("button")).toBeVisible();
-      await expect(finishedRow.locator("button")).toBeDisabled();
+      const finishedDelete = finishedRow.locator('[data-ui="action-menu-surface"] button');
+      await expect(finishedDelete).toBeVisible();
+      await expect(finishedDelete).toBeDisabled();
       await expect(finishedRow.getByText(/Finished games (?:can’t|cannot) be deleted\./)).toBeVisible();
+      const finishedSurface = finishedRow.locator('[data-ui="action-menu-surface"]');
+      await expect(finishedSurface).toBeFocused();
+      await expectActionSurfaceFits(page, finishedSurface);
+      expect((await finishedRow.boundingBox())!.height).toBeCloseTo(rowHeight, 1);
+      expect((await finishedRow.locator("td").first().boundingBox())!.width).toBeCloseTo(dateWidth, 1);
       await expectGeometry(page);
-      if (width === 320 && colorScheme === "dark") await capture(page, testInfo, "season-finished-more-dark-320");
-      await page.keyboard.press("Enter");
-      await expect(finishedRow.locator("button")).toBeHidden();
+      if (width === 320 && colorScheme === "dark") await capture(page, testInfo, "season-finished-action-menu-dark-320");
+      await page.keyboard.press("Escape");
+      await expect(finishedDelete).toBeHidden();
+      await expect(finishedMore).toBeFocused();
 
       const createGame = page.getByTestId("toggle-create-game");
       await createGame.focus();
@@ -340,11 +359,105 @@ test("simulated 200% CSS zoom preserves organiser reading and actions", async ({
     await expect(page.getByRole("table", { name: surface.table, exact: true })).toBeVisible();
     await page.locator("html").evaluate(element => { element.style.zoom = "2"; });
     await expectGeometry(page);
+    const trigger = page.locator('[data-action="toggle-action-menu"]').first();
+    if (await trigger.count()) {
+      await trigger.click();
+      await expectActionSurfaceFits(page, page.locator('[data-ui="action-menu-surface"]:visible'));
+      await expectGeometry(page);
+      await page.keyboard.press("Escape");
+      await expect(trigger).toBeFocused();
+    }
   }
   await page.getByTestId("toggle-create-game").click();
   await expect(page.getByLabel("Game date", { exact: true })).toBeFocused();
   await expectGeometry(page);
   await capture(page, testInfo, "season-simulated-css-zoom-200-dark-768");
+  expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("game-list action menus keep rows stable and dismiss without stealing destination focus", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const fixture = await installFixture(page, { largeGameList: true });
+  await page.goto(`${origin}${seasonPath}`);
+  const rows = page.getByRole("table", { name: "Upcoming games", exact: true }).locator("tbody tr");
+  const first = rows.first();
+  const trigger = first.locator('[data-action="toggle-action-menu"]');
+  await expect(trigger).toBeVisible();
+  await trigger.scrollIntoViewIfNeeded();
+  const height = (await first.boundingBox())!.height;
+  await trigger.locator('[data-icon="ellipsis-vertical"]').click();
+  const surface = first.locator('[data-ui="action-menu-surface"]');
+  const action = surface.locator('[data-action="delete-game"]');
+  await expect(action).toBeFocused();
+  await expectActionSurfaceFits(page, surface);
+  expect((await first.boundingBox())!.height).toBeCloseTo(height, 1);
+  await capture(page, testInfo, "game-list-kebab-open-dark-320");
+
+  const secondTrigger = rows.nth(1).locator('[data-action="toggle-action-menu"]');
+  await secondTrigger.click();
+  await expect(surface).toBeHidden();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator('[data-ui="action-menu-surface"]:visible')).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(secondTrigger).toBeFocused();
+
+  await trigger.click();
+  await page.keyboard.press("Shift+Tab");
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(first.locator("a")).toBeFocused();
+  await expect(surface).toBeHidden();
+  await trigger.click();
+  await page.getByTestId("toggle-create-game").click();
+  await expect(surface).toBeHidden();
+  await expect(page.getByLabel("Game date", { exact: true })).toBeFocused();
+  await page.getByRole("form", { name: "Create game", exact: true }).getByRole("button", { name: "Cancel", exact: true }).click();
+
+  // Native confirmation cancellation must not send a deletion or leave focus
+  // on a hidden action. The fixture deliberately implements no DELETE route.
+  let confirmations = 0;
+  page.on("dialog", async dialog => { confirmations += 1; await dialog.dismiss(); });
+  await trigger.click();
+  await action.locator('[data-ui="icon"]').click();
+  await expect(surface).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(confirmations).toBe(1);
+  await trigger.click();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect(surface).toBeHidden();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  // The detached popup must not follow the viewport after its row leaves view.
+  const scrolledTrigger = (await trigger.boundingBox())!;
+  expect(scrolledTrigger.y + scrolledTrigger.height).toBeLessThanOrEqual(0);
+  expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("action surfaces retain viewport positioning without native Popover methods", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.addInitScript(() => {
+    Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+    Object.defineProperty(HTMLElement.prototype, "hidePopover", { configurable: true, value: undefined });
+  });
+  const fixture = await installFixture(page, { largeGameList: true });
+  await page.goto(`${origin}${seasonPath}`);
+  const row = page.getByRole("table", { name: "Upcoming games", exact: true }).locator("tbody tr").nth(10);
+  const trigger = row.locator('[data-action="toggle-action-menu"]');
+  await trigger.scrollIntoViewIfNeeded();
+  const height = (await row.boundingBox())!.height;
+  await trigger.click();
+  await expectActionSurfaceFits(page, row.locator('[data-ui="action-menu-surface"]'));
+  expect((await row.boundingBox())!.height).toBeCloseTo(height, 1);
+  await expectGeometry(page);
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  await page.locator("html").evaluate(element => { element.style.zoom = "2"; });
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+  await expectActionSurfaceFits(page, row.locator('[data-ui="action-menu-surface"]'));
+  await page.keyboard.press("Escape");
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

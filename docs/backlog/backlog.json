@@ -322,6 +322,7 @@
         "UX-01",
         "UX-02",
         "UX-03",
+        "UX-07",
         "UX-04",
         "UX-05",
         "UX-06"
@@ -2156,6 +2157,52 @@
       }
     },
     {
+      "id": "UX-07",
+      "title": "Replace management accordions with consistent kebab action menus",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-03"],
+      "summary": "Apply AJ's QA feedback across league, season, game and player-management actions using compact kebab-triggered surfaces, not expanding rows.",
+      "scope": [
+        "Shared locally generated Lucide vertical-ellipsis trigger and labelled action surface in all management headers, season/game list rows and player-management actions.",
+        "Only one surface open, predictable focus, Escape, outside interaction and normal keyboard traversal; clamp or flip inside the available viewport without row reflow.",
+        "Preserve deletion confirmations, pending request ownership, finished/permission locks, surviving-row focus and promotion semantics."
+      ],
+      "outOfScope": [
+        "Informational Reference IDs, Join game, Additional options, assists and history disclosures remain unchanged.",
+        "No API, permission, scoring, identity, dependency or deployment changes; no merge or production release."
+      ],
+      "acceptanceCriteria": [
+        "No More or Manage action accordion remains; each applicable surface uses an entity-labelled kebab button and text-labelled actions.",
+        "Opening actions does not expand a row or displace its name/date; surfaces remain usable at 320/390/430/768/desktop widths, both themes and enlarged text.",
+        "Keyboard and icon-child activation work once; Escape returns focus, outside interaction keeps destination focus, and only one surface opens.",
+        "Cancel, failed/uncertain and committed deletion preserve existing behaviour and focus ownership; disabled-only surfaces expose their reason accessibly.",
+        "Unknown or restricted actors see no actionable flash; current game locks and league-wide player promotion checks remain intact."
+      ],
+      "testScenarios": [
+        "Server/static/dynamic rendering parity and manifest icon validation; computed hidden state and no removed accordion markup.",
+        "Pointer, Enter/Space, nested icon clicks, Tab/Shift+Tab, Escape, outside focus, viewport-edge flipping and one-open behaviour.",
+        "Cancelled/successful/failed deletion, surviving-row redraw, external focus movement and pending request latches.",
+        "Finished-only menus, actor variants, player promotion, long labels and unchanged informational disclosures.",
+        "Built-asset fictional browser matrix and exact-head isolated signed-in QA without mutating AJ's games."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review of preserved action ownership, permissions, deletion and promotion boundaries.",
+        "Current-head local evidence, accepted exact-head GitHub Codex review, serialized CI/QA and review:ready before live-scoring child implementation; no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "planned",
+        "githubIssue": 147,
+        "branch": "codex/design-action-menus",
+        "notes": ["Inserted after match/roster and before live scoring following AJ's QA feedback; existing issue IDs and partial-work boundaries remain unchanged."]
+      }
+    },
+    {
       "id": "UX-04",
       "title": "Redesign focused live scoring and goal feedback",
       "storyPoints": 8,
@@ -2169,7 +2216,7 @@
         "priority:P1"
       ],
       "dependsOn": [
-        "UX-03"
+        "UX-07"
       ],
       "summary": "Keep timing, scores and reliable goal entry usable on a phone.",
       "scope": [
@@ -2280,6 +2327,7 @@
         "M1-13",
         "UX-02",
         "UX-03",
+        "UX-07",
         "UX-04",
         "UX-05"
       ],
