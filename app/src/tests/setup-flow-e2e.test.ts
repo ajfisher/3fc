@@ -5665,6 +5665,127 @@ test("match player native submit latches SVG clicks and retries the frozen origi
   assert.equal(input.value, "");
 });
 
+for (const code of ["game_finished", "game_state_changed"]) {
+  test(`match player ${code} rejection releases the frozen attempt without losing the draft`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "game-player-conflict", role: "scorekeeper" });
+    const original = createMockFetch(apiState);
+    const requests: Array<{ body: string; key: string | null }> = [];
+    const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+      const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+      if (path.endsWith("/players") && init.method === "POST") {
+        requests.push({ body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+        // The real endpoint persists business conflicts. Reusing this key would
+        // replay the same rejection forever, even if the current state permits a new request.
+        if (requests.at(-1)?.key === requests[0].key) {
+          return createJsonResponse(409, { error: "conflict", code, message: "Game state changed." });
+        }
+      }
+      return original(input, init);
+    };
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-player-conflict" }), url: "http://localhost:3000/games/game-player-conflict#teams", scriptFile: "setup-flow.js", apiState, fetch });
+    const form = page.document.getElementById("player-create-form");
+    const input = page.document.getElementById("player-nickname");
+    assert(form instanceof page.window.HTMLFormElement);
+    assert(input instanceof page.window.HTMLInputElement);
+    dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]') as HTMLButtonElement);
+    input.value = "Original draft";
+    input.focus();
+    dispatchSubmit(form);
+    await flushAsync();
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0].key);
+    assert.equal(input.value, "Original draft");
+    assert.equal(page.document.activeElement, input);
+    assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /unconfirmed|original nickname/);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Game state changed/);
+    input.value = "Corrected draft";
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    dispatchSubmit(form);
+    await flushAsync();
+    assert.equal(requests.length, 2);
+    assert.notEqual(requests[1].key, requests[0].key);
+    assert.notEqual(JSON.parse(requests[1].body).playerId, JSON.parse(requests[0].body).playerId);
+    assert.equal(JSON.parse(requests[1].body).nickname, "Corrected draft");
+    assert.equal([...apiState.players.values()].filter(player => player.nickname === "Original draft").length, 0);
+    assert.equal([...apiState.players.values()].filter(player => player.nickname === "Corrected draft").length, 1);
+  });
+}
+
+for (const code of ["idempotency_in_progress", "idempotency_conflict", "unknown_conflict", "malformed_conflict"]) {
+  test(`match player ${code} retains the original request for uncertain recovery`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "game-player-pending", role: "admin" });
+    const original = createMockFetch(apiState);
+    const requests: Array<{ body: string; key: string | null }> = [];
+    const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+      const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+      if (path.endsWith("/players") && init.method === "POST") {
+        requests.push({ body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+        // Idempotency categories are in error, not the business-conflict code field.
+        return createJsonResponse(409, { error: code, ...(code === "malformed_conflict" ? { code: "game_finished" } : {}), message: "Request conflict." });
+      }
+      return original(input, init);
+    };
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-player-pending" }), url: "http://localhost:3000/games/game-player-pending#teams", scriptFile: "setup-flow.js", apiState, fetch });
+    const form = page.document.getElementById("player-create-form");
+    const input = page.document.getElementById("player-nickname");
+    assert(form instanceof page.window.HTMLFormElement);
+    assert(input instanceof page.window.HTMLInputElement);
+    input.value = "Original draft";
+    dispatchSubmit(form);
+    await flushAsync();
+    input.value = "Later draft";
+    dispatchSubmit(form);
+    await flushAsync();
+    assert.equal(requests.length, 2);
+    assert.ok(requests[0].key);
+    assert.deepEqual(requests[1], requests[0]);
+    assert.equal(input.value, "Later draft");
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed/);
+  });
+}
+
+test("match player business conflict after response loss does not discard the earlier unresolved request", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "game-player-lost-conflict", role: "admin" });
+  const original = createMockFetch(apiState);
+  const requests: Array<{ body: string; key: string | null }> = [];
+  const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+    if (path.endsWith("/players") && init.method === "POST") {
+      requests.push({ body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+      if (requests.length === 1) {
+        await original(input, init); // Commit before losing the response.
+        return createJsonResponse(503, { message: "Response unavailable." });
+      }
+      return createJsonResponse(409, { error: "conflict", code: "game_finished", message: "Game finished." });
+    }
+    return original(input, init);
+  };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-player-lost-conflict" }), url: "http://localhost:3000/games/game-player-lost-conflict#teams", scriptFile: "setup-flow.js", apiState, fetch });
+  const form = page.document.getElementById("player-create-form");
+  const input = page.document.getElementById("player-nickname");
+  assert(form instanceof page.window.HTMLFormElement);
+  assert(input instanceof page.window.HTMLInputElement);
+  input.value = "Committed draft";
+  dispatchSubmit(form);
+  await flushAsync();
+  input.value = "Later draft";
+  for (let retry = 0; retry < 2; retry += 1) {
+    dispatchSubmit(form);
+    await flushAsync();
+  }
+  assert.equal(requests.length, 3);
+  assert.ok(requests[0].key);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.deepEqual(requests[2], requests[0]);
+  assert.equal(input.value, "Later draft");
+  assert.equal([...apiState.players.values()].filter(player => player.nickname === "Committed draft").length, 1);
+  assert.equal([...apiState.players.values()].filter(player => player.nickname === "Later draft").length, 0);
+  assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed/);
+});
+
 test("match player committed addition survives refresh failure and cancellation preserves the next draft", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "game-player-committed", role: "admin" });

@@ -20,6 +20,7 @@ participation-based home or performance destination is introduced.
 | QA / keyboard | Promotion can destroy its focused button during redraw. | Preserve operation focus ownership and restore a surviving Manage summary or player card without stealing later focus. Five regressions cover promotion, co-organiser, rejection, committed-but-unconfirmed and outside focus. |
 | QA / data presentation | Starting or finishing a game must update Overview, not only the scoring/result panels. | Refresh read-only overview fields after confirmed state changes without writing edit inputs. Scheduled→Live→Finished assertions passed. |
 | Root / restricted copy | A finished scorekeeper must not be told to choose an unavailable correction action. | Only an organiser receives that instruction; other actors are directed to ask a league organiser. The finished smoke retains role restrictions and checks this copy. |
+| GitHub Codex / retry ownership | Persisted player-creation business conflicts were treated as uncertain writes, permanently replaying the rejected request. | Player creation alone recognises `conflict / game_finished` and `conflict / game_state_changed` as definitive when no earlier attempt was uncertain. Retain the editable draft, retire the rejected request, and give the next explicit submit a fresh identity. In-progress, idempotency-conflict, malformed/unknown409 and all later rejections following uncertainty retain the original body/ID/key. Seven focused regressions and the complete200-test interaction file passed. |
 
 Independent architecture/security and QA/engineering re-reviews closed the
 material source findings. Root owns validation; review agents launch no tests.
@@ -39,7 +40,8 @@ packet, not inferred from a local pass.
 - `setup-flow-e2e.test.ts`: role boundaries, scoped names, navigation/history,
   roster identity/provenance, mutation ownership, stale reads, draft recovery
   and explicit finished corrections. The complete interaction file passed
-  193 tests after each diagnosed failure was checked in isolation.
+  193 tests after each diagnosed failure was checked in isolation; the subsequent
+  Codex conflict-recovery fix raises that to200 passing tests.
 - `tests/e2e/match-roster.spec.ts`: built production assets with intercepted
   fictional data; five widths, two themes, role variants, long/duplicate names,
   capped candidate search, native entry, transfer recovery and enlarged text.

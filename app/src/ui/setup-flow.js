@@ -1181,6 +1181,11 @@
       const message = result.body?.message || result.body?.error || `Request failed with status ${result.status}.`;
       const error = new Error(message);
       error.statusCode = result.status;
+      // Keep the machine category separate from user-facing copy. Callers can
+      // distinguish a known state rejection from an in-progress idempotent write.
+      error.responseCode = typeof result.body?.code === "string" ? result.body.code
+        : typeof result.body?.error === "string" ? result.body.error : null;
+      error.responseError = typeof result.body?.error === "string" ? result.body.error : null;
       throw error;
     }
 
@@ -4856,7 +4861,13 @@
         } catch (error) {
           if (committed) {
             showError("Player added. The latest players couldn’t be loaded. Reload to check them.", { includesOutcome: true });
-          } else if (isDefinitiveRequestRejection(error) && error.statusCode !== 409 && !playerCreateAttempt.uncertain) {
+          } else if (isDefinitiveRequestRejection(error) &&
+            (error.statusCode !== 409 || (error.responseError === "conflict" &&
+              ["game_finished", "game_state_changed"].includes(error.responseCode))) &&
+            !playerCreateAttempt.uncertain) {
+            // These state conflicts are persisted rejections, not pending writes.
+            // An earlier lost response still needs its original request retained;
+            // a later rejection cannot establish that the first attempt failed.
             playerCreateAttempt = null;
             showError(error.message);
             setStatus("Player could not be added.", "error");
