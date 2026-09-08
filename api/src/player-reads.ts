@@ -29,12 +29,22 @@ export function unavailableJoinPlayerContext() {
 
 // Authentication is enforced by each route adapter. Code + exact membership
 // supplies display context only; this function cannot claim or grant access.
-export async function readJoinPlayerContext(repository: PlayerReadRepository, rawCode: string, rawPlayerId: string) {
+export async function readJoinPlayerContext(repository: PlayerReadRepository, rawCode: string, rawQueryString: string) {
   let joinCode: string;
   let playerId: string;
   try {
     joinCode = normalizeJoinCodePathParam(decodeURIComponent(rawCode));
-    playerId = decodeURIComponent(rawPlayerId);
+    // Keep opaque identity out of gateway-decoded paths. Decode the sole query
+    // value exactly once; URLSearchParams-style replacement of malformed UTF-8
+    // must never silently substitute a different stored player identity.
+    const fields = rawQueryString.split("&");
+    if (fields.length !== 1) throw new Error("invalid_context");
+    const separator = fields[0].indexOf("=");
+    if (separator < 0 || decodeURIComponent(fields[0].slice(0, separator).replaceAll("+", " ")) !== "playerId") {
+      throw new Error("invalid_context");
+    }
+    playerId = decodeURIComponent(fields[0].slice(separator + 1).replaceAll("+", " "));
+    encodeURIComponent(playerId); // Reject a nonrepresentable raw Unicode value.
     if (!isJoinCodePathParamValid(joinCode) || !playerId.trim()) throw new Error("invalid_context");
   } catch {
     return { statusCode: 400, payload: { error: "bad_request", message: "This player link is invalid." } };

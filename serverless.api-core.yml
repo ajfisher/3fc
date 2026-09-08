@@ -113,10 +113,10 @@ functions:
           path: /v1/join/{joinCode}
       - httpApi:
           method: GET
-          path: /v1/join/{joinCode}/players/{playerId+}
+          path: /v1/join/{joinCode}/player-context
       - httpApi:
           method: OPTIONS
-          path: /v1/join/{joinCode}/players/{playerId+}
+          path: /v1/join/{joinCode}/player-context
       - httpApi:
           method: GET
           path: /v1/leagues

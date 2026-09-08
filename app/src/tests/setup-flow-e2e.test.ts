@@ -774,10 +774,20 @@ function createMockFetch(state: MockApiState) {
     }
 
     const claimPlayerMatch = path.match(/^\/v1\/players\/([^/]+)\/claim$/);
-    const joinContextMatch = path.match(/^\/v1\/join\/([^/]+)\/players\/([^/]+)$/);
+    const joinContextMatch = path.match(/^\/v1\/join\/([^/]+)\/player-context$/);
     if (method === "GET" && joinContextMatch) {
       const joinCode = decodeURIComponent(joinContextMatch[1]).trim().toUpperCase();
-      const playerId = decodeURIComponent(joinContextMatch[2]);
+      let playerId: string;
+      try {
+        const fields = target.search.slice(1).split("&");
+        if (fields.length !== 1) throw new Error("invalid_context_query");
+        const separator = fields[0].indexOf("=");
+        if (separator < 0 || decodeURIComponent(fields[0].slice(0, separator).replace(/\+/g, " ")) !== "playerId") throw new Error("invalid_context_query");
+        playerId = decodeURIComponent(fields[0].slice(separator + 1).replace(/\+/g, " "));
+        if (!playerId.trim()) throw new Error("invalid_context_query");
+      } catch {
+        return createJsonResponse(400, { error: "bad_request", message: "This player link is invalid." });
+      }
       const game = [...state.games.values()].find((candidate) => candidate.joinCode === joinCode);
       const player = state.players.get(playerId);
       if (!game || !player || !state.gamePlayers.has(`${game.gameId}:${playerId}`)) {
@@ -13169,11 +13179,12 @@ function ux09PlayerRows(page: Awaited<ReturnType<typeof bootPage>>, selector: st
   return [...page.document.querySelectorAll(selector)].filter(row => row.getAttribute("data-player-id") === playerId);
 }
 
-for (const identity of ["duplicate-name", "backslash", "long", "reserved"] as const) {
+for (const identity of ["duplicate-name", "backslash", "long", "reserved", "literal-percent", "plus-space"] as const) {
   test(`ux09 returned player lookup preserves exact ${identity} identity without automatic claiming`, async () => {
     const apiState = createMockApiState(); seedEntryInvite(apiState);
     const playerId = identity === "backslash" ? "returned\\player" : identity === "long" ? "returned-" + "x".repeat(600)
-      : identity === "reserved" ? "returned/player?#%" : "same-name-second";
+      : identity === "reserved" ? "returned/player?#%" : identity === "literal-percent" ? "returned%2Fplayer%ZZ"
+        : identity === "plus-space" ? "returned+player name" : "same-name-second";
     seedUx09Registration(apiState, "invite-entry", playerId, "Ari");
     const base = createMockFetch(apiState); const reads: string[] = []; const writes: string[] = [];
     const page = await bootPage({
@@ -13181,15 +13192,15 @@ for (const identity of ["duplicate-name", "backslash", "long", "reserved"] as co
       url: "http://localhost:3000/join?code=abcd2345&playerId=" + encodeURIComponent(playerId),
       scriptFile: "setup-flow.js", apiState,
       fetch: async (input, init = {}) => {
-        const path = new URL(String(input)).pathname;
-        if (path.startsWith("/v1/join/")) { reads.push(path); assert.equal(init.method, "GET"); assert.equal(init.cache, "no-store"); }
+        const target = new URL(String(input)); const path = target.pathname;
+        if (path.startsWith("/v1/join/")) { reads.push(path + target.search); assert.equal(init.method, "GET"); assert.equal(init.cache, "no-store"); }
         if (init.method === "POST") writes.push(path);
         return base(input, init);
       },
     });
     try {
       const controls = joinEntryControls(page);
-      assert.deepEqual(reads, ["/v1/join/ABCD2345/players/" + encodeURIComponent(playerId)]);
+      assert.deepEqual(reads, ["/v1/join/ABCD2345/player-context?" + new URLSearchParams({ playerId }).toString()]);
       assert.equal(writes.length, 0, "a verified display name is not authorization to claim automatically");
       assert.equal(page.document.getElementById("join-result")?.hidden, false);
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Ari");
@@ -13312,7 +13323,7 @@ for (const outcome of ["success", "failure"] as const) {
       fetch: async (input, init = {}) => {
         const path = new URL(String(input)).pathname;
         if (init.method === "POST") writes.push(path);
-        if (path === "/v1/join/ABCD2345/players/player-ari") {
+        if (path === "/v1/join/ABCD2345/player-context" && new URL(String(input)).searchParams.get("playerId") === "player-ari") {
           return new Promise<Response>(resolve => { release = () => {
             if (outcome === "failure") resolve(createJsonResponse(503, { error: "unavailable" }));
             else void base(input, init).then(resolve);

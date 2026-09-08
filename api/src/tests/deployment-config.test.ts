@@ -18,8 +18,9 @@ function assertServerlessRoute(method: string, path: string): void {
 }
 
 test("api core deployment config registers claim and access routes", () => {
-  assertServerlessRoute("GET", "/v1/join/{joinCode}/players/{playerId+}");
-  assertServerlessRoute("OPTIONS", "/v1/join/{joinCode}/players/{playerId+}");
+  assertServerlessRoute("GET", "/v1/join/{joinCode}/player-context");
+  assertServerlessRoute("OPTIONS", "/v1/join/{joinCode}/player-context");
+  assert.doesNotMatch(serverlessCoreConfig, /\/v1\/join\/\{joinCode\}\/players\//);
   assertServerlessRoute("POST", "/v1/auth/logout");
   assertServerlessRoute("OPTIONS", "/v1/auth/logout");
   assertServerlessRoute("POST", "/v1/players/{playerId}/claim");

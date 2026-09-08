@@ -44,7 +44,7 @@ rows, “No players found in the available search.”
 Independent architecture/security and QA reviews approved these bounded support
 changes before backend implementation:
 
-- Authenticated GET `/v1/join/{joinCode}/players/{playerId}` verifies the current
+- Authenticated GET `/v1/join/{joinCode}/player-context?playerId=…` verifies the current
   join-code mapping, exact game-player registration and profile. It returns only
   gameId, joinCode and explicit public player fields. It grants neither ownership
   nor league access. Invalid/mismatched context reveals no global player identity.
@@ -173,7 +173,7 @@ route rejected encoded slash before Lambda (gateway404), while encoded backslash
 reached Lambda's401. [AWS route documentation](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)
 describes decoded parameters and greedy path variables.
 
-The fix is scoped to the new GET/OPTIONS transport route: `{playerId+}` lets the
+The first attempted fix (superseded after deployed verification below) was scoped to the new GET/OPTIONS transport route: `{playerId+}` lets the
 gateway pass encoded slashes, but the application accepts one raw encoded ID
 component only. The GET chooses rawPath before context-path decoding; other
 routes retain their original precedence. Session classification, safe failures
@@ -198,6 +198,49 @@ remains applicable; exact-head deployed acceptance is rerun after publication.
 The local M2 smoke also passed4/4 in group97469, exit0, host peak1,331,632KiB
 plus a hard512MiB ephemeral database. All owned services exited and the database
 container was removed; no real data or credentials were captured.
+
+### Deployed falsification and final query transport
+
+Although bfde481 passed CI34199120362, QA deployment34199623186 and Codex's
+explicit no-new-issues completion5581070407, the additional deployed identity
+check failed. Group18666 exited1 cleanly (peak874,960KiB, no children), removing
+its one owned authentication fixture and browser context without cleanup errors.
+Anonymous probes demonstrated encoded slash now reached Lambda but returned404,
+and a literal percent identity returned gateway400. These observations falsify
+the first fix's transport assumption; passing emulated events were insufficient.
+No authentication tokens or user data were captured in diagnostic evidence.
+
+Architecture/security approved replacing only this unreleased display endpoint
+with a fixed ASCII path and an opaque query value before implementation:
+`GET /v1/join/{joinCode}/player-context?playerId=…`. The browser uses
+URLSearchParams and checks lossless round-trip identity. Both adapters strictly
+decode the raw query exactly once, require one nonempty playerId, and reject
+malformed/duplicate values. Slashes, literal percent signs and plus characters
+remain part of the ID, never route syntax. Exact membership/profile checks and
+the public DTO remain unchanged. The unreleased greedy routes and rawPath
+precedence override are removed; all existing routes keep their original
+semantics. QA mixed-version failure remains the documented fail-closed404.
+
+Independent engineering/QA found no material issue in the final parser,
+adapters, auth ordering, contract or deployment diff. Independent frontend/design
+review found no material issue in the query construction or guarded deployed
+acceptance helper. Validation is owned by the root, not those reviewers:
+
+- Query interaction focused8 passed, then400/400 full interaction cases,
+  groups21845/22653 exit0, peaks439,664/1,708,704KiB, no children.
+- Query backend focused16 passed, then134/134 full affected Lambda/shared
+  reads/session/deployment cases, groups24312/24376 exit0,
+  peaks558,736/163,344KiB, no children.
+- Three exact-query browser regressions passed, then64/64 complete results and
+  entry browser cases, groups24418/24526 exit0, peaks863,504/1,558,992KiB,
+  no children. These are production-built fictional fixtures, not gateway proof.
+- Final lint, complete API/app tests (448 app cases),57 review-gate tests,
+  contracts, build, strict browser fixture typecheck,11 QA safety tests and
+  backlog validation/export passed in group24775, exit0,
+  peak2,147,376KiB, no children. The deployed scenario was skipped locally.
+
+Final query-head Codex/CI/deployed QA verification remains required before
+readiness; the earlier path-based external passes remain historical.
 
 ## Rollback order
 

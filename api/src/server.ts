@@ -2963,7 +2963,7 @@ export async function handleLocalJoinPlayerContextRoute(input: {
   response: ServerResponse;
   session: AuthSessionRecord | null;
   rawJoinCode: string;
-  rawPlayerId: string;
+  rawQueryString: string;
   playerRepository?: PlayerReadRepository;
 }): Promise<number> {
   const headers = { "Cache-Control": "no-store" };
@@ -2973,7 +2973,7 @@ export async function handleLocalJoinPlayerContextRoute(input: {
     }, headers);
     return 401;
   }
-  const result = await readJoinPlayerContext(input.playerRepository ?? repository, input.rawJoinCode, input.rawPlayerId);
+  const result = await readJoinPlayerContext(input.playerRepository ?? repository, input.rawJoinCode, input.rawQueryString);
   sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
   return result.statusCode;
 }
@@ -3342,11 +3342,11 @@ async function start(): Promise<void> {
         return;
       }
 
-      const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/players\/([^/]+)$/);
+      const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/player-context$/);
       if (method === "GET" && joinPlayerContextMatch) {
         status = await handleLocalJoinPlayerContextRoute({
           request, response, session: authGate.session,
-          rawJoinCode: joinPlayerContextMatch[1], rawPlayerId: joinPlayerContextMatch[2],
+          rawJoinCode: joinPlayerContextMatch[1], rawQueryString: requestUrl.search.slice(1),
         });
         return;
       }
@@ -5466,7 +5466,7 @@ async function start(): Promise<void> {
       status = 404;
       sendJsonWithCors(request, response, status, { error: "Not found" });
     } catch (error) {
-      if (method === "GET" && /^\/v1\/join\/[^/]+\/players\/[^/]+$/.test(route)) {
+      if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
         const result = unavailableJoinPlayerContext();
         status = result.statusCode;
         sendJsonWithCors(request, response, status, result.payload, { "Cache-Control": "no-store" });

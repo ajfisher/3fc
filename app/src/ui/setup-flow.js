@@ -5831,8 +5831,11 @@
         claimMessage("");
         if (session) {
           if (verifiedClaimPlayerId !== playerId) {
-            const path = encodedRecordPath("/v1/join/" + encodeURIComponent(joinCode) + "/players/", playerId);
-            if (!path) throw new Error("context_unavailable");
+            // Opaque IDs belong in a query value: API Gateway decodes path
+            // components before routing, including encoded slashes/percent signs.
+            const params = new URLSearchParams({ playerId });
+            if (params.get("playerId") !== playerId) throw new Error("context_unavailable");
+            const path = `/v1/join/${encodeURIComponent(joinCode)}/player-context?${params}`;
             claimMessage("Loading player…");
             let context;
             try { context = await requestJsonOrThrow(path, { method: "GET", cache: "no-store" }); }

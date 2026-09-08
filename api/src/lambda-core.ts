@@ -669,16 +669,10 @@ interface CoreHandlerDependencies {
 }
 
 function getRequestDetails(event: ApiGatewayHttpEvent): RequestDetails {
-  const method = event.requestContext?.http?.method ?? "GET";
-  // HTTP API's context path can already be decoded. This new display route
-  // must split the encoded path first, then decode each opaque ID exactly once.
-  // Preserve legacy routing precedence for every other read and all mutations.
-  const encodedJoinContext = method === "GET" && typeof event.rawPath === "string" &&
-    /^\/v1\/join\/[^/]+\/players\/[^/]+$/.test(event.rawPath);
   return {
     requestId: event.requestContext?.requestId ?? randomUUID(),
-    route: encodedJoinContext ? event.rawPath! : event.requestContext?.http?.path ?? event.rawPath ?? "/",
-    method,
+    route: event.requestContext?.http?.path ?? event.rawPath ?? "/",
+    method: event.requestContext?.http?.method ?? "GET",
   };
 }
 
@@ -3010,9 +3004,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
       }
 
       if (session) {
-        const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/players\/([^/]+)$/);
+        const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/player-context$/);
         if (method === "GET" && joinPlayerContextMatch) {
-          const result = await readJoinPlayerContext(dependencies.repository, joinPlayerContextMatch[1], joinPlayerContextMatch[2]);
+          const result = await readJoinPlayerContext(dependencies.repository, joinPlayerContextMatch[1], event.rawQueryString ?? "");
           status = result.statusCode;
           return createJsonResponse(status, result.payload, {
             ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
@@ -5717,7 +5711,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
       );
     } catch (error) {
-      if (method === "GET" && /^\/v1\/join\/[^/]+\/players\/[^/]+$/.test(route)) {
+      if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
         const result = unavailableJoinPlayerContext();
         status = result.statusCode;
         return createJsonResponse(status, result.payload, {

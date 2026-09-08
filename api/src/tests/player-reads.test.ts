@@ -8,6 +8,7 @@ import { handleLocalJoinPlayerContextRoute } from "../server.js";
 const timestamp = "2026-09-08T10:00:00.000Z";
 const player = { playerId: "player-one", nickname: "Same name", createdAt: timestamp, updatedAt: timestamp };
 const link = { gameId: "game-one", playerId: player.playerId, createdAt: timestamp, updatedAt: timestamp };
+const contextQuery = (id: string) => new URLSearchParams({ playerId: id }).toString();
 function fixture(overrides: Partial<PlayerReadRepository> = {}): PlayerReadRepository {
   return {
     async getGameByJoinCode(code) { return code === "ABCD2345" ? { gameId: "game-one", joinCode: code } : null; },
@@ -20,7 +21,7 @@ function fixture(overrides: Partial<PlayerReadRepository> = {}): PlayerReadRepos
 }
 
 test("join context identifies exact membership without private fields, claiming or nickname resolution", async () => {
-  assert.deepEqual(await readJoinPlayerContext(fixture(), "abcd2345", "player-one"), {
+  assert.deepEqual(await readJoinPlayerContext(fixture(), "abcd2345", contextQuery("player-one")), {
     statusCode: 200, payload: { gameId: "game-one", joinCode: "ABCD2345", player },
   });
   assert.equal(publicPlayerSchema.safeParse({ ...player, access: { userId: "private" } }).success, false);
@@ -31,27 +32,38 @@ test("join context identifies exact membership without private fields, claiming 
     async getPlayer() { profileReads += 1; return player; },
   });
   const expected = { statusCode: 404, payload: { error: "not_found", message: "This player link is unavailable." } };
-  assert.deepEqual(await readJoinPlayerContext(mismatched, "ABCD2345", "player-one"), expected);
+  assert.deepEqual(await readJoinPlayerContext(mismatched, "ABCD2345", contextQuery("player-one")), expected);
   assert.equal(profileReads, 0);
-  assert.deepEqual(await readJoinPlayerContext(fixture(), "ABCD2345", "same-name-but-other-id"), expected);
-  assert.deepEqual(await readJoinPlayerContext(fixture(), "BCDE2345", "player-one"), expected);
-  assert.deepEqual(await readJoinPlayerContext(fixture({ async getPlayer() { return null; } }), "ABCD2345", "player-one"), expected);
+  assert.deepEqual(await readJoinPlayerContext(fixture(), "ABCD2345", contextQuery("same-name-but-other-id")), expected);
+  assert.deepEqual(await readJoinPlayerContext(fixture(), "BCDE2345", contextQuery("player-one")), expected);
+  assert.deepEqual(await readJoinPlayerContext(fixture({ async getPlayer() { return null; } }), "ABCD2345", contextQuery("player-one")), expected);
 });
 
-test("join context rejects malformed paths and preserves constructable opaque player IDs", async () => {
-  for (const [code, id] of [["short", "player-one"], ["%E0%A4%A", "player-one"], ["ABCD2345", "%E0%A4%A"], ["ABCD2345", "%20"]]) {
-    assert.equal((await readJoinPlayerContext(fixture(), code, id)).statusCode, 400);
+test("join context rejects ambiguous or malformed queries and preserves exact opaque player IDs", async () => {
+  let reads = 0;
+  const unread = fixture({ async getGameByJoinCode() { reads += 1; return null; } });
+  for (const [code, query] of [
+    ["short", "playerId=player-one"], ["%E0%A4%A", "playerId=player-one"],
+    ["ABCD2345", ""], ["ABCD2345", "playerId"], ["ABCD2345", "playerId="],
+    ["ABCD2345", "playerId=%20"], ["ABCD2345", "playerId=%E0%A4%A"],
+    ["ABCD2345", "playerId=%ZZ"], ["ABCD2345", "playerId=%ED%A0%80"],
+    ["ABCD2345", "playerId=\ud800"], ["ABCD2345", "playerId=one&playerId=two"],
+    ["ABCD2345", "playerId=one&%70layerId=two"], ["ABCD2345", "playerId=one&extra=two"],
+    ["ABCD2345", "other=one"], ["ABCD2345", "player%ZZId=one"],
+  ]) {
+    assert.equal((await readJoinPlayerContext(unread, code, query)).statusCode, 400);
   }
-  for (const id of ["player\\one", "player/one", "player-" + "x".repeat(700), "player-\rlegacy", "player-\u0000legacy"]) {
+  assert.equal(reads, 0);
+  for (const id of ["player\\one", "player/one", "player-" + "x".repeat(700), "player-\rlegacy", "player-\u0000legacy", "player%2Fone%ZZ", "player+one", "player one", "player&one=two", "..", "Zoë ⚽"]) {
     const opaque = fixture({
       async getGamePlayer(gameId, requestedId) { assert.equal(requestedId, id); return { ...link, gameId, playerId: id }; },
       async getPlayer(requestedId, options) { assert.equal(requestedId, id); assert.equal(options?.consistentRead, true); return { ...player, playerId: id }; },
     });
-    const result = await readJoinPlayerContext(opaque, "ABCD2345", encodeURIComponent(id));
+    const result = await readJoinPlayerContext(opaque, "ABCD2345", contextQuery(id));
     assert.equal(result.statusCode, 200);
     assert.equal("player" in result.payload && result.payload.player.playerId, id);
   }
-  const failed = await readJoinPlayerContext(fixture({ async getGamePlayer() { throw new Error("private SDK diagnostic"); } }), "ABCD2345", "player-one");
+  const failed = await readJoinPlayerContext(fixture({ async getGamePlayer() { throw new Error("private SDK diagnostic"); } }), "ABCD2345", contextQuery("player-one"));
   assert.equal(failed.statusCode, 503);
   assert.doesNotMatch(JSON.stringify(failed), /private|SDK/);
 });
@@ -100,7 +112,7 @@ test("local join context adapter requires a session and returns shared safe no-s
     let read = false; let code = 0; let headers: Record<string, string> = {}; let body = "";
     const response = { writeHead(status: number, values: Record<string, string>) { code = status; headers = values; }, end(value: string) { body = value; } } as unknown as ServerResponse;
     await handleLocalJoinPlayerContextRoute({ request, response, session: signedIn ? session : null,
-      rawJoinCode: "ABCD2345", rawPlayerId: "player-one", playerRepository: fixture({ async getGameByJoinCode(joinCode) { read = true; return { gameId: "game-one", joinCode }; } }),
+      rawJoinCode: "ABCD2345", rawQueryString: contextQuery("player-one"), playerRepository: fixture({ async getGameByJoinCode(joinCode) { read = true; return { gameId: "game-one", joinCode }; } }),
     });
     assert.equal(code, signedIn ? 200 : 401); assert.equal(read, signedIn);
     assert.equal(headers["Cache-Control"], "no-store");
@@ -115,7 +127,7 @@ test("local join context adapter requires a session and returns shared safe no-s
   ]) {
     let code = 0; let headers: Record<string, string> = {}; let body = "";
     const response = { writeHead(status: number, values: Record<string, string>) { code = status; headers = values; }, end(value: string) { body = value; } } as unknown as ServerResponse;
-    await handleLocalJoinPlayerContextRoute({ request, response, session, rawJoinCode: scenario.code, rawPlayerId: scenario.id, playerRepository: scenario.repository });
+    await handleLocalJoinPlayerContextRoute({ request, response, session, rawJoinCode: scenario.code, rawQueryString: contextQuery(scenario.id), playerRepository: scenario.repository });
     assert.equal(code, scenario.expected); assert.equal(headers["Cache-Control"], "no-store");
     assert.doesNotMatch(body, /person@example|private|SDK|claimedByUserId|access/);
   }

@@ -250,9 +250,10 @@ async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: strin
   const gameId = process.env.THREEFC_QA_JOIN_GAME ?? "";
   if (!/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(code) || !playerId.trim() || !gameId.trim() ||
     playerId.length > 512 || gameId.length > 512) throw new Error("Explicit QA display context is required");
-  const path = `/v1/join/${code}/players/${encodeURIComponent(playerId)}`;
+  const contextPath = (identity: string) => `/v1/join/${code}/player-context?${new URLSearchParams({ playerId: identity })}`;
+  const path = contextPath(playerId);
   const rosterPath = `/v1/games/${encodeURIComponent(gameId)}/roster`;
-  if (new URL(path, api).pathname !== path || new URL(rosterPath, api).pathname !== rosterPath) {
+  if (new URL(path, api).searchParams.get("playerId") !== playerId || new URL(rosterPath, api).pathname !== rosterPath) {
     throw new Error("QA display identifiers do not have stable encoded paths");
   }
   async function safeRead(pathname: string, authenticated: boolean) {
@@ -266,7 +267,7 @@ async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: strin
   }
   const anonymous = await safeRead(path, false);
   expect(anonymous.status).toBe(401);
-  const encodedSlash = await safeRead(`/v1/join/${code}/players/codex-missing%2Fopaque`, false);
+  const encodedSlash = await safeRead(contextPath("codex-missing/opaque"), false);
   expect(encodedSlash.status).toBe(401);
   expect(encodedSlash.cache).toBe("no-store");
   const valid = await safeRead(path, true);
@@ -275,12 +276,11 @@ async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: strin
   expect(valid.body?.gameId === gameId && valid.body?.joinCode === code && valid.body?.player?.playerId === playerId).toBe(true);
   expect(Object.keys(valid.body?.player ?? {}).sort().join(",") === "createdAt,nickname,playerId,updatedAt").toBe(true);
   expect(typeof valid.body?.player?.nickname === "string" && Boolean(valid.body.player.nickname.trim())).toBe(true);
-  const missing = await safeRead(`/v1/join/${code}/players/codex-missing-${randomUUID()}`, true);
+  const missing = await safeRead(contextPath(`codex-missing-${randomUUID()}`), true);
   expect(missing.status).toBe(404);
   expect(missing.body?.player === undefined).toBe(true);
-  // The literal "%ZZ" is a valid opaque ID substring after one decode. If
-  // Lambda uses the decoded context path and decodes again this becomes400.
-  const onceDecoded = await safeRead(`/v1/join/${code}/players/codex-missing-%25ZZ`, true);
+  // A literal "%ZZ" in an opaque ID must be decoded only once from the query.
+  const onceDecoded = await safeRead(contextPath("codex-missing-%ZZ"), true);
   expect(onceDecoded.status).toBe(404);
   expect(onceDecoded.cache).toBe("no-store");
   const roster = await safeRead(rosterPath, true);

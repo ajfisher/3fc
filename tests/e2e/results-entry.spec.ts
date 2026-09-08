@@ -17,6 +17,7 @@ const seasonId = "fictional-results-season";
 const gamePath = `/games/${gameId}`;
 const apiPath = `/v1${gamePath}`;
 const joinCode = "ABCDEFGH";
+const joinContextPath = `/v1/join/${joinCode}/player-context`;
 const inviteCode = "JKLMNPQR";
 const nickname = "Alexandra Francesca Montgomery-Williams";
 const recipient = "alexandra.montgomery-williams@fictional-community.example.com";
@@ -33,11 +34,12 @@ type Goal = {
   scoringTeamId: TeamId | null; concedingTeamId: TeamId; scorerPlayerId: string;
   assistPlayerIds: string[]; ownGoal: boolean; createdAt: string; updatedAt: string;
 };
-type RequestRecord = { method: string; path: string; body: Record<string, unknown> | null; serialized: string | null; key?: string };
+type RequestRecord = { method: string; path: string; query: string; body: Record<string, unknown> | null; serialized: string | null; key?: string };
 type Operation = "join" | "claim" | "invite" | "magic" | "complete" | "logout";
 type Plan = { kind: Operation; gate?: ReturnType<typeof deferred>; status?: number; commit?: boolean; malformed?: boolean; message?: string; code?: string };
 type LookupPlan = { gate?: ReturnType<typeof deferred>; status?: number; payload?: unknown };
-type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred>; inviteLeagueId?: string };
+type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred>; inviteLeagueId?: string;
+  contextPlayers?: Array<{ playerId: string; nickname: string }> };
 const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
@@ -126,6 +128,7 @@ async function installFixture(page: Page, options: Options = {}) {
   const lookupPlans: LookupPlan[] = [];
   const joinIdentities = new Map(players.map(player => [player.playerId, snapshot(player)]));
   joinIdentities.set("fictional-existing-player", { playerId: "fictional-existing-player", nickname, createdAt: now, updatedAt: now });
+  for (const player of options.contextPlayers ?? []) joinIdentities.set(player.playerId, { ...player, createdAt: now, updatedAt: now });
   const joinReplays = new Map<string, { serialized: string | null; payload: unknown }>();
   let sessionGate = options.sessionGate;
   page.on("pageerror", error => { errors.push(error.message); });
@@ -149,7 +152,7 @@ async function installFixture(page: Page, options: Options = {}) {
     }
     const serialized = request.postData();
     const body = serialized ? request.postDataJSON() as Record<string, unknown> : null;
-    const record: RequestRecord = { method, path: url.pathname, body, serialized, key: request.headers()["idempotency-key"] };
+    const record: RequestRecord = { method, path: url.pathname, query: url.search, body, serialized, key: request.headers()["idempotency-key"] };
     requests.push(record);
     const reject = (status: number, message: string, code?: string) => route.fulfill({ status, json: {
       error: status === 503 ? "unavailable" : status === 409 ? "conflict" : status === 403 ? "forbidden" : status === 404 ? "not_found" : "rejected",
@@ -163,13 +166,25 @@ async function installFixture(page: Page, options: Options = {}) {
         return route.fulfill({ status: authenticated ? 200 : 401, headers: { "cache-control": "no-store" }, json: authenticated
           ? { authenticated: true, session: { sessionId: "fictional-auth-session", email: recipient, userId: "fictional-account" } } : { error: "unauthorized" } });
       }
-      const identityRoute = new RegExp(`^/v1/join/${joinCode}/players/([^/]+)$`).exec(url.pathname);
-      if (identityRoute) {
+      if (url.pathname === joinContextPath) {
         if (!state.authenticated) return reject(401, "Sign in to identify this player.");
+        // The API accepts the opaque ID in one query value, not a decoded route
+        // segment. Decode raw query values once, with strict malformed handling.
+        let ids: string[];
+        try {
+          ids = url.search.slice(1).split("&").flatMap(part => {
+            const separator = part.indexOf("=");
+            const key = separator < 0 ? part : part.slice(0, separator);
+            const value = separator < 0 ? "" : part.slice(separator + 1);
+            return decodeURIComponent(key.replace(/\+/g, " ")) === "playerId"
+              ? [decodeURIComponent(value.replace(/\+/g, " "))] : [];
+          });
+        } catch { return reject(400, "This player link is invalid."); }
+        if (ids.length !== 1 || !ids[0].trim()) return reject(400, "This player link is invalid.");
         const plan = lookupPlans.shift();
         if (plan?.gate) await plan.gate.promise;
         if (plan?.status) return reject(plan.status, "Player details could not be loaded.");
-        const player = joinIdentities.get(decodeURIComponent(identityRoute[1]));
+        const player = joinIdentities.get(ids[0]);
         if (!player) return reject(404, "Player not found for this join code.");
         return route.fulfill({ headers: { "cache-control": "no-store" }, json: plan?.payload ?? { gameId, joinCode, player } });
       }
@@ -683,7 +698,7 @@ for (const width of [320, 390]) {
     await expect(claim).toHaveAccessibleDescription(nickname);
     await expectJoinReceipt(page);
     await expectGeometry(page);
-    expect(fixture.requests.filter(request => request.path === `/v1/join/${joinCode}/players/fictional-existing-player`)).toHaveLength(1);
+    expect(fixture.requests.filter(request => request.path === joinContextPath && request.query === "?playerId=fictional-existing-player")).toHaveLength(1);
     expect(fixture.writes()).toHaveLength(0);
     await claim.focus();
     await capture(page, testInfo, `claim-verified-name-${width}`);
@@ -693,6 +708,46 @@ for (const width of [320, 390]) {
     await expect(page.locator("#join-result-player")).toHaveText(nickname);
     expect(fixture.writes("join")).toHaveLength(0);
     expect(fixture.writes("claim")).toHaveLength(1);
+    expectClean(fixture);
+  });
+}
+
+for (const identity of [
+  { label: "slash", playerId: "fictional/linked-player", otherId: "fictional%2Flinked-player", width: 320, theme: "light" },
+  { label: "literal percent", playerId: "fictional%linked-player", otherId: "fictional-linked-player", width: 390, theme: "dark" },
+  { label: "percent-encoded text and query delimiters", playerId: "fictional%2Flinked+player?team=red&name=#1", otherId: "fictional/linked+player?team=red&name=#1", width: 390, theme: "dark" },
+] as const) {
+  test(`claim context query preserves ${identity.label} identity without a write`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: identity.width, height: 900 });
+    await page.emulateMedia({ colorScheme: identity.theme });
+    const fixture = await installFixture(page, { contextPlayers: [
+      { playerId: identity.playerId, nickname },
+      { playerId: identity.otherId, nickname: "Different existing player" },
+    ] });
+    const entryQuery = new URLSearchParams({ code: joinCode, playerId: identity.playerId });
+    await page.goto(`${origin}/join?${entryQuery.toString()}`);
+    const claim = page.getByRole("button", { name: "Claim player", exact: true });
+    await expect(claim).toBeVisible();
+    await expect(claim).toBeEnabled();
+    await expect(page.locator("#join-result-player")).toBeVisible();
+    await expect(page.locator("#join-result-player")).toHaveText(nickname);
+    await expect(claim).toHaveAccessibleDescription(nickname);
+    await expect(page.locator("body")).not.toContainText("Different existing player");
+    await expect(page.getByRole("button", { name: "Retry lookup", exact: true })).toBeHidden();
+    const reads = fixture.requests.filter(request => request.method === "GET" && request.path.startsWith(`/v1/join/${joinCode}/`));
+    expect(reads).toHaveLength(1);
+    expect(reads[0].path).toBe(joinContextPath);
+    expect(reads[0].query).toBe(`?${new URLSearchParams({ playerId: identity.playerId }).toString()}`);
+    expect(new URLSearchParams(reads[0].query).getAll("playerId")).toEqual([identity.playerId]);
+    expect(fixture.writes()).toHaveLength(0);
+    await expectJoinReceipt(page);
+    await expectGeometry(page);
+    await claim.focus();
+    await expect(claim).toBeFocused();
+    await capture(page, testInfo, `claim-query-identity-${identity.label.replaceAll(" ", "-")}-${identity.width}`);
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Join another player", exact: true })).toBeFocused();
+    expect(fixture.writes()).toHaveLength(0);
     expectClean(fixture);
   });
 }
@@ -764,7 +819,7 @@ test("a failed identity lookup retries only the read before enabling a named cla
   await expect(retry).toBeHidden();
   await expect(page.getByTestId("claim-player")).toBeFocused();
   await expect(page.locator("#setup-error")).toBeHidden();
-  expect(fixture.requests.filter(request => request.path === `/v1/join/${joinCode}/players/fictional-existing-player`)).toHaveLength(3);
+  expect(fixture.requests.filter(request => request.path === joinContextPath && request.query === "?playerId=fictional-existing-player")).toHaveLength(3);
   expect(fixture.writes()).toHaveLength(0);
   expectClean(fixture);
 });
@@ -796,16 +851,19 @@ test("Join another player cancels a delayed lookup without replacing its new dra
   const gate = deferred();
   fixture.lookupPlans.push({ gate });
   try {
-    const lookupPath = `/v1/join/${joinCode}/players/fictional-existing-player`;
+    const lookupPath = joinContextPath;
     await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
-    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath).length).toBe(1);
+    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath && request.query === "?playerId=fictional-existing-player").length).toBe(1);
     await expect(page.locator("#join-result")).toBeHidden();
     await expect(page.getByTestId("claim-player")).toBeDisabled();
     await page.getByRole("button", { name: "Join another player", exact: true }).click();
     const input = page.getByLabel("Player name", { exact: true });
     await expect(input).toBeFocused();
     await input.fill("Keep this new player draft");
-    const response = page.waitForResponse(candidate => new URL(candidate.url()).pathname === lookupPath);
+    const response = page.waitForResponse(candidate => {
+      const url = new URL(candidate.url());
+      return url.pathname === lookupPath && url.search === "?playerId=fictional-existing-player";
+    });
     gate.release();
     await (await response).finished();
     await expect(input).toBeFocused();
@@ -825,16 +883,19 @@ test("an old lookup cannot settle or replace a new confirmed join and pending cl
   fixture.lookupPlans.push({ gate: lookupGate });
   fixture.plans.push({ kind: "claim", gate: claimGate });
   try {
-    const lookupPath = `/v1/join/${joinCode}/players/fictional-existing-player`;
+    const lookupPath = joinContextPath;
     await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
-    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath).length).toBe(1);
+    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath && request.query === "?playerId=fictional-existing-player").length).toBe(1);
     await page.getByRole("button", { name: "Join another player", exact: true }).click();
     await page.getByLabel("Player name", { exact: true }).fill("A different new player");
     await page.getByLabel("Player name", { exact: true }).press("Enter");
     await expect.poll(() => fixture.writes("claim").length).toBe(1);
     await expect(page.locator("#join-result-player")).toHaveText("A different new player");
     await expect(page.getByTestId("claim-player")).toBeDisabled();
-    const response = page.waitForResponse(candidate => new URL(candidate.url()).pathname === lookupPath);
+    const response = page.waitForResponse(candidate => {
+      const url = new URL(candidate.url());
+      return url.pathname === lookupPath && url.search === "?playerId=fictional-existing-player";
+    });
     lookupGate.release();
     await (await response).finished();
     await expect(page.locator("#join-result-player")).toHaveText("A different new player");
