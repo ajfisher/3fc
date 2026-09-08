@@ -36,7 +36,7 @@ type Goal = {
 type RequestRecord = { method: string; path: string; body: Record<string, unknown> | null; serialized: string | null; key?: string };
 type Operation = "join" | "claim" | "invite" | "magic" | "complete" | "logout";
 type Plan = { kind: Operation; gate?: ReturnType<typeof deferred>; status?: number; commit?: boolean; malformed?: boolean; message?: string; code?: string };
-type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred> };
+type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred>; inviteLeagueId?: string };
 const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
@@ -199,7 +199,11 @@ async function installFixture(page: Page, options: Options = {}) {
       joinReplays.set(record.key!, { serialized, payload: snapshot(payload) });
     }
     if (kind === "claim") { state.claimed += 1; payload = { player: { playerId: decodeURIComponent(url.pathname.split("/")[3]), nickname }, claim: { claimedByCurrentUser: true } }; }
-    if (kind === "invite") { state.accepted = 1; payload = { invite: { leagueId, inviteCode }, access: { leagueId, role: "admin" } }; }
+    if (kind === "invite") {
+      state.accepted = 1;
+      const acceptedLeagueId = options.inviteLeagueId ?? leagueId;
+      payload = { invite: { leagueId: acceptedLeagueId, inviteCode }, access: { leagueId: acceptedLeagueId, role: "admin" } };
+    }
     if (kind === "magic") payload = { ok: true };
     if (kind === "complete") { state.authenticated = true; payload = { session: { sessionId: "fictional-auth-session", email: recipient, userId: "fictional-account" } }; }
     if (kind === "logout") {
@@ -718,6 +722,48 @@ test("invite pending latch and uncertain same-code retry reach only the returned
   expect(fixture.writes("invite")[0].path).toBe(fixture.writes("invite")[1].path);
   expectClean(fixture);
 });
+
+for (const acceptedLeague of [
+  { kind: "backslash", id: "fictional\\community-league", label: "Open league", status: "Organiser invite accepted." },
+  { kind: "dot segment", id: "..", label: "Go to Home", status: "Organiser invite accepted. Go to Home to continue." },
+]) {
+  test(`accepted invite with ${acceptedLeague.kind} identity stays confirmed without another write`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    const fixture = await installFixture(page, { inviteLeagueId: acceptedLeague.id });
+    await page.goto(`${origin}/invites?code=${inviteCode}`);
+    const accept = page.locator('[data-action="accept-organiser-invite"]');
+    await accept.focus();
+    await page.keyboard.press("Enter");
+    const continuation = page.locator("#organiser-invite-league-link");
+    const expectedPath = acceptedLeague.kind === "backslash" ? `/leagues/${encodeURIComponent(acceptedLeague.id)}` : "/setup";
+    await expect(page.locator("#setup-status")).toHaveText(acceptedLeague.status);
+    await expect(page.locator("#setup-error")).toBeHidden();
+    await expect(continuation).toHaveText(acceptedLeague.label);
+    await expect(continuation).toHaveAttribute("href", expectedPath);
+    await expect(continuation).toBeFocused();
+    // Check the browser-resolved destination as well as the raw attribute:
+    // an opaque backslash must not become a path separator or external origin.
+    const destination = new URL(await continuation.evaluate(element => (element as HTMLAnchorElement).href));
+    expect(destination.origin).toBe(origin);
+    expect(destination.pathname).toBe(expectedPath);
+    expect(destination.search).toBe("");
+    expect(destination.hash).toBe("");
+    if (acceptedLeague.kind === "backslash") {
+      expect(destination.pathname).toContain("%5C");
+      expect(decodeURIComponent(destination.pathname.slice("/leagues/".length))).toBe(acceptedLeague.id);
+    }
+    await expect(accept).toBeHidden();
+    await expect(accept).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Retry invite", exact: true })).toHaveCount(0);
+    await accept.dispatchEvent("click");
+    expect(fixture.state.accepted).toBe(1);
+    expect(fixture.writes("invite")).toHaveLength(1);
+    await expectGeometry(page);
+    await capture(page, testInfo, `invite-accepted-${acceptedLeague.kind.replaceAll(" ", "-")}-dark-320`);
+    expectClean(fixture);
+  });
+}
 
 test("account switching retains reconstructed entry context without copying credential-like fields", async ({ page }) => {
   const fixture = await installFixture(page);

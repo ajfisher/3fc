@@ -16,8 +16,8 @@ head's CI, Codex, QA and browser evidence, including findings and disposition.
 | #134 / UX-03 | Match overview, navigation and teams | [#145](https://github.com/ajfisher/3fc/pull/145), `6f0085d1417d17415fe69af864e0f4cec3fabd66` | [Roster map](match-roster-review.md), role/permission and browser matrices. Review-ready. |
 | #147 / UX-07 | Kebab action surfaces, including both game lists | [#148](https://github.com/ajfisher/3fc/pull/148), `ce429963d4b667a67a0123e5c1ff3094aa43dc7f` | [Action-menu map](action-menu-review.md),63 browser/12 isolated QA cases and signed-in read-only menus. Review-ready. |
 | #135 / UX-04 | Scoring, clock and safe request recovery | [#149](https://github.com/ajfisher/3fc/pull/149), `b09ee27bb7c629e6a9cbcaa28e931d1729afbdb1` | [Scoring map](live-scoring-review.md),254 interactions/89 cross-surface browser/12 isolated QA cases and signed-in phone checks. Review-ready. |
-| #136 / UX-05 | Reports and existing entry journeys | `codex/design-results-entry` | [Results/entry map](results-entry-review.md). Implementation and local acceptance complete; current-head external readiness is recorded in this branch's PR packet. |
-| #137 / UX-06 | Cross-stack acceptance | Final frontend PR plus this checklist | 159 cross-stack browser cases and4 local M2 cases passed; physical-device evidence below remains outstanding. Keep issue open. |
+| #136 / UX-05 | Reports and existing entry journeys | [#150](https://github.com/ajfisher/3fc/pull/150), `codex/design-results-entry` | [Results/entry map](results-entry-review.md). Implementation and local acceptance complete; current-head external readiness is recorded in this branch's PR packet. |
+| #137 / UX-06 | Cross-stack acceptance | Final frontend PR plus this checklist | 161 cross-stack browser cases and4 local M2 cases passed; physical-device evidence below remains outstanding. Keep issue open. |
 
 Parent acceptance was completed before each child was implemented. Shared QA is
 deployed serially, and each packet records its accepted deployment SHA before

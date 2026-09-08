@@ -91,7 +91,7 @@ scorekeeper editing.
 | Join | Join game; Player name; Use the name the scorekeeper expects. One join code and no raw game-ID receipt. |
 | Claim | Sign in to claim this player / Claim player / Player claimed. Claiming is not scorer access and makes no personal-history promise. |
 | Unconfirmed joining/acceptance | Explain uncertainty and retry the captured action. Do not convert edited input into a second operation while the original is unresolved. |
-| Organiser invite | One invite code, Accept invite, then Open league only after a valid confirmed response. No Pending league, repeated code, or invented expiry deadline. |
+| Organiser invite | One invite code, Accept invite, then Open league only after a valid confirmed response. If the confirmed league has no usable direct link, offer Go to Home; do not call the accepted invite unconfirmed. No Pending league, repeated code, or invented expiry deadline. |
 | Sign in | Sign in to 3FC; Email address; Send sign-in link. No organiser-only or unfinished-account paragraph. |
 | Email request | Sending sign-in link… then Sign-in link sent to the submitted address. Network uncertainty tells the person to check their inbox before trying again. Older session checks cannot replace this feedback or redirect them. |
 | Complete sign-in | Complete your sign-in; Sign-in starts in a few seconds. Or continue below. Same three-second completion and immediate manual action. Hide the initial promise while pending or after failure; one error and the appropriate retry/return action remain. |

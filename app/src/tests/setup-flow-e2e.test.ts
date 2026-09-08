@@ -12391,3 +12391,311 @@ test("results entry preserves an opaque league ID as one encoded application rou
     assert.equal(page.document.getElementById("setup-error")?.hidden, true);
   } finally { page.dom.window.close(); }
 });
+
+for (const item of [
+  { name: "backslash", id: "league\\winter" },
+  { name: "long", id: "league-" + "x".repeat(600) },
+  { name: "reserved characters", id: "league/?#%winter" },
+  { name: "surrounding spaces", id: " legacy league " },
+]) {
+  test("results entry invite identity accepts contract-valid " + item.name, async () => {
+    const apiState = createMockApiState(); seedEntryInvite(apiState);
+    apiState.leagues.set(item.id, { ...apiState.leagues.get("three-sided-football-club")!, leagueId: item.id });
+    apiState.leagueInvites.get("ABCD2345")!.leagueId = item.id;
+    const base = createMockFetch(apiState);
+    let accepts = 0;
+    const page = await bootPage({
+      html: renderInvitePage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/invites?code=ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => { if (String(input).endsWith("/accept")) accepts += 1; return base(input, init); },
+    });
+    try {
+      const normalizer = (page.window as unknown as { __THREEFC_NORMALIZE_RETURN_TO__: (path: string) => string | null }).__THREEFC_NORMALIZE_RETURN_TO__;
+      if (item.name === "backslash") assert.equal(normalizer("/leagues/" + encodeURIComponent(item.id)), null, "authentication return policy must stay strict");
+      Object.defineProperty(page.window, "__THREEFC_NORMALIZE_RETURN_TO__", { configurable: true, value: () => { throw new Error("ordinary links must not use auth return validation"); } });
+      const button = page.document.querySelector('[data-action="accept-organiser-invite"]');
+      assert(button instanceof page.window.HTMLButtonElement);
+      button.focus(); dispatchClick(button); await flushAsync();
+      const link = page.document.getElementById("organiser-invite-league-link");
+      assert(link instanceof page.window.HTMLAnchorElement);
+      assert.equal(link.hidden, false);
+      assert.equal(link.textContent, "Open league");
+      assert.equal(link.getAttribute("href"), "/leagues/" + encodeURIComponent(item.id));
+      const target = new URL(link.href);
+      assert.equal(target.origin, "http://localhost:3000");
+      assert.equal(decodeURIComponent(target.pathname.slice("/leagues/".length)), item.id);
+      assert.equal(target.search, ""); assert.equal(target.hash, "");
+      assert.equal(page.document.getElementById("setup-status")?.textContent, "Organiser invite accepted.");
+      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+      assert.equal(apiState.leagueAccess.get(leagueAccessKey(item.id, "invitee@example.com")), "admin");
+      assert.equal(button.hidden, true); assert.equal(button.disabled, true);
+      assert.equal(page.document.activeElement, link);
+      dispatchClick(button); await flushAsync(); assert.equal(accepts, 1);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const item of [
+  { name: "dot", id: "." }, { name: "parent dot", id: ".." }, { name: "unpaired Unicode", id: "league-\ud800" },
+]) {
+  test("results entry invite identity keeps confirmed acceptance when its link is unaddressable: " + item.name, async () => {
+    const apiState = createMockApiState(); seedEntryInvite(apiState);
+    apiState.leagues.set(item.id, { ...apiState.leagues.get("three-sided-football-club")!, leagueId: item.id });
+    apiState.leagueInvites.get("ABCD2345")!.leagueId = item.id;
+    const base = createMockFetch(apiState);
+    let accepts = 0;
+    const page = await bootPage({
+      html: renderInvitePage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/invites?code=ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => { if (String(input).endsWith("/accept")) accepts += 1; return base(input, init); },
+    });
+    try {
+      const button = page.document.querySelector('[data-action="accept-organiser-invite"]');
+      assert(button instanceof page.window.HTMLButtonElement);
+      button.focus(); dispatchClick(button); await flushAsync();
+      const link = page.document.getElementById("organiser-invite-league-link");
+      assert(link instanceof page.window.HTMLAnchorElement);
+      assert.equal(link.hidden, false); assert.equal(link.textContent, "Go to Home");
+      assert.equal(link.getAttribute("href"), "/setup");
+      assert.equal(page.document.getElementById("setup-status")?.textContent, "Organiser invite accepted. Go to Home to continue.");
+      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+      assert.equal(apiState.leagueAccess.get(leagueAccessKey(item.id, "invitee@example.com")), "admin");
+      assert.equal(button.hidden, true); assert.equal(button.disabled, true);
+      assert.equal(page.document.activeElement, link);
+      dispatchClick(button); await flushAsync(); assert.equal(accepts, 1);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const item of [
+  { name: "backslash", suffix: "\\historic" }, { name: "long", suffix: "x".repeat(600) },
+]) {
+  test("results entry historical identity preserves contract-valid " + item.name, async () => {
+    const apiState = createMockApiState();
+    const game = seedResultsEntry(apiState, "history-contract", "admin");
+    const scorerId = "scorer-" + item.suffix; const assistId = "assist-" + item.suffix;
+    const eventId = "goal-" + item.suffix;
+    for (const [playerId, nickname] of [[scorerId, "Historical scorer"], [assistId, "Historical assist"]]) {
+      apiState.players.set(playerId, { playerId, nickname, claimedByUserId: null, createdAt: game.createdAt, updatedAt: game.updatedAt });
+      apiState.gamePlayers.set(game.gameId + ":" + playerId, { gameId: game.gameId, playerId, createdAt: game.createdAt, updatedAt: game.updatedAt });
+    }
+    seedLiveGoalEvent(apiState, game.gameId, eventId);
+    Object.assign(apiState.goalEvents.get(eventId)!, { scorerPlayerId: scorerId, assistPlayerIds: [assistId] });
+    refreshMockFinishedResult(apiState, game, "2026-03-28T11:02:00.000Z");
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: game.gameId }), url: "http://localhost:3000/games/" + game.gameId,
+      scriptFile: "setup-flow.js", apiState,
+    });
+    try {
+      const rows = [...page.document.querySelectorAll('[data-testid="final-full-goal-log"] [data-ui="final-goal-item"]')];
+      assert.equal(rows.length, 1); assert.equal(rows[0].getAttribute("data-event-id"), eventId);
+      assert.match(rows[0].textContent ?? "", /Historical scorer/);
+      assert.match(rows[0].textContent ?? "", /Assists: Historical assist/);
+      assert.match(page.document.querySelector('[data-testid="final-scorer-stats"]')?.textContent ?? "", /Historical scorer\s*1/);
+      assert.match(page.document.querySelector('[data-testid="final-assist-stats"]')?.textContent ?? "", /Historical assist\s*1/);
+      assert.equal(page.document.querySelector('[data-testid="final-goal-summary-unavailable"]'), null);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const item of [
+  { name: "backslash", playerId: "player\\joined" }, { name: "long", playerId: "player-" + "x".repeat(600) },
+]) {
+  test("results entry joined identity can be claimed with contract-valid " + item.name, async () => {
+    const apiState = createMockApiState(); seedEntryInvite(apiState);
+    apiState.games.get("invite-entry")!.joinCode = "ABCD2345";
+    const base = createMockFetch(apiState);
+    let joins = 0; const claimPaths: string[] = [];
+    const page = await bootPage({
+      html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join?code=ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/v1/join/ABCD2345") {
+          joins += 1;
+          const player = { playerId: item.playerId, nickname: "Joined scorer", claimedByUserId: null, createdAt: "2026-03-28T11:00:00.000Z", updatedAt: "2026-03-28T11:00:00.000Z" };
+          apiState.players.set(player.playerId, player);
+          apiState.gamePlayers.set("invite-entry:" + player.playerId, { gameId: "invite-entry", playerId: player.playerId, createdAt: player.createdAt, updatedAt: player.updatedAt });
+          return createJsonResponse(201, { gameId: "invite-entry", joinCode: "ABCD2345", player });
+        }
+        if (path.endsWith("/claim")) claimPaths.push(path);
+        return base(input, init);
+      },
+    });
+    try {
+      const controls = joinEntryControls(page);
+      controls.nickname.value = "Joined scorer"; dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(page.document.getElementById("join-result-player")?.textContent, "Joined scorer");
+      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+      assert.equal(joins, 1);
+      assert.deepEqual(claimPaths, ["/v1/players/" + encodeURIComponent(item.playerId) + "/claim"]);
+      assert.equal(apiState.players.get(item.playerId)?.claimedByUserId, "invitee@example.com");
+      assert.equal(controls.form.hidden, true); assert.equal(controls.claim.hidden, true);
+      dispatchSubmit(controls.form); dispatchClick(controls.claim); await flushAsync();
+      assert.equal(joins, 1); assert.equal(claimPaths.length, 1);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const item of [
+  { name: "dot", id: "." }, { name: "parent dot", id: ".." }, { name: "unpaired Unicode", id: "goal-\ud800" },
+  { name: "NUL attribute normalization", id: "goal-\u0000legacy" }, { name: "CR attribute normalization", id: "goal-\rlegacy" },
+]) {
+  test("results entry unaddressable event identity cannot redirect a mutation: " + item.name, async () => {
+    const apiState = createMockApiState();
+    const game = seedResultsEntry(apiState, "safe-event-target", "admin");
+    seedLiveGoalEvent(apiState, game.gameId, item.id);
+    refreshMockFinishedResult(apiState, game, "2026-03-28T11:02:00.000Z");
+    const base = createMockFetch(apiState);
+    const writes: Array<{ path: string; method: string; body: string }> = [];
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: game.gameId }), url: "http://localhost:3000/games/" + game.gameId,
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (init.method && init.method !== "GET") writes.push({ path: new URL(String(input)).pathname, method: init.method, body: String(init.body) });
+        return base(input, init);
+      },
+    });
+    try {
+      assert.equal(page.document.querySelectorAll('[data-testid="final-full-goal-log"] [data-ui="final-goal-item"]').length, 1);
+      assert.match(page.document.querySelector('[data-testid="final-scorer-stats"]')?.textContent ?? "", /Ari\s*1/);
+      enterFinishedCorrections(page);
+      Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+      const edit = page.document.querySelector('[data-action="edit-goal"]');
+      const remove = page.document.querySelector('[data-action="delete-goal"]');
+      assert(edit instanceof page.window.HTMLButtonElement && remove instanceof page.window.HTMLButtonElement);
+      for (const control of [edit, remove]) {
+        assert.equal(control.disabled, true);
+        assert.equal(control.getAttribute("data-event-id"), "", "unavailable controls cannot contain another normalized record’s actionable ID");
+        assert.match(page.document.getElementById(control.getAttribute("aria-describedby") ?? "")?.textContent ?? "", /Editing isn’t available/);
+        control.disabled = false;
+        dispatchClick(control);
+      }
+      await flushAsync();
+      assert.equal(writes.length, 0, "synthetic enabling cannot send DELETE/PATCH to a normalized collection or game path");
+      assert.equal(apiState.games.has(game.gameId), true);
+      assert.equal(apiState.goalEvents.has(item.id), true);
+      const controls = liveGoalControls(page);
+      assert.equal(controls.cancel.hidden, true, "an unaddressable event cannot become an editable draft");
+      assert.equal(controls.undo.disabled, false, "expectedEventId remains valid JSON even without an individual event URL");
+      dispatchClick(controls.undo); await flushAsync();
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].path, "/v1/games/safe-event-target/goals/undo-last");
+      assert.equal(writes[0].method, "POST");
+      assert.deepEqual(JSON.parse(writes[0].body), { expectedEventId: item.id });
+      assert.equal(apiState.goalEvents.has(item.id), false);
+      assert.equal(apiState.games.has(game.gameId), true);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const item of [
+  { name: "dot", id: "." }, { name: "parent dot", id: ".." }, { name: "unpaired Unicode", id: "player-\ud800" },
+]) {
+  test("results entry unaddressable claim identity preserves confirmed registration: " + item.name, async () => {
+    const apiState = createMockApiState(); seedEntryInvite(apiState);
+    const base = createMockFetch(apiState);
+    const writes: string[] = [];
+    const page = await bootPage({
+      html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join?code=ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        const path = new URL(String(input)).pathname;
+        if (init.method === "POST") writes.push(path);
+        if (path === "/v1/join/ABCD2345") {
+          const player = { playerId: item.id, nickname: "Registered player", claimedByUserId: null, createdAt: "2026-03-28T11:00:00.000Z", updatedAt: "2026-03-28T11:00:00.000Z" };
+          apiState.players.set(player.playerId, player);
+          apiState.gamePlayers.set("invite-entry:" + player.playerId, { gameId: "invite-entry", playerId: player.playerId, createdAt: player.createdAt, updatedAt: player.updatedAt });
+          return createJsonResponse(201, { gameId: "invite-entry", joinCode: "ABCD2345", player });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const controls = joinEntryControls(page);
+      controls.nickname.value = "Registered player"; controls.nickname.focus(); dispatchSubmit(controls.form); await flushAsync();
+      assert.deepEqual(writes, ["/v1/join/ABCD2345"], "never send a claim POST to a different normalized endpoint");
+      assert.equal(apiState.gamePlayers.has("invite-entry:" + item.id), true);
+      assert.equal(page.document.getElementById("join-result")?.hidden, false);
+      assert.equal(page.document.getElementById("join-result-player")?.textContent, "Registered player");
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Joined game\. This player can’t be claimed from this link/);
+      assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed/);
+      assert.equal(controls.claim.disabled, true); assert.equal(controls.claim.hidden, true);
+      assert.equal(controls.another.disabled, false); assert.equal(controls.another.hidden, false);
+      assert.equal(page.document.activeElement, controls.another);
+      controls.claim.disabled = false; dispatchClick(controls.claim); await flushAsync();
+      assert.deepEqual(writes, ["/v1/join/ABCD2345"]);
+      dispatchClick(controls.another);
+      assert.equal(controls.form.hidden, false); assert.equal(controls.nickname.disabled, false);
+      assert.equal(controls.nickname.value, ""); assert.equal(page.document.activeElement, controls.nickname);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const item of [
+  { name: "CR and LF", original: "\r", normalized: "\n" },
+  { name: "NUL and replacement character", original: "\u0000", normalized: "\ufffd" },
+]) {
+  test("results entry correction identity distinguishes " + item.name + " collisions", async () => {
+    const apiState = createMockApiState();
+    const game = seedResultsEntry(apiState, "correction-identity", "admin");
+    const scorerId = "scorer-" + item.original + "legacy";
+    const assistId = "assist-" + item.original + "legacy";
+    const otherScorerId = "scorer-" + item.normalized + "legacy";
+    const otherAssistId = "assist-" + item.normalized + "legacy";
+    for (const [playerId, nickname] of [
+      [scorerId, "Original scorer"], [otherScorerId, "Different scorer"],
+      [assistId, "Original assist"], [otherAssistId, "Different assist"],
+    ]) {
+      apiState.players.set(playerId, { playerId, nickname, claimedByUserId: null, createdAt: game.createdAt, updatedAt: game.updatedAt });
+      apiState.gamePlayers.set(game.gameId + ":" + playerId, { gameId: game.gameId, playerId, createdAt: game.createdAt, updatedAt: game.updatedAt });
+      apiState.roster.set(game.gameId + ":" + playerId, { gameId: game.gameId, playerId, teamId: "red", createdAt: game.createdAt, updatedAt: game.updatedAt });
+    }
+    seedLiveGoalEvent(apiState, game.gameId, "addressable-event");
+    Object.assign(apiState.goalEvents.get("addressable-event")!, { scorerPlayerId: scorerId, assistPlayerIds: [assistId] });
+    refreshMockFinishedResult(apiState, game, "2026-03-28T11:02:00.000Z");
+    const base = createMockFetch(apiState);
+    const patches: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: game.gameId }), url: "http://localhost:3000/games/" + game.gameId,
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (init.method === "PATCH") patches.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init.body)) as Record<string, unknown> });
+        return base(input, init);
+      },
+    });
+    try {
+      assert.match(page.document.querySelector('[data-testid="final-full-goal-log"]')?.textContent ?? "", /Original scorer/);
+      enterFinishedCorrections(page);
+      const edit = page.document.querySelector('[data-action="edit-goal"]');
+      assert(edit instanceof page.window.HTMLButtonElement); assert.equal(edit.disabled, false);
+      dispatchClick(edit);
+      const controls = liveGoalControls(page);
+      const originalScorer = [...controls.scorer.options].find((option) => option.textContent === "Original scorer");
+      const differentScorer = [...controls.scorer.options].find((option) => option.textContent === "Different scorer");
+      assert(originalScorer && differentScorer);
+      assert.equal(originalScorer.value, scorerId, "the visible scorer option must retain its exact opaque identity");
+      assert.equal(differentScorer.value, otherScorerId);
+      assert.equal(controls.scorer.value, scorerId, "editing must retain the recorded scorer, not a normalized collision");
+      controls.scorer.selectedIndex = originalScorer.index;
+      controls.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+      const assists = [...page.document.querySelectorAll<HTMLInputElement>('#goal-assists input[type="checkbox"]')];
+      const originalAssist = assists.find((input) => input.closest("label")?.textContent?.includes("Original assist"));
+      const differentAssist = assists.find((input) => input.closest("label")?.textContent?.includes("Different assist"));
+      assert(originalAssist && differentAssist);
+      assert.equal(originalAssist.value, assistId);
+      assert.equal(differentAssist.value, otherAssistId);
+      assert.equal(originalAssist.checked, true); assert.equal(differentAssist.checked, false);
+      dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(patches.length, 1);
+      assert.equal(patches[0].path, "/v1/games/correction-identity/goals/addressable-event");
+      assert.equal(patches[0].body.scorerPlayerId, scorerId, "correction JSON must not substitute the colliding rostered scorer");
+      assert.deepEqual(patches[0].body.assistPlayerIds, [assistId], "correction JSON must not substitute the colliding rostered assister");
+      assert.equal(apiState.goalEvents.get("addressable-event")?.scorerPlayerId, scorerId);
+      assert.deepEqual(apiState.goalEvents.get("addressable-event")?.assistPlayerIds, [assistId]);
+      assert.equal(controls.cancel.hidden, true);
+      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    } finally { page.dom.window.close(); }
+  });
+}

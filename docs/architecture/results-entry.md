@@ -50,6 +50,21 @@ same-account replay and email restrictions are unchanged. Open league uses a
 validated identity from the confirmed response. The contract has no invite
 expiry field; the frontend invents none.
 
+Record identity and navigation policy are separate boundaries. Opaque nonempty
+IDs may contain backslashes or exceed a UI-invented length limit; they remain
+valid record identities in reports and confirmed responses. Ordinary local
+links encode the complete ID as one fixed-prefix route component and check that
+URL parsing preserves it. They do not use the stricter authentication
+return-target validator. Dot segments or malformed Unicode that cannot form a
+lossless route do not undo a confirmed invite: the receipt offers Home instead.
+Unaddressable historical events remain readable, with correction controls
+unavailable rather than targeting a normalized, different API endpoint.
+Scorer and assist control values use DOM properties so HTML parsing cannot
+normalize a historical identity into a different player's ID. Disabled event
+controls contain no actionable normalized ID; undo retains its exact JSON
+expected-event target without needing an individual event URL.
+Authentication return targets retain their existing strict rules unchanged.
+
 Sign-out still requires the existing confirmed HTTP204 before clearing auth
 recovery state or navigating. Only validated entry context is retained for a
 different account. Neither failed logout nor malformed success is called done.

@@ -58,6 +58,26 @@ string remains a supported single league-route component, not an auth redirect;
 a positive compatibility regression proves this. This evidence-disposition
 preserves the existing contract rather than inventing a narrower ID grammar.
 
+GitHub Codex subsequently found a valid P2 on initial head `b8d7367`: the same
+acceptance path still rejected backslash/long league IDs and reused the auth
+return validator for an ordinary encoded league link. The earlier local review
+proved slash-ID compatibility but missed these other contract-valid values.
+The fix separates record validity, ordinary route constructability and strict
+auth-return policy. Confirmed acceptance settles before building the link;
+unaddressable IDs receive a Home continuation, not a false retry. The same
+record-ID restriction is removed from historical contributions and joined
+player responses. Regression execution and renewed exact-head review are
+recorded in the versioned PR packet; initial-head evidence is not reused as a
+claim of final-head external acceptance.
+
+Architecture challenged the broadened historical-ID coverage as well: HTML
+attribute parsing can normalize NUL/CR IDs to a different player's identity.
+Scorer/assist controls preserve their exact values through DOM properties;
+collision regressions cover both normalizations. Historical event corrections
+require lossless URL and HTML identity; disabled actions contain no actionable
+normalized ID. JSON-based undo retains the exact expected event. These are
+frontend identity-preservation fixes, not new backend restrictions.
+
 Bounded fixture corrections retained their decisive assertions: rejected page
 copy is checked on the body rather than a legitimate browser-tab title, and the
 callback clock is paused before navigation while keeping the2999/3000ms checks.
@@ -66,15 +86,26 @@ match navigation introduced by their parent slices.
 
 ## Validation and remaining acceptance
 
-Completed local execution:331/331 interaction cases;23/23 layout cases;
-311/311 API and379/379 app cases;57/57 review-gate tests; lint/typecheck,
-contracts and build. Final results/entry browser file passed49/49. Each owned
+Completed local execution:352/352 interaction cases;23/23 layout cases;
+311/311 API and400/400 app cases;57/57 review-gate tests; lint/typecheck,
+contracts and build. Final results/entry browser file passed51/51. Each owned
 group exited0 with no descendants; peak aggregate RSS remained below4GiB.
-The final six-suite browser matrix passed159/159. The isolated local M2 passed
+The final six-suite browser matrix passed161/161. The isolated local M2 passed
 4/4, including the real fake-email/database journey and three cleanup cases.
 All services exited and the owned in-memory database was removed, leaving
 unrelated local containers untouched. Exact-head external results belong in
 the versioned PR packet after publication.
+
+The external-finding fix added21 focused interaction cases, all passing. Two
+test-only negative controls proved the old source failures without replacing
+workspace files: a confirmed backslash invite hid its continuation, and a
+relaxed-ID-only old controller changed a CR scorer ID to the distinct LF ID.
+The fixed full interaction file passed in group83435 (peak1234624KiB), full
+repository validation in group83716 (peak1460816KiB), two focused mobile invite
+cases in group85052 (peak853616KiB), and the final161 browser cases in group85202
+(peak1892016KiB). Each exited0 with no descendants. Independent architecture,
+security, engineering and QA source review closed all material findings; the
+design reviewer also approved the two corrected320px continuation captures.
 
 Run focused tests, complete affected files, serialized lint/typecheck/full
 app/API/contracts/build/review-gate tests, production-built browser fixtures and

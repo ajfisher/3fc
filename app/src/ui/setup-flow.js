@@ -39,7 +39,23 @@
   }
 
   function usableEntityId(value) {
-    return typeof value === "string" && value.length > 0 && value.length <= 512 && value.trim() === value && !/[\\\u0000-\u001f\u007f]/u.test(value);
+    // Record identity is an opaque nonempty string. URL constructability and
+    // the stricter authentication return-target policy are separate concerns.
+    return typeof value === "string" && value.trim().length > 0;
+  }
+
+  function encodedRecordPath(prefix, id, suffix = "") {
+    try {
+      const encodedId = encodeURIComponent(id);
+      const path = prefix + encodedId + suffix;
+      const target = new URL(path, window.location.origin);
+      return target.origin === window.location.origin && target.pathname === path &&
+        !target.search && !target.hash && decodeURIComponent(encodedId) === id ? path : null;
+    } catch {
+      // Dot segments normalize away; malformed Unicode cannot be represented
+      // losslessly. Neither means an already-confirmed write was rejected.
+      return null;
+    }
   }
 
   function navigateTo(url, mode = "assign") {
@@ -84,7 +100,10 @@
       : resolveRouteEntityId("data-invite-code", "invites") || query.get("code"));
     const params = new URLSearchParams();
     if (validEntryCode(code)) params.set("code", code);
-    if (page === "join" && usableEntityId(playerId)) params.set("playerId", playerId);
+    if (page === "join" && usableEntityId(playerId)) {
+      params.set("playerId", playerId);
+      if (params.get("playerId") !== playerId) return null;
+    }
     const target = `${page === "join" ? "/join" : "/invites"}${params.size ? `?${params}` : ""}`;
     try {
       return typeof window.__THREEFC_NORMALIZE_RETURN_TO__ === "function" ? window.__THREEFC_NORMALIZE_RETURN_TO__(target) : null;
@@ -3525,6 +3544,12 @@
         options.length > 0 || preservesMissingSelection
           ? `${placeholderOption}${preservedOption}${renderedOptions}`
           : `<option value="">${escapeHtml(emptyLabel)}</option>`;
+      // HTML attribute parsing normalizes CR and NUL. Restore opaque record
+      // values through DOM properties before selecting an existing identity.
+      const renderedValues = options.length > 0 || preservesMissingSelection
+        ? [...(includePlaceholder ? [""] : []), ...(preservesMissingSelection ? [selectedValue] : []), ...options.map((option) => option.value)]
+        : [""];
+      renderedValues.forEach((value, index) => { selectElement.options[index].value = value; });
       selectElement.value = safeSelected;
       selectElement.disabled = options.length === 0 && !preservesMissingSelection;
     }
@@ -3625,6 +3650,10 @@
           </label>`;
         })
         .join("");
+      goalAssistsElement.querySelectorAll('input[type="checkbox"]').forEach((input, index) => {
+        // Keep the submitted player identity exact, independent of HTML parsing.
+        input.value = rostered[index].playerId;
+      });
     }
 
     function renderGoalControls(seed = {}) {
@@ -4020,10 +4049,9 @@
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
       const finishedActionsDisabled =
         goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null || !canScoreGame();
-      const disabledAttribute = finishedActionsDisabled ? " disabled" : "";
       goalTimelineElement.innerHTML = [...goalTimeline]
         .reverse()
-        .map((goal) => {
+        .map((goal, index) => {
           const assists =
             Array.isArray(goal.assistPlayerIds) && goal.assistPlayerIds.length > 0
               ? goal.assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")
@@ -4032,6 +4060,10 @@
           const displayTime = goalDisplayTime(goal);
           const scorer = String(playerNickname(goal.scorerPlayerId));
           const eventId = String(goal.eventId ?? "");
+          const addressable = goalEventControlAvailable(eventId);
+          const disabledAttribute = finishedActionsDisabled || !addressable ? " disabled" : "";
+          const unavailableId = `goal-action-unavailable-${index}`;
+          const reasonAttribute = addressable ? "" : ` aria-describedby="${unavailableId}"`;
           const scoringContext = goal.ownGoal
             ? `<span data-ui="own-goal-marker" aria-label="Own goal">OG</span>`
             : renderGoalTeamChip(goal.scoringTeamId, "Scoring team");
@@ -4049,16 +4081,17 @@
                 ${renderThirdIndicator(goal.third)}
               </div>
               ${assists ? `<small>Assists: ${escapeHtml(assists)}</small>` : ""}
+              ${addressable ? "" : `<small id="${unavailableId}">Editing isn’t available for this goal.</small>`}
             </div>
             <div data-ui="row-action-buttons">
               <button data-ui="icon-button" type="button" data-action="edit-goal" data-event-id="${escapeHtml(
-                eventId,
-              )}" aria-label="Edit ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Edit goal"${
+                addressable ? eventId : "",
+              )}" aria-label="Edit ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Edit goal"${reasonAttribute}${
                 disabledAttribute
               }>${renderClientIcon("pencil")}</button>
               <button data-ui="icon-button" data-variant="danger" type="button" data-action="delete-goal" data-event-id="${escapeHtml(
-                eventId,
-              )}" aria-label="Delete ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Delete goal"${
+                addressable ? eventId : "",
+              )}" aria-label="Delete ${escapeHtml(scorer)} goal at ${escapeHtml(displayTime)}" title="Delete goal"${reasonAttribute}${
                 disabledAttribute
               }>${renderClientIcon("trash-2")}</button>
             </div>
@@ -4225,8 +4258,23 @@
       ].includes(error.responseCode);
     }
 
+    function goalMutationPath(kind, eventId = null) {
+      const goalsPath = encodedRecordPath("/v1/games/", gameId, "/goals");
+      if (!goalsPath) return null;
+      if (kind === "undo") return goalsPath + "/undo-last";
+      return eventId ? encodedRecordPath(goalsPath + "/", eventId) : goalsPath;
+    }
+
+    function goalEventControlAvailable(eventId) {
+      if (!goalMutationPath("edit", eventId)) return false;
+      const probe = document.createElement("span");
+      probe.innerHTML = `<i data-event-id="${escapeHtml(eventId)}"></i>`;
+      return probe.firstElementChild?.getAttribute("data-event-id") === eventId;
+    }
+
     function newGoalOperation(kind, eventId = null, payload = null) {
-      const path = `/v1/games/${encodeURIComponent(gameId)}/goals${kind === "undo" ? "/undo-last" : eventId ? `/${encodeURIComponent(eventId)}` : ""}`;
+      const path = goalMutationPath(kind, eventId);
+      if (!path) return null;
       const method = kind === "delete" ? "DELETE" : kind === "edit" ? "PATCH" : "POST";
       const prefix = kind === "edit" ? "update-goal" : `${kind}-goal`;
       const requestPayload = kind === "undo" ? { expectedEventId: eventId } : payload;
@@ -4282,7 +4330,7 @@
     }
 
     async function performGoalOperation(operation, initiator) {
-      if (goalMutationInFlight || operation !== goalOperation || timerMutationPending || clockOperation || !canScoreGame()) return;
+      if (!operation || goalMutationInFlight || operation !== goalOperation || timerMutationPending || clockOperation || !canScoreGame()) return;
       const finishFocus = trackScoringOperationFocus(initiator);
       const saved = operation.kind === "create" ? "Goal recorded" : operation.kind === "edit" ? "Goal updated" : operation.kind === "delete" ? "Goal deleted" : "Latest goal undone";
       const progress = operation.kind === "delete" ? "Deleting goal" : operation.kind === "undo" ? "Undoing latest goal" : "Saving goal";
@@ -5489,7 +5537,7 @@
         if (target.disabled || goalMutationInFlight || goalOperation || timerMutationPending || clockOperation || !canScoreGame() || !goalTimelineLoaded) return;
         const eventId = target.getAttribute("data-event-id");
         const goal = goalTimeline.find((item) => item.eventId === eventId);
-        if (!goal) return;
+        if (!goal || !goalEventControlAvailable(eventId)) return;
         if (action === "edit-goal") {
           populateGoalForm(goal);
           return;
@@ -5626,6 +5674,14 @@
     async function claimJoinedPlayer(playerId) {
       if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId || claimButton.disabled) return;
       const finishFocus = trackEntryFocus(claimButton);
+      const claimPath = encodedRecordPath("/v1/players/", playerId, "/claim");
+      if (!claimPath) {
+        claimButton.hidden = true;
+        claimButton.disabled = true;
+        showError((joined ? "Joined game. " : "") + "This player can’t be claimed from this link. Ask the organiser for help.", { includesOutcome: true });
+        if (finishFocus()) focusClaimContinuation();
+        return;
+      }
       claimPending = true;
       const revision = ++claimRevision;
       claimButton.disabled = true;
@@ -5635,7 +5691,7 @@
       setStatus("Claiming player…", "default");
       if (signInLink instanceof HTMLAnchorElement) signInLink.hidden = true;
       try {
-        const result = await requestJsonOrThrow("/v1/players/" + encodeURIComponent(playerId) + "/claim", {
+        const result = await requestJsonOrThrow(claimPath, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
         });
         if (result?.player?.playerId !== playerId || typeof result.player.nickname !== "string" ||
@@ -5876,15 +5932,15 @@
           (payload?.invite?.leagueId !== undefined && payload.invite.leagueId !== leagueId) ||
           (payload?.access?.leagueId !== undefined && payload.access.leagueId !== leagueId) ||
           (payload?.invite?.inviteCode !== undefined && payload.invite.inviteCode !== operation.code)) throw new Error("invite_unconfirmed");
-        const path = "/leagues/" + encodeURIComponent(leagueId);
-        if (typeof window.__THREEFC_NORMALIZE_RETURN_TO__ !== "function" || window.__THREEFC_NORMALIZE_RETURN_TO__(path) !== path) throw new Error("invite_unconfirmed");
         accepted = true;
         attempt = null;
+        const path = encodedRecordPath("/leagues/", leagueId);
         if (leagueLink instanceof HTMLAnchorElement) {
-          leagueLink.href = path;
+          leagueLink.href = path ?? "/setup";
+          leagueLink.textContent = path ? "Open league" : "Go to Home";
           leagueLink.hidden = false;
         }
-        setStatus("Organiser invite accepted.", "success");
+        setStatus(path ? "Organiser invite accepted." : "Organiser invite accepted. Go to Home to continue.", "success");
       } catch (error) {
         const definitive = !operation.uncertain && isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
           (error.statusCode !== 409 || (error.responseError === "conflict" && error.responseCode === "invite_already_accepted"));
