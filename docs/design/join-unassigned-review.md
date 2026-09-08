@@ -164,10 +164,53 @@ states only. They do not establish physical-device behaviour, every viewport or
 zoom state, a complete accessibility audit, or deployed acceptance. Interaction
 and transport claims rely on their separate executed tests, not screenshots.
 
+## GitHub review: encoded gateway identity
+
+Codex review5138544044 on0a8eb209caf735e4747d1ba84cbcb4fdd1c6d39d
+identified decoded HTTP API context paths as a missing deployment boundary.
+An anonymous QA probe additionally demonstrated that the single-segment gateway
+route rejected encoded slash before Lambda (gateway404), while encoded backslash
+reached Lambda's401. [AWS route documentation](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-routes.html)
+describes decoded parameters and greedy path variables.
+
+The fix is scoped to the new GET/OPTIONS transport route: `{playerId+}` lets the
+gateway pass encoded slashes, but the application accepts one raw encoded ID
+component only. The GET chooses rawPath before context-path decoding; other
+routes retain their original precedence. Session classification, safe failures
+and logging use that same selected path. Exact membership decodes each capture
+once; literal extra separators remain404 and do not read player data. No ANY
+route or write permission is introduced. Architecture approved this adjustment
+before the deployment edit. Realistic Lambda events now distinguish encoded
+rawPath from decoded context path, including percent/double-decode cases.
+
+Post-fix deployed acceptance must prove encoded-slash anonymous401/no-store and
+authenticated once-decoded missing-ID404, alongside the ordinary named receipt.
+Initial12/12 deployed acceptance at0a8eb20/run34198052736 passed, but does not
+prove the corrected head; fresh CI, Codex and QA evidence are mandatory.
+
+The transport fix passed four focused cases, then113 Lambda/deployment cases.
+Independent architecture and engineering/QA re-review found no material blocker.
+Final serialized lint/full tests/contracts/build/strict QA-fixture typecheck and
+11 QA safety tests passed in group98742, exit0, peak2,116,992KiB, no children;
+the deployed test was deliberately skipped in that local run. API coverage now
+contains327 passing tests. The unchanged frontend's180-case browser matrix
+remains applicable; exact-head deployed acceptance is rerun after publication.
+The local M2 smoke also passed4/4 in group97469, exit0, host peak1,331,632KiB
+plus a hard512MiB ephemeral database. All owned services exited and the database
+container was removed; no real data or credentials were captured.
+
 ## Rollback order
 
-Deployment is API-first, then frontend. The additive response remains compatible
-with the parent frontend. A new frontend encountering an old API shows explicit
-read recovery/fallback. Roll back the frontend first, then the API, to the validated
-parent; no migration or reversal of durable join/claim/assignment writes is needed.
+The existing QA workflow deploys the site, API health and API core in that order;
+this slice does not change it. The additive response remains compatible with the
+parent frontend. During the site-first interval, a new frontend encountering the
+old API shows the limited roster-search fallback and hides Claim on context404.
+That terminal lookup state requires reloading after the API deployment, not an
+automatic retry. A site-only deployment is not completed acceptance: require a
+successful API deployment and exact-head provenance before QA/review readiness.
+Architecture review accepted this bounded temporary degradation; a separately
+authorized manual rollout could deploy API first to avoid it.
+
+Roll back the frontend first, then the API, to the validated parent; no migration
+or reversal of durable join/claim/assignment writes is needed.
 No rollback deployment, merge or production release is implied.

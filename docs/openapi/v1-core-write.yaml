@@ -94,7 +94,7 @@ paths:
   /v1/join/{joinCode}/players/{playerId}:
     get:
       summary: Identify a joined player for an authenticated claim screen
-      description: Requires a valid session and the exact player link in the game identified by the join code. Returns public identity only; does not claim a player or grant access. All responses use Cache-Control no-store.
+      description: Requires a valid session and the exact player link in the game identified by the join code. Encode playerId as one URL path component. The gateway uses a greedy transport parameter to pass encoded slashes through, but the application accepts only one raw encoded component and decodes it once. Returns public identity only; does not claim a player or grant access. All responses use Cache-Control no-store.
       operationId: getJoinPlayerContext
       parameters:
         - name: joinCode

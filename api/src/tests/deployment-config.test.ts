@@ -13,13 +13,13 @@ const qaWorkflow = readFileSync(resolve(process.cwd(), "../.github/workflows/dep
 function assertServerlessRoute(method: string, path: string): void {
   assert.match(
     serverlessCoreConfig,
-    new RegExp(`method:\\s*${method}\\s+path:\\s*${path.replace(/[{}]/g, "\\$&")}`),
+    new RegExp(`method:\\s*${method}\\s+path:\\s*${path.replace(/[{}+]/g, "\\$&")}`),
   );
 }
 
 test("api core deployment config registers claim and access routes", () => {
-  assertServerlessRoute("GET", "/v1/join/{joinCode}/players/{playerId}");
-  assertServerlessRoute("OPTIONS", "/v1/join/{joinCode}/players/{playerId}");
+  assertServerlessRoute("GET", "/v1/join/{joinCode}/players/{playerId+}");
+  assertServerlessRoute("OPTIONS", "/v1/join/{joinCode}/players/{playerId+}");
   assertServerlessRoute("POST", "/v1/auth/logout");
   assertServerlessRoute("OPTIONS", "/v1/auth/logout");
   assertServerlessRoute("POST", "/v1/players/{playerId}/claim");

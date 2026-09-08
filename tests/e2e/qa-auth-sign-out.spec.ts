@@ -266,6 +266,9 @@ async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: strin
   }
   const anonymous = await safeRead(path, false);
   expect(anonymous.status).toBe(401);
+  const encodedSlash = await safeRead(`/v1/join/${code}/players/codex-missing%2Fopaque`, false);
+  expect(encodedSlash.status).toBe(401);
+  expect(encodedSlash.cache).toBe("no-store");
   const valid = await safeRead(path, true);
   expect(valid.status).toBe(200);
   expect(valid.cache).toBe("no-store");
@@ -275,6 +278,11 @@ async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: strin
   const missing = await safeRead(`/v1/join/${code}/players/codex-missing-${randomUUID()}`, true);
   expect(missing.status).toBe(404);
   expect(missing.body?.player === undefined).toBe(true);
+  // The literal "%ZZ" is a valid opaque ID substring after one decode. If
+  // Lambda uses the decoded context path and decodes again this becomes400.
+  const onceDecoded = await safeRead(`/v1/join/${code}/players/codex-missing-%25ZZ`, true);
+  expect(onceDecoded.status).toBe(404);
+  expect(onceDecoded.cache).toBe("no-store");
   const roster = await safeRead(rosterPath, true);
   expect(roster.status).toBe(403); // A display lookup does not grant league access.
   let writes = 0;
@@ -310,7 +318,7 @@ async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: strin
     throw new Error("QA join display acceptance failed; sensitive detail suppressed");
   }
   await page.unroute(`${api}/v1/**`, guard);
-  console.log("QA join context PASS: named authenticated read, anonymous401, missing404, roster403, strict public fields, zero browser writes");
+  console.log("QA join context PASS: named authenticated read, anonymous401, encoded-slash401, once-decoded404, missing404, roster403, strict public fields, zero browser writes");
 }
 
 test("QA credential transport suppresses secrets from network and cookie errors", async () => {

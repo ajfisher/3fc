@@ -309,7 +309,7 @@ function createJoinContextHarness(role?: "admin" | "scorekeeper" | "viewer") {
   const stamp = "2026-02-23T00:00:00.000Z";
   const gameId = "game-context";
   const players = Object.fromEntries(Array.from({ length: 46 }, (_, index) => {
-    const playerId = index === 45 ? "player/opaque\\identity" : `player-${index}`;
+    const playerId = index === 45 ? "player/opaque\\identity" : index === 44 ? "player%2Fopaque" : `player-${index}`;
     return [playerId, { playerId, nickname: "Same name", claimedByUserId: index === 45 ? "private-owner@example.com" : null, createdAt: stamp, updatedAt: stamp }];
   }));
   return createHarness({
@@ -356,6 +356,45 @@ test("core lambda join context is session and membership bound without granting 
     const result = await harness.handler(createEvent({ method: "GET", path: invalidPath, headers }));
     assert.equal(result.statusCode, 400); assert.equal(result.headers["cache-control"], "no-store");
   }
+});
+
+for (const playerId of ["player/opaque\\identity", "player%2Fopaque"]) {
+  test("core lambda join context preserves raw identity when HTTP API supplies a decoded context path: " + encodeURIComponent(playerId), async () => {
+    const harness = createJoinContextHarness();
+    const rawPath = "/v1/join/ABCD2345/players/" + encodeURIComponent(playerId);
+    const event = createEvent({ method: "GET", path: decodeURIComponent(rawPath) });
+    event.rawPath = rawPath;
+    const anonymous = await harness.handler(event);
+    assert.equal(anonymous.statusCode, 401);
+    assert.equal(anonymous.headers["cache-control"], "no-store");
+    event.headers = { Cookie: "threefc_session=context-session" };
+    const response = await harness.handler(event);
+    assert.equal(response.statusCode, 200);
+    assert.equal(JSON.parse(response.body).player.playerId, playerId, "decode each raw parameter exactly once");
+    assert.equal(response.headers["cache-control"], "no-store");
+    assert.equal(harness.createdPlayers.length, 0);
+    assert.equal(harness.grantedLeagueAccess.length, 0);
+
+    const unavailable = createHarness({ getSessionError: new Error("private session diagnostic") });
+    const failed = await unavailable.handler(event);
+    assert.equal(failed.statusCode, 503);
+    assert.equal(failed.headers["cache-control"], "no-store");
+    assert.doesNotMatch(failed.body, /private|diagnostic/);
+  });
+}
+
+test("core lambda join transport rejects literal extra segments and preserves legacy path precedence", async () => {
+  const harness = createJoinContextHarness();
+  const headers = { Cookie: "threefc_session=context-session" };
+  const invalid = await harness.handler(createEvent({ method: "GET", path: "/v1/join/ABCD2345/players/player/opaque", headers }));
+  assert.equal(invalid.statusCode, 404);
+  assert.doesNotMatch(invalid.body, /Same name|playerId/);
+  assert.equal(harness.getGameCalls.length, 0);
+  const legacy = createEvent({ method: "GET", path: "/v1/auth/session", headers });
+  legacy.rawPath = "/legacy-context-precedence";
+  const session = await harness.handler(legacy);
+  assert.equal(session.statusCode, 200);
+  assert.equal(JSON.parse(session.body).authenticated, true);
 });
 
 test("core lambda join context session-store failures are generic and never cacheable", async () => {

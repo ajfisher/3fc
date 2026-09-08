@@ -669,10 +669,16 @@ interface CoreHandlerDependencies {
 }
 
 function getRequestDetails(event: ApiGatewayHttpEvent): RequestDetails {
+  const method = event.requestContext?.http?.method ?? "GET";
+  // HTTP API's context path can already be decoded. This new display route
+  // must split the encoded path first, then decode each opaque ID exactly once.
+  // Preserve legacy routing precedence for every other read and all mutations.
+  const encodedJoinContext = method === "GET" && typeof event.rawPath === "string" &&
+    /^\/v1\/join\/[^/]+\/players\/[^/]+$/.test(event.rawPath);
   return {
     requestId: event.requestContext?.requestId ?? randomUUID(),
-    route: event.requestContext?.http?.path ?? event.rawPath ?? "/",
-    method: event.requestContext?.http?.method ?? "GET",
+    route: encodedJoinContext ? event.rawPath! : event.requestContext?.http?.path ?? event.rawPath ?? "/",
+    method,
   };
 }
 
