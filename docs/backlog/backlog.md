@@ -106,7 +106,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-04` | frontend-stack | review-ready | [#135](https://github.com/ajfisher/3fc/issues/135) | codex/design-live-scoring |
 | `UX-05` | frontend-stack | implemented | [#136](https://github.com/ajfisher/3fc/issues/136) | codex/design-results-entry |
 | `UX-08` | frontend-stack | implemented | [#151](https://github.com/ajfisher/3fc/issues/151) | codex/design-match-flow-polish |
-| `UX-09` | frontend-stack | planned | [#152](https://github.com/ajfisher/3fc/issues/152) | - |
+| `UX-09` | frontend-stack | implemented | [#152](https://github.com/ajfisher/3fc/issues/152) | codex/design-join-unassigned |
 | `UX-10` | frontend-stack | planned | [#153](https://github.com/ajfisher/3fc/issues/153) | - |
 | `UX-06` | frontend-stack | partial | [#137](https://github.com/ajfisher/3fc/issues/137) | codex/design-results-entry |
 | `M3-07` | deferred-player-portal | planned | [#138](https://github.com/ajfisher/3fc/issues/138) | - |

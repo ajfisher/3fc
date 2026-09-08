@@ -932,6 +932,12 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
                   type: "button",
                   "data-action": "claim-player",
                   "data-testid": "claim-player",
+                  "aria-describedby": "join-result-player",
+                })}
+                ${renderButton("Retry lookup", "secondary", {
+                  type: "button",
+                  "data-action": "retry-join-context",
+                  hidden: "",
                 })}
               </div>
             </section>

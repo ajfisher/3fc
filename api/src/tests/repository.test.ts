@@ -425,6 +425,68 @@ function createRepositoryHarness(): { repository: ThreeFcRepository; client: InM
   };
 }
 
+test("repository complete roster reads follow scoped continuation through empty pages without changing ordinary reads", async () => {
+  const stamp = "2026-09-08T10:00:00.000Z";
+  for (const prefix of ["PLAYER#", "ROSTER#"] as const) {
+    const observed: Array<{ cursor: string | undefined; consistent: boolean | undefined }> = [];
+    const makeItem = (id: string): Item => ({
+      pk: { S: "GAME#game-one" }, sk: { S: prefix + id },
+      entityType: { S: prefix === "PLAYER#" ? "gamePlayer" : "roster" },
+      createdAt: { S: stamp }, updatedAt: { S: stamp },
+      data: { S: JSON.stringify({ gameId: "game-one", playerId: id, ...(prefix === "ROSTER#" ? { teamId: "red" } : {}) }) },
+    });
+    const client = { async send(command: unknown) {
+      assert(command instanceof QueryCommand);
+      assert.equal(command.input.ExpressionAttributeValues?.[":pk"].S, "GAME#game-one");
+      assert.equal(command.input.ExpressionAttributeValues?.[":skPrefix"].S, prefix);
+      const cursor = command.input.ExclusiveStartKey?.sk?.S;
+      observed.push({ cursor, consistent: command.input.ConsistentRead });
+      if (!cursor) return { Items: [makeItem("one")], LastEvaluatedKey: { pk: { S: "GAME#game-one" }, sk: { S: prefix + "one" } } };
+      if (cursor === prefix + "one") return { Items: [], LastEvaluatedKey: { pk: { S: "GAME#game-one" }, sk: { S: prefix + "two" } } };
+      return { Items: [makeItem("three")] };
+    } };
+    const repository = new ThreeFcRepository(client, "test", new IncrementingClock());
+    const read = prefix === "PLAYER#" ? repository.listGamePlayers.bind(repository) : repository.listGameRoster.bind(repository);
+    assert.deepEqual((await read("game-one")).map((entry) => entry.playerId), ["one"]);
+    assert.equal(observed.length, 1);
+    observed.length = 0;
+    assert.deepEqual((await read("game-one", { complete: true, consistentRead: true })).map((entry) => entry.playerId), ["one", "three"]);
+    assert.deepEqual(observed, [undefined, prefix + "one", prefix + "two"].map((cursor) => ({ cursor, consistent: true })));
+  }
+});
+
+test("repository complete roster continuation fails closed on errors or repeated cursors", async () => {
+  for (const failure of ["repeated", "failed"] as const) {
+    let calls = 0;
+    const repository = new ThreeFcRepository({ async send(command: unknown) {
+      assert(command instanceof QueryCommand); calls += 1;
+      if (calls === 2 && failure === "failed") throw new Error("read failed");
+      return { Items: [], LastEvaluatedKey: { pk: { S: "GAME#game-one" }, sk: { S: "PLAYER#same" } } };
+    } }, "test", new IncrementingClock());
+    await assert.rejects(repository.listGamePlayers("game-one", { complete: true }), failure === "failed" ? /read failed/ : /continuation/);
+    assert.equal(calls, 2);
+  }
+});
+
+test("repository join context membership and profile use exact strongly consistent identity reads", async () => {
+  const { repository, client } = createRepositoryHarness();
+  const game = await repository.createGame({ gameId: "game-context", leagueId: "league", seasonId: "season", sessionId: "session", gameStartTs: "2026-09-08T10:00:00Z" });
+  const id = "player/opaque\\identity";
+  const joined = await repository.joinGameByCode({ joinCode: game.joinCode, playerId: id, nickname: "Ari" });
+  assert(joined);
+  client.getItemRequests.length = 0;
+  assert.deepEqual(await repository.getGamePlayer(game.gameId, id), joined.link);
+  assert.equal((await repository.getPlayer(id, { consistentRead: true }))?.playerId, id);
+  assert.deepEqual(client.getItemRequests, [
+    { pk: "GAME#game-context", sk: `PLAYER#${id}`, consistentRead: true },
+    { pk: `PLAYER#${id}`, sk: "PROFILE", consistentRead: true },
+  ]);
+  assert.equal(await repository.getGamePlayer("other-game", id), null);
+  const stored = client.readItem("GAME#game-context", `PLAYER#${id}`); assert(stored);
+  stored.data = { S: JSON.stringify({ gameId: "other-game", playerId: id }) };
+  assert.equal(await repository.getGamePlayer(game.gameId, id), null);
+});
+
 function markStoredGameFinished(client: InMemoryDynamoClient, gameId: string): void {
   const item = client.readItem(`GAME#${gameId}`, "METADATA");
   assert.ok(item);

@@ -52,7 +52,7 @@ request fan-out. Existing sign-out and invitation outcome feedback remain.
 | Overview | Actual date, kickoff, status and third length. Edit game opens only when requested and authorised. Join game and Reference IDs are optional details. |
 | Teams | Unassigned candidates when available, then Red, Blue and Yellow. Assigned identities appear once. Search players filters current-game names. |
 | Add player | Player name, Add player and Cancel. Native Enter submission; retained failed/uncertain input and safe consecutive additions. |
-| Capped search | “Search by name to find more players.” A capped candidate response is not described as the complete game population. |
+| Unassigned | Complete registered/unassigned public identities from the authorized roster read; local name filtering, independent of capped administrator enrichment. Missing/malformed new collection falls back honestly: “The full Unassigned list is unavailable. Search by name to find players.” |
 | Filtered empty state | “No matching players.” Do not turn a filtered list or unavailable enrichment into an assertion that nobody joined. |
 | Viewer roster | Existing public assigned names and teams, without fabricated Unassigned 0, claim status or management controls. |
 | Transfer | Familiar transfer action with an entity-specific accessible name, only other teams, preserved context on failure. An uncertain request says “Assignment could not be confirmed. Retry this team choice or reload to check.” |
@@ -89,7 +89,7 @@ scorekeeper editing.
 | Unavailable log | Player contributions and the match log could not be loaded. Reload to try again. A missing or partial log is not an empty match. |
 | Goal log | Time, full player name, dot-only team relationship and accessible thirds. Optional assists, explicit OG; no repeated conceding-only explanation. |
 | Join | Join game; Player name; Use the name the scorekeeper expects. One join code and no raw game-ID receipt. |
-| Claim | Sign in to claim this player / Claim player / Player claimed. Claiming is not scorer access and makes no personal-history promise. |
+| Claim | Verified Player/name receipt before Claim player on return; Sign in to claim this player / Claim player / Player claimed. Loading player… and a separate Retry lookup read action when needed. Claiming is not scorer access and makes no personal-history promise. |
 | Unconfirmed joining/acceptance | Explain uncertainty and retry the captured action. Do not convert edited input into a second operation while the original is unresolved. |
 | Organiser invite | One invite code, Accept invite, then Open league only after a valid confirmed response. If the confirmed league has no usable direct link, offer Go to Home; do not call the accepted invite unconfirmed. No Pending league, repeated code, or invented expiry deadline. |
 | Sign in | Sign in to 3FC; Email address; Send sign-in link. No organiser-only or unfinished-account paragraph. |

@@ -89,6 +89,7 @@ import {
 } from "./data/repository.js";
 import type { LeagueInviteRecord, GameRecord } from "./data/types.js";
 import { buildHealthResponse } from "./index.js";
+import { readJoinPlayerContext, readRosterPlayerData, unavailableJoinPlayerContext, type PlayerReadRepository } from "./player-reads.js";
 import { logAuthRateLimit, logMagicLinkEvent, logRequest, logRequestError } from "./logging.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
@@ -967,21 +968,11 @@ async function buildRosterResponse(game: {
   updatedAt: string;
 }) {
   const teams = await readGameTeams(game);
-  const roster = await repository.listGameRoster(game.gameId);
-  const playersById = new Map(
-    (
-      await Promise.all(
-        [...new Set(roster.map((assignment) => assignment.playerId))].map((playerId) =>
-          repository.getPlayer(playerId),
-        ),
-      )
-    )
-      .filter((player) => player !== null)
-      .map((player) => [player.playerId, toPublicPlayer(player)]),
-  );
+  const { roster, playersById, unassignedPlayers } = await readRosterPlayerData(repository, game.gameId);
 
   return {
     teams,
+    unassignedPlayers,
     roster: roster
       .map((assignment) => ({
         ...assignment,
@@ -2967,6 +2958,26 @@ async function handleMagicLinkStart(
   }
 }
 
+export async function handleLocalJoinPlayerContextRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  session: AuthSessionRecord | null;
+  rawJoinCode: string;
+  rawPlayerId: string;
+  playerRepository?: PlayerReadRepository;
+}): Promise<number> {
+  const headers = { "Cache-Control": "no-store" };
+  if (!input.session) {
+    sendJsonWithCors(input.request, input.response, 401, {
+      error: "unauthorized", message: "Valid session cookie required.",
+    }, headers);
+    return 401;
+  }
+  const result = await readJoinPlayerContext(input.playerRepository ?? repository, input.rawJoinCode, input.rawPlayerId);
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
 export async function handleLocalLogoutRoute(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -3327,6 +3338,15 @@ async function start(): Promise<void> {
               },
             };
           },
+        });
+        return;
+      }
+
+      const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/players\/([^/]+)$/);
+      if (method === "GET" && joinPlayerContextMatch) {
+        status = await handleLocalJoinPlayerContextRoute({
+          request, response, session: authGate.session,
+          rawJoinCode: joinPlayerContextMatch[1], rawPlayerId: joinPlayerContextMatch[2],
         });
         return;
       }
@@ -5446,6 +5466,12 @@ async function start(): Promise<void> {
       status = 404;
       sendJsonWithCors(request, response, status, { error: "Not found" });
     } catch (error) {
+      if (method === "GET" && /^\/v1\/join\/[^/]+\/players\/[^/]+$/.test(route)) {
+        const result = unavailableJoinPlayerContext();
+        status = result.statusCode;
+        sendJsonWithCors(request, response, status, result.payload, { "Cache-Control": "no-store" });
+        return;
+      }
       status = 500;
 
       logRequestError({

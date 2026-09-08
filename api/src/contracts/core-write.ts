@@ -3,6 +3,23 @@ import { MAX_ASSISTS, TEAM_IDS, THIRD_LENGTH_MINUTES } from "@3fc/contracts";
 
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
+const opaqueNonEmptyString = z.string().refine((value) => value.trim().length > 0, "must be a non-empty string");
+
+// Public reads never inherit the optional administrator-only access fields.
+export const publicPlayerSchema = z.object({
+  playerId: opaqueNonEmptyString,
+  nickname: opaqueNonEmptyString,
+  createdAt: z.string().datetime({ offset: true }),
+  updatedAt: z.string().datetime({ offset: true }),
+}).strict();
+
+export const joinPlayerContextResponseSchema = z.object({
+  gameId: opaqueNonEmptyString,
+  joinCode: z.string().regex(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/),
+  player: publicPlayerSchema,
+}).strict();
+
+export type PublicPlayer = z.infer<typeof publicPlayerSchema>;
 const teamIdSchema = z.enum(TEAM_IDS);
 const delegatedLeagueRoleSchema = z.enum(["admin", "scorekeeper"]);
 const joinCodePathPattern = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;

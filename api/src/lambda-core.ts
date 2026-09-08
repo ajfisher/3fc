@@ -87,6 +87,7 @@ import type {
   UpdateGoalResult,
 } from "./data/types.js";
 import { logAuthRateLimit, logMagicLinkEvent, logRequest, logRequestError } from "./logging.js";
+import { readJoinPlayerContext, readRosterPlayerData, unavailableJoinPlayerContext } from "./player-reads.js";
 
 const FINISHED_REPAIR_RETRY_DELAYS_MS = [25, 50, 100] as const;
 const FINISHED_REPAIR_MAX_ATTEMPTS = 3;
@@ -411,6 +412,7 @@ interface RepositoryContract {
   }>;
   getPlayer(
     playerId: string,
+    options?: { consistentRead?: boolean },
   ): Promise<
     | {
         playerId: string;
@@ -455,7 +457,10 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listGamePlayers(gameId: string): Promise<
+  getGamePlayer(gameId: string, playerId: string): Promise<{
+    gameId: string; playerId: string; createdAt: string; updatedAt: string;
+  } | null>;
+  listGamePlayers(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<
     Array<{
       gameId: string;
       playerId: string;
@@ -475,7 +480,7 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listGameRoster(gameId: string): Promise<
+  listGameRoster(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<
     Array<{
       gameId: string;
       teamId: TeamId;
@@ -1504,21 +1509,11 @@ async function buildRosterResponse(repository: RepositoryContract, game: {
   updatedAt: string;
 }) {
   const teams = await readGameTeams(repository, game);
-  const roster = await repository.listGameRoster(game.gameId);
-  const playersById = new Map(
-    (
-      await Promise.all(
-        [...new Set(roster.map((assignment) => assignment.playerId))].map((playerId) =>
-          repository.getPlayer(playerId),
-        ),
-      )
-    )
-      .filter((player) => player !== null)
-      .map((player) => [player.playerId, toPublicPlayer(player)]),
-  );
+  const { roster, playersById, unassignedPlayers } = await readRosterPlayerData(repository, game.gameId);
 
   return {
     teams,
+    unassignedPlayers,
     roster: roster
       .map((assignment) => ({
         ...assignment,
@@ -3009,6 +3004,15 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
       }
 
       if (session) {
+        const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/players\/([^/]+)$/);
+        if (method === "GET" && joinPlayerContextMatch) {
+          const result = await readJoinPlayerContext(dependencies.repository, joinPlayerContextMatch[1], joinPlayerContextMatch[2]);
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, {
+            ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
+          });
+        }
+
         const aclResult = await authorizeProtectedMutation(
           method,
           route,
@@ -5707,6 +5711,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
       );
     } catch (error) {
+      if (method === "GET" && /^\/v1\/join\/[^/]+\/players\/[^/]+$/.test(route)) {
+        const result = unavailableJoinPlayerContext();
+        status = result.statusCode;
+        return createJsonResponse(status, result.payload, {
+          ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
+        });
+      }
       status = 500;
 
       logRequestError({

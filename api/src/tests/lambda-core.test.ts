@@ -271,6 +271,7 @@ interface HarnessConfig {
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
   magicLinkStartDelayMs?: number;
   magicLinkStartError?: Error;
+  getSessionError?: Error;
   revokeSessionError?: Error;
   beforeIdempotencyRecordRead?: (input: {
     scope: string;
@@ -302,6 +303,95 @@ function createEvent(input: {
       },
     },
   };
+}
+
+function createJoinContextHarness(role?: "admin" | "scorekeeper" | "viewer") {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const gameId = "game-context";
+  const players = Object.fromEntries(Array.from({ length: 46 }, (_, index) => {
+    const playerId = index === 45 ? "player/opaque\\identity" : `player-${index}`;
+    return [playerId, { playerId, nickname: "Same name", claimedByUserId: index === 45 ? "private-owner@example.com" : null, createdAt: stamp, updatedAt: stamp }];
+  }));
+  return createHarness({
+    sessions: { "context-session": { sessionId: "context-session", email: "reader@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" } },
+    games: { [gameId]: { gameId, joinCode: "ABCD2345", leagueId: "league-context", seasonId: "season", sessionId: "session", status: "scheduled", gameStartTs: stamp, createdAt: stamp, updatedAt: stamp } },
+    seasons: { season: { seasonId: "season", leagueId: "league-context", name: "Context season", slug: null, startsOn: null, endsOn: null, createdAt: stamp, updatedAt: stamp } },
+    players,
+    gamePlayers: Object.fromEntries(Object.keys(players).map((playerId) => [`${gameId}:${playerId}`, { gameId, playerId, createdAt: stamp, updatedAt: stamp }])),
+    rosterAssignments: Object.fromEntries(Object.keys(players).slice(0, 21).map((playerId) => [`${gameId}:${playerId}`, { gameId, playerId, teamId: "red" as const, createdAt: stamp, updatedAt: stamp }])),
+    leagueAccess: role ? { "league-context:reader@example.com": { leagueId: "league-context", userId: "reader@example.com", role, grantedByUserId: "admin", createdAt: stamp, updatedAt: stamp } } : {},
+  });
+}
+
+test("core lambda join context is session and membership bound without granting access or claiming", async () => {
+  const harness = createJoinContextHarness();
+  const path = "/v1/join/abcd2345/players/" + encodeURIComponent("player/opaque\\identity");
+  for (const cookie of [undefined, "threefc_session=invalid"]) {
+    const denied = await harness.handler(createEvent({ method: "GET", path, headers: cookie ? { Cookie: cookie } : {} }));
+    assert.equal(denied.statusCode, 401); assert.equal(denied.headers["cache-control"], "no-store");
+    assert.doesNotMatch(denied.body, /Same name|private-owner/);
+  }
+  const headers = { Cookie: "threefc_session=context-session", Origin: "https://qa.3fc.football" };
+  const response = await harness.handler(createEvent({ method: "GET", path, headers }));
+  assert.equal(response.statusCode, 200); assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(response.headers["Access-Control-Allow-Origin"], "https://qa.3fc.football");
+  const body = JSON.parse(response.body);
+  assert.equal(body.gameId, "game-context"); assert.equal(body.joinCode, "ABCD2345");
+  assert.equal(body.player.playerId, "player/opaque\\identity"); assert.equal(body.player.nickname, "Same name");
+  assert.deepEqual(Object.keys(body.player).sort(), ["createdAt", "nickname", "playerId", "updatedAt"]);
+  assert.doesNotMatch(response.body, /private-owner|reader@example|claimedByUserId|access/);
+  assert.equal(harness.players.get("player/opaque\\identity")?.claimedByUserId, "private-owner@example.com");
+  assert.equal(harness.grantedLeagueAccess.length, 0); assert.equal(harness.createdPlayers.length, 0);
+  const roster = await harness.handler(createEvent({ method: "GET", path: "/v1/games/game-context/roster", headers }));
+  assert.equal(roster.statusCode, 403, "join context is not league access");
+  const unavailable = [];
+  harness.players.set("unlinked-player", { playerId: "unlinked-player", nickname: "Same name", claimedByUserId: null, createdAt: "2026-02-23T00:00:00.000Z", updatedAt: "2026-02-23T00:00:00.000Z" });
+  for (const invalidPath of ["/v1/join/BCDE2345/players/player-1", "/v1/join/ABCD2345/players/missing", "/v1/join/ABCD2345/players/unlinked-player"]) {
+    const result = await harness.handler(createEvent({ method: "GET", path: invalidPath, headers }));
+    assert.equal(result.statusCode, 404); assert.equal(result.headers["cache-control"], "no-store"); unavailable.push(JSON.parse(result.body));
+  }
+  assert.deepEqual(unavailable[0], unavailable[1]);
+  assert.deepEqual(unavailable[0], unavailable[2]);
+  for (const invalidPath of ["/v1/join/short/players/player-1", "/v1/join/%E0%A4%A/players/player-1", "/v1/join/ABCD2345/players/%E0%A4%A"]) {
+    const result = await harness.handler(createEvent({ method: "GET", path: invalidPath, headers }));
+    assert.equal(result.statusCode, 400); assert.equal(result.headers["cache-control"], "no-store");
+  }
+});
+
+test("core lambda join context session-store failures are generic and never cacheable", async () => {
+  const harness = createHarness({ getSessionError: new Error("private SDK credentials diagnostic") });
+  const response = await harness.handler(createEvent({ method: "GET", path: "/v1/join/ABCD2345/players/player-one", headers: { Cookie: "threefc_session=unavailable" } }));
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.deepEqual(JSON.parse(response.body), { error: "unavailable", message: "Player details could not be loaded. Try again." });
+  assert.doesNotMatch(response.body, /private|SDK|credentials/);
+});
+
+for (const role of ["admin", "scorekeeper", "viewer"] as const) {
+  test("core lambda roster exposes complete public unassigned identities to authorized " + role, async () => {
+    const harness = createJoinContextHarness(role);
+    const headers = { Cookie: "threefc_session=context-session" };
+    const request = () => harness.handler(createEvent({ method: "GET", path: "/v1/games/game-context/roster", headers }));
+    const response = await request(); assert.equal(response.statusCode, 200);
+    const body = JSON.parse(response.body);
+    assert.equal(body.roster.length, 21); assert.equal(body.unassignedPlayers.length, 25);
+    assert.equal(new Set(body.unassignedPlayers.map((entry: { playerId: string }) => entry.playerId)).size, 25);
+    assert.doesNotMatch(response.body, /private-owner|reader@example|claimedByUserId|"access"/);
+    const join = await harness.handler(createEvent({ method: "POST", path: "/v1/join/ABCD2345", body: { nickname: "New public join" }, headers: { "Idempotency-Key": "new-public-join" } }));
+    assert.equal(join.statusCode, 201);
+    const joinedId = JSON.parse(join.body).player.playerId;
+    const after = JSON.parse((await request()).body);
+    assert.equal(after.unassignedPlayers.length, 26);
+    assert.equal(after.unassignedPlayers.filter((entry: { playerId: string }) => entry.playerId === joinedId).length, 1);
+    if (role !== "viewer") {
+      const assignment = await harness.handler(createEvent({ method: "PUT", path: "/v1/games/game-context/roster/" + encodeURIComponent(joinedId), headers, body: { teamId: "blue" } }));
+      assert.equal(assignment.statusCode, 200);
+      const moved = JSON.parse((await request()).body);
+      assert.equal(moved.unassignedPlayers.some((entry: { playerId: string }) => entry.playerId === joinedId), false);
+      assert.equal(moved.roster.filter((entry: { playerId: string }) => entry.playerId === joinedId).length, 1);
+    }
+    assert.equal(harness.players.get(joinedId)?.claimedByUserId, null);
+  });
 }
 
 function normalizePayloadForTestHash(value: unknown): unknown {
@@ -801,6 +891,7 @@ function createHarness(config: HarnessConfig = {}) {
         if (config.sessions) delete config.sessions[sessionId];
       },
       async getSession(sessionId: string) {
+        if (config.getSessionError) throw config.getSessionError;
         return config.sessions?.[sessionId] ?? null;
       },
       async start(email: string, options) {
@@ -1546,6 +1637,9 @@ function createHarness(config: HarnessConfig = {}) {
       },
       async listGamePlayers(gameId: string) {
         return [...gamePlayers.values()].filter((player) => player.gameId === gameId);
+      },
+      async getGamePlayer(gameId: string, playerId: string) {
+        return gamePlayers.get(`${gameId}:${playerId}`) ?? null;
       },
       async assignRosterPlayer(input) {
         if (assignRosterPlayerStateChangedOnce) {

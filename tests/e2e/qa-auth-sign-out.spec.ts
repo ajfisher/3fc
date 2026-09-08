@@ -240,6 +240,79 @@ async function installSessionCookie(context: BrowserContext, headers: Headers) {
   }
 }
 
+// Optional read-only acceptance of a user-approved existing join context. These
+// are public display identifiers, never credentials. The synthetic account has
+// no league ACL; no player is joined, claimed or assigned by this helper.
+async function verifyReadOnlyJoinContext(page: Page, cookie: string, head: string) {
+  if (process.env.THREEFC_QA_JOIN_CONTEXT !== "1") return;
+  const code = process.env.THREEFC_QA_JOIN_CODE ?? "";
+  const playerId = process.env.THREEFC_QA_JOIN_PLAYER ?? "";
+  const gameId = process.env.THREEFC_QA_JOIN_GAME ?? "";
+  if (!/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(code) || !playerId.trim() || !gameId.trim() ||
+    playerId.length > 512 || gameId.length > 512) throw new Error("Explicit QA display context is required");
+  const path = `/v1/join/${code}/players/${encodeURIComponent(playerId)}`;
+  const rosterPath = `/v1/games/${encodeURIComponent(gameId)}/roster`;
+  if (new URL(path, api).pathname !== path || new URL(rosterPath, api).pathname !== rosterPath) {
+    throw new Error("QA display identifiers do not have stable encoded paths");
+  }
+  async function safeRead(pathname: string, authenticated: boolean) {
+    try {
+      const response = await fetch(`${api}${pathname}`, {
+        headers: { Origin: site, ...(authenticated ? { Cookie: `threefc_session=${cookie}` } : {}) },
+        signal: AbortSignal.timeout(15000), redirect: "error", cache: "no-store",
+      });
+      return { status: response.status, cache: response.headers.get("cache-control"), body: await response.json() };
+    } catch { throw new Error("QA display read failed; credential detail suppressed"); }
+  }
+  const anonymous = await safeRead(path, false);
+  expect(anonymous.status).toBe(401);
+  const valid = await safeRead(path, true);
+  expect(valid.status).toBe(200);
+  expect(valid.cache).toBe("no-store");
+  expect(valid.body?.gameId === gameId && valid.body?.joinCode === code && valid.body?.player?.playerId === playerId).toBe(true);
+  expect(Object.keys(valid.body?.player ?? {}).sort().join(",") === "createdAt,nickname,playerId,updatedAt").toBe(true);
+  expect(typeof valid.body?.player?.nickname === "string" && Boolean(valid.body.player.nickname.trim())).toBe(true);
+  const missing = await safeRead(`/v1/join/${code}/players/codex-missing-${randomUUID()}`, true);
+  expect(missing.status).toBe(404);
+  expect(missing.body?.player === undefined).toBe(true);
+  const roster = await safeRead(rosterPath, true);
+  expect(roster.status).toBe(403); // A display lookup does not grant league access.
+  let writes = 0;
+  let transportFailed = false;
+  const guard = async (route: Route) => {
+    try {
+      if (!isReadOnlyQaMethod(route.request().method())) { writes += 1; await route.abort(); }
+      else await route.continue();
+    } catch {
+      transportFailed = true;
+      try { await route.abort(); } catch { /* Already completed or closed. */ }
+    }
+  };
+  await page.route(`${api}/v1/**`, guard);
+  try {
+    await page.goto(`${site}/join?code=${code}&playerId=${encodeURIComponent(playerId)}`);
+    await expect(page.getByTestId("claim-player")).toBeVisible();
+    await expect(page.getByTestId("claim-player")).toBeEnabled();
+    await expect(page.getByTestId("claim-player")).toHaveAttribute("aria-describedby", "join-result-player");
+    await expect(page.locator("#join-result")).toBeVisible();
+    await expect(page.locator("#join-result-player")).toBeVisible();
+    expect((await page.locator("#join-result-player").textContent()) === valid.body.player.nickname).toBe(true);
+    await verifySitePage(page, head);
+    await page.getByTestId("claim-player").focus(); // Never activate a claim.
+    await expect(page.getByTestId("claim-player")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await page.goto(`${site}/setup`);
+    await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
+    expect(writes).toBe(0);
+    expect(transportFailed).toBe(false);
+  } catch {
+    // Keep the guard until the caller closes this owned context on any failure.
+    throw new Error("QA join display acceptance failed; sensitive detail suppressed");
+  }
+  await page.unroute(`${api}/v1/**`, guard);
+  console.log("QA join context PASS: named authenticated read, anonymous401, missing404, roster403, strict public fields, zero browser writes");
+}
+
 test("QA credential transport suppresses secrets from network and cookie errors", async () => {
   const secret = "fictional-sensitive-sentinel";
   const failingFetch: typeof fetch = async () => { throw new Error(`Cookie: ${secret}`); };
@@ -383,6 +456,8 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     const originalCookie = await installSessionCookie(context, complete.headers);
     phase = "signed-in empty Home and unsent draft acceptance";
     await verifySignedInEmptyHome(page, expectedHead);
+    phase = "optional read-only join identity acceptance";
+    await verifyReadOnlyJoinContext(page, originalCookie, expectedHead);
     phase = "keyboard sign-out and cookie expiry";
     const signOut = page.getByRole("button", { name: "Sign out", exact: true });
     await expect(signOut).toBeVisible();

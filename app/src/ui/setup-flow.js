@@ -2677,6 +2677,9 @@
     let timerTickInterval = 0;
     let rosterTeams = [];
     let rosterPlayers = [];
+    // Public registration identities are separate from administrator-only
+    // search enrichment. null means the additive read is unavailable, not empty.
+    let rosterUnassignedPlayers = null;
     let rosterAssignments = [];
     let rosterSearchTimer = 0;
     let openTransferPlayerId = null;
@@ -2701,7 +2704,6 @@
     let playersReadVersion = 0;
     let rosterDataLoaded = false;
     let playerSearchState = "loading";
-    let playerSearchCapped = false;
     let playerNicknameGeneration = 0;
     let playerSearchGeneration = 0;
     const knownRosterPlayers = new Map();
@@ -3157,7 +3159,8 @@
     }
 
     function playerById(playerId) {
-      const enrichedPlayer = knownRosterPlayers.get(playerId) ?? rosterPlayers.find((player) => player.playerId === playerId);
+      const enrichedPlayer = knownRosterPlayers.get(playerId) ?? rosterPlayers.find((player) => player.playerId === playerId)
+        ?? rosterUnassignedPlayers?.find((player) => player.playerId === playerId);
       if (enrichedPlayer) {
         return enrichedPlayer;
       }
@@ -4453,6 +4456,19 @@
       }
     }
 
+    function playerIdentityAttribute(playerId) {
+      // JSON protects opaque IDs from HTML's CR/NUL normalization. Restore the
+      // exact value through the DOM before any rendered control is interactive.
+      return `data-player-identity="${escapeHtml(JSON.stringify(playerId))}"`;
+    }
+
+    function restorePlayerIdentities(surface) {
+      for (const element of surface.querySelectorAll("[data-player-identity]")) {
+        element.setAttribute("data-player-id", JSON.parse(element.getAttribute("data-player-identity")));
+        element.removeAttribute("data-player-identity");
+      }
+    }
+
     function assignmentButton(playerId, team, currentTeamId = null, context = "assign") {
       const disabled = finishedRosterControlsLocked() || rosterMutationPending ? " disabled" : "";
       const active = currentTeamId === team.teamId;
@@ -4463,9 +4479,7 @@
           : active
             ? `${nickname} assigned to ${team.name}`
             : `Assign ${nickname} to ${team.name}`;
-      return `<button data-ui="team-chip" data-context="${escapeHtml(context)}" type="button" data-action="assign-player" data-player-id="${escapeHtml(
-        playerId,
-      )}" data-team-id="${escapeHtml(team.teamId)}" aria-label="${escapeHtml(label)}" aria-pressed="${
+      return `<button data-ui="team-chip" data-context="${escapeHtml(context)}" type="button" data-action="assign-player" ${playerIdentityAttribute(playerId)} data-team-id="${escapeHtml(team.teamId)}" aria-label="${escapeHtml(label)}" aria-pressed="${
         active ? "true" : "false"
       }" data-state="${
         active ? "active" : "idle"
@@ -4500,7 +4514,6 @@
     }
 
     function transferControl(playerId, currentTeamId) {
-      const safePlayerId = escapeHtml(playerId);
       const menuId = transferMenuId(playerId);
       const open = openTransferPlayerId === playerId;
       const disabled = finishedRosterControlsLocked() || rosterMutationPending ? " disabled" : "";
@@ -4511,7 +4524,7 @@
         .join("");
 
       return `<div data-ui="transfer-control">
-        <button data-ui="transfer-toggle" type="button" data-action="toggle-transfer" data-player-id="${safePlayerId}" aria-label="${escapeHtml(
+        <button data-ui="transfer-toggle" type="button" data-action="toggle-transfer" ${playerIdentityAttribute(playerId)} aria-label="${escapeHtml(
           `Transfer ${nickname}`,
         )}" aria-expanded="${
           open ? "true" : "false"
@@ -4541,8 +4554,8 @@
         role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
       const pendingDisabled = rosterMutationPending ? " disabled" : "";
       const actions = role === "admin" ? "" : renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname, `<div data-ui="access-actions">
-          ${role !== "scorekeeper" ? `<button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(player.playerId)}" data-role="scorekeeper"${pendingDisabled}>Make scorer</button>` : ""}
-          <button data-ui="row-action" type="button" data-action="grant-player-access" data-player-id="${escapeHtml(player.playerId)}" data-role="admin"${pendingDisabled}>Make co-organiser</button>
+          ${role !== "scorekeeper" ? `<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="scorekeeper"${pendingDisabled}>Make scorer</button>` : ""}
+          <button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="admin"${pendingDisabled}>Make co-organiser</button>
         </div>`, { "data-player-management": "" });
 
       return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
@@ -4564,12 +4577,19 @@
         playerPoolElement.innerHTML = "";
         return;
       }
-      const players = rosterPlayers.filter((player) => !assignmentByPlayerId(player.playerId));
-      const limitedNote = playerSearchCapped ? '<p data-ui="empty-note">Search by name to find more players.</p>' : "";
+      const search = playerSearchInput.value.trim().toLocaleLowerCase();
+      const candidates = new Map((rosterUnassignedPlayers ?? rosterPlayers).map((player) => [player.playerId, player]));
+      for (const player of pendingCreatedPlayers.values()) candidates.set(player.playerId, player);
+      const players = [...candidates.values()].filter((player) => !assignmentByPlayerId(player.playerId) &&
+        (!search || player.nickname.toLocaleLowerCase().includes(search)))
+        .sort((left, right) => left.nickname.localeCompare(right.nickname) || left.playerId.localeCompare(right.playerId));
+      const limitedNote = rosterUnassignedPlayers === null && rosterDataLoaded
+        ? '<p data-ui="empty-note">The full Unassigned list is unavailable. Search by name to find players.</p>' : "";
       if (players.length === 0) {
-        const message = playerSearchState === "unavailable" ? "Unassigned players couldn’t be loaded. Try searching again."
-          : playerSearchState === "loading" ? "Loading players…"
-            : playerSearchInput.value.trim() ? "No matching unassigned players." : "No unassigned players to show.";
+        const message = rosterUnassignedPlayers === null && playerSearchState === "unavailable" ? "Unassigned players couldn’t be loaded. Try searching again."
+          : rosterUnassignedPlayers === null && playerSearchState === "loading" ? "Loading players…"
+            : rosterUnassignedPlayers === null ? "No players found in the available search."
+              : search ? "No matching unassigned players." : "No unassigned players to show.";
         playerPoolElement.innerHTML = `<p data-ui="empty-note">${message}</p>${limitedNote}`;
         return;
       }
@@ -4577,7 +4597,7 @@
       playerPoolElement.innerHTML = players
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
-          return `<article data-ui="roster-player" data-player-id="${escapeHtml(player.playerId)}">
+          return `<article data-ui="roster-player" ${playerIdentityAttribute(player.playerId)}>
             <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
             <div data-ui="roster-player-main">
               <strong>${escapeHtml(player.nickname)}</strong>
@@ -4589,6 +4609,7 @@
           </article>`;
         })
         .join("") + limitedNote;
+      restorePlayerIdentities(playerPoolElement);
     }
 
     function renderRosterTeams() {
@@ -4610,7 +4631,7 @@
             .map((assignment) => {
               const player = assignment.player ?? playerById(assignment.playerId);
               const nickname = player?.nickname ?? assignment.playerId;
-              return `<li data-ui="roster-member" data-player-id="${escapeHtml(assignment.playerId)}">
+              return `<li data-ui="roster-member" ${playerIdentityAttribute(assignment.playerId)}>
                 <div data-ui="roster-member-main"><strong>${escapeHtml(nickname)}</strong>${playerAccessPanel(playerById(assignment.playerId) ?? player)}</div>
                 ${canManageRoster() ? transferControl(assignment.playerId, team.teamId) : ""}
               </li>`;
@@ -4629,6 +4650,7 @@
           </article>`;
         })
         .join("");
+      restorePlayerIdentities(rosterTeamsElement);
     }
 
     function renderRosterSetup() {
@@ -4698,7 +4720,7 @@
     async function loadRosterSetup(options = {}) {
       if (!rosterControlsAvailable()) return;
       const version = ++rosterReadVersion;
-      const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET" });
+      const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET", cache: "no-store" });
       if (version !== rosterReadVersion) return;
 
       rosterTeams = Array.isArray(rosterPayload?.teams)
@@ -4716,6 +4738,18 @@
         else assignmentsById.set(playerId, assignment);
       }
       rosterAssignments = [...assignmentsById.values()];
+      const publicPlayers = rosterPayload?.unassignedPlayers;
+      rosterUnassignedPlayers = Array.isArray(publicPlayers) && publicPlayers.every((player) =>
+        usableEntityId(player?.playerId) && typeof player.nickname === "string" && player.nickname.trim())
+        ? [...new Map(publicPlayers.map((player) => [player.playerId, {
+            playerId: player.playerId, nickname: player.nickname,
+          }])).values()] : null;
+      for (const player of rosterUnassignedPlayers ?? []) {
+        // Public reads never establish claimed identity or administrator access.
+        if (!knownRosterPlayers.has(player.playerId)) knownRosterPlayers.set(player.playerId, player);
+        pendingCreatedPlayers.delete(player.playerId);
+      }
+      for (const assignment of rosterAssignments) pendingCreatedPlayers.delete(assignment.playerId);
       rosterDataLoaded = true;
       if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
@@ -4742,9 +4776,12 @@
         if (role === "admin") {
           for (const player of rosterPlayers) verifiedAdminPlayers.set(player.playerId, player);
         }
-        playerSearchCapped = rosterPlayers.length >= 20;
         for (const [playerId, player] of pendingCreatedPlayers) {
-          if (rosterPlayers.some((entry) => entry.playerId === playerId)) pendingCreatedPlayers.delete(playerId);
+          if (rosterPlayers.some((entry) => entry.playerId === playerId)) {
+            // Private search cannot acknowledge a complete public roster snapshot:
+            // its previous refresh may have failed after this creation committed.
+            if (rosterUnassignedPlayers === null) pendingCreatedPlayers.delete(playerId);
+          }
           else if (!search || player.nickname.toLocaleLowerCase().includes(search.toLocaleLowerCase())) rosterPlayers.unshift(player);
         }
         for (const player of rosterPlayers) knownRosterPlayers.set(player.playerId, player);
@@ -4754,7 +4791,6 @@
         playerSearchState = "unavailable";
         verifiedAdminPlayers.clear();
         rosterPlayers = [...pendingCreatedPlayers.values()].filter((player) => !search || player.nickname.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-        playerSearchCapped = false;
       }
       renderRosterSetup();
     }
@@ -5641,6 +5677,7 @@
     const claimStatus = document.getElementById("join-claim-status");
     const signInLink = document.getElementById("join-signin-link");
     const claimButton = root.querySelector('[data-action="claim-player"]');
+    const lookupButton = root.querySelector('[data-action="retry-join-context"]');
     const queryPlayerId = query.get("playerId");
     let claimPlayerId = usableEntityId(queryPlayerId) ? queryPlayerId : "";
     entryClaimPlayerId = claimPlayerId || null;
@@ -5649,6 +5686,9 @@
     let joined = false;
     let claimPending = false;
     let claimComplete = false;
+    let verifiedClaimPlayerId = "";
+    let contextLookupPending = false;
+    let contextLookupRevision = 0;
     let claimRevision = 0;
     let entryNavigationRevision = 0;
     let entryFlowRevision = 0;
@@ -5690,7 +5730,8 @@
     function focusClaimContinuation() {
       const target = claimComplete ? anotherButton
         : !claimButton.hidden && !claimButton.disabled ? claimButton
-          : signInLink instanceof HTMLAnchorElement && !signInLink.hidden ? signInLink : anotherButton;
+          : lookupButton instanceof HTMLButtonElement && !lookupButton.hidden && !lookupButton.disabled ? lookupButton
+            : signInLink instanceof HTMLAnchorElement && !signInLink.hidden ? signInLink : anotherButton;
       if (target instanceof HTMLElement && actionElementVisible(target) && !target.matches(":disabled")) target.focus();
     }
 
@@ -5716,7 +5757,8 @@
     }
 
     async function claimJoinedPlayer(playerId) {
-      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId || claimButton.disabled) return;
+      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId ||
+        playerId !== verifiedClaimPlayerId || claimButton.disabled) return;
       const finishFocus = trackEntryFocus(claimButton);
       const claimPath = encodedRecordPath("/v1/players/", playerId, "/claim");
       if (!claimPath) {
@@ -5773,35 +5815,73 @@
     }
 
     async function refreshClaimActions(playerId, autoClaim = false) {
+      if (contextLookupPending) return;
+      contextLookupPending = true;
+      const lookupRevision = ++contextLookupRevision;
       const revision = ++claimRevision;
       if (claimActions instanceof HTMLElement) claimActions.hidden = false;
       claimButton.disabled = true;
       claimButton.hidden = true;
       if (signInLink instanceof HTMLAnchorElement) signInLink.hidden = true;
-      let session;
-      try { session = await currentJoinSession(); }
-      catch (error) {
-        if (revision !== claimRevision || playerId !== claimPlayerId) return;
-        throw error;
-      }
-      if (revision !== claimRevision || playerId !== claimPlayerId || claimPending || claimComplete) return;
-      setAccountSession(session);
-      claimMessage("");
-      if (session) {
-        claimButton.hidden = false;
-        claimButton.disabled = false;
-        if (autoClaim) await claimJoinedPlayer(playerId);
-      } else if (signInLink instanceof HTMLAnchorElement) {
-        signInLink.hidden = false;
-        signInLink.href = entrySignInHref(playerId);
+      if (lookupButton instanceof HTMLButtonElement) { lookupButton.hidden = true; lookupButton.disabled = true; }
+      try {
+        const session = await currentJoinSession();
+        if (revision !== claimRevision || playerId !== claimPlayerId || claimPending || claimComplete) return;
+        setAccountSession(session);
+        claimMessage("");
+        if (session) {
+          if (verifiedClaimPlayerId !== playerId) {
+            const path = encodedRecordPath("/v1/join/" + encodeURIComponent(joinCode) + "/players/", playerId);
+            if (!path) throw new Error("context_unavailable");
+            claimMessage("Loading player…");
+            let context;
+            try { context = await requestJsonOrThrow(path, { method: "GET", cache: "no-store" }); }
+            catch (error) {
+              if (revision !== claimRevision || playerId !== claimPlayerId) return;
+              if (error.statusCode === 404) {
+                claimMessage("");
+                showError("This player couldn’t be found for this join link. Ask the organiser for help.", { includesOutcome: true });
+                return;
+              }
+              throw error;
+            }
+            if (revision !== claimRevision || playerId !== claimPlayerId) return;
+            if (context?.joinCode !== joinCode || !usableEntityId(context?.gameId) || context?.player?.playerId !== playerId ||
+              typeof context.player.nickname !== "string" || !context.player.nickname.trim()) throw new Error("context_unconfirmed");
+            verifiedClaimPlayerId = playerId;
+            if (resultPlayer) resultPlayer.textContent = context.player.nickname;
+            if (resultElement) resultElement.hidden = false;
+          }
+          claimMessage("");
+          claimButton.hidden = false;
+          claimButton.disabled = false;
+          // Only a confirmed fresh Join game action retains its existing automatic
+          // claim. Query/sign-in return and context retries are reads, never claims.
+          if (autoClaim) await claimJoinedPlayer(playerId);
+        } else if (signInLink instanceof HTMLAnchorElement) {
+          signInLink.hidden = false;
+          signInLink.href = entrySignInHref(playerId);
+        }
+      } catch (error) {
+        if (revision === claimRevision && playerId === claimPlayerId) throw error;
+      } finally {
+        if (lookupRevision === contextLookupRevision) {
+          contextLookupPending = false;
+          if (lookupButton instanceof HTMLButtonElement) lookupButton.disabled = false;
+        }
       }
     }
 
     function claimProbeFailed() {
       if (!claimPlayerId || claimComplete) return;
-      showError((joined ? "Joined game. " : "") + "Sign-in could not be checked. Retry claiming this player or sign in again.", { includesOutcome: true });
-      claimButton.hidden = false;
-      claimButton.disabled = false;
+      claimMessage("");
+      const identityKnown = verifiedClaimPlayerId === claimPlayerId;
+      showError((joined ? "Joined game. " : "") + (identityKnown
+        ? "Sign-in could not be checked. Retry claiming this player or sign in again."
+        : "The player details couldn’t be loaded. Retry lookup or sign in again."), { includesOutcome: true });
+      claimButton.hidden = !identityKnown;
+      claimButton.disabled = !identityKnown;
+      if (lookupButton instanceof HTMLButtonElement) lookupButton.hidden = identityKnown;
       if (signInLink instanceof HTMLAnchorElement) {
         signInLink.hidden = false;
         signInLink.href = entrySignInHref(claimPlayerId);
@@ -5824,14 +5904,26 @@
       setFieldMessage("join-player-nickname");
     });
     claimButton.addEventListener("click", () => { void claimJoinedPlayer(claimPlayerId); });
+    if (lookupButton instanceof HTMLButtonElement) lookupButton.addEventListener("click", () => {
+      if (lookupButton.disabled || contextLookupPending || !claimPlayerId) return;
+      const finishFocus = trackEntryFocus(lookupButton);
+      clearError();
+      void refreshClaimActions(claimPlayerId).catch(claimProbeFailed).finally(() => {
+        if (finishFocus()) focusClaimContinuation();
+      });
+    });
     if (anotherButton instanceof HTMLButtonElement) anotherButton.addEventListener("click", () => {
       if (anotherButton.disabled || joinPending || claimPending || joinAttempt) return;
       ++claimRevision;
       ++entryFlowRevision;
+      ++contextLookupRevision;
+      contextLookupPending = false;
       claimPlayerId = "";
+      verifiedClaimPlayerId = "";
       entryClaimPlayerId = null;
       joined = false;
       claimComplete = false;
+      claimMessage("");
       if (resultElement) resultElement.hidden = true;
       if (claimActions instanceof HTMLElement) claimActions.hidden = true;
       nicknameInput.value = "";
@@ -5876,6 +5968,7 @@
         joinAttempt = null;
         clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
         claimPlayerId = result.player.playerId;
+        verifiedClaimPlayerId = claimPlayerId;
         entryClaimPlayerId = claimPlayerId;
         if (resultPlayer) resultPlayer.textContent = result.player.nickname;
         if (resultElement) resultElement.hidden = false;

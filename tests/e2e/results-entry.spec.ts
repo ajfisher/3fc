@@ -36,6 +36,7 @@ type Goal = {
 type RequestRecord = { method: string; path: string; body: Record<string, unknown> | null; serialized: string | null; key?: string };
 type Operation = "join" | "claim" | "invite" | "magic" | "complete" | "logout";
 type Plan = { kind: Operation; gate?: ReturnType<typeof deferred>; status?: number; commit?: boolean; malformed?: boolean; message?: string; code?: string };
+type LookupPlan = { gate?: ReturnType<typeof deferred>; status?: number; payload?: unknown };
 type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred>; inviteLeagueId?: string };
 const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
@@ -122,6 +123,9 @@ async function installFixture(page: Page, options: Options = {}) {
   const unexpected: string[] = [];
   const errors: string[] = [];
   const plans: Plan[] = [];
+  const lookupPlans: LookupPlan[] = [];
+  const joinIdentities = new Map(players.map(player => [player.playerId, snapshot(player)]));
+  joinIdentities.set("fictional-existing-player", { playerId: "fictional-existing-player", nickname, createdAt: now, updatedAt: now });
   const joinReplays = new Map<string, { serialized: string | null; payload: unknown }>();
   let sessionGate = options.sessionGate;
   page.on("pageerror", error => { errors.push(error.message); });
@@ -159,12 +163,22 @@ async function installFixture(page: Page, options: Options = {}) {
         return route.fulfill({ status: authenticated ? 200 : 401, headers: { "cache-control": "no-store" }, json: authenticated
           ? { authenticated: true, session: { sessionId: "fictional-auth-session", email: recipient, userId: "fictional-account" } } : { error: "unauthorized" } });
       }
+      const identityRoute = new RegExp(`^/v1/join/${joinCode}/players/([^/]+)$`).exec(url.pathname);
+      if (identityRoute) {
+        if (!state.authenticated) return reject(401, "Sign in to identify this player.");
+        const plan = lookupPlans.shift();
+        if (plan?.gate) await plan.gate.promise;
+        if (plan?.status) return reject(plan.status, "Player details could not be loaded.");
+        const player = joinIdentities.get(decodeURIComponent(identityRoute[1]));
+        if (!player) return reject(404, "Player not found for this join code.");
+        return route.fulfill({ headers: { "cache-control": "no-store" }, json: plan?.payload ?? { gameId, joinCode, player } });
+      }
       if (url.pathname === "/v1/leagues") return route.fulfill({ json: { leagues: [] } });
       if (url.pathname === `/v1/leagues/${leagueId}`) return route.fulfill({ json: { leagueId, name: "Fictional Community Football League", access: { role: state.role } } });
       if (url.pathname === `/v1/leagues/${leagueId}/seasons/${seasonId}`) return route.fulfill({ json: { leagueId, seasonId, name: "Fictional Spring Season", startsOn: "2026-09-01", endsOn: "2027-02-28" } });
       if (url.pathname === apiPath) return route.fulfill({ json: game });
       if (url.pathname === `${apiPath}/teams`) return route.fulfill({ json: { teams: liveTeams } });
-      if (url.pathname === `${apiPath}/roster`) return route.fulfill({ json: { teams: liveTeams, roster: players.slice(0, 18).map(player => ({ gameId, playerId: player.playerId, teamId: assignments.get(player.playerId), player, createdAt: kickoff, updatedAt: kickoff })) } });
+      if (url.pathname === `${apiPath}/roster`) return route.fulfill({ json: { teams: liveTeams, roster: players.slice(0, 18).map(player => ({ gameId, playerId: player.playerId, teamId: assignments.get(player.playerId), player, createdAt: kickoff, updatedAt: kickoff })), unassignedPlayers: players.slice(18) } });
       if (url.pathname === `${apiPath}/players` && state.role !== "viewer") return route.fulfill({ json: { players } });
       if (url.pathname === `${apiPath}/goals`) {
         if (options.log === "unavailable") return reject(503, "Goal details unavailable.");
@@ -195,10 +209,16 @@ async function installFixture(page: Page, options: Options = {}) {
     let payload: unknown = {};
     if (kind === "join") {
       state.joined += 1;
-      payload = { gameId, player: { playerId: `fictional-joined-player-${state.joined}`, nickname: body?.nickname, createdAt: now, updatedAt: now } };
+      const player = { playerId: `fictional-joined-player-${state.joined}`, nickname: String(body?.nickname ?? ""), createdAt: now, updatedAt: now };
+      joinIdentities.set(player.playerId, player);
+      payload = { gameId, player };
       joinReplays.set(record.key!, { serialized, payload: snapshot(payload) });
     }
-    if (kind === "claim") { state.claimed += 1; payload = { player: { playerId: decodeURIComponent(url.pathname.split("/")[3]), nickname }, claim: { claimedByCurrentUser: true } }; }
+    if (kind === "claim") {
+      state.claimed += 1;
+      const playerId = decodeURIComponent(url.pathname.split("/")[3]);
+      payload = { player: joinIdentities.get(playerId) ?? { playerId, nickname, createdAt: now, updatedAt: now }, claim: { claimedByCurrentUser: true } };
+    }
     if (kind === "invite") {
       state.accepted = 1;
       const acceptedLeagueId = options.inviteLeagueId ?? leagueId;
@@ -213,7 +233,7 @@ async function installFixture(page: Page, options: Options = {}) {
     if (plan?.status) return reject(plan.status, plan.message ?? "The operation could not be confirmed.", plan.code);
     return route.fulfill({ status: kind === "join" ? 201 : 200, json: plan?.malformed ? {} : payload });
   });
-  return { state, players, goals, game, requests, plans, unexpected, errors,
+  return { state, players, goals, game, requests, plans, lookupPlans, unexpected, errors,
     writes: (kind?: Operation) => requests.filter(request => request.method === "POST" && (!kind || (
       kind === "join" ? request.path.startsWith("/v1/join/") : kind === "claim" ? request.path.endsWith("/claim")
         : kind === "invite" ? request.path.endsWith("/accept") : kind === "logout" ? request.path.endsWith("/logout")
@@ -649,20 +669,184 @@ test("an explicit new join after confirmation creates a distinct player even wit
   expectClean(fixture);
 });
 
-test("claim-return context requires explicit activation and does not invent a join receipt", async ({ page }) => {
+for (const width of [320, 390]) {
+  test(`claim-return names the verified player before explicit activation ${width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ colorScheme: width === 320 ? "light" : "dark" });
+    const fixture = await installFixture(page);
+    await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
+    const claim = page.getByRole("button", { name: "Claim player", exact: true });
+    await expect(claim).toBeEnabled();
+    await expect(page.locator("#join-result-player")).toHaveText(nickname);
+    await expect(page.locator("#join-result")).toBeVisible();
+    await expect(claim).toHaveAttribute("aria-describedby", "join-result-player");
+    await expect(claim).toHaveAccessibleDescription(nickname);
+    await expectJoinReceipt(page);
+    await expectGeometry(page);
+    expect(fixture.requests.filter(request => request.path === `/v1/join/${joinCode}/players/fictional-existing-player`)).toHaveLength(1);
+    expect(fixture.writes()).toHaveLength(0);
+    await claim.focus();
+    await capture(page, testInfo, `claim-verified-name-${width}`);
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
+    await expect(page.locator("#join-claim-status")).toBeHidden();
+    await expect(page.locator("#join-result-player")).toHaveText(nickname);
+    expect(fixture.writes("join")).toHaveLength(0);
+    expect(fixture.writes("claim")).toHaveLength(1);
+    expectClean(fixture);
+  });
+}
+
+test("duplicate nicknames and a forged query name do not change the exact claim target", async ({ page }) => {
   const fixture = await installFixture(page);
-  await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
+  const duplicate = fixture.players[7];
+  expect(duplicate.nickname).toBe(fixture.players[1].nickname);
+  await page.goto(`${origin}/join?code=${joinCode}&playerId=${duplicate.playerId}&nickname=Forged%20name`);
   const claim = page.getByRole("button", { name: "Claim player", exact: true });
   await expect(claim).toBeEnabled();
-  await expect(page.locator("#join-result")).toBeHidden();
+  await expect(page.locator("#join-result-player")).toHaveText("Sam");
+  await expect(page.locator("body")).not.toContainText("Forged name");
   expect(fixture.writes()).toHaveLength(0);
-  await claim.focus();
-  await page.keyboard.press("Enter");
+  await claim.click();
   await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
-  await expect(page.locator("#join-claim-status")).toBeHidden();
+  await expect(page.locator("#join-result-player")).toHaveText("Sam");
+  expect(fixture.writes("claim")).toMatchObject([{ path: `/v1/players/${duplicate.playerId}/claim` }]);
   expect(fixture.writes("join")).toHaveLength(0);
-  expect(fixture.writes("claim")).toHaveLength(1);
   expectClean(fixture);
+});
+
+test("sign-in return resolves the named claim context without automatically claiming it", async ({ page }) => {
+  const fixture = await installFixture(page, { authenticated: false });
+  const returnPath = `/join?code=${joinCode}&playerId=fictional-existing-player`;
+  await page.goto(`${origin}${returnPath}`);
+  await expect(page.locator("#join-result")).toBeHidden();
+  await page.getByTestId("join-signin-link").click();
+  await expect(page.getByRole("heading", { name: "Sign in to 3FC", exact: true })).toBeVisible();
+  await page.getByLabel("Email address", { exact: true }).fill(recipient);
+  await page.getByRole("button", { name: "Send sign-in link", exact: true }).click();
+  await expect(page.locator("#auth-status")).toContainText(recipient);
+  await page.goto(`${origin}/auth/callback?token=fictional-unused-context-token&returnTo=${encodeURIComponent(returnPath)}`);
+  await page.getByTestId("complete-magic-link").click();
+  await expect(page).toHaveURL(`${origin}${returnPath}`);
+  await expect(page.locator("#join-result-player")).toHaveText(nickname);
+  await expect(page.getByTestId("claim-player")).toBeEnabled();
+  expect(fixture.writes("magic")).toHaveLength(1);
+  expect(fixture.writes("complete")).toHaveLength(1);
+  expect(fixture.writes("claim")).toHaveLength(0);
+  expect(fixture.writes("join")).toHaveLength(0);
+  expectClean(fixture);
+});
+
+test("a failed identity lookup retries only the read before enabling a named claim", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const fixture = await installFixture(page);
+  fixture.lookupPlans.push({ status: 503 }, { status: 503 });
+  await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
+  const retry = page.getByRole("button", { name: "Retry lookup", exact: true });
+  await expect(page.locator("#setup-error")).toHaveText("The player details couldn’t be loaded. Retry lookup or sign in again.");
+  await expect(page.getByTestId("claim-player")).toBeDisabled();
+  await expect(page.locator("#join-result")).toBeHidden();
+  await expect(retry).toBeEnabled();
+  await expect(page.getByTestId("join-signin-link")).toBeVisible();
+  await expectGeometry(page);
+  await capture(page, testInfo, "claim-lookup-retry-dark-320");
+  expect(fixture.writes()).toHaveLength(0);
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(retry).toBeFocused();
+  await expect(retry).toBeEnabled();
+  await expect(page.getByTestId("claim-player")).toBeDisabled();
+  expect(fixture.writes()).toHaveLength(0);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#join-result-player")).toHaveText(nickname);
+  await expect(page.getByTestId("claim-player")).toBeEnabled();
+  await expect(retry).toBeHidden();
+  await expect(page.getByTestId("claim-player")).toBeFocused();
+  await expect(page.locator("#setup-error")).toBeHidden();
+  expect(fixture.requests.filter(request => request.path === `/v1/join/${joinCode}/players/fictional-existing-player`)).toHaveLength(3);
+  expect(fixture.writes()).toHaveLength(0);
+  expectClean(fixture);
+});
+
+for (const invalid of ["missing player", "different player", "different code", "malformed player"] as const) {
+  test(`claim lookup ${invalid} cannot expose an unverified identity or enable a write`, async ({ page }) => {
+    const fixture = await installFixture(page);
+    const playerId = invalid === "missing player" ? "fictional-other-game-player" : "fictional-existing-player";
+    if (invalid !== "missing player") fixture.lookupPlans.push({ payload: {
+      gameId, joinCode: invalid === "different code" ? "23456789" : joinCode,
+      player: { playerId: invalid === "different player" ? "fictional-unrequested-player" : playerId,
+        nickname: invalid === "malformed player" ? null : "Unverified name", createdAt: now, updatedAt: now },
+    } });
+    await page.goto(`${origin}/join?code=${joinCode}&playerId=${playerId}`);
+    await expect(page.locator("#setup-error")).toHaveText(invalid === "missing player"
+      ? "This player couldn’t be found for this join link. Ask the organiser for help."
+      : "The player details couldn’t be loaded. Retry lookup or sign in again.");
+    await expect(page.locator("#join-result")).toBeHidden();
+    await expect(page.getByTestId("claim-player")).toBeDisabled();
+    await expect(page.locator("body")).not.toContainText("Unverified name");
+    await page.getByTestId("claim-player").dispatchEvent("click");
+    expect(fixture.writes()).toHaveLength(0);
+    expectClean(fixture);
+  });
+}
+
+test("Join another player cancels a delayed lookup without replacing its new draft or focus", async ({ page }) => {
+  const fixture = await installFixture(page);
+  const gate = deferred();
+  fixture.lookupPlans.push({ gate });
+  try {
+    const lookupPath = `/v1/join/${joinCode}/players/fictional-existing-player`;
+    await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
+    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath).length).toBe(1);
+    await expect(page.locator("#join-result")).toBeHidden();
+    await expect(page.getByTestId("claim-player")).toBeDisabled();
+    await page.getByRole("button", { name: "Join another player", exact: true }).click();
+    const input = page.getByLabel("Player name", { exact: true });
+    await expect(input).toBeFocused();
+    await input.fill("Keep this new player draft");
+    const response = page.waitForResponse(candidate => new URL(candidate.url()).pathname === lookupPath);
+    gate.release();
+    await (await response).finished();
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue("Keep this new player draft");
+    await expect(page.locator("#join-result")).toBeHidden();
+    await expect(page.locator("#join-claim-actions")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Join game", exact: true })).toBeEnabled();
+    expect(fixture.writes()).toHaveLength(0);
+    expectClean(fixture);
+  } finally { gate.release(); }
+});
+
+test("an old lookup cannot settle or replace a new confirmed join and pending claim", async ({ page }) => {
+  const fixture = await installFixture(page);
+  const lookupGate = deferred();
+  const claimGate = deferred();
+  fixture.lookupPlans.push({ gate: lookupGate });
+  fixture.plans.push({ kind: "claim", gate: claimGate });
+  try {
+    const lookupPath = `/v1/join/${joinCode}/players/fictional-existing-player`;
+    await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
+    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath).length).toBe(1);
+    await page.getByRole("button", { name: "Join another player", exact: true }).click();
+    await page.getByLabel("Player name", { exact: true }).fill("A different new player");
+    await page.getByLabel("Player name", { exact: true }).press("Enter");
+    await expect.poll(() => fixture.writes("claim").length).toBe(1);
+    await expect(page.locator("#join-result-player")).toHaveText("A different new player");
+    await expect(page.getByTestId("claim-player")).toBeDisabled();
+    const response = page.waitForResponse(candidate => new URL(candidate.url()).pathname === lookupPath);
+    lookupGate.release();
+    await (await response).finished();
+    await expect(page.locator("#join-result-player")).toHaveText("A different new player");
+    await expect(page.getByTestId("claim-player")).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Join another player", exact: true })).toBeDisabled();
+    claimGate.release();
+    await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
+    await expect(page.locator("#join-result-player")).toHaveText("A different new player");
+    expect(fixture.writes("join")).toHaveLength(1);
+    expect(fixture.writes("claim")).toMatchObject([{ path: "/v1/players/fictional-joined-player-1/claim" }]);
+    expectClean(fixture);
+  } finally { lookupGate.release(); claimGate.release(); }
 });
 
 test("malformed invite reveals and focuses native code correction", async ({ page }) => {

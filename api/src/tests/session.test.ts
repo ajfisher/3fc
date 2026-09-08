@@ -69,6 +69,10 @@ test("expired session cookies match the host-only session scope and expire immed
 });
 
 test("isAuthenticatedApiRoute marks protected routes only", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/join/ABCD2345/players/player-1"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/join/ABCD2345/players/player%2F1"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/join/ABCD2345"), false);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/join/ABCD2345/players/player-1/claim"), false);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1/seasons"), true);

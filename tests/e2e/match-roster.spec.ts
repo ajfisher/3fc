@@ -28,6 +28,7 @@ type FixtureOptions = {
   delayAuthority?: boolean; failCreateOnce?: boolean; failTransferOnce?: boolean;
   assignmentGate?: ReturnType<typeof deferred>;
   metadataGate?: ReturnType<typeof deferred>;
+  extraUnassigned?: number; missingUnassigned?: boolean;
 };
 const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
@@ -57,6 +58,12 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
     createdAt: timestamp, updatedAt: timestamp,
   }));
   const assignments = new Map<string, TeamId>(players.slice(2).map((player, index) => [player.playerId, teamIds[Math.floor(index / perTeam)]]));
+  players.push(...Array.from({ length: options.extraUnassigned ?? 0 }, (_, index) => ({
+    playerId: `fixture-public-join-${index + 1}`,
+    nickname: index === 0 ? "New arrival Alexandra Francesca Montgomery-Williams"
+      : index === 1 ? "Sam" : `New public arrival ${index + 1}`,
+    createdAt: timestamp, updatedAt: timestamp,
+  })));
   const initialPlayerIndices = new Map(players.map((player, index) => [player.playerId, index]));
   const teams = teamIds.map((teamId, index) => ({
     gameId, teamId, name: ["Red", "Blue", "Yellow"][index], color: ["#d43d3d", "#377cd6", "#e1b52c"][index],
@@ -147,7 +154,10 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
     if (method === "GET" && url.pathname === `/v1/leagues/${leagueId}/seasons/${seasonId}`) {
       return route.fulfill({ json: { leagueId, seasonId, name: seasonName, startsOn: "2026-09-01", endsOn: "2027-02-28" } });
     }
-    if (method === "GET" && url.pathname === `${apiGamePath}/roster`) return route.fulfill({ json: { teams, roster: publicRoster() } });
+    if (method === "GET" && url.pathname === `${apiGamePath}/roster`) return route.fulfill({ json: {
+      teams, roster: publicRoster(),
+      ...(options.missingUnassigned ? {} : { unassignedPlayers: players.filter(player => !assignments.has(player.playerId)) }),
+    } });
     if (method === "GET" && url.pathname === `${apiGamePath}/teams`) return route.fulfill({ json: { teams } });
     if (method === "GET" && url.pathname === `${apiGamePath}/players`) {
       if (!isOperator) return forbidden();
@@ -694,12 +704,12 @@ test("transfer offers only alternatives, keeps failures open and collapses after
   expect(fixture.unexpected).toEqual([]);
 });
 
-test("a capped player search never drops assigned identities or invents claim state", async ({ page }) => {
+test("capped private enrichment does not cap the complete public roster or invent claim state", async ({ page }) => {
   const fixture = await installMatchFixture(page, { largeRoster: true });
   await page.goto(`${origin}${gamePath}#teams`);
   await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
   await expect(displayedPlayers(page)).toHaveCount(26);
-  await expect(page.getByText("Search by name to find more players.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Search by name to find more players.", { exact: true })).toHaveCount(0);
   for (const player of fixture.players.slice(20)) {
     const member = page.locator(`[data-ui="roster-member"][data-player-id="${player.playerId}"]`);
     await expect(member).toContainText(player.nickname);
@@ -720,10 +730,77 @@ test("missing private enrichment leaves the public roster readable without uncla
   const fixture = await installMatchFixture(page, { playersUnavailable: true });
   await page.goto(`${origin}${gamePath}#teams`);
   await expectReady(page);
-  await expect(displayedPlayers(page)).toHaveCount(15);
+  await expect(displayedPlayers(page)).toHaveCount(17);
+  await expect(page.locator('#player-pool [data-ui="roster-player"]')).toHaveCount(2);
   await expect(page.locator('[data-ui="claim-badge"]')).toHaveCount(0);
-  await expect(page.getByText("Unassigned players couldn’t be loaded. Try searching again.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Unassigned players couldn’t be loaded. Try searching again.", { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-ui="roster-member"] strong').filter({ hasText: /^Sam$/ })).toHaveCount(2);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+for (const [width, playersUnavailable] of [[320, false], [390, true]] as const) {
+  test(`complete Unassigned shows public joins beyond twenty with private enrichment ${playersUnavailable ? "unavailable" : "capped"} ${width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ colorScheme: width === 320 ? "light" : "dark" });
+    const fixture = await installMatchFixture(page, { largeRoster: true, extraUnassigned: 23, playersUnavailable });
+    await page.goto(`${origin}${gamePath}#teams`);
+    // This last context read resolves after the initial public roster/private
+    // enrichment cycle; a transient pre-enrichment render cannot pass the test.
+    await expect(page.locator("#game-season-link")).toHaveText(seasonName);
+    const pool = page.locator('#player-pool [data-ui="roster-player"]');
+    await expect(pool).toHaveCount(25);
+    await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
+    await expect(displayedPlayers(page)).toHaveCount(49);
+    await expect(page.getByText("Search by name to find more players.", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("The full Unassigned list is unavailable. Search by name to find players.", { exact: true })).toHaveCount(0);
+    const target = fixture.players.find(player => player.playerId === "fixture-public-join-1")!;
+    const targetRow = page.locator(`#player-pool [data-ui="roster-player"][data-player-id="${target.playerId}"]`);
+    await expect(targetRow).toContainText(target.nickname);
+    await expect(targetRow.locator('[data-ui="claim-badge"]')).toHaveCount(0);
+    await expect(targetRow.locator('[data-action="grant-player-access"]')).toHaveCount(0);
+    // Duplicate display names stay separate identities across pool and teams.
+    await expect(displayedPlayers(page).locator("strong").filter({ hasText: /^Sam$/ })).toHaveCount(3);
+    const search = page.getByLabel("Search players", { exact: true });
+    await search.fill(target.nickname);
+    await expect(pool).toHaveCount(1);
+    await expect(targetRow).toBeVisible();
+    await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(0);
+    await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === target.nickname).length).toBe(1);
+    await expect(targetRow).toBeVisible();
+    await expectMatchGeometry(page);
+    await capture(page, testInfo, `complete-unassigned-filtered-${width}`);
+    await targetRow.locator('[data-action="assign-player"][data-team-id="yellow"]').click();
+    await expect(page.locator("#setup-status")).toHaveText(`${target.nickname} assigned to Yellow.`);
+    await expect(pool).toHaveCount(0);
+    const assigned = page.locator(`[data-ui="roster-team"][data-team-id="yellow"] [data-ui="roster-member"][data-player-id="${target.playerId}"]`);
+    await expect(assigned).toHaveCount(1);
+    await expect(displayedPlayers(page)).toHaveCount(1);
+    await search.fill("");
+    await expect(pool).toHaveCount(24);
+    await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(25);
+    await expect(displayedPlayers(page)).toHaveCount(49);
+    const ids = await displayedPlayers(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-player-id")));
+    expect(new Set(ids).size).toBe(49);
+    if (playersUnavailable) await expect(page.locator('[data-ui="claim-badge"]')).toHaveCount(0);
+    expect(fixture.requests.filter(request => request.method !== "GET")).toMatchObject([{
+      method: "PUT", path: `${apiGamePath}/roster/${target.playerId}`, body: { teamId: "yellow" },
+    }]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+test("an older roster response truthfully marks its Unassigned fallback as incomplete", async ({ page }) => {
+  const fixture = await installMatchFixture(page, { largeRoster: true, extraUnassigned: 23, missingUnassigned: true });
+  await page.goto(`${origin}${gamePath}#teams`);
+  await expect(page.locator("#game-season-link")).toHaveText(seasonName);
+  await expect(page.getByText("The full Unassigned list is unavailable. Search by name to find players.", { exact: true })).toBeVisible();
+  await expect(page.locator('#player-pool [data-ui="roster-player"]')).toHaveCount(2);
+  await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
+  await page.getByLabel("Search players", { exact: true }).fill("No such fictional player");
+  await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === "No such fictional player").length).toBe(1);
+  await expect(page.getByText("No players found in the available search.", { exact: true })).toBeVisible();
+  await expect(page.getByText("No unassigned players to show.", { exact: true })).toHaveCount(0);
+  expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
 
