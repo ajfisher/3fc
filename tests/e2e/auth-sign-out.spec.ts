@@ -72,7 +72,7 @@ for (const colorScheme of ["light", "dark"] as const) {
       if (width === 320) await page.screenshot({ path: testInfo.outputPath(`sign-out-${colorScheme}-retry-320.png`), fullPage: true });
       await page.keyboard.press("Enter");
       await expect(page).toHaveURL(`${origin}/sign-in`);
-      await expect(page.getByRole("heading", { name: "League organiser sign in" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Sign in to 3FC" })).toBeVisible();
       expect((await context.cookies(origin)).some(cookie => cookie.name === "threefc_session")).toBe(false);
       expect(logoutRequests).toBe(2);
       // A fresh protected-page visit cannot bounce back into a cached session.

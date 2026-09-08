@@ -21,8 +21,8 @@ The component examples use labelled fictional fixtures, genuine in-page links,
 native form controls and the existing confirmation prompt. They do not advertise
 performance, standings, public results or unsupported navigation.
 
-Authentication completion copy and timers are unchanged. Later feature slices
-own navigation, human dates, entry-flow and match-specific language refinement.
+The foundation retained authentication completion mechanics. The final entry
+slice below refines its copy while keeping the same timer and recovery contract.
 
 ## Organiser shell (UX-02)
 
@@ -78,5 +78,24 @@ history, a player portal or match-only scorer permissions.
 
 Confirmed commits and failed refreshes are separate outcomes. Keep useful
 constraints and recovery, without promising offline recovery or concurrent
-scorekeeper editing. Results composition and existing entry journeys belong to
-the next slice.
+scorekeeper editing.
+
+## Results and existing entry journeys (UX-05)
+
+| Surface/state | Reviewed treatment |
+| --- | --- |
+| Finished report | Match summary; confirmed winner or Draw, comparable Red/Blue/Yellow totals, Goals and Assists, Own goals only when present, then one Full match log. No duplicate per-team logs or routine Status/Finished paragraph. |
+| Invalid/missing result | Result unavailable. Never turn malformed counts into zero or a missing winner into Draw. Valid totals may remain when the outcome cannot be verified. |
+| Unavailable log | Player contributions and the match log could not be loaded. Reload to try again. A missing or partial log is not an empty match. |
+| Goal log | Time, full player name, dot-only team relationship and accessible thirds. Optional assists, explicit OG; no repeated conceding-only explanation. |
+| Join | Join game; Player name; Use the name the scorekeeper expects. One join code and no raw game-ID receipt. |
+| Claim | Sign in to claim this player / Claim player / Player claimed. Claiming is not scorer access and makes no personal-history promise. |
+| Unconfirmed joining/acceptance | Explain uncertainty and retry the captured action. Do not convert edited input into a second operation while the original is unresolved. |
+| Organiser invite | One invite code, Accept invite, then Open league only after a valid confirmed response. No Pending league, repeated code, or invented expiry deadline. |
+| Sign in | Sign in to 3FC; Email address; Send sign-in link. No organiser-only or unfinished-account paragraph. |
+| Email request | Sending sign-in link… then Sign-in link sent to the submitted address. Network uncertainty tells the person to check their inbox before trying again. Older session checks cannot replace this feedback or redirect them. |
+| Complete sign-in | Complete your sign-in; Sign-in starts in a few seconds. Or continue below. Same three-second completion and immediate manual action. Hide the initial promise while pending or after failure; one error and the appropriate retry/return action remain. |
+
+The destination for account switching preserves only validated join/invite
+fields, never the whole query string. No token, OAuth parameter, identity
+inference, public result link or future portal destination is introduced.

@@ -580,7 +580,7 @@ test("magic-link callback page includes auth flow script and callback messaging"
   );
   assert.match(html, /data-testid="auth-callback-shell"/);
   assert.match(html, /Complete your sign-in/);
-  assert.match(html, /The browser will redirect to finish your sign in within a few seconds\. If not, please click the button below to continue/);
+  assert.match(html, /Sign-in starts in a few seconds\. Or continue below\./);
   assert.doesNotMatch(html, /3FC Auth/);
   assert.doesNotMatch(html, /Magic link ready/);
   assert.equal((html.match(/role="alert"/g) ?? []).length, 1);
@@ -596,8 +596,9 @@ test("sign-in page renders magic-link form and carries return path", () => {
 
   assert.match(html, /data-testid="signin-shell"/);
   assert.match(html, /data-testid="panel-signin-flow"/);
-  assert.match(html, /League organiser sign in/);
-  assert.match(html, /If you&#39;re a league organiser, put in your email address and we&#39;ll send you a magic link to sign in\. If this is your first time, once you&#39;ve signed in you can finish your account creation\./);
+  assert.match(html, /Sign in to 3FC/);
+  assert.match(html, /Send sign-in link/);
+  assert.doesNotMatch(html, /league organiser|finish your account creation/);
   assert.match(html, /id="auth-magic-form"/);
   assert.match(html, /id="auth-return-to"/);
   assert.match(html, /value="\/setup"/);
@@ -685,7 +686,7 @@ test("game page retains game, roster and scoring hooks within the readable match
   assert.match(html, /data-testid="game-result-summary"/);
   assert.match(html, /data-testid="panel-game-final"/);
   assert.match(html, /data-testid="finalisation-board"/);
-  assert.match(html, />Match Summary</);
+  assert.match(html, />Match summary</);
   assert.doesNotMatch(html, />Run game</);
   assert.doesNotMatch(html, /Record goals first/);
   assert.doesNotMatch(html, />Finalisation</);
@@ -888,7 +889,7 @@ test("match overview is readable before intentional editing and roster entry is 
   } finally { dom.window.close(); }
 });
 
-test("join page renders player registration shell", () => {
+test("join page renders one useful player entry surface", () => {
   const html = renderJoinPage("https://qa-api.3fc.football", "join0001");
 
   assert.match(html, /data-testid="join-shell"/);
@@ -902,4 +903,39 @@ test("join page renders player registration shell", () => {
   assert.match(html, /data-testid="join-claim-actions"/);
   assert.match(html, /data-testid="join-signin-link"/);
   assert.match(html, /data-testid="claim-player"/);
+  assert.match(html, />Player name</);
+  assert.match(html, /Use the name the scorekeeper expects\./);
+  assert.doesNotMatch(html, /join-result-game/);
+  const dom = new JSDOM(html);
+  try {
+    const document = dom.window.document;
+    assert.doesNotMatch(document.body.textContent ?? "", /Player registration|3FC Join|scoring access/);
+    assert.equal(document.querySelectorAll('h1').length, 1);
+    assert.equal(document.querySelectorAll('h2').length, 0);
+    assert.equal(document.querySelectorAll('#join-code-value').length, 1);
+    assert(document.querySelector('[data-layout="auth"] #join-game-form'));
+  } finally { dom.window.close(); }
+});
+
+test("entry pages load the same versioned return validator once before their controller", () => {
+  const previous = process.env.THREEFC_ASSET_VERSION;
+  process.env.THREEFC_ASSET_VERSION = "entry-fixture";
+  try {
+    for (const html of [renderJoinPage("https://qa-api.3fc.football", "ABCD2345"),
+      renderInvitePage("https://qa-api.3fc.football", "ABCD2345")]) {
+      const dom = new JSDOM(html);
+      try {
+        const document = dom.window.document;
+        const scripts = [...document.querySelectorAll('script')].map(script => script.getAttribute('src'));
+        assert.deepEqual(scripts, ["/ui/auth-flow.js?v=entry-fixture", "/ui/setup-flow.js?v=entry-fixture"]);
+        assert(document.body.getAttribute('data-return-target-patterns'));
+        assert.equal(document.querySelectorAll('[data-ui="hero"]').length, 1);
+        assert.equal(document.querySelectorAll('h2').length, 0);
+        assert.doesNotMatch(html, /Pending|Join the league setup team|3FC Invite/);
+      } finally { dom.window.close(); }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.THREEFC_ASSET_VERSION;
+    else process.env.THREEFC_ASSET_VERSION = previous;
+  }
 });

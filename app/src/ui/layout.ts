@@ -402,7 +402,6 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
 
 export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string {
   const safeInviteCode = escapeHtml(inviteCode.trim().toUpperCase());
-  const inviteHeading = safeInviteCode.length > 0 ? safeInviteCode : "Organiser invite";
   const hasCode = safeInviteCode.length > 0;
 
   return `<!doctype html>
@@ -413,22 +412,16 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
     <title>3FC Organiser Invite</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="invite-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      <section data-ui="hero">
+      <section data-ui="hero" data-layout="auth">
         ${renderAccountActions()}
-        <span data-ui="hero-kicker">3FC Invite</span>
         <h1>Organiser invite</h1>
-        <p data-ui="hero-copy">Code <code>${inviteHeading}</code></p>
-      </section>
-      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="invite" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-invite-code="${safeInviteCode}">
+        <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="invite" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-invite-code="${safeInviteCode}">
         ${renderActivityStatus("Checking sign-in state…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
-        <section data-ui="panel-grid" data-testid="invite-grid">
-          ${renderPanel(
-            "Accept invite",
-            "Join the league setup team.",
-            `<form data-ui="auth-form" id="organiser-invite-code-form" ${hasCode ? "hidden" : ""} novalidate>
+        <div data-testid="panel-organiser-invite">
+            <form data-ui="auth-form" id="organiser-invite-code-form" ${hasCode ? "hidden" : ""} novalidate>
               ${renderValidatedField({
                 id: "organiser-invite-code-input",
                 label: "Invite code",
@@ -443,8 +436,7 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
             </form>
             <section data-ui="claim-panel" id="organiser-invite-acceptance" data-testid="organiser-invite-acceptance" ${hasCode ? "" : "hidden"}>
               <dl data-ui="id-preview">
-                <div><dt>Invite code</dt><dd id="organiser-invite-accept-code">${inviteHeading}</dd></div>
-                <div><dt>League</dt><dd id="organiser-invite-league">Pending</dd></div>
+                <div><dt>Invite code</dt><dd id="organiser-invite-accept-code">${safeInviteCode}</dd></div>
               </dl>
               <div data-ui="button-row">
                 ${renderButton("Accept invite", "primary", {
@@ -454,13 +446,12 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
                 })}
                 <a data-ui="button-secondary" id="organiser-invite-league-link" data-testid="organiser-invite-league-link" href="/setup" hidden>Open league</a>
               </div>
-            </section>`,
-            "",
-            "panel-organiser-invite",
-          )}
+            </section>
+        </div>
         </section>
       </section>
     </main>
+    ${renderAuthScriptTag()}
     ${renderSetupScriptTag()}
   </body>
 </html>`;
@@ -606,21 +597,20 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>League organiser sign in | 3FC</title>
+    <title>Sign in to 3FC</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="signin-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth" data-testid="panel-signin-flow">
-        <h1>League organiser sign in</h1>
-        <p data-ui="hero-copy">If you&#39;re a league organiser, put in your email address and we&#39;ll send you a magic link to sign in. If this is your first time, once you&#39;ve signed in you can finish your account creation.</p>
+        <h1>Sign in to 3FC</h1>
         <form data-ui="auth-form" id="auth-magic-form" novalidate>
           <input id="auth-return-to" type="hidden" value="${safeReturnTo}" />
           ${renderValidatedField({
             id: "auth-email",
             label: "Email address",
             type: "email",
-            placeholder: "organiser@3fc.football",
+            placeholder: "you@example.com",
             required: true,
             inputAttributes: {
               autocomplete: "email",
@@ -629,7 +619,7 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
               spellcheck: "false",
             },
           })}
-          <div data-ui="button-row">${renderButton("Send magic link", "primary", {
+          <div data-ui="button-row">${renderButton("Send sign-in link", "primary", {
             type: "submit",
             "data-action": "send-magic-link",
             "data-testid": "send-magic-link",
@@ -856,7 +846,6 @@ export function renderStatusPage(title: string, message: string): string {
   <body>
     <main data-ui="app-shell">
       <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Auth</span>
         <h1>${safeTitle}</h1>
         <p data-ui="hero-copy">${safeMessage}</p>
       </section>
@@ -879,7 +868,7 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
     <main data-ui="app-shell" data-testid="auth-callback-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth">
         <h1 id="auth-callback-title">Complete your sign-in</h1>
-        <p data-ui="hero-copy" id="auth-callback-copy">The browser will redirect to finish your sign in within a few seconds. If not, please click the button below to continue</p>
+        <p data-ui="hero-copy" id="auth-callback-copy">Sign-in starts in a few seconds. Or continue below.</p>
         <div data-ui="button-row">
           ${renderButton("Complete sign-in", "primary", {
             type: "button",
@@ -900,7 +889,6 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
 
 export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
   const safeJoinCode = escapeHtml(joinCode);
-  const joinHeading = safeJoinCode.length > 0 ? safeJoinCode : "Join game";
 
   return `<!doctype html>
 <html lang="en">
@@ -910,28 +898,22 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
     <title>3FC Join</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="join-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      <section data-ui="hero">
+      <section data-ui="hero" data-layout="auth">
         ${renderAccountActions()}
-        <span data-ui="hero-kicker">3FC Join</span>
         <h1>Join game</h1>
-        <p data-ui="hero-copy">Code <code>${joinHeading}</code></p>
-      </section>
-      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="join" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-join-code="${safeJoinCode}">
+        <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="join" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-join-code="${safeJoinCode}">
         ${renderActivityStatus("", false)}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
-        <section data-ui="panel-grid" data-testid="join-grid">
-          ${renderPanel(
-            "Player registration",
-            "Enter the name that should appear on the scorekeeper roster.",
-            `<dl data-ui="id-preview" data-testid="join-context-details">
-              <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${joinHeading}</dd></div>
+        <div data-testid="panel-join-player">
+            <dl data-ui="id-preview" data-testid="join-context-details">
+              <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${safeJoinCode}</dd></div>
             </dl>
             <form data-ui="auth-form" id="join-game-form" novalidate>
               ${renderValidatedField({
                 id: "join-player-nickname",
-                label: "Nickname",
+                label: "Player name",
                 placeholder: "Ari",
                 required: true,
                 hint: "Use the name the scorekeeper expects.",
@@ -942,27 +924,29 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
                 "data-testid": "join-game",
               })}</div>
             </form>
-            <dl data-ui="id-preview" data-testid="join-result" id="join-result" hidden>
+            <dl data-ui="join-receipt" data-testid="join-result" id="join-result" hidden>
               <div><dt>Player</dt><dd id="join-result-player"></dd></div>
-              <div><dt>Game</dt><dd id="join-result-game"></dd></div>
             </dl>
             <section data-ui="claim-panel" data-testid="join-claim-actions" id="join-claim-actions" hidden>
-              <p data-ui="field-hint" id="join-claim-status">Sign in to claim this player for scoring access.</p>
+              <p data-ui="field-hint" id="join-claim-status" hidden></p>
               <div data-ui="button-row">
-                <a data-ui="button-secondary" id="join-signin-link" data-testid="join-signin-link" href="/sign-in">Sign in to claim</a>
+                <a data-ui="button-secondary" id="join-signin-link" data-testid="join-signin-link" href="/sign-in">Sign in to claim this player</a>
                 ${renderButton("Claim player", "primary", {
                   type: "button",
                   "data-action": "claim-player",
                   "data-testid": "claim-player",
                 })}
               </div>
-            </section>`,
-            "",
-            "panel-join-player",
-          )}
+            </section>
+            ${renderButton("Join another player", "secondary", {
+              type: "button", "data-action": "join-another-player",
+              "data-testid": "join-another-player", hidden: "",
+            })}
+        </div>
         </section>
       </section>
     </main>
+    ${renderAuthScriptTag()}
     ${renderSetupScriptTag()}
   </body>
 </html>`;
@@ -1221,10 +1205,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>
     </section>`;
   const finalPanel = renderPanel(
-    "Match Summary",
+    "Match summary",
     "",
     `<div data-ui="finalisation-board" data-testid="finalisation-board">
-      <dl data-ui="final-summary-status" data-testid="finalisation-context">
+      <dl data-ui="final-summary-status" data-testid="finalisation-context" hidden>
         <div><dt>Status</dt><dd id="final-game-status">Loading…</dd></div>
       </dl>
       <div data-ui="game-result-summary" id="game-result-summary" data-testid="game-result-summary" hidden></div>

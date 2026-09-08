@@ -1931,13 +1931,13 @@
         "Independently issued sessions remain valid; browsers sharing one replayed magic-link session are all invalidated when that session is revoked."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 114,
         "branch": "codex/auth-sign-out",
         "notes": [
-          "Restore the existing GitHub issue, preserving its state and ID; PR0 does not close implementation work."
+          "Implementation and current-head automated/isolated-QA evidence are in open PR #143. Physical Android Firefox acceptance remains #137; review readiness does not claim that check or authorise merging."
         ]
       },
       "reviewRequirements": [
@@ -1986,9 +1986,9 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 131,
         "branch": "codex/design-delivery-backlog",
         "notes": [
@@ -2038,9 +2038,9 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 132,
         "branch": "codex/design-foundation",
         "notes": [
@@ -2092,9 +2092,9 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 133,
         "branch": "codex/design-organiser-shell",
         "notes": [
@@ -2146,9 +2146,9 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 134,
         "branch": "codex/design-match-roster",
         "notes": [
@@ -2196,7 +2196,7 @@
       "delivery": {
         "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 147,
         "branch": "codex/design-action-menus",
         "notes": ["Inserted after match/roster and before live scoring following AJ's QA feedback; existing issue IDs and partial-work boundaries remain unchanged."]
@@ -2246,9 +2246,9 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "review-ready",
         "githubIssue": 135,
         "branch": "codex/design-live-scoring",
         "notes": [
@@ -2299,13 +2299,13 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "implemented",
         "githubIssue": 136,
         "branch": "codex/design-results-entry",
         "notes": [
-          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+          "Implementation and local acceptance complete: 331 interactions, 379 app/311 API tests, 159 cross-stack browser cases and 4 isolated local M2 cases. Current-head external readiness belongs to the branch PR packet; this is not merge or release authority."
         ]
       }
     },
@@ -2358,13 +2358,15 @@
         "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-08",
         "wave": "frontend-stack",
-        "status": "planned",
+        "status": "partial",
         "githubIssue": 137,
         "branch": "codex/design-results-entry",
         "notes": [
-          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+          "Automated and emulated local cross-stack acceptance is complete in the final frontend PR: 159 browser and 4 local M2 cases. Current-head external evidence map: docs/design/stack-acceptance.md and the PR packet.",
+          "Still required from AJ: physical iOS Safari/Android keyboard, safe-area, date-control and email-return checks, plus Android Firefox account switching. Do not close this issue while required evidence is missing.",
+          "Review-ready records describe open PR readiness, not merged work, a release or completion of partial M2/M3 issues."
         ]
       }
     },

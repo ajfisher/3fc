@@ -212,6 +212,9 @@ body {
   &[data-layout="auth"] {
     display: grid;
     gap: 1rem;
+    width: 100%;
+    max-width: 34rem;
+    margin-inline: auto;
 
     h1 {
       margin: 0;
@@ -222,6 +225,39 @@ body {
 [data-ui="auth-form"] {
   display: grid;
   gap: 0.9rem;
+}
+
+[data-layout="auth"] [data-ui="setup-flow"] {
+  min-width: 0;
+}
+
+[data-layout="auth"] [data-ui="status-note"],
+[data-layout="auth"] [data-ui="id-preview"] dd {
+  overflow-wrap: anywhere;
+}
+
+[data-layout="auth"] [data-ui="claim-panel"] {
+  border: 0;
+  padding-top: 0;
+}
+
+[data-action="join-another-player"] {
+  margin-top: 1rem;
+}
+
+[data-ui="join-receipt"] {
+  margin-block: 1rem;
+
+  dt {
+    color: var(--ink-soft);
+    font-size: 0.875rem;
+  }
+
+  dd {
+    margin: 0.25rem 0 0;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
 }
 
 [data-ui="hero"] + [data-ui="setup-flow"] {
@@ -1403,7 +1439,23 @@ body {
 }
 
 [data-ui="game-result-summary"] {
-  margin-top: 0.75rem;
+  margin-top: 0;
+  container-type: inline-size;
+}
+
+[data-testid="game-shell"] > [data-ui="hero"] {
+  container: match-header / inline-size;
+  padding-inline: 0.75rem;
+}
+
+@container match-header (max-width: 15rem) {
+  main[data-testid="game-shell"] > [data-ui="hero"] > [data-ui="hero-title-row"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-ui="hero-title-row"] > [data-ui="action-menu"] {
+    justify-self: end;
+  }
 }
 
 [data-ui="game-result-summary"][hidden] {
@@ -1412,11 +1464,8 @@ body {
 
 [data-ui="result-board"] {
   display: grid;
-  gap: 0.65rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 0.7rem;
-  background: var(--surface);
+  gap: 1.5rem;
+  min-width: 0;
 
   > header {
     display: grid;
@@ -1431,8 +1480,8 @@ body {
 
     strong {
       font-family: var(--font-display);
-      font-size: 1.35rem;
-      line-height: 1.1;
+      font-size: 1.75rem;
+      line-height: 1.2;
       overflow-wrap: anywhere;
     }
 
@@ -1445,28 +1494,22 @@ body {
 
 [data-ui="result-team-list"] {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.45rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  padding-block: 1rem;
+  border-block: 1px solid var(--line);
 }
 
 [data-ui="result-team"] {
   --team-color: var(--team-neutral);
   display: grid;
-  gap: 0.45rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 0.55rem;
-  background: var(--surface);
-
-  &[data-outcome="win"],
-  &[data-outcome="draw"] {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
+  gap: 0.75rem;
+  min-width: 0;
+  align-content: start;
 
   header {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     gap: 0.35rem;
 
@@ -1478,13 +1521,13 @@ body {
 
   dl {
     display: grid;
-    gap: 0.25rem;
+    gap: 0.75rem;
     margin: 0;
   }
 
   div {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.25rem;
     align-items: baseline;
   }
@@ -1497,8 +1540,13 @@ body {
   dd {
     margin: 0;
     font-weight: 850;
-    font-size: 1.05rem;
+    font-size: 1.125rem;
     font-variant-numeric: tabular-nums;
+  }
+
+  dl > div:first-child dd {
+    font-size: 2.25rem;
+    line-height: 1.2;
   }
 
   [data-ui="team-swatch"] {
@@ -1510,9 +1558,29 @@ body {
   }
 }
 
-[data-ui="final-team-log"] {
-  border-top: 1px solid var(--line);
-  padding-top: 0.45rem;
+/* Enlarged text can leave less room than a phone viewport suggests. Preserve
+   complete labels by switching totals to one team per row at that width. */
+@container (max-width: 15rem) {
+  [data-ui="result-team-list"] {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  [data-ui="result-team"] dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-ui="result-team"] dl > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  [data-ui="final-goal-item"][data-has-third="true"] {
+    grid-template-columns: minmax(0, 1fr) auto;
+
+    [data-ui="goal-time"] { grid-column: 1; grid-row: 1; }
+    [data-ui="third-indicator"] { grid-column: 2; grid-row: 1; }
+    [data-ui="final-goal-details"] { grid-column: 1 / -1; grid-row: 2; }
+  }
 }
 
 [data-ui="final-goal-list"] {
@@ -1525,24 +1593,20 @@ body {
 
 [data-ui="final-goal-item"] {
   display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr);
-  gap: 0.45rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.5rem;
   align-items: start;
-  padding: 0.42rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+  padding-block: 0.75rem;
+  border-top: 1px solid var(--line);
 
   &[data-has-third="true"] {
-    grid-template-columns: 3rem minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   [data-ui="goal-time"] {
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent-strong);
-    padding: 0.1rem 0.34rem;
-    text-align: center;
+    color: var(--ink-soft);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
     font-weight: 850;
     font-size: 0.875rem;
   }
@@ -1587,21 +1651,19 @@ body {
 
 [data-ui="final-aggregate-stats"] {
   display: grid;
-  gap: 0.55rem;
+  gap: 1.5rem;
 }
 
 [data-ui="final-stat-card"] {
   display: grid;
   gap: 0.45rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  padding: 0.6rem;
+  min-width: 0;
 
+  h3,
   h4 {
     margin: 0;
     color: var(--ink-strong);
-    font-size: 0.9rem;
+    font-size: 1.125rem;
   }
 }
 

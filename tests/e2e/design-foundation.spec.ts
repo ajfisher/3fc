@@ -51,7 +51,7 @@ for (const colorScheme of ["light", "dark"] as const) {
       for (const control of await controls.all()) {
         if (!await control.isVisible()) continue;
         const box = await control.boundingBox();
-        expect(box?.height, await control.getAttribute("aria-label") || await control.textContent()).toBeGreaterThanOrEqual(44);
+        expect(box?.height, await control.getAttribute("aria-label") || await control.textContent() || "Visible control").toBeGreaterThanOrEqual(44);
       }
       for (const field of await page.locator('[data-ui="input"]').all()) {
         if (await field.isVisible()) await expect(field).toHaveCSS("font-size", "16px");
@@ -105,7 +105,7 @@ async function mountRunningGame(page: Page) {
   }));
   const players = Array.from({length:18}, (_, index) => ({playerId:`player-${index}`, nickname:index === 0 ? "Alexandra Montgomery-Williams" : `Fixture Player ${index + 1}`, claimedByUserId:index === 0 ? "fixture-user" : null}));
   const payloads: Record<string, unknown> = {
-    "/v1/auth/session": {session:{sessionId:"fixture-session", email:"fixture@example.invalid", createdAt:now, expiresAt:"2099-01-01T00:00:00Z"}},
+    "/v1/auth/session": {authenticated:true,session:{sessionId:"fixture-session", email:"fixture@example.invalid", createdAt:now, expiresAt:"2099-01-01T00:00:00Z"}},
     "/v1/games/fixture-game": {gameId:"fixture-game", leagueId:"fixture-league", seasonId:"fixture-season", status:"live", gameStartTs:now, thirdLengthMinutes:25, thirds:[1,2,3].map(third => ({third, status:third===1 ? "running" : "not_started", startedAt:third===1 ? now:null, finishedAt:null}))},
     "/v1/leagues/fixture-league": {leagueId:"fixture-league",name:"Fixture league",access:{role:"admin"}},
     "/v1/leagues/fixture-league/seasons/fixture-season": {leagueId:"fixture-league",seasonId:"fixture-season",name:"Fixture season"},
@@ -125,11 +125,12 @@ async function mountRunningGame(page: Page) {
       await route.abort();
     }
   });
-  await page.goto("http://fixture.invalid/games/fixture-game#run");
+  await page.goto("http://fixture.invalid/games/fixture-game#score");
   await page.addStyleTag({content:styles+icons});
   await page.addScriptTag({content:setupScript});
   await expect(page.locator('[data-ui="score-team"]')).toHaveCount(3);
   await expect(page.getByTestId("game-mode-run")).toBeVisible();
+  await expect(page).toHaveURL("http://fixture.invalid/games/fixture-game#score");
   return unexpected;
 }
 
@@ -140,8 +141,12 @@ for (const colorScheme of ["light", "dark"] as const) {
     const unexpected = await mountRunningGame(page);
     await expect(page.getByTestId("start-third")).toBeDisabled();
     await expect(page.getByTestId("finish-third")).toBeEnabled();
-    await page.getByTestId("goal-scoring-team").selectOption("red");
-    await page.getByTestId("goal-conceding-team").selectOption("blue");
+    const scoringTeam = page.getByTestId("goal-scoring-team").getByRole("radio", {name:"Red",exact:true});
+    const concedingTeam = page.getByTestId("goal-conceding-team").getByRole("radio", {name:"Blue",exact:true});
+    await scoringTeam.check();
+    await concedingTeam.check();
+    await expect(scoringTeam).toBeChecked();
+    await expect(concedingTeam).toBeChecked();
     await page.getByTestId("goal-scorer").selectOption("player-0");
     await page.getByTestId("add-goal").focus();
     await expect(page.getByTestId("add-goal")).toHaveCSS("outline-width","3px");
@@ -167,7 +172,10 @@ for (const colorScheme of ["light", "dark"] as const) {
       await page.getByTestId("run-primary-scoring").screenshot({path:testInfo.outputPath(`goal-entry-${colorScheme}-${scale}.png`)});
     }
     await page.evaluate(()=>document.documentElement.style.fontSize = "100%");
+    await expect(page.getByTestId("game-mode-players-tab")).toHaveAttribute("href", "#teams");
     await page.getByTestId("game-mode-players-tab").click();
+    await expect(page).toHaveURL("http://fixture.invalid/games/fixture-game#teams");
+    await expect(page.getByTestId("game-mode-players")).toBeVisible();
     for (const width of [320,768]) {
       for (const scale of [100,200]) {
         await page.setViewportSize({width,height:900});

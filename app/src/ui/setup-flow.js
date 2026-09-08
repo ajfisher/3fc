@@ -38,6 +38,10 @@
       .replaceAll("'", "&#39;");
   }
 
+  function usableEntityId(value) {
+    return typeof value === "string" && value.length > 0 && value.length <= 512 && value.trim() === value && !/[\\\u0000-\u001f\u007f]/u.test(value);
+  }
+
   function navigateTo(url, mode = "assign") {
     closeActionMenu();
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
@@ -62,6 +66,37 @@
   let signOutUnconfirmed = false;
   let hasAuthenticatedAccount = false;
   let accountRevalidating = false;
+  let entryClaimPlayerId = null;
+
+  function normalizedEntryCode(value) {
+    return typeof value === "string" ? value.trim().toUpperCase().replace(/\s+/g, "") : "";
+  }
+
+  function validEntryCode(value) {
+    return /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(value);
+  }
+
+  function entryReturnTarget(playerId = entryClaimPlayerId) {
+    if (page !== "join" && page !== "invite") return null;
+    const query = new URLSearchParams(window.location.search);
+    const code = normalizedEntryCode(page === "join"
+      ? query.get("code") || resolveRouteEntityId("data-join-code", "join")
+      : resolveRouteEntityId("data-invite-code", "invites") || query.get("code"));
+    const params = new URLSearchParams();
+    if (validEntryCode(code)) params.set("code", code);
+    if (page === "join" && usableEntityId(playerId)) params.set("playerId", playerId);
+    const target = `${page === "join" ? "/join" : "/invites"}${params.size ? `?${params}` : ""}`;
+    try {
+      return typeof window.__THREEFC_NORMALIZE_RETURN_TO__ === "function" ? window.__THREEFC_NORMALIZE_RETURN_TO__(target) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function entrySignInHref(playerId = entryClaimPlayerId) {
+    const target = entryReturnTarget(playerId);
+    return target ? `/sign-in?returnTo=${encodeURIComponent(target)}` : "/sign-in";
+  }
 
   function setAccountSession(session) {
     const actions = document.getElementById("account-actions");
@@ -143,7 +178,7 @@
         } catch {
           // A blocked storage API must not prevent leaving the signed-out page.
         }
-        navigateTo("/sign-in", "replace");
+        navigateTo(entrySignInHref(), "replace");
       } catch {
         // A lost response may mean revocation committed. Do not promise that
         // the session is still active, and never display raw transport errors.
@@ -1392,18 +1427,6 @@
     }
   }
 
-  async function currentAuthenticatedSession() {
-    const result = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store" });
-    if (!result.ok) {
-      setAccountSession(null);
-      return null;
-    }
-
-    const session = result.body?.session ?? null;
-    setAccountSession(session);
-    return session;
-  }
-
   function toIsoTimestamp(localDateTime) {
     const parsed = new Date(localDateTime);
     if (Number.isNaN(parsed.getTime())) {
@@ -1609,8 +1632,8 @@
     const result = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store" });
 
     if (!result.ok) {
-      const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-      navigateTo(`/sign-in?returnTo=${returnTo}`, "replace");
+      const target = page === "invite" ? entrySignInHref() : `/sign-in?returnTo=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`;
+      navigateTo(target, "replace");
       throw new Error("redirecting_to_sign_in");
     }
 
@@ -3166,32 +3189,49 @@
     }
 
     function normalizeScoreboardTeams(teams) {
+      if (!Array.isArray(teams) || teams.length !== 3 ||
+        teams.some((team) => !team || typeof team !== "object" || !["red", "blue", "yellow"].includes(team.teamId) ||
+          !Number.isSafeInteger(team.scored) || team.scored < 0 || !Number.isSafeInteger(team.conceded) || team.conceded < 0) ||
+        new Set(teams.map((team) => team.teamId)).size !== 3) return [];
       return teams.map((team) => ({
         gameId: team.gameId ?? gameId,
         teamId: team.teamId,
         name:
           typeof team.name === "string" && team.name.length > 0
             ? team.name
-            : String(team.teamId ?? "Unknown team"),
+            : ({ red: "Red", blue: "Blue", yellow: "Yellow" }[team.teamId]),
         color: typeof team.color === "string" ? team.color : null,
-        scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
-        conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
+        scored: team.scored,
+        conceded: team.conceded,
         createdAt: team.createdAt ?? "",
         updatedAt: team.updatedAt ?? "",
       }));
     }
 
     function scoreboardTeamsInRosterOrder() {
-      const byTeamId = new Map(scoreboardTeams.map((team) => [team.teamId, team]));
-      const ordered = rosterTeams
-        .map((team) => byTeamId.get(team.teamId) ?? normalizeScoreboardTeams([team])[0])
-        .filter(Boolean);
-
-      if (ordered.length > 0) {
-        return teamsInMatchOrder(ordered);
-      }
-
       return teamsInMatchOrder(scoreboardTeams);
+    }
+
+    function decodeGoalTimeline(value) {
+      if (!Array.isArray(value)) return null;
+      const ids = new Set();
+      for (const goal of value) {
+        if (!goal || typeof goal !== "object" || Array.isArray(goal) || goal.gameId !== gameId ||
+          !usableEntityId(goal.eventId) || ids.has(goal.eventId) || !usableEntityId(goal.scorerPlayerId) ||
+          typeof goal.ownGoal !== "boolean" || !["red", "blue", "yellow"].includes(goal.concedingTeamId) ||
+          (goal.ownGoal ? goal.scoringTeamId !== null : !["red", "blue", "yellow"].includes(goal.scoringTeamId) || goal.scoringTeamId === goal.concedingTeamId) ||
+          !Number.isInteger(goal.third) || goal.third < 1 || goal.third > 3 ||
+          !Number.isSafeInteger(goal.thirdMinute) || goal.thirdMinute < 1 ||
+          !Number.isSafeInteger(goal.gameMinute) || goal.gameMinute < 0 ||
+          !Number.isSafeInteger(goal.elapsedSeconds) || goal.elapsedSeconds < 0 ||
+          (goal.stoppageMinute !== null && (!Number.isSafeInteger(goal.stoppageMinute) || goal.stoppageMinute < 1)) ||
+          typeof goal.createdAt !== "string" || !Number.isFinite(Date.parse(goal.createdAt)) ||
+          !Array.isArray(goal.assistPlayerIds) || goal.assistPlayerIds.length > 3 ||
+          goal.assistPlayerIds.some((id) => !usableEntityId(id) || id === goal.scorerPlayerId) ||
+          new Set(goal.assistPlayerIds).size !== goal.assistPlayerIds.length) return null;
+        ids.add(goal.eventId);
+      }
+      return sortGoalTimeline(value);
     }
 
     function teamsInMatchOrder(teams) {
@@ -3370,22 +3410,18 @@
     }
 
     function resultTeams() {
-      const teams = currentGame?.result?.teams;
-      if (!Array.isArray(teams)) {
-        return [];
-      }
+      return teamsInMatchOrder(normalizeScoreboardTeams(currentGame?.result?.teams));
+    }
 
-      return teams
-        .filter((team) => team && typeof team === "object" && typeof team.teamId === "string")
-        .map((team) => ({
-          teamId: team.teamId,
-          name: typeof team.name === "string" && team.name.length > 0 ? team.name : team.teamId,
-          color: typeof team.color === "string" ? team.color : null,
-          scored: Number.isInteger(team.scored) && team.scored >= 0 ? team.scored : 0,
-          conceded: Number.isInteger(team.conceded) && team.conceded >= 0 ? team.conceded : 0,
-          rank: Number.isInteger(team.rank) && team.rank > 0 ? team.rank : 0,
-          outcome: ["win", "draw", "loss"].includes(team.outcome) ? team.outcome : "loss",
-        }));
+    function resultOutcome(teams) {
+      const result = currentGame?.result;
+      if (teams.length !== 3 || !result || !["win", "draw"].includes(result.outcome)) return null;
+      // Check the supplied outcome against the same conceded/scored comparator,
+      // never replace it with a newly computed winner when the response differs.
+      const ranked = [...teams].sort((left, right) => left.conceded - right.conceded || right.scored - left.scored);
+      const leaders = ranked.filter((team) => team.conceded === ranked[0].conceded && team.scored === ranked[0].scored);
+      if (result.outcome === "draw") return result.winnerTeamId === null && leaders.length > 1 ? { kind: "draw", text: "Draw" } : null;
+      return leaders.length === 1 && leaders[0].teamId === result.winnerTeamId ? { kind: "win", text: `${leaders[0].name} win` } : null;
     }
 
     function renderGameResult() {
@@ -3418,53 +3454,37 @@
         return;
       }
 
-      const result = currentGame?.result;
       const teams = resultTeams();
-      if (!isGameFinished() || !result || teams.length === 0) {
+      if (!isGameFinished()) {
         gameResultSummaryElement.hidden = true;
         gameResultSummaryElement.innerHTML = "";
         syncGameModeState();
         return;
       }
 
-      const winner = teams.find((team) => team.teamId === result.winnerTeamId) ?? null;
-      const outcomeText = winner ? `${winner.name} win` : "Draw";
-      const resultOutcome = result.outcome === "win" ? "win" : "draw";
+      const outcome = resultOutcome(teams);
       const goalLogsLoaded = goalTimelineLoaded;
       gameResultSummaryElement.hidden = false;
-      gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-outcome="${escapeHtml(resultOutcome)}">
+      gameResultSummaryElement.innerHTML = `<section data-ui="result-board"${outcome ? ` data-outcome="${outcome.kind}"` : ' data-state="unavailable"'}>
         <header>
-          <span>Final result</span>
-          <strong data-testid="game-result-outcome">${escapeHtml(outcomeText)}</strong>
+          ${outcome ? `<strong data-testid="game-result-outcome">${escapeHtml(outcome.text)}</strong>` : '<strong data-testid="result-unavailable">Result unavailable</strong><p data-ui="empty-note">The match result could not be loaded. Reload to try again.</p>'}
         </header>
-        <div data-ui="result-team-list" data-testid="game-result-teams">
+        ${teams.length > 0 ? `<div data-ui="result-team-list" data-testid="game-result-teams">
           ${teams
             .map((team) => {
-              const teamGoals = goalsForFinalTeam(team.teamId);
-              return `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}" data-outcome="${escapeHtml(
-                team.outcome,
-              )}"${teamSwatchStyle(team)}>
+              return `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
                 <header>
-                  <span data-ui="team-swatch"></span>
+                  <span data-ui="team-swatch" aria-hidden="true"></span>
                   <strong>${escapeHtml(team.name)}</strong>
-                  ${team.rank > 0 ? `<span data-ui="rank-chip">#${escapeHtml(String(team.rank))}</span>` : ""}
                 </header>
                 <dl>
                   <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
                   <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
                 </dl>
-                ${goalLogsLoaded
-                  ? `<details data-ui="final-team-log" data-testid="final-team-log-${escapeHtml(team.teamId)}">
-                    <summary>Scoring log</summary>
-                    <ol data-ui="final-goal-list">
-                      ${renderFinalGoalItems(teamGoals, "No goals recorded for this team.")}
-                    </ol>
-                  </details>`
-                  : `<p data-ui="empty-note" data-testid="final-team-log-unavailable-${escapeHtml(team.teamId)}">Goal log unavailable.</p>`}
               </article>`;
             })
             .join("")}
-        </div>
+        </div>` : ""}
         ${goalLogsLoaded ? `${renderFinalAggregateStats()}${renderFinalFullGoalLog()}` : renderFinalGoalSummariesUnavailable()}
       </section>`;
       syncGameModeState();
@@ -3862,64 +3882,23 @@
       return "-";
     }
 
-    function goalAssistLabel(goal) {
-      const assistPlayerIds = Array.isArray(goal.assistPlayerIds) ? goal.assistPlayerIds : [];
-      if (assistPlayerIds.length === 0) {
-        return "No assists";
-      }
-
-      return `Assisted by ${assistPlayerIds.map((playerId) => playerNickname(playerId)).join(", ")}`;
-    }
-
-    function finalTeamGoalLabel(goal) {
-      const scorer = playerNickname(goal.scorerPlayerId);
-      if (goal.ownGoal) {
-        return `${scorer} own goal`;
-      }
-
-      return scorer;
-    }
-
-    function finalTeamGoalDetail(goal) {
-      if (goal.ownGoal) {
-        return "Conceded-only own goal";
-      }
-
-      return goalAssistLabel(goal);
-    }
-
-    function goalsForFinalTeam(teamId) {
-      return goalTimeline.filter(
-        (goal) =>
-          (!goal.ownGoal && goal.scoringTeamId === teamId) ||
-          (goal.ownGoal && goal.concedingTeamId === teamId),
-      );
-    }
-
-    function renderFinalGoalItems(goals, emptyText, options = {}) {
+    function renderFinalGoalItems(goals, emptyText) {
       if (goals.length === 0) {
         return `<li data-ui="empty-note">${escapeHtml(emptyText)}</li>`;
       }
 
       return goals
         .map((goal) => {
-          const detail = finalTeamGoalDetail(goal);
-          const includesThird = options.includeThird === true && Number.isInteger(goal.third);
-          const goalTeamSemantics = options.includeThird === true
-            ? goal.ownGoal
-              ? `Own goal. No scoring team. Conceding team: ${teamName(goal.concedingTeamId)}.`
-              : `Scoring team: ${teamName(goal.scoringTeamId)}. Conceding team: ${teamName(goal.concedingTeamId)}.`
-            : "";
-          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(String(goal.eventId ?? ""))}"${
-            includesThird ? ' data-has-third="true"' : ""
-          }>
+          return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(goal.eventId)}" data-has-third="true">
             <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
-            <div>
-              <strong>${escapeHtml(finalTeamGoalLabel(goal))}</strong>
-              <small>${escapeHtml(detail)}</small>
-              ${goalTeamSemantics ? `<span class="sr-only" data-ui="goal-team-semantics">${escapeHtml(goalTeamSemantics)}</span>` : ""}
+            <div data-ui="final-goal-details">
+              <strong>${escapeHtml(playerNickname(goal.scorerPlayerId))}</strong>
+              <span data-ui="goal-team-relationship">${goal.ownGoal ? '<span data-ui="own-goal-marker" aria-label="Own goal">OG</span>' : renderGoalTeamChip(goal.scoringTeamId, "Scoring team")}
+                <span data-ui="goal-team-arrow" aria-hidden="true">→</span>${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
+              </span>
+              ${goal.assistPlayerIds.length ? `<small>Assists: ${escapeHtml(goal.assistPlayerIds.map((id) => playerNickname(id)).join(", "))}</small>` : ""}
             </div>
-            ${includesThird ? renderThirdIndicator(goal.third) : ""}
+            ${renderThirdIndicator(goal.third)}
           </li>`;
         })
         .join("");
@@ -3989,18 +3968,18 @@
       const stats = finalAggregateStats();
       const ownGoalStats = stats.ownGoals.length > 0
         ? `<section data-ui="final-stat-card" data-testid="final-own-goal-stats">
-          <h4>Own goals</h4>
+          <h3>Own goals</h3>
           ${renderPlayerStatList(stats.ownGoals, "No own goals.")}
         </section>`
         : "";
 
       return `<section data-ui="final-aggregate-stats" data-testid="final-aggregate-stats" aria-label="Player statistics">
         <section data-ui="final-stat-card" data-testid="final-scorer-stats">
-          <h4>Top scorers</h4>
+          <h3>Goals</h3>
           ${renderPlayerStatList(stats.scorers, "No scorers recorded.")}
         </section>
         <section data-ui="final-stat-card" data-testid="final-assist-stats">
-          <h4>Assists</h4>
+          <h3>Assists</h3>
           ${renderPlayerStatList(stats.assists, "No assists recorded.")}
         </section>
         ${ownGoalStats}
@@ -4009,8 +3988,8 @@
 
     function renderFinalGoalSummariesUnavailable() {
       return `<section data-ui="final-goal-unavailable" data-testid="final-goal-summary-unavailable" aria-label="Goal summaries unavailable">
-        <h4>Goal summaries unavailable</h4>
-        <p data-ui="empty-note">Team result totals are shown, but scorer, assist, and full goal logs could not be loaded.</p>
+        <h3>Goal summaries unavailable</h3>
+        <p data-ui="empty-note">Player contributions and the match log could not be loaded. Reload to try again.</p>
       </section>`;
     }
 
@@ -4018,7 +3997,7 @@
       return `<details data-ui="final-full-log" data-testid="final-full-goal-log">
         <summary>Full match log</summary>
         <ol data-ui="final-goal-list">
-          ${renderFinalGoalItems(goalTimeline, "No goals recorded.", { includeThird: true })}
+          ${renderFinalGoalItems(goalTimeline, "No goals recorded.")}
         </ol>
       </details>`;
     }
@@ -4089,13 +4068,9 @@
     }
 
     function renderLiveScoring(seed = {}) {
-      if (!liveControlsAvailable()) {
-        return;
-      }
-
       const focus = captureScoringFocus();
       renderLiveScoreboard();
-      renderGoalControls(seed);
+      if (liveControlsAvailable()) renderGoalControls(seed);
       renderGoalTimeline();
       renderGameResult();
       syncGameModeState();
@@ -4116,29 +4091,18 @@
       if (!focus) return;
       let target = focus.id ? document.getElementById(focus.id) : null;
       if (focus.group) target = [...(document.getElementById(focus.group)?.querySelectorAll('input[type="radio"]') ?? [])].find((input) => input.value === focus.value);
-      else if (!target && focus.value) target = [...goalAssistsElement.querySelectorAll('input[type="checkbox"]')].find((input) => input.value === focus.value);
+      else if (!target && focus.value) target = [...(goalAssistsElement?.querySelectorAll('input[type="checkbox"]') ?? [])].find((input) => input.value === focus.value);
       else if (!target && focus.action) target = [...root.querySelectorAll('button[data-action]')].find((button) => button.getAttribute("data-action") === focus.action && button.getAttribute("data-event-id") === focus.eventId);
       if (target instanceof HTMLElement && !target.matches(":disabled") && actionElementVisible(target)) target.focus({ preventScroll: true });
     }
 
-    function applyGoalMutationResult(result, fallback = {}) {
+    function applyGoalMutationResult(result) {
       scoreboardState = "refreshing";
-      if (Array.isArray(result?.scoreboard?.teams)) {
-        scoreboardTeams = normalizeScoreboardTeams(result.scoreboard.teams);
-      }
-
-      if (Array.isArray(result?.timeline)) {
-        goalTimelineLoaded = true;
-        goalTimeline = sortGoalTimeline(result.timeline);
-      } else if (goalTimelineLoaded && result?.goal) {
-        const nextGoal = result.goal;
-        goalTimeline = sortGoalTimeline([
-          ...goalTimeline.filter((goal) => goal.eventId !== nextGoal.eventId),
-          nextGoal,
-        ]);
-      } else if (goalTimelineLoaded && fallback.deletedEventId) {
-        goalTimeline = goalTimeline.filter((goal) => goal.eventId !== fallback.deletedEventId);
-      }
+      const teams = normalizeScoreboardTeams(result?.scoreboard?.teams);
+      if (teams.length) scoreboardTeams = teams;
+      const timeline = decodeGoalTimeline(result?.timeline);
+      goalTimelineLoaded = timeline !== null;
+      goalTimeline = timeline ?? [];
 
       renderLiveScoring();
     }
@@ -4361,7 +4325,7 @@
         goalOperation = null;
         const finishedCorrection = isGameFinished();
         if (finishedCorrection) finishedResultState = "saved-unavailable";
-        applyGoalMutationResult(result, { deletedEventId: operation.eventId });
+        applyGoalMutationResult(result);
         if (operation.kind === "create" || operation.kind === "edit" || (operation.editingGoalId && operation.editingGoalId === operation.eventId)) resetGoalForm();
         else {
           editingGoalId = operation.editingGoalId;
@@ -4725,10 +4689,6 @@
     }
 
     async function loadGameGoals() {
-      if (!liveControlsAvailable()) {
-        return true;
-      }
-
       let payload;
       try {
         payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/goals`, {
@@ -4736,22 +4696,29 @@
         });
       } catch (error) {
         goalTimelineLoaded = false;
-        const message = error instanceof Error ? error.message : "Could not load goal timeline.";
-        showError(message);
-        setStatus("Could not load goal timeline.", "error");
+        // Results owns its partial-log message. Scoring still has the local
+        // unavailable timeline; a mutation caller adds its own commit outcome.
+        if (!isGameFinished()) {
+          showError("The match log could not be loaded. Reload to try again.", { includesOutcome: true });
+        }
         renderLiveScoring();
         return false;
       }
 
-      goalTimelineLoaded = true;
-      if (Array.isArray(payload?.scoreboard?.teams)) {
-        scoreboardTeams = normalizeScoreboardTeams(payload.scoreboard.teams);
+      const teams = normalizeScoreboardTeams(payload?.scoreboard?.teams);
+      const timeline = decodeGoalTimeline(payload?.timeline);
+      goalTimelineLoaded = timeline !== null;
+      goalTimeline = timeline ?? [];
+      if (teams.length) {
+        scoreboardTeams = teams;
         scoreboardState = "authoritative";
+      } else if (!(isGameFinished() && finishedResultState === "authoritative" && resultTeams().length)) {
+        scoreboardTeams = [];
+        scoreboardState = "unavailable";
       }
-
-      goalTimeline = Array.isArray(payload?.timeline) ? sortGoalTimeline(payload.timeline) : [];
+      if (!goalTimelineLoaded && !isGameFinished()) showError("The match log could not be loaded. Reload to try again.", { includesOutcome: true });
       renderLiveScoring();
-      return true;
+      return goalTimelineLoaded;
     }
 
     async function loadGame() {
@@ -4761,9 +4728,9 @@
 
       currentGame = game;
       finishedResultState = "authoritative";
-      if (game.status === "finished" && Array.isArray(game.result?.teams)) {
-        scoreboardTeams = normalizeScoreboardTeams(game.result.teams);
-        scoreboardState = "authoritative";
+      if (game.status === "finished") {
+        scoreboardTeams = normalizeScoreboardTeams(game.result?.teams);
+        scoreboardState = scoreboardTeams.length ? "authoritative" : "unavailable";
       }
       currentLeagueId = game.leagueId;
       currentSeasonId = game.seasonId;
@@ -5006,9 +4973,9 @@
       if (isGameFinished()) {
         finishedResultState = resultAvailable ? "authoritative" : "saved-unavailable";
         if (!resultAvailable) scoreboardState = "unavailable";
-        else if (Array.isArray(currentGame?.result?.teams)) {
-          scoreboardTeams = normalizeScoreboardTeams(currentGame.result.teams);
-          scoreboardState = "authoritative";
+        else {
+          scoreboardTeams = normalizeScoreboardTeams(currentGame?.result?.teams);
+          scoreboardState = scoreboardTeams.length ? "authoritative" : "unavailable";
         }
         finishedResultEditing = false;
         finishedRosterEditing = false;
@@ -5564,368 +5531,419 @@
       // Keep existing game context if season lookup fails.
     }
 
-    if (goalsLoaded) {
+    if (goalsLoaded || isGameFinished()) {
       setStatus("");
     }
   }
 
   async function initJoinPage() {
-    const searchParams = new URLSearchParams(window.location.search);
-    const queryJoinCode = searchParams.get("code") ?? "";
-    const routeJoinCode = queryJoinCode || resolveRouteEntityId("data-join-code", "join") || "";
-    const joinCode = routeJoinCode.trim().toUpperCase();
-    const joinCodeValue = document.getElementById("join-code-value");
+    const query = new URLSearchParams(window.location.search);
+    const joinCode = normalizedEntryCode(query.get("code") || resolveRouteEntityId("data-join-code", "join") || "");
     const form = document.getElementById("join-game-form");
     const nicknameInput = document.getElementById("join-player-nickname");
     const joinButton = root.querySelector('[data-action="join-game"]');
+    const anotherButton = root.querySelector('[data-action="join-another-player"]');
     const resultElement = document.getElementById("join-result");
     const resultPlayer = document.getElementById("join-result-player");
-    const resultGame = document.getElementById("join-result-game");
     const claimActions = document.getElementById("join-claim-actions");
     const claimStatus = document.getElementById("join-claim-status");
     const signInLink = document.getElementById("join-signin-link");
     const claimButton = root.querySelector('[data-action="claim-player"]');
-    const initialPlayerId = searchParams.get("playerId") ?? "";
-    let claimPlayerId = initialPlayerId.trim();
+    const queryPlayerId = query.get("playerId");
+    let claimPlayerId = usableEntityId(queryPlayerId) ? queryPlayerId : "";
+    entryClaimPlayerId = claimPlayerId || null;
+    let joinAttempt = null;
+    let joinPending = false;
+    let joined = false;
+    let claimPending = false;
+    let claimComplete = false;
+    let claimRevision = 0;
+    let entryNavigationRevision = 0;
+    let entryFlowRevision = 0;
+    window.addEventListener("popstate", () => { entryNavigationRevision += 1; });
+    window.addEventListener("hashchange", () => { entryNavigationRevision += 1; });
+    const codeValue = document.getElementById("join-code-value");
+    if (codeValue) codeValue.textContent = joinCode || "Missing";
 
-    // Account switching is needed before joining/claiming, not only afterwards.
-    // The existing claim path already checks the session when playerId exists.
-    // This read never blocks an anonymous join or changes claiming behaviour.
-    if (!claimPlayerId) {
-      void currentAuthenticatedSession().catch(() => setAccountSession(null));
-    }
-
-    if (joinCodeValue) {
-      joinCodeValue.textContent = joinCode || "Missing";
-    }
-
-    if (!joinCode) {
-      setStatus("Join code missing.", "error");
-      showError("Open a join link from a game page.");
+    if (!(form instanceof HTMLFormElement) || !(nicknameInput instanceof HTMLInputElement) ||
+      !(joinButton instanceof HTMLButtonElement) || !(claimButton instanceof HTMLButtonElement)) return;
+    if (!validEntryCode(joinCode)) {
+      form.hidden = true;
+      showError("This join link is missing or invalid. Ask the organiser for a new link.", { includesOutcome: true });
       return;
     }
 
-    if (!(form instanceof HTMLFormElement) || !(nicknameInput instanceof HTMLInputElement)) {
-      setStatus("Join form unavailable.", "error");
-      return;
+    function claimMessage(text) {
+      if (claimStatus instanceof HTMLElement) {
+        claimStatus.textContent = text;
+        claimStatus.hidden = !text;
+      }
     }
 
-    nicknameInput.addEventListener("input", () => {
-      clearError();
-      setFieldMessage("join-player-nickname");
-    });
-
-    function signInHrefForClaim(playerId) {
-      const returnParams = new URLSearchParams(window.location.search);
-      returnParams.set("playerId", playerId);
-      if (!returnParams.has("code") && window.location.pathname === "/join" && joinCode) {
-        returnParams.set("code", joinCode);
-      }
-      const returnTo = `${window.location.pathname}?${returnParams.toString()}`;
-      return `/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
+    function trackEntryFocus(scope) {
+      const revision = entryNavigationRevision;
+      const flowRevision = entryFlowRevision;
+      let ownsFocus = scope?.contains(document.activeElement) === true;
+      const onFocus = (event) => { if (event.target !== document.body && !scope?.contains(event.target)) ownsFocus = false; };
+      const onPointer = (event) => { if (!scope?.contains(event.target)) ownsFocus = false; };
+      document.addEventListener("focusin", onFocus, true);
+      document.addEventListener("pointerdown", onPointer, true);
+      return () => {
+        document.removeEventListener("focusin", onFocus, true);
+        document.removeEventListener("pointerdown", onPointer, true);
+        return ownsFocus && revision === entryNavigationRevision && flowRevision === entryFlowRevision;
+      };
     }
 
-    function showClaimActions() {
-      if (claimActions instanceof HTMLElement) {
-        claimActions.hidden = false;
+    function focusClaimContinuation() {
+      const target = claimComplete ? anotherButton
+        : !claimButton.hidden && !claimButton.disabled ? claimButton
+          : signInLink instanceof HTMLAnchorElement && !signInLink.hidden ? signInLink : anotherButton;
+      if (target instanceof HTMLElement && actionElementVisible(target) && !target.matches(":disabled")) target.focus();
+    }
+
+    function renderJoinState() {
+      nicknameInput.disabled = joinPending || joinAttempt !== null || joined || Boolean(claimPlayerId);
+      if (joinAttempt) nicknameInput.value = joinAttempt.nickname;
+      joinButton.disabled = joinPending || joined || Boolean(claimPlayerId);
+      joinButton.textContent = joinAttempt?.uncertain ? "Retry join" : "Join game";
+      form.hidden = joined || Boolean(claimPlayerId);
+      if (anotherButton instanceof HTMLButtonElement) {
+        anotherButton.hidden = !joined && !claimPlayerId;
+        anotherButton.disabled = claimPending || joinPending;
       }
+    }
+
+    async function currentJoinSession() {
+      const result = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store" });
+      if (result.status === 401) return null;
+      const session = result.body?.session;
+      if (!result.ok || result.body?.authenticated !== true || !usableEntityId(session?.sessionId) ||
+        typeof session?.email !== "string" || !session.email.trim()) throw new Error("session_unconfirmed");
+      return session;
     }
 
     async function claimJoinedPlayer(playerId) {
-      if (!playerId) {
-        return;
-      }
-
-      showClaimActions();
-      if (claimStatus instanceof HTMLElement) {
-        claimStatus.textContent = "Claiming player for this account…";
-      }
-      if (claimButton instanceof HTMLButtonElement) {
-        claimButton.disabled = true;
+      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId || claimButton.disabled) return;
+      const finishFocus = trackEntryFocus(claimButton);
+      claimPending = true;
+      const revision = ++claimRevision;
+      claimButton.disabled = true;
+      renderJoinState();
+      clearError();
+      claimMessage("");
+      setStatus("Claiming player…", "default");
+      if (signInLink instanceof HTMLAnchorElement) signInLink.hidden = true;
+      try {
+        const result = await requestJsonOrThrow("/v1/players/" + encodeURIComponent(playerId) + "/claim", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+        });
+        if (result?.player?.playerId !== playerId || typeof result.player.nickname !== "string" ||
+          !result.player.nickname.trim() || result?.claim?.claimedByCurrentUser !== true) throw new Error("claim_unconfirmed");
+        if (revision !== claimRevision) return;
+        claimComplete = true;
+        if (resultPlayer) resultPlayer.textContent = result.player.nickname;
+        if (resultElement) resultElement.hidden = false;
+        claimButton.hidden = true;
+        claimMessage("");
+        setStatus("Player claimed.", "success");
+      } catch (error) {
+        if (revision !== claimRevision) return;
+        const definitive = isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
+          (error.statusCode !== 409 || (error.responseError === "conflict" && error.responseCode === "player_already_claimed"));
+        const prefix = joined ? "Joined game. " : "";
+        const message = definitive
+          ? error.statusCode === 409 ? "This player is already claimed by another account. Sign out to use a different account."
+            : error.statusCode === 401 ? "Sign in to claim this player."
+              : "This player could not be claimed. Ask the organiser for help."
+          : "The player claim could not be confirmed. Retry claiming this player.";
+        showError(prefix + message, { includesOutcome: true });
         claimButton.hidden = false;
+        if (error.statusCode === 401 && signInLink instanceof HTMLAnchorElement) {
+          signInLink.hidden = false;
+          signInLink.href = entrySignInHref(playerId);
+          claimButton.hidden = true;
+        }
+      } finally {
+        claimPending = false;
+        claimButton.disabled = claimComplete;
+        renderJoinState();
+        if (finishFocus() && revision === claimRevision) focusClaimContinuation();
       }
-      if (signInLink instanceof HTMLAnchorElement) {
-        signInLink.hidden = true;
-      }
-
-      const result = await requestJsonOrThrow(`/v1/players/${encodeURIComponent(playerId)}/claim`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({}),
-      });
-
-      if (resultPlayer) {
-        resultPlayer.textContent = result?.player?.nickname ?? resultPlayer.textContent;
-      }
-      if (resultElement) {
-        resultElement.hidden = false;
-      }
-      if (claimStatus instanceof HTMLElement) {
-        claimStatus.textContent = "Player claimed. The organiser can now make this account a scorer.";
-      }
-      setStatus("Player claimed.", "success");
     }
 
-    async function refreshClaimActions(playerId, options = {}) {
-      if (!playerId) {
-        return;
+    async function refreshClaimActions(playerId, autoClaim = false) {
+      const revision = ++claimRevision;
+      if (claimActions instanceof HTMLElement) claimActions.hidden = false;
+      claimButton.disabled = true;
+      claimButton.hidden = true;
+      if (signInLink instanceof HTMLAnchorElement) signInLink.hidden = true;
+      let session;
+      try { session = await currentJoinSession(); }
+      catch (error) {
+        if (revision !== claimRevision || playerId !== claimPlayerId) return;
+        throw error;
       }
-
-      showClaimActions();
-      const session = await currentAuthenticatedSession();
+      if (revision !== claimRevision || playerId !== claimPlayerId || claimPending || claimComplete) return;
+      setAccountSession(session);
+      claimMessage("");
       if (session) {
-        if (signInLink instanceof HTMLAnchorElement) {
-          signInLink.hidden = true;
-        }
-        if (claimButton instanceof HTMLButtonElement) {
-          claimButton.hidden = false;
-          claimButton.disabled = false;
-        }
-        if (claimStatus instanceof HTMLElement) {
-          claimStatus.textContent = `Signed in as ${session.email}. Claim this player for scorer access.`;
-        }
-        if (options.autoClaim === true) {
-          await claimJoinedPlayer(playerId);
-        }
-        return;
+        claimButton.hidden = false;
+        claimButton.disabled = false;
+        if (autoClaim) await claimJoinedPlayer(playerId);
+      } else if (signInLink instanceof HTMLAnchorElement) {
+        signInLink.hidden = false;
+        signInLink.href = entrySignInHref(playerId);
       }
+    }
 
-      if (claimStatus instanceof HTMLElement) {
-        claimStatus.textContent = "Sign in to claim this player so the organiser can make you a scorer.";
-      }
+    function claimProbeFailed() {
+      if (!claimPlayerId || claimComplete) return;
+      showError((joined ? "Joined game. " : "") + "Sign-in could not be checked. Retry claiming this player or sign in again.", { includesOutcome: true });
+      claimButton.hidden = false;
+      claimButton.disabled = false;
       if (signInLink instanceof HTMLAnchorElement) {
         signInLink.hidden = false;
-        signInLink.href = signInHrefForClaim(playerId);
-      }
-      if (claimButton instanceof HTMLButtonElement) {
-        claimButton.hidden = true;
-        claimButton.disabled = true;
+        signInLink.href = entrySignInHref(claimPlayerId);
       }
     }
 
-    if (claimPlayerId) {
-      void refreshClaimActions(claimPlayerId).catch((error) => {
-        const message = error instanceof Error ? error.message : "Could not claim player.";
-        showError(message);
-        setStatus("Player claim failed.", "error");
-        if (claimButton instanceof HTMLButtonElement) {
-          claimButton.disabled = false;
-          claimButton.hidden = false;
-        }
+    if (claimPlayerId) void refreshClaimActions(claimPlayerId).catch(claimProbeFailed);
+    else {
+      const revision = claimRevision;
+      void currentJoinSession().then((session) => {
+        if (revision === claimRevision) setAccountSession(session);
+      }).catch(() => {
+        if (revision === claimRevision) setAccountSession(null);
       });
     }
-
-    if (claimButton instanceof HTMLButtonElement) {
-      claimButton.addEventListener("click", async () => {
-        clearError();
-        try {
-          await claimJoinedPlayer(claimPlayerId);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Could not claim player.";
-          showError(message);
-          setStatus("Player claim failed.", "error");
-          claimButton.disabled = false;
-        }
-      });
-    }
+    renderJoinState();
+    nicknameInput.addEventListener("input", () => {
+      if (joinAttempt) { nicknameInput.value = joinAttempt.nickname; return; }
+      clearError();
+      setFieldMessage("join-player-nickname");
+    });
+    claimButton.addEventListener("click", () => { void claimJoinedPlayer(claimPlayerId); });
+    if (anotherButton instanceof HTMLButtonElement) anotherButton.addEventListener("click", () => {
+      if (anotherButton.disabled || joinPending || claimPending || joinAttempt) return;
+      ++claimRevision;
+      ++entryFlowRevision;
+      claimPlayerId = "";
+      entryClaimPlayerId = null;
+      joined = false;
+      claimComplete = false;
+      if (resultElement) resultElement.hidden = true;
+      if (claimActions instanceof HTMLElement) claimActions.hidden = true;
+      nicknameInput.value = "";
+      clearError();
+      setStatus("");
+      setFieldMessage("join-player-nickname");
+      renderJoinState();
+      nicknameInput.focus();
+    });
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (joinPending || joined || claimPlayerId) return;
+      if (!joinAttempt) {
+        const nickname = nicknameInput.value.trim();
+        if (!nickname) {
+          setFieldMessage("join-player-nickname", "invalid", "Player name is required.");
+          nicknameInput.focus();
+          return;
+        }
+        joinAttempt = {
+          nickname, uncertain: false,
+          path: "/v1/join/" + encodeURIComponent(joinCode),
+          request: Object.freeze({ method: "POST", headers: Object.freeze({
+            "Content-Type": "application/json", "Idempotency-Key": idempotencyKeyForPublicJoin(joinCode, nickname),
+          }), body: JSON.stringify({ nickname }) }),
+        };
+      }
+      const attempt = joinAttempt;
+      const finishFocus = trackEntryFocus(form);
+      joinPending = true;
+      renderJoinState();
       clearError();
-
-      const nickname = nicknameInput.value.trim();
-      if (!nickname) {
-        setFieldMessage("join-player-nickname", "invalid", "Nickname is required.");
-        setStatus("Nickname required.", "error");
-        return;
-      }
-
-      if (joinButton instanceof HTMLButtonElement) {
-        joinButton.disabled = true;
-      }
-      nicknameInput.disabled = true;
-      setStatus("Joining game...", "default");
-
+      setStatus("Joining game…", "default");
       try {
-        const result = await requestJsonOrThrow(`/v1/join/${encodeURIComponent(joinCode)}`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "Idempotency-Key": idempotencyKeyForPublicJoin(joinCode, nickname),
-          },
-          body: JSON.stringify({
-            nickname,
-          }),
-        });
-
-        clearIdempotencyKeyForPublicJoin(joinCode, nickname);
-        claimPlayerId = result?.player?.playerId ?? "";
-        setFieldMessage("join-player-nickname", "valid", "Joined.");
+        const result = await requestJsonOrThrow(attempt.path, attempt.request);
+        if (!usableEntityId(result?.gameId) || !usableEntityId(result?.player?.playerId) ||
+          typeof result.player.nickname !== "string" || result.player.nickname.trim() !== attempt.nickname ||
+          (result.joinCode !== undefined && result.joinCode !== joinCode) ||
+          (result.link !== undefined && (result.link?.gameId !== result.gameId || result.link?.playerId !== result.player.playerId))) throw new Error("join_unconfirmed");
+        joined = true;
+        joinAttempt = null;
+        clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
+        claimPlayerId = result.player.playerId;
+        entryClaimPlayerId = claimPlayerId;
+        if (resultPlayer) resultPlayer.textContent = result.player.nickname;
+        if (resultElement) resultElement.hidden = false;
+        setFieldMessage("join-player-nickname");
         setStatus("Joined game.", "success");
-        if (resultPlayer) {
-          resultPlayer.textContent = result?.player?.nickname ?? nickname;
-        }
-        if (resultGame) {
-          resultGame.textContent = result?.gameId ?? "";
-        }
-        if (resultElement) {
-          resultElement.hidden = false;
-        }
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not join game.";
-        showError(message);
-        setStatus("Join failed.", "error");
-        nicknameInput.disabled = false;
-        if (joinButton instanceof HTMLButtonElement) {
-          joinButton.disabled = false;
+        const definitive = !attempt.uncertain && isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
+          (error.statusCode !== 409 || (error.responseError === "conflict" && ["game_finished", "join_state_changed"].includes(error.responseCode)));
+        if (definitive) {
+          joinAttempt = null;
+          clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
+          showError(error.statusCode === 404 ? "This join link is unavailable. Ask the organiser for a new link."
+            : error.responseCode === "game_finished" ? "This game has finished. Ask the organiser for help."
+              : "Could not join the game. Check the player name and try again.", { includesOutcome: true });
+        } else {
+          attempt.uncertain = true;
+          showError("Joining could not be confirmed. Retry uses the same player name.", { includesOutcome: true });
         }
-        return;
+      } finally {
+        joinPending = false;
+        renderJoinState();
       }
-
-      try {
-        await refreshClaimActions(claimPlayerId, { autoClaim: true });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not claim player.";
-        showError(message);
-        setStatus("Joined game. Player claim failed.", "error");
-        if (claimButton instanceof HTMLButtonElement) {
-          claimButton.disabled = false;
-          claimButton.hidden = false;
-        }
+      if (joined) {
+        try { await refreshClaimActions(claimPlayerId, true); } catch { claimProbeFailed(); }
+      }
+      if (finishFocus()) {
+        if (joined) focusClaimContinuation();
+        else (joinAttempt?.uncertain ? joinButton : nicknameInput).focus();
       }
     });
-
     setStatus("");
   }
 
   async function initInvitePage() {
-    const queryInviteCode = new URLSearchParams(window.location.search).get("code") ?? "";
-    const initialInviteCode =
-      resolveRouteEntityId("data-invite-code", "invites") || queryInviteCode;
+    const initialCode = normalizedEntryCode(resolveRouteEntityId("data-invite-code", "invites") || new URLSearchParams(window.location.search).get("code"));
     const codeForm = document.getElementById("organiser-invite-code-form");
     const codeInput = document.getElementById("organiser-invite-code-input");
     const acceptance = document.getElementById("organiser-invite-acceptance");
     const acceptCode = document.getElementById("organiser-invite-accept-code");
-    const acceptLeague = document.getElementById("organiser-invite-league");
     const acceptButton = document.querySelector('[data-action="accept-organiser-invite"]');
     const leagueLink = document.getElementById("organiser-invite-league-link");
+    let attempt = null;
+    let pending = false;
+    let accepted = false;
 
-    function normalizeInviteCode(value) {
-      return value.trim().toUpperCase().replace(/\s+/g, "");
-    }
-
-    function isInviteCodeValid(value) {
-      return /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(value);
-    }
-
-    function showInviteAcceptance(inviteCode) {
-      if (codeForm instanceof HTMLFormElement) {
-        codeForm.hidden = true;
-      }
-      if (acceptance instanceof HTMLElement) {
-        acceptance.hidden = false;
-      }
-      if (acceptCode instanceof HTMLElement) {
-        acceptCode.textContent = inviteCode;
+    function showCodeForm(code = "") {
+      if (codeForm instanceof HTMLFormElement) codeForm.hidden = false;
+      if (acceptance instanceof HTMLElement) acceptance.hidden = true;
+      if (codeInput instanceof HTMLInputElement) {
+        codeInput.value = code;
+        codeInput.disabled = false;
       }
     }
 
-    async function acceptInvite(inviteCode) {
-      if (!isInviteCodeValid(inviteCode)) {
-        setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
-        if (codeInput instanceof HTMLInputElement) {
-          codeInput.focus();
-        }
-        return;
-      }
+    function showInviteAcceptance(code) {
+      if (codeForm instanceof HTMLFormElement) codeForm.hidden = true;
+      if (acceptance instanceof HTMLElement) acceptance.hidden = false;
+      if (acceptCode instanceof HTMLElement) acceptCode.textContent = code;
+    }
 
-      showInviteAcceptance(inviteCode);
+    function renderAcceptance() {
+      if (attempt) showInviteAcceptance(attempt.code);
       if (acceptButton instanceof HTMLButtonElement) {
-        acceptButton.disabled = true;
+        acceptButton.disabled = pending || accepted;
+        acceptButton.hidden = accepted;
+        acceptButton.textContent = attempt?.uncertain ? "Retry invite" : "Accept invite";
       }
-      clearError();
-      setStatus("Accepting organiser invite…", "default");
+      if (codeInput instanceof HTMLInputElement) codeInput.disabled = pending || attempt !== null;
+    }
 
-      try {
-        const payload = await requestJsonOrThrow(
-          `/v1/invites/${encodeURIComponent(inviteCode)}/accept`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({}),
-          },
-        );
-        const leagueId = payload.invite?.leagueId ?? payload.access?.leagueId ?? "";
-        if (acceptLeague instanceof HTMLElement) {
-          acceptLeague.textContent = leagueId || "Accepted";
+    async function acceptInvite(code) {
+      if (pending || accepted || !(acceptButton instanceof HTMLButtonElement) || acceptButton.disabled) return;
+      if (!attempt) {
+        if (!validEntryCode(code)) {
+          showCodeForm(code);
+          setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
+          codeInput?.focus();
+          return;
         }
-        if (leagueLink instanceof HTMLAnchorElement && leagueId) {
-          leagueLink.href = `/leagues/${encodeURIComponent(leagueId)}`;
+        attempt = { code, uncertain: false, path: "/v1/invites/" + encodeURIComponent(code) + "/accept",
+          request: Object.freeze({ method: "POST", headers: Object.freeze({ "Content-Type": "application/json" }), body: JSON.stringify({}) }) };
+      }
+      const operation = attempt;
+      pending = true;
+      const ownsFocusInitially = document.activeElement === acceptButton;
+      let ownsFocus = ownsFocusInitially;
+      const focusChanged = (event) => { if (event.target !== document.body && event.target !== acceptButton) ownsFocus = false; };
+      const pointerChanged = (event) => { if (!acceptButton.contains(event.target)) ownsFocus = false; };
+      document.addEventListener("focusin", focusChanged, true);
+      document.addEventListener("pointerdown", pointerChanged, true);
+      renderAcceptance();
+      clearError();
+      setStatus("Accepting invite…", "default");
+      try {
+        const payload = await requestJsonOrThrow(operation.path, operation.request);
+        const leagueId = payload?.access?.leagueId ?? payload?.invite?.leagueId;
+        if (!usableEntityId(leagueId) ||
+          (payload?.invite?.leagueId !== undefined && payload.invite.leagueId !== leagueId) ||
+          (payload?.access?.leagueId !== undefined && payload.access.leagueId !== leagueId) ||
+          (payload?.invite?.inviteCode !== undefined && payload.invite.inviteCode !== operation.code)) throw new Error("invite_unconfirmed");
+        const path = "/leagues/" + encodeURIComponent(leagueId);
+        if (typeof window.__THREEFC_NORMALIZE_RETURN_TO__ !== "function" || window.__THREEFC_NORMALIZE_RETURN_TO__(path) !== path) throw new Error("invite_unconfirmed");
+        accepted = true;
+        attempt = null;
+        if (leagueLink instanceof HTMLAnchorElement) {
+          leagueLink.href = path;
           leagueLink.hidden = false;
         }
         setStatus("Organiser invite accepted.", "success");
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not accept organiser invite.";
-        showError(message);
-        setStatus("Organiser invite failed.", "error");
-        if (acceptButton instanceof HTMLButtonElement) {
-          acceptButton.disabled = false;
+        const definitive = !operation.uncertain && isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
+          (error.statusCode !== 409 || (error.responseError === "conflict" && error.responseCode === "invite_already_accepted"));
+        if (definitive) {
+          attempt = null;
+          if (error.statusCode === 404 || error.responseCode === "invite_already_accepted") showCodeForm(operation.code);
+          const message = error.responseCode === "invite_email_mismatch"
+            ? "This invite is for a different email address. Sign out and use the email it was sent to."
+            : error.responseCode === "invite_already_accepted"
+              ? "This invite has already been used. Ask the organiser for another invite."
+              : error.statusCode === 404 ? "This invite could not be found. Check the code or ask the organiser for another invite."
+                : "This invite could not be accepted. Check your sign-in and try again.";
+          showError(message, { includesOutcome: true });
+        } else {
+          operation.uncertain = true;
+          showError("Invite acceptance could not be confirmed. Retry uses the same invite.", { includesOutcome: true });
+        }
+      } finally {
+        pending = false;
+        document.removeEventListener("focusin", focusChanged, true);
+        document.removeEventListener("pointerdown", pointerChanged, true);
+        renderAcceptance();
+        if (ownsFocus) {
+          if (accepted && leagueLink instanceof HTMLAnchorElement) leagueLink.focus();
+          else if (codeForm instanceof HTMLFormElement && !codeForm.hidden) codeInput?.focus();
+          else acceptButton.focus();
         }
       }
     }
 
-    if (codeForm instanceof HTMLFormElement) {
-      codeForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        if (!(codeInput instanceof HTMLInputElement)) {
-          return;
-        }
-
-        const inviteCode = normalizeInviteCode(codeInput.value);
-        if (!isInviteCodeValid(inviteCode)) {
-          setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
-          codeInput.focus();
-          return;
-        }
-
-        navigateTo(`/invites?code=${encodeURIComponent(inviteCode)}`);
-      });
-    }
-
-    if (codeInput instanceof HTMLInputElement) {
-      codeInput.addEventListener("input", () => {
-        setFieldMessage("organiser-invite-code-input");
-      });
-    }
-
-    if (acceptButton instanceof HTMLButtonElement) {
-      acceptButton.addEventListener("click", () => {
-        const inviteCode = normalizeInviteCode(
-          acceptCode instanceof HTMLElement ? acceptCode.textContent ?? "" : initialInviteCode ?? "",
-        );
-        void acceptInvite(inviteCode);
-      });
-    }
-
-    if (initialInviteCode) {
-      const normalizedInitialInviteCode = normalizeInviteCode(initialInviteCode);
-      if (isInviteCodeValid(normalizedInitialInviteCode)) {
-        showInviteAcceptance(normalizedInitialInviteCode);
-      } else {
+    if (codeForm instanceof HTMLFormElement) codeForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (pending || attempt || accepted || !(codeInput instanceof HTMLInputElement)) return;
+      const code = normalizedEntryCode(codeInput.value);
+      if (!validEntryCode(code)) {
+        showCodeForm(code);
         setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
-        if (codeInput instanceof HTMLInputElement) {
-          codeInput.value = normalizedInitialInviteCode;
-          codeInput.focus();
-        }
+        codeInput.focus();
+        return;
       }
-      setStatus("");
-      return;
+      navigateTo("/invites?code=" + encodeURIComponent(code));
+    });
+    if (codeInput instanceof HTMLInputElement) codeInput.addEventListener("input", () => {
+      if (attempt) { codeInput.value = attempt.code; return; }
+      clearError();
+      setFieldMessage("organiser-invite-code-input");
+    });
+    if (acceptButton instanceof HTMLButtonElement) acceptButton.addEventListener("click", () => {
+      void acceptInvite(attempt?.code ?? normalizedEntryCode(acceptCode?.textContent ?? initialCode));
+    });
+    if (validEntryCode(initialCode)) showInviteAcceptance(initialCode);
+    else {
+      showCodeForm(initialCode);
+      if (initialCode) {
+        setFieldMessage("organiser-invite-code-input", "invalid", "Invite code must be 8 characters.");
+        codeInput?.focus();
+      }
     }
-
+    renderAcceptance();
     setStatus("");
   }
 

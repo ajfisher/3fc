@@ -169,7 +169,7 @@ jobs:
 
           grep -q "3FC Home" /tmp/qa-site-root.html
           grep -qi '^referrer-policy: strict-origin-when-cross-origin' /tmp/qa-site-root.headers
-          grep -q "League organiser sign in" /tmp/qa-site-signin.html
+          grep -q "Sign in to 3FC" /tmp/qa-site-signin.html
           grep -q "3FC Home" /tmp/qa-site-setup.html
           grep -q "Complete your sign-in" /tmp/qa-site-callback.html
           grep -q "Complete your sign-in" /tmp/qa-site-callback-slash.html

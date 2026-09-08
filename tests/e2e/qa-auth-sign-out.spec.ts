@@ -390,7 +390,7 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     await signOut.focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(`${site}/sign-in`);
-    await expect(page.getByRole("heading", { name: "League organiser sign in" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to 3FC" })).toBeVisible();
     await verifySitePage(page, expectedHead);
     expect((await context.cookies(api)).some(cookie => cookie.name === "threefc_session")).toBe(false);
     // Revoked cookie and still-unexpired original bearer both fail on real API.

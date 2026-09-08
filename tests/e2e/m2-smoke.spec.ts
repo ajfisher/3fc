@@ -937,7 +937,7 @@ test.describe("M2 local-stack smoke", () => {
       await page.getByTestId("send-magic-link").click();
       const magicStartResponse = await magicStartResponsePromise;
       magicLinkStartConsumedRateLimit = didMagicLinkStartConsumeRateLimit(magicStartResponse.status());
-      await expect(page.locator("#auth-status")).toContainText("Magic link sent");
+      await expect(page.locator("#auth-status")).toContainText("Sign-in link sent");
 
       const magicLink = await waitForMagicLink(email);
       await page.goto(magicLink);
@@ -1086,8 +1086,8 @@ test.describe("M2 local-stack smoke", () => {
 
       await expect(page.getByTestId("game-mode-final")).toBeVisible();
       await expect(page.getByTestId("game-result-summary")).toBeVisible();
-      await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match Summary" })).toBeVisible();
-      await expect(page.getByTestId("finalisation-context").locator("dt")).toHaveText("Status");
+      await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match summary" })).toBeVisible();
+      await expect(page.getByTestId("finalisation-context")).toBeHidden();
       await expect(page.getByTestId("finalisation-context")).not.toContainText(/Game|Timeline/);
       await expect(page.getByTestId("game-result-outcome")).toHaveText("Red win");
       await expect(page.getByTestId("game-result-summary")).not.toContainText("Computed");
@@ -1096,7 +1096,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="blue"]')).toContainText(/Scored\s*0/);
-      await expect(page.getByTestId("final-team-log-red")).toContainText(ariNickname);
+      await expect(page.locator('[data-ui="final-team-log"]')).toHaveCount(0);
       await expect(page.getByTestId("final-scorer-stats").locator("li").filter({ hasText: ariNickname })).toContainText("1");
       await expect(page.getByTestId("final-assist-stats").locator("li").filter({ hasText: beaNickname })).toContainText("1");
       const fullGoalLog = page.getByTestId("final-full-goal-log");
