@@ -2730,6 +2730,7 @@
     let lastHandledGameHash = window.location.hash;
     let metadataDirty = false;
     let refreshAccountLocked = false;
+    let refreshWriteLocked = false;
     let authorityRevision = 0;
     let draftRosterChanged = false;
     let editingGoalSnapshot = null;
@@ -2758,11 +2759,11 @@
     }
 
     function canCorrectFinishedGoals() {
-      return !refreshAccountLocked && currentLeagueRole === "admin" && finishedResultEditing;
+      return !refreshAccountLocked && !refreshWriteLocked && currentLeagueRole === "admin" && finishedResultEditing;
     }
 
     function finishedRosterControlsLocked() {
-      return !canManageRoster();
+      return refreshWriteLocked || !canManageRoster();
     }
 
     function isLeagueOperator() {
@@ -2774,18 +2775,18 @@
     }
 
     function canScoreGame() {
-      return Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
+      return !refreshWriteLocked && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
     }
 
     function canEditGame() {
-      return !refreshAccountLocked && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
+      return !refreshAccountLocked && !refreshWriteLocked && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
     }
 
     function syncGameCapabilities() {
       if (currentLeagueRole !== "admin") closeActionMenu();
       const capabilities = {
         admin: !refreshAccountLocked && Boolean(currentGame) && currentLeagueRole === "admin",
-        roster: canManageRoster(),
+        roster: !refreshWriteLocked && canManageRoster(),
         score: canScoreGame(),
         correct: !refreshAccountLocked && isGameFinished() && currentLeagueRole === "admin",
       };
@@ -2818,8 +2819,10 @@
       }
       const correctionTeams = root.querySelector('[data-action="edit-finished-teams"]');
       if (correctionTeams instanceof HTMLElement) correctionTeams.hidden = !capabilities.correct || finishedRosterEditing;
+      if (correctionTeams instanceof HTMLButtonElement) correctionTeams.disabled = refreshWriteLocked;
       const correctionResult = root.querySelector('[data-action="correct-finished-result"]');
       if (correctionResult instanceof HTMLElement) correctionResult.hidden = !capabilities.correct || finishedResultEditing;
+      if (correctionResult instanceof HTMLButtonElement) correctionResult.disabled = refreshWriteLocked;
       setModeLabel("run", isGameFinished() && finishedResultEditing ? "Correction" : "Score game");
       // A remotely finished game must not remove the current destination or
       // silently enter correction mode. The draft remains here until navigation.
@@ -3067,7 +3070,7 @@
         else field.removeAttribute("aria-describedby");
       }
       deleteButton.hidden = currentLeagueRole !== "admin";
-      deleteButton.disabled = currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
+      deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
       if (gameFinished) {
         deleteButton.setAttribute("aria-disabled", "true");
         deleteButton.setAttribute("aria-describedby", "game-delete-lock-reason");
@@ -3135,7 +3138,7 @@
       finishGameButton.textContent = gameFinished ? "Game finished" : clockOperation?.kind === "finish-game" ? "Retry finish game" : "Finish game";
       if (refreshGameStateButton instanceof HTMLButtonElement) {
         refreshGameStateButton.hidden = !clockOperation?.uncertain;
-        refreshGameStateButton.disabled = refreshAccountLocked || timerMutationPending || !clockOperation?.uncertain;
+        refreshGameStateButton.disabled = refreshAccountLocked || refreshWriteLocked || timerMutationPending || !clockOperation?.uncertain;
       }
       if (nextThird) {
         startThirdButton.setAttribute("data-third", String(nextThird));
@@ -3595,7 +3598,7 @@
         const message = resultPending
           ? "Checking the latest match result…"
           : resultUncertain
-            ? "The correction outcome could not be confirmed. Retry the same action."
+            ? refreshWriteLocked ? "The correction outcome could not be confirmed. Reload this game before making more changes." : "The correction outcome could not be confirmed. Retry the same action."
             : "The latest match result could not be loaded. Reload to try again.";
         gameResultSummaryElement.hidden = false;
         updateResultMarkup(`<section data-ui="result-board" data-state="unavailable">
@@ -3869,10 +3872,10 @@
       const recovery = document.getElementById("goal-operation-recovery");
       if (recovery instanceof HTMLElement) recovery.hidden = retryGoalButton.hidden;
       const recoveryNote = document.getElementById("goal-operation-note");
-      if (recoveryNote instanceof HTMLElement) recoveryNote.textContent = goalOperation?.kind === "delete" ? "Retry targets the same goal."
+      if (recoveryNote instanceof HTMLElement) recoveryNote.textContent = refreshWriteLocked ? "Reload this game before making more changes." : goalOperation?.kind === "delete" ? "Retry targets the same goal."
         : goalOperation?.kind === "undo" ? "Retry targets the original goal, even if another has been recorded." : "Retry uses the original goal details.";
 
-      if (goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null) {
+      if (refreshWriteLocked || goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null) {
         goalScoringTeamInput.disabled = true;
         goalConcedingTeamInput.disabled = true;
         goalOwnGoalInput.disabled = true;
@@ -3884,7 +3887,7 @@
             input.disabled = true;
           }
         }
-        goalFormNote.textContent = goalOperation?.uncertain ? "The goal change is unconfirmed. Retry the same action."
+        goalFormNote.textContent = refreshWriteLocked ? "Reload this game before making more changes." : goalOperation?.uncertain ? "The goal change is unconfirmed. Retry the same action."
           : clockOperation?.uncertain ? "Check the clock before recording another goal."
             : goalMutationInFlight ? "Saving goal change…" : "Updating clock…";
         return;
@@ -4759,7 +4762,7 @@
       const role = normalizeLeagueRole(access.role);
       const roleLabel =
         role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
-      const pendingDisabled = rosterMutationPending || playerCreatePending ? " disabled" : "";
+      const pendingDisabled = refreshAccountLocked || refreshWriteLocked || rosterMutationPending || playerCreatePending ? " disabled" : "";
       const actions = role === "admin" ? "" : renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname, `<div data-ui="access-actions">
           ${role !== "scorekeeper" ? `<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="scorekeeper"${pendingDisabled}>Make scorer</button>` : ""}
           <button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="admin"${pendingDisabled}>Make co-organiser</button>
@@ -4863,7 +4866,7 @@
       const focus = captureRosterFocus();
       const active = document.activeElement;
       const rosterLocked = finishedRosterControlsLocked();
-      if (rosterLocked) {
+      if (!canManageRoster()) {
         openTransferPlayerId = null;
       }
       if (quickCreatePlayerButton instanceof HTMLButtonElement) {
@@ -5173,10 +5176,20 @@
     const playerCreateRegion = document.getElementById("player-create-region");
     attachDisclosure(gameEditToggle, gameEditRegion);
     attachDisclosure(playerCreateToggle, playerCreateRegion);
+    for (const panel of [gameEditRegion, playerCreateRegion]) panel?.addEventListener("keydown", (event) => {
+      // The disclosure's Escape handler already closed it. Its original trigger
+      // may now be disabled; keep deliberate keyboard recovery visible.
+      if (event.key === "Escape" && refreshWriteLocked && panel.hidden) refreshRetry?.focus();
+    });
     root.addEventListener("click", (event) => {
       const action = event.target instanceof Element ? event.target.closest("[data-action]")?.getAttribute("data-action") : null;
-      if (action === "cancel-game-edit") setDisclosureState(gameEditToggle, gameEditRegion, false);
-      if (action === "cancel-player-create") setDisclosureState(playerCreateToggle, playerCreateRegion, false);
+      if (action === "cancel-game-edit" || action === "cancel-player-create") {
+        const panel = action === "cancel-game-edit" ? gameEditRegion : playerCreateRegion;
+        const trigger = action === "cancel-game-edit" ? gameEditToggle : playerCreateToggle;
+        const ownsFocus = panel?.contains(document.activeElement);
+        setDisclosureState(trigger, panel, false);
+        if (ownsFocus && refreshWriteLocked) refreshRetry?.focus();
+      }
     });
 
     attachFormSubmit("game-edit-form", saveButton, async () => {
@@ -5235,25 +5248,26 @@
         }
       } catch (error) {
         if (uncertainReadBarriers.has(`PATCH:/v1/games/${encodeURIComponent(gameId)}`)) {
-          showError("Game changes could not be confirmed. Retry saving these details or reload to check.", { includesOutcome: true });
+          showError("Game changes could not be confirmed. Reload to check before making more changes.", { includesOutcome: true });
         } else {
           const message = error instanceof Error ? error.message : "Could not update game.";
           showError(message);
           setStatus("Game update failed.", "error");
         }
       } finally {
-        finishSaveFocus();
+        const ownsFocus = finishSaveFocus();
         gameMetadataPending = false;
         renderTimer();
         saveButton.disabled = !canEditGame() || metadataRefreshConflict();
         kickoffInput.disabled = !canEditGame();
         statusInput.disabled = !canEditGame();
         thirdLengthInput.disabled = !canEditGame() || buildTimerState(currentGame).thirds.some((third) => third.startedAt !== null);
+        if (ownsFocus && refreshWriteLocked) refreshRetry?.focus();
       }
     });
 
     deleteButton.addEventListener("click", async () => {
-      if (currentLeagueRole !== "admin" || deleteButton.disabled || gameDeletionPending || isGameFinished()) return;
+      if (refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || deleteButton.disabled || gameDeletionPending || isGameFinished()) return;
 
       if (!window.confirm(`Delete game ${gameId}?`)) {
         return;
@@ -5270,12 +5284,16 @@
         });
         navigateTo(buildLeagueSeasonPath(currentLeagueId, currentSeasonId));
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not delete game.";
-        showError(message);
-        setStatus("Game deletion failed.", "error");
+        if (refreshWriteLocked) {
+          showError("Game deletion could not be confirmed. Reload to check before making more changes.", { includesOutcome: true });
+        } else {
+          const message = error instanceof Error ? error.message : "Could not delete game.";
+          showError(message);
+          setStatus("Game deletion failed.", "error");
+        }
       } finally {
         gameDeletionPending = false;
-        deleteButton.disabled = currentLeagueRole !== "admin" || isGameFinished();
+        deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || isGameFinished();
       }
     });
 
@@ -5297,10 +5315,10 @@
     }
 
     async function reconcileClockOperation(operation) {
-      if (refreshAccountLocked) return false;
+      if (refreshAccountLocked || refreshWriteLocked) return false;
       try {
         const game = await requestJsonOrThrow("/v1/games/" + encodeURIComponent(gameId), { method: "GET", cache: "no-store" });
-        if (refreshAccountLocked) return false;
+        if (refreshAccountLocked || refreshWriteLocked) return false;
         currentGame = game;
         if (clockOutcomeObserved(operation)) {
           clockOperation = null;
@@ -5351,7 +5369,7 @@
     }
 
     async function performClockOperation(operation, initiator, readOnly = false) {
-      if (refreshAccountLocked || timerMutationPending || goalMutationInFlight || goalOperation || (!readOnly && !canScoreGame())) return;
+      if (refreshAccountLocked || refreshWriteLocked || timerMutationPending || goalMutationInFlight || goalOperation || (!readOnly && !canScoreGame())) return;
       const finishFocus = trackScoringOperationFocus(initiator);
       const navigationRevision = gameNavigationRevision;
       timerMutationPending = true;
@@ -5442,16 +5460,16 @@
       const target = event.target;
       const action = target instanceof Element ? target.closest("[data-action]")?.getAttribute("data-action") : null;
       if (action === "exit-result-correction") {
-        if (!isGameFinished() || !canCorrectFinishedGoals() || goalOperation || clockOperation || goalMutationInFlight || timerMutationPending) return;
+        if (!isGameFinished() || refreshAccountLocked || currentLeagueRole !== "admin" || !finishedResultEditing || goalOperation || clockOperation || goalMutationInFlight || timerMutationPending) return;
         finishedResultEditing = false;
-        resetGoalForm();
+        if (!refreshWriteLocked) resetGoalForm();
         renderLiveScoring();
         manualGameModeSelected = true;
         setGameMode("final", { focusPanel: true });
         return;
       }
       if (action === "edit-finished-teams" || action === "correct-finished-result") {
-        if (!isGameFinished() || currentLeagueRole !== "admin") return;
+        if (!isGameFinished() || refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin") return;
         if (action === "edit-finished-teams") finishedRosterEditing = true;
         else finishedResultEditing = true;
         manualGameModeSelected = true;
@@ -5613,7 +5631,7 @@
         }
 
         if (action === "grant-player-access") {
-          if (currentLeagueRole !== "admin" || rosterMutationPending || playerCreatePending || target.disabled) {
+          if (refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || rosterMutationPending || playerCreatePending || target.disabled) {
             return;
           }
 
@@ -5670,7 +5688,8 @@
             rosterMutationPending = false;
             const ownsFocus = finishAccessFocus();
             renderRosterSetup();
-            if (ownsFocus) {
+            if (ownsFocus && refreshWriteLocked) refreshRetry?.focus();
+            else if (ownsFocus) {
               const player = [...root.querySelectorAll('[data-ui="roster-player"][data-player-id], [data-ui="roster-member"][data-player-id]')]
                 .find((element) => element.getAttribute("data-player-id") === playerId);
               const focusTarget = player?.querySelector('[data-action="toggle-action-menu"]') ?? player;
@@ -5727,12 +5746,13 @@
             showError(message);
             setStatus("Roster assignment failed.", "error");
           } else {
-            showError("Assignment could not be confirmed. Retry this team choice or reload to check.", { includesOutcome: true });
+            showError("Assignment could not be confirmed. Reload to check before making more changes.", { includesOutcome: true });
           }
           rosterMutationPending = false;
           const ownsFocus = finishFocus();
           renderRosterSetup();
-          if (ownsFocus) restoreRosterFocus(originalFocus);
+          if (ownsFocus && refreshWriteLocked) refreshRetry?.focus();
+          else if (ownsFocus) restoreRosterFocus(originalFocus);
           return;
         }
 
@@ -5886,6 +5906,7 @@
     }
 
     function setRefreshNotice(message = "") {
+      if (refreshWriteLocked && !refreshAccountLocked) message = "An earlier change is unconfirmed. Reload to check before making more changes.";
       const ownedFocus = !message && refreshNotice?.contains(document.activeElement);
       if (refreshNotice) refreshNotice.hidden = !message;
       if (refreshMessage && refreshMessage.textContent !== message) refreshMessage.textContent = message;
@@ -5922,6 +5943,7 @@
 
     beforeGameWrite = (path, method) => {
       if (refreshAccountLocked && path !== "/v1/auth/logout") throw new Error("Your account changed. Reload before making changes.");
+      if (refreshWriteLocked && path !== "/v1/auth/logout") throw new Error("An earlier change is unconfirmed. Reload before making changes.");
       // Synchronous and before fetch, including writes made outside this root.
       refreshEpoch += 1;
       invalidateRefresh();
@@ -5935,8 +5957,15 @@
         // can confirm its operation without replaying the POST; don't strand
         // freshness behind an additional generic barrier.
         if (dedicatedOwner) return;
-        if (!result || result.status >= 500 || [408, 429].includes(result.status)) uncertainReadBarriers.add(owner);
-        else if (result.ok) uncertainReadBarriers.delete(owner);
+        if (!result || result.status >= 500 || [408, 429].includes(result.status)) {
+          uncertainReadBarriers.add(owner);
+          // Legacy writes have no frozen replay owner. A different payload to
+          // the same path cannot prove an earlier request settled. Keep this
+          // page read-only until explicit reload, even after other successes.
+          refreshWriteLocked = true;
+          renderBackgroundState();
+          setRefreshNotice();
+        }
       };
     };
 
@@ -6048,32 +6077,43 @@
         if (!current()) throw new Error("Superseded read");
         return value;
       };
+      const sameSession = async () => {
+        const session = (await read("/v1/auth/session"))?.session;
+        if (!usableEntityId(session?.sessionId) || !usableEntityId(session?.email) ||
+          session.sessionId !== authenticatedSession?.sessionId || session.email !== authenticatedSession?.email) {
+          lockRefreshAccount("Your sign-in changed. Reload this game before continuing.");
+          return false;
+        }
+        return true;
+      };
+      const applyAuthority = (league) => {
+        if (!league) return;
+        const role = normalizeLeagueRole(league.access.role);
+        authorityRevision += 1;
+        if (role !== currentLeagueRole) {
+          discardPrivateEnrichment();
+          currentLeagueRole = role;
+          renderRosterSetup();
+          renderTimer();
+          renderGoalControls({}, true);
+        }
+      };
       try {
         let league = null;
         if (full) {
-          const session = (await read("/v1/auth/session"))?.session;
-          if (!usableEntityId(session?.sessionId) || !usableEntityId(session?.email) ||
-            session.sessionId !== authenticatedSession?.sessionId || session.email !== authenticatedSession?.email) {
-            lockRefreshAccount("Your sign-in changed. Reload this game before continuing.");
-            return;
-          }
+          if (!await sameSession()) return;
           league = await read(`/v1/leagues/${encodeURIComponent(currentLeagueId)}`);
           if (league?.leagueId !== currentLeagueId || !normalizeLeagueRole(league?.access?.role)) throw new Error("Invalid league read");
-          const role = normalizeLeagueRole(league.access.role);
-          authorityRevision += 1;
-          if (role !== currentLeagueRole) {
-            discardPrivateEnrichment();
-            currentLeagueRole = role;
-            renderRosterSetup();
-            renderTimer();
-            renderGoalControls({}, true);
-          }
         }
         // Full authority revalidation is allowed during uncertainty. It cannot
         // acknowledge, retry or supersede any in-flight or unconfirmed write.
         if (localWriteOwnsState()) {
+          // Authority is also staged while a write owns match data. Never
+          // apply a role fetched with a cookie switched after the first probe.
+          if (!await sameSession()) return;
+          applyAuthority(league);
           if (full) refreshLastFullAt = Date.now();
-          if (uncertainReadBarriers.size) setRefreshNotice("An earlier change is unconfirmed. Retry that action or reload to check the game.");
+          if (refreshWriteLocked) setRefreshNotice();
           return;
         }
         const gamePath = `/v1/games/${encodeURIComponent(gameId)}`;
@@ -6085,7 +6125,11 @@
         if (!refreshGameValid(game) ||
           !teams.length || goals.scoreboard.teams.some((team) => team.gameId && team.gameId !== gameId) || timeline === null ||
           (roster && !refreshRosterValid(roster))) throw new Error("Invalid game read");
-        if (!current() || localWriteOwnsState()) return;
+        // Every batch, including the five-second lightweight reads, verifies
+        // identity immediately before synchronous apply. Independent cookie
+        // requests are not an atomic session snapshot; do not claim otherwise.
+        if (!await sameSession() || !current() || localWriteOwnsState()) return;
+        applyAuthority(league);
         if (roster) {
           const before = JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]);
           applyRosterPayload(roster);

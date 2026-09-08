@@ -6780,8 +6780,9 @@ test("game roster transfer remains open after assignment failure", async () => {
       ?.getAttribute("aria-expanded"),
     "true",
   );
-  assert.equal(page.document.activeElement?.getAttribute("data-player-id"), "player-ari");
-  assert.equal(page.document.activeElement?.getAttribute("data-team-id"), "blue");
+  assert.equal(page.document.activeElement?.getAttribute("data-action"), "retry-game-updates");
+  assert.equal(page.document.activeElement?.textContent, "Reload game");
+  assert.equal(blueOption.disabled, true, "the uncertain team choice remains visible but cannot be resent");
   assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Assignment could not be confirmed/);
   assert.equal(page.document.getElementById("setup-status")?.hidden, true);
 });
@@ -7067,6 +7068,10 @@ for (const outcome of ["scorer", "admin", "failure", "uncertain", "outside"] as 
       assert.equal(writes, 1);
     }
     if (outcome === "outside") assert.equal(page.document.activeElement, outside);
+    else if (outcome === "uncertain") {
+      assert.equal(page.document.activeElement?.getAttribute("data-action"), "retry-game-updates");
+      assert.equal(page.document.activeElement?.textContent, "Reload game");
+    }
     else if (outcome === "admin") {
       assert.equal(page.document.activeElement?.getAttribute("data-player-id"), "player-ari");
       assert.equal(page.document.activeElement?.querySelector('[data-player-management]'), null);
@@ -7103,7 +7108,7 @@ for (const statusCode of [403, 503]) {
     assert.equal(writes, 1);
     assert.equal(page.document.getElementById("transfer-options-player-ari")?.hidden, false);
     if (statusCode === 503) {
-      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed.*Retry this team choice or reload/);
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed.*Reload to check before making more changes/);
       assert.equal(page.document.getElementById("setup-status")?.hidden, true);
     } else assert.equal(page.document.getElementById("setup-status")?.textContent, "Roster assignment failed.");
   });
@@ -7438,7 +7443,10 @@ test("action menus keep game deletion pending through timer redraws and repeated
     assert(resolveDelete);
     resolveDelete(createJsonResponse(503, { message: "Delete could not be confirmed" }));
     await flushAsync();
-    assert.equal(action.disabled, false);
+    assert.equal(action.disabled, true, "an ambiguous delete requires reload rather than another mutation");
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /deletion could not be confirmed.*Reload/);
+    action.disabled = false; dispatchClick(action); await flushAsync();
+    assert.equal(writes, 1, "synthetic re-enabling cannot bypass the absorbing write lock");
     assert.equal(page.navigations.length, 0);
   } finally { page.dom.window.close(); }
 });
@@ -14150,7 +14158,7 @@ test("ux10 hidden and page lifecycle stop scheduling and foreground refresh runs
     seedLiveGoalEvent(apiState, "ux10-match", "while-hidden");
     setUx10Visible(page, true); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
     assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "while-hidden");
-    assert.equal(reads.slice(initial).filter(path => path === "/v1/auth/session").length, 1);
+    assert.equal(reads.slice(initial).filter(path => path === "/v1/auth/session").length, 2, "full refresh checks session before reading and again before applying");
     assert.equal(reads.slice(initial).filter(path => path.endsWith("/goals")).length, 1);
     assert.equal(page.timers.pendingCount(), 1);
     page.window.dispatchEvent(new page.window.PageTransitionEvent("pagehide", { persisted: true })); const afterHide = reads.length;
@@ -14173,13 +14181,14 @@ test("ux10 live cadence separates frequent game reads from serial full capabilit
   try {
     observe = true; await advanceUx10(page, 5000);
     assert.equal(paths.filter(path => path.endsWith("/goals")).length, 1);
-    assert.equal(paths.filter(path => path === "/v1/auth/session" || path.endsWith("/roster")).length, 0);
+    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 1, "even a short batch checks the current session before apply");
+    assert.equal(paths.filter(path => path.endsWith("/roster")).length, 0);
     await advanceUx10(page, 5000);
     assert.equal(paths.filter(path => path.endsWith("/goals")).length, 2);
-    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 0);
+    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 2);
     await advanceUx10(page, 5000);
     assert.equal(paths.filter(path => path.endsWith("/goals")).length, 3);
-    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 1);
+    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 4, "the full batch adds both its initial and final session probes");
     assert.equal(paths.filter(path => path === "/v1/leagues/three-sided-football-club").length, 1);
     assert.equal(paths.filter(path => path.endsWith("/roster")).length, 1);
     assert.equal(peak, 1, "the background batch issues one request at a time"); assert.equal(active, 0);
@@ -14488,7 +14497,7 @@ test("ux10 visibility and repeated focus signals coalesce while the foreground a
     page.window.dispatchEvent(new page.window.Event("focus")); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
     assert(release); assert.deepEqual(reads, ["/v1/auth/session"]);
     release(); await flushAsync();
-    assert.equal(reads.filter(path => path === "/v1/auth/session").length, 1);
+    assert.equal(reads.filter(path => path === "/v1/auth/session").length, 2, "coalesced foreground work is one full batch with a pre-apply session fence");
     assert.equal(reads.filter(path => path === "/v1/games/ux10-match").length, 1);
     assert.equal(reads.filter(path => path.endsWith("/goals")).length, 1);
     assert.equal(reads.filter(path => path.endsWith("/roster")).length, 1);
@@ -14527,11 +14536,11 @@ test("ux10 removing the game root stops the remaining recurring refresh", async 
   } finally { closeUx10Page(page); }
 });
 
-test("ux10 uncertain metadata retains the draft and blocks background application until explicit same-path success", async () => {
+test("ux10 uncertain metadata is reload-required and cannot be superseded by a changed same-path payload", async () => {
   const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled"); const base = createMockFetch(apiState);
   const writes: Array<{ path: string; method: string; body: string }> = [];
   const page = await bootUx10Page(apiState, { mode: "overview", fetch: async (input, init = {}) => {
-    if (init.method === "PATCH") {
+    if (init.method && init.method !== "GET") {
       writes.push({ path: new URL(String(input)).pathname, method: init.method, body: String(init.body) });
       const result = await base(input, init); return writes.length === 1 ? createJsonResponse(503, { error: "unavailable" }) : result;
     }
@@ -14550,29 +14559,52 @@ test("ux10 uncertain metadata retains the draft and blocks background applicatio
     assert.equal(page.document.getElementById("game-overview-kickoff")?.textContent, previousOverview);
     assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
     assert.equal(page.document.getElementById("setup-error")?.textContent, uncertainty);
-    dispatchSubmit(form); await flushAsync();
-    assert.equal(writes.length, 2); assert.deepEqual(writes[1], writes[0], "this is an explicit repeat of the existing metadata endpoint, not a polling mutation");
+    const save = form.querySelector('[data-action="save-game"]');
+    assert(save instanceof page.window.HTMLButtonElement);
+    assert.equal(save.disabled, true, "there is no safe replay contract for ambiguous metadata writes");
+    assert.equal(field.disabled, true);
+    const originalRequest = structuredClone(writes[0]);
+    assert.equal(JSON.parse(originalRequest.body).gameStartTs, new Date("2030-04-01T10:30").toISOString());
+    // A changed body at the same method/path must not release the old write's
+    // uncertainty, even if a consumer synthetically enables the native controls.
+    field.disabled = false; field.value = "2032-04-01T10:30";
+    field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    save.disabled = false; dispatchSubmit(form); await flushAsync();
+    assert.equal(writes.length, 1, "same-path success is impossible because the changed write never reaches transport");
+    assert.deepEqual(writes[0], originalRequest);
     apiState.games.get("ux10-match")!.gameStartTs = "2032-04-01T10:30:00.000Z";
     await advanceUx10(page, 15000);
-    assert.equal(page.document.getElementById("game-overview-kickoff")?.textContent, expectedSeasonKickoff("2032-04-01T10:30:00.000Z"));
-    assert.equal(page.document.getElementById("game-refresh-notice")?.hidden, true);
-    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    assert.equal(page.document.getElementById("game-overview-kickoff")?.textContent, previousOverview);
+    assert.equal(writes.length, 1);
+    const reload = page.document.querySelector('[data-action="retry-game-updates"]');
+    assert(reload instanceof page.window.HTMLButtonElement);
+    assert.equal(interactionVisible(reload), true); assert.equal(reload.textContent, "Reload game");
+    const cancel = form.querySelector('[data-action="cancel-game-edit"]'); assert(cancel instanceof page.window.HTMLButtonElement);
+    cancel.focus(); dispatchClick(cancel);
+    assert.equal(page.document.getElementById("game-edit-region")?.hidden, true);
+    assert.equal(page.document.activeElement, reload, "Cancel must restore visible recovery, not the now-hidden edit trigger");
+    dispatchClick(reload); await flushAsync();
+    assert.deepEqual(page.navigations, [{ url: "/games/ux10-match#overview", mode: "reload" }]);
+    assert.equal(writes.length, 1, "recovery is a reload, not a second metadata mutation");
   } finally { closeUx10Page(page); }
 });
 
-test("ux10 uncertain assignment preserves the displayed team until an explicit same-choice success releases refresh", async () => {
+test("ux10 uncertain assignment is reload-required and cannot be superseded by another team choice", async () => {
   const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
   const writes: Array<{ path: string; method: string; body: string }> = [];
   const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
-    if (init.method === "PUT") {
+    if (init.method && init.method !== "GET") {
       writes.push({ path: new URL(String(input)).pathname, method: init.method, body: String(init.body) });
       const response = await base(input, init); return writes.length === 1 ? createJsonResponse(503, { error: "unavailable" }) : response;
     }
     return base(input, init);
   } });
   try {
+    const goalDraft = liveGoalControls(page); goalDraft.draft();
     const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]'); assert(transfer instanceof page.window.HTMLButtonElement); dispatchClick(transfer);
-    let yellow = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="yellow"]'); assert(yellow instanceof page.window.HTMLButtonElement);
+    const yellow = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="yellow"]');
+    const blue = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="blue"]');
+    assert(yellow instanceof page.window.HTMLButtonElement && blue instanceof page.window.HTMLButtonElement);
     dispatchClick(yellow); await flushAsync(); assert.equal(writes.length, 1); assert.equal(apiState.roster.get("ux10-match:player-ari")?.teamId, "yellow");
     const uncertainty = page.document.getElementById("setup-error")?.textContent; assert.match(uncertainty ?? "", /Assignment could not be confirmed/);
     seedLiveGoalEvent(apiState, "ux10-match", "remote-during-assignment-uncertainty");
@@ -14581,13 +14613,273 @@ test("ux10 uncertain assignment preserves the displayed team until an explicit s
     assert.equal(rows[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "red");
     assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
     assert.equal(page.document.getElementById("setup-error")?.textContent, uncertainty); assert.equal(writes.length, 1);
-    yellow = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="yellow"]'); assert(yellow instanceof page.window.HTMLButtonElement);
-    dispatchClick(yellow); await flushAsync(); assert.equal(writes.length, 2); assert.deepEqual(writes[1], writes[0]);
+    assert.equal([...page.document.querySelectorAll<HTMLButtonElement>('[data-action="assign-player"]')].some(button => !button.disabled), false);
+    const root = page.document.getElementById("setup-flow-root"); assert(root);
+    if (!blue.isConnected) root.append(blue);
+    blue.disabled = false; dispatchClick(blue); await flushAsync();
+    assert.equal(goalDraft.scorer.value, "player-ari"); assert.equal(goalDraft.save.disabled, true);
+    goalDraft.save.disabled = false; dispatchSubmit(goalDraft.form); await flushAsync();
+    assert.equal(writes.length, 1, "a new body at the same assignment path cannot settle the uncertain Yellow write");
+    assert.deepEqual(JSON.parse(writes[0].body), { teamId: "yellow" });
+    assert.equal(apiState.roster.get("ux10-match:player-ari")?.teamId, "yellow", "the mock committed only the original assignment");
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1);
-    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "yellow");
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "red");
     await advanceUx10(page, 15000);
-    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "remote-during-assignment-uncertainty");
-    assert.equal(page.document.getElementById("game-refresh-notice")?.hidden, true);
-    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    assert.equal(page.document.getElementById("game-refresh-notice")?.hidden, false);
+    assert.equal(page.document.querySelector('[data-action="retry-game-updates"]')?.textContent, "Reload game");
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed|reload/i);
+    assert.equal(writes.length, 1);
   } finally { closeUx10Page(page); }
+});
+
+test("ux10 uncertain access is reload-required and cannot be superseded by a different role at the same path", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState);
+  apiState.players.get("player-ari")!.claimedByUserId = "ari-access@example.com";
+  apiState.players.get("player-bea")!.claimedByUserId = "bea-access@example.com";
+  const base = createMockFetch(apiState); const writes: Array<{ path: string; method: string; body: string }> = [];
+  const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+    if (init.method && init.method !== "GET") {
+      writes.push({ path: new URL(String(input)).pathname, method: init.method, body: String(init.body) });
+      const response = await base(input, init);
+      return writes.length === 1 ? createJsonResponse(503, { error: "unavailable" }) : response;
+    }
+    return base(input, init);
+  } });
+  try {
+    const scorer = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-ari"][data-role="scorekeeper"]');
+    const admin = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-ari"][data-role="admin"]');
+    const otherAdmin = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-bea"][data-role="admin"]');
+    assert(scorer instanceof page.window.HTMLButtonElement && admin instanceof page.window.HTMLButtonElement && otherAdmin instanceof page.window.HTMLButtonElement);
+    openActionMenuFor(scorer); dispatchClick(scorer); await flushAsync();
+    assert.equal(writes.length, 1);
+    assert.deepEqual(JSON.parse(writes[0].body), { userId: "ari-access@example.com", role: "scorekeeper" });
+    assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "ari-access@example.com")), "scorekeeper");
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Access change could not be confirmed/);
+    // Keep a real action reference: a lock may remove private actions entirely,
+    // so reattach that formerly-authorized control to challenge delegated guards.
+    const root = page.document.getElementById("setup-flow-root"); assert(root);
+    if (!admin.isConnected) root.append(admin);
+    admin.hidden = false; admin.disabled = false; dispatchClick(admin); await flushAsync();
+    if (!otherAdmin.isConnected) root.append(otherAdmin);
+    otherAdmin.hidden = false; otherAdmin.disabled = false; dispatchClick(otherAdmin); await flushAsync();
+    assert.equal(writes.length, 1);
+    assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "ari-access@example.com")), "scorekeeper");
+    assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "bea-access@example.com")), undefined);
+    seedLiveGoalEvent(apiState, "ux10-match", "remote-during-access-uncertainty");
+    page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync(); await advanceUx10(page, 15000);
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    const reload = page.document.querySelector('[data-action="retry-game-updates"]');
+    assert(reload instanceof page.window.HTMLButtonElement);
+    assert.equal(interactionVisible(reload), true); assert.equal(reload.textContent, "Reload game");
+    assert.equal(writes.length, 1);
+  } finally { closeUx10Page(page); }
+});
+
+for (const heldAt of ["full-game", "full-roster", "short-goals"] as const) {
+  test(`ux10 an account switch during ${heldAt} is fenced before any remote snapshot is applied`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState);
+    apiState.players.get("player-ari")!.claimedByUserId = "private-player@example.com";
+    seedLiveGoalEvent(apiState, "ux10-match", "known-before-switch");
+    const base = createMockFetch(apiState); const reads: string[] = []; let writes = 0;
+    let observe = false; let held = false; let release: (() => void) | undefined;
+    const heldPath = heldAt === "full-game" ? "/v1/games/ux10-match" : "/v1/games/ux10-match/" + (heldAt === "full-roster" ? "roster" : "goals");
+    const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method && init.method !== "GET") writes += 1;
+      if (observe) {
+        reads.push(path);
+        if (!held && path === heldPath) {
+          held = true; const snapshot = await base(input, init);
+          return new Promise<Response>(resolve => { release = () => resolve(snapshot); });
+        }
+      }
+      return base(input, init);
+    } });
+    let observer: MutationObserver | undefined;
+    try {
+      const controls = liveGoalControls(page); controls.draft(); controls.scorer.focus();
+      const beforeTitle = page.document.getElementById("game-title")?.textContent;
+      const beforeScores = ux10Scores(page);
+      assert(page.document.querySelector('[data-action="grant-player-access"]'));
+      const appliedIds: string[] = []; const appliedTitles: Array<string | null> = [];
+      observer = new page.window.MutationObserver(() => {
+        appliedIds.push(...[...page.document.querySelectorAll('[data-ui="goal-event"]')].map(row => row.getAttribute("data-event-id") ?? ""));
+        appliedTitles.push(page.document.getElementById("game-title")?.textContent ?? null);
+      });
+      observer.observe(page.document.getElementById("setup-flow-root")!, { childList: true, subtree: true, characterData: true });
+      apiState.games.get("ux10-match")!.gameStartTs = "2031-04-01T10:00:00.000Z";
+      seedLiveGoalEvent(apiState, "ux10-match", "must-not-apply-after-account-switch", 55);
+      apiState.roster.get("ux10-match:player-ari")!.teamId = "yellow";
+      observe = true;
+      if (heldAt === "short-goals") await advanceUx10(page, 5000);
+      else { page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync(); }
+      assert(release, "the account changes after match reads have begun, not before the batch's first session check");
+      assert.equal(reads.filter(path => path === "/v1/auth/session").length, heldAt === "short-goals" ? 0 : 1);
+      assert.equal(page.document.getElementById("game-title")?.textContent, beforeTitle);
+      apiState.session = { ...apiState.session!, sessionId: "new-admin-session", email: "new-admin@example.com" };
+      apiState.cookieJar = "threefc_session=new-admin-session";
+      grantMockLeagueAccess(apiState, "three-sided-football-club", "new-admin@example.com", "admin");
+      release(); await flushAsync();
+      assert.equal(reads.filter(path => path === "/v1/auth/session").length, heldAt === "short-goals" ? 1 : 2);
+      assert.equal(reads.at(-1), "/v1/auth/session", "the final session response fences all already-staged match and authority reads");
+      assert.equal(appliedIds.includes("must-not-apply-after-account-switch"), false, "the invalid batch must not render even transiently");
+      assert(appliedTitles.every(title => title === beforeTitle));
+      assert.equal(page.document.getElementById("game-title")?.textContent, beforeTitle);
+      assert.deepEqual(ux10Scores(page), beforeScores);
+      assert.deepEqual([...page.document.querySelectorAll('[data-ui="goal-event"]')].map(row => row.getAttribute("data-event-id")), ["known-before-switch"]);
+      assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0]?.closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "red");
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+      assert.equal(page.document.querySelector('[data-ui="claim-badge"]'), null);
+      assert.equal(controls.scorer.value, "player-ari"); assert.equal(goalTeamValue(controls.scoring), "red"); assert.equal(goalTeamValue(controls.conceding), "blue");
+      assert.equal(controls.save.disabled, true);
+      controls.save.disabled = false; dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(writes, 0, "another valid administrator account cannot inherit this page's draft authority");
+      assert.equal(page.window.location.hash, "#score"); assert.equal(page.navigations.length, 0);
+      assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /sign-in changed/);
+      assert.equal(page.document.querySelector('[data-action="retry-game-updates"]')?.textContent, "Reload game");
+    } finally { observer?.disconnect(); release?.(); await flushAsync(); closeUx10Page(page); }
+  });
+}
+
+for (const finalProbe of ["unavailable", "malformed", "expired"] as const) {
+  test(`ux10 a ${finalProbe} final session probe cannot apply staged administrator authority or match data`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState, "live", "viewer");
+    apiState.players.get("player-ari")!.claimedByUserId = "private-player@example.com";
+    const base = createMockFetch(apiState); let observe = false; let sessionReads = 0; let writes = 0;
+    const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method && init.method !== "GET") writes += 1;
+      if (observe && path === "/v1/auth/session" && ++sessionReads === 2) {
+        if (finalProbe === "malformed") return createJsonResponse(200, { authenticated: true, session: { email: apiState.session!.email } });
+        return createJsonResponse(finalProbe === "expired" ? 401 : 503, { error: finalProbe === "expired" ? "unauthorized" : "unavailable" });
+      }
+      return base(input, init);
+    } });
+    let observer: MutationObserver | undefined;
+    try {
+      const beforeTitle = page.document.getElementById("game-title")?.textContent;
+      const beforeScores = ux10Scores(page); const appliedGoals: string[] = []; const visibleAuthority: boolean[] = [];
+      const create = page.document.querySelector('[data-action="toggle-player-create"]');
+      assert(create instanceof page.window.HTMLButtonElement);
+      assert.equal(interactionVisible(create), false);
+      observer = new page.window.MutationObserver(() => {
+        appliedGoals.push(...[...page.document.querySelectorAll('[data-ui="goal-event"]')].map(row => row.getAttribute("data-event-id") ?? ""));
+        visibleAuthority.push(interactionVisible(create));
+      });
+      observer.observe(page.document.getElementById("setup-flow-root")!, { childList: true, subtree: true, attributes: true });
+      grantMockLeagueAccess(apiState, "three-sided-football-club", apiState.session!.email, "admin");
+      apiState.games.get("ux10-match")!.gameStartTs = "2031-04-01T10:00:00.000Z";
+      seedLiveGoalEvent(apiState, "ux10-match", "unverified-session-goal", 55);
+      apiState.roster.get("ux10-match:player-ari")!.teamId = "yellow";
+      observe = true; page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+      assert.equal(sessionReads, 2, "a failed end probe must be exercised after the successful beginning probe");
+      assert.equal(appliedGoals.includes("unverified-session-goal"), false);
+      assert.equal(visibleAuthority.includes(true), false, "staged administrator controls must never become usable before identity verification");
+      assert.equal(interactionVisible(create), false);
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+      assert.equal(page.document.querySelector('[data-ui="claim-badge"]'), null);
+      assert.equal(page.document.getElementById("game-title")?.textContent, beforeTitle);
+      assert.deepEqual(ux10Scores(page), beforeScores);
+      assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+      assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0]?.closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "red");
+      assert.equal(page.document.getElementById("game-refresh-notice")?.hidden, false);
+      const controls = liveGoalControls(page); controls.save.disabled = false; dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(writes, 0); assert.equal(page.window.location.hash, "#teams");
+    } finally { observer?.disconnect(); closeUx10Page(page); }
+  });
+}
+
+test("ux10 authority-only refresh fences a changed session without retiring a frozen goal retry", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  const writes: Array<{ path: string; method: string; body: string; key: string | null }> = [];
+  let observe = false; let release: (() => void) | undefined; const reads: string[] = [];
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (init.method && init.method !== "GET") {
+      writes.push({ path, method: init.method, body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+      await base(input, init); return createJsonResponse(503, { error: "unavailable" });
+    }
+    if (observe) {
+      reads.push(path);
+      if (path === "/v1/leagues/three-sided-football-club" && !release) {
+        const response = await base(input, init); return new Promise<Response>(resolve => { release = () => resolve(response); });
+      }
+    }
+    return base(input, init);
+  } });
+  try {
+    const controls = liveGoalControls(page); controls.draft(); dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(writes.length, 1); assert(writes[0].key); assert.equal(apiState.goalEvents.size, 1);
+    const original = structuredClone(writes[0]);
+    assert.equal(controls.retry.hidden, false); assert.equal(controls.retry.disabled, false);
+    observe = true; page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+    assert(release); assert.deepEqual(reads, ["/v1/auth/session", "/v1/leagues/three-sided-football-club"]);
+    apiState.session = { ...apiState.session!, sessionId: "replacement-admin-session", email: "replacement-admin@example.com" };
+    apiState.cookieJar = "threefc_session=replacement-admin-session";
+    grantMockLeagueAccess(apiState, "three-sided-football-club", "replacement-admin@example.com", "admin");
+    release(); await flushAsync();
+    assert.deepEqual(reads, ["/v1/auth/session", "/v1/leagues/three-sided-football-club", "/v1/auth/session"], "frozen writes skip presentation reads, not the final session boundary");
+    assert.equal(controls.scorer.value, "player-ari"); assert.equal(goalTeamValue(controls.scoring), "red");
+    assert.equal(controls.retry.hidden, false); assert.equal(controls.retry.disabled, true);
+    controls.retry.disabled = false; dispatchClick(controls.retry); await flushAsync();
+    assert.equal(writes.length, 1); assert.deepEqual(writes[0], original);
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /sign-in changed/);
+  } finally { release?.(); await flushAsync(); closeUx10Page(page); }
+});
+
+test("ux10 Escape from reload-locked metadata restores the visible recovery control without a write", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled"); const base = createMockFetch(apiState); let writes = 0;
+  const page = await bootUx10Page(apiState, { mode: "overview", fetch: async (input, init = {}) => {
+    if (init.method && init.method !== "GET") { writes += 1; await base(input, init); return createJsonResponse(503, { error: "unavailable" }); }
+    return base(input, init);
+  } });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-game-edit"]'); const form = page.document.getElementById("game-edit-form");
+    const field = page.document.getElementById("game-edit-kickoff"); const region = page.document.getElementById("game-edit-region");
+    assert(toggle instanceof page.window.HTMLButtonElement && form instanceof page.window.HTMLFormElement && field instanceof page.window.HTMLInputElement && region instanceof page.window.HTMLElement);
+    dispatchClick(toggle); field.value = "2030-04-01T10:30"; field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    dispatchSubmit(form); await flushAsync(); assert.equal(writes, 1);
+    const cancel = form.querySelector('[data-action="cancel-game-edit"]'); const reload = page.document.querySelector('[data-action="retry-game-updates"]');
+    assert(cancel instanceof page.window.HTMLButtonElement && reload instanceof page.window.HTMLButtonElement);
+    cancel.focus(); cancel.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    assert.equal(region.hidden, true); assert.equal(field.value, "2030-04-01T10:30"); assert.equal(interactionVisible(toggle), false);
+    assert.equal(interactionVisible(reload), true); assert.equal(page.document.activeElement, reload);
+    assert.equal(writes, 1); assert.equal(page.navigations.length, 0);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 reload-locked finished correction can exit without discarding its draft or enabling correction again", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState);
+  const game = apiState.games.get("ux10-match")!; game.status = "finished"; refreshMockFinishedResult(apiState, game, "2026-03-28T11:04:00.000Z");
+  apiState.players.get("player-ari")!.claimedByUserId = "ari-access@example.com";
+  const base = createMockFetch(apiState); let writes = 0; let release: (() => void) | undefined;
+  const page = await bootUx10Page(apiState, { mode: "results", fetch: async (input, init = {}) => {
+    if (init.method && init.method !== "GET") {
+      writes += 1; await base(input, init);
+      return new Promise<Response>(resolve => { release = () => resolve(createJsonResponse(503, { error: "unavailable" })); });
+    }
+    return base(input, init);
+  } });
+  try {
+    enterFinishedCorrections(page); const controls = liveGoalControls(page); controls.draft();
+    dispatchClick(qaGameNavigation(page).teams);
+    const grant = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-ari"][data-role="scorekeeper"]');
+    assert(grant instanceof page.window.HTMLButtonElement); openActionMenuFor(grant); dispatchClick(grant); await flushAsync();
+    assert.equal(writes, 1); assert(release); assert.equal(apiState.leagueAccess.get(leagueAccessKey(game.leagueId, "ari-access@example.com")), "scorekeeper");
+    dispatchClick(qaGameNavigation(page).score);
+    assert.equal(page.window.location.hash, "#score"); release(); await flushAsync();
+    const exit = page.document.querySelector('[data-action="exit-result-correction"]');
+    assert(exit instanceof page.window.HTMLButtonElement); assert.equal(exit.disabled, false, "leaving this view makes no request and cannot clear the separate legacy-write lock");
+    dispatchClick(exit); await flushAsync();
+    assert.equal(page.window.location.hash, "#results"); assert.equal(page.document.getElementById("finished-correction-actions")?.hidden, true);
+    assert.equal(controls.scorer.value, "player-ari"); assert.equal(goalTeamValue(controls.scoring), "red"); assert.equal(goalTeamValue(controls.conceding), "blue");
+    const correct = page.document.querySelector('[data-action="correct-finished-result"]');
+    assert(correct instanceof page.window.HTMLButtonElement); assert.equal(correct.disabled, true);
+    correct.disabled = false; dispatchClick(correct); await flushAsync();
+    assert.equal(page.window.location.hash, "#results"); assert.equal(page.document.getElementById("finished-correction-actions")?.hidden, true);
+    assert.equal(controls.save.disabled, true); assert.equal(writes, 1);
+    assert.equal(page.document.querySelector('[data-action="retry-game-updates"]')?.textContent, "Reload game");
+  } finally { release?.(); await flushAsync(); closeUx10Page(page); }
 });

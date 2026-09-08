@@ -1,9 +1,11 @@
 # Cross-client match freshness
 
 UX-10 / #153 is the frontend-only child on `codex/design-match-refresh`.
-Implementation and final local validation are complete. No child PR
-number, exact-head external acceptance or `review:ready` is claimed yet. The
-confirmed local evidence and remaining gates are recorded below.
+The child is [PR156](https://github.com/ajfisher/3fc/pull/156). Its versioned
+packet records current-head validation and external readiness. The first
+published head passed CI and isolated deployed QA; Codex then identified two
+P1 recovery/identity gaps, addressed below. Historical passes are not substitutes
+for validation and external acceptance of the corrected head.
 
 The parent [PR155](https://github.com/ajfisher/3fc/pull/155) was `review:ready` at
 `dd8982e134fd055bb4f7e13ad5cb4053853a9de8` before this child began. Root verified
@@ -42,6 +44,7 @@ fetches independently of completion.
 | Visible live game | Refresh score/log and clock reads every 5 seconds after the preceding pass settles. |
 | Visible scheduled or finished game | Refresh every 15 seconds; finished games still receive authorized corrections. |
 | Full authority and roster reads | Due every 15 seconds and on foreground return, within the same coordinator. Private capped player search is enrichment, not roster authority. |
+| Session identity | Every batch checks the original session immediately before apply; full batches additionally check before reading authority. Stage role changes until the final check, including authority-only passes during local uncertainty. |
 | Foreground return | Coalesce visibility/focus notifications into one immediate full pass. |
 | Deadline | One 12-second deadline bounds the batch, including response-body reading. Abort the owned batch on expiry. |
 | Repeated unavailable reads | Back off up to 60 seconds; successful refresh resets the delay. Do not pile up queued refreshes. |
@@ -70,15 +73,17 @@ poll-driven inference.
 
 Legacy metadata, assignment, access and deletion writes do not have the goal,
 clock and player-creation recovery slots. An ambiguous network/5xx/408/429
-outcome therefore retains a separate read-apply barrier keyed by method and exact
-path. A later rejection cannot remove it. An explicit successful action at that
-same method/path can release presentation refresh, or the user can reload to
-check current state. This neither proves what happened to the earlier lost
-request nor adds idempotency, ordering or automatic retry to those endpoints.
-The barrier has quiet, persistent recovery guidance independent of a newer
-action's feedback. Dedicated goal/clock/player owners are excluded: in
-particular, a positive clock GET used by its existing explicit recovery flow
-must not leave an extra POST barrier that prevents subsequent refreshes.
+outcome therefore retains an absorbing, reload-required write/read-apply lock.
+No later in-page mutation is sent, including a changed body/role/team at the
+same endpoint or a dedicated retry. The original draft and any existing frozen
+operation remain; successful already-forwarded requests cannot clear the lock.
+Reload is an explicit recovery boundary, not proof an uncertain server write
+stopped. No idempotency or ordering is invented for these endpoints. Dedicated
+goal/clock/player owners do not create this additional legacy lock: absent a
+legacy ambiguity, their existing exact recovery flows remain unchanged.
+The persistent Reload game action remains available, as do Sign out and
+read-only navigation. Deliberate Cancel/Escape and owned-failure recovery focus
+have visible fallback targets when their original trigger is disabled.
 
 ## Draft, authority and rendering ownership
 
@@ -116,6 +121,10 @@ snapshot. Even the existing goal read obtains teams and events separately.
 Applying a validated batch together prevents local interleaving, not concurrent
 server changes. The claim is bounded, eventually convergent read freshness;
 there is no cross-client lock, transaction revision or coordinated editor.
+Session probes close a switch between an early probe and later reads/apply, but
+separate cookie-authenticated requests are not an atomic session/ACL snapshot.
+A switch during the final probe or after it can only be detected subsequently;
+there is no server-bound transaction identity or coordinated-edit guarantee.
 Scored/conceded, own goals, assists, winner and draw calculations remain unchanged.
 
 ## Architecture and invariant review
@@ -150,17 +159,37 @@ are not substitutes for child validation or exact-head external readiness.
 | Another client becomes current | Two fictional clients: create/edit/delete a goal, start/finish thirds and finish/correct a game; receiving client updates without reload. |
 | Delayed reads cannot undo local work | Hold a pre-write response through a confirmed local commit; release it afterwards and assert it does not apply. Include assignment and metadata. |
 | Reads never settle uncertain writes | Lost create/edit/delete/undo/clock outcomes appear in later GETs; exact key/body/path/event and the manual recovery action remain unchanged. |
-| Legacy uncertainty is not silently cleared | Lost metadata/assignment/access response, later unrelated success, later rejection and eventual explicit same-method/path success; preserve the barrier/recovery notice without inventing replay semantics. A positive owned clock GET permits normal polling again. |
+| Legacy uncertainty is not silently cleared | Lost metadata/assignment/access response, changed body/team/role and synthetic enabled controls cannot send another write or clear the absorbing lock. Preserve draft, original operation and Reload guidance. Dedicated clock recovery remains available when no legacy ambiguity exists. |
 | Drafts survive external changes | Dirty visible/closed metadata; scorer and three assists retained through roster transfer/removal; edited event deleted elsewhere; no silent conversion to create. |
 | Interaction remains stable | Open assists, native selection, focused controls/menus and hash/history across refresh; remote finish does not move focus or navigate. |
-| Authority remains scoped | Session expiry, account switch, role downgrade, viewer and cross-league cases; held legacy administrator responses cannot restore revoked private controls. Locked manual clock recovery cannot send a request or retire the old operation. |
+| Authority remains scoped | Session expiry, account switch during full/short batches, unavailable final session check, role downgrade, viewer and cross-league cases; staged and held legacy administrator reads cannot restore revoked private controls. Authority-only uncertain passes also require the final identity check. |
 | Failures stay honest | Malformed/partial/unavailable reads retain usable prior data with appropriate freshness state; no invented zeros, empty collection or winner. |
 | Coordinator stays bounded | Held reads, 12-second deadline, repeated failures/backoff, hidden/foreground event coalescing, removal and persisted-page restoration; no overlapping batches or surviving timers. Foreground during initialization queues one pass; a late write completion cannot resurrect a hidden-page clock interval. |
 | Original QA list is complete | The ten-item map in [stack acceptance](stack-acceptance.md) records the first nine items complete in reviewed parents and the tenth implemented, awaiting final QA. |
 
 ## Confirmed local evidence and remaining work
 
-The root owns execution and reported the following observed results on 8
+The corrected worktree adds ten interaction cases (450 interactions / 498 total
+app tests, including 50 UX-10 cases). The complete interaction file passed in
+group3522, exit0, peak1877280KiB, remaining[]. Group4028 passed repository
+lint/typecheck, full API/app tests,57 review-gate tests, contracts, build and
+strict browser-fixture compilation. Its later browser phase found one stale
+uncertain-transfer expectation; this was isolated before broad revalidation.
+The final seven-suite browser matrix plus offline QA safety cases passed
+212/212 with two explicit deployed opt-ins skipped, group8085, exit0,
+peak1679632KiB, remaining[], tripNone. The native transfer case proves actual
+main-frame reload, fresh session/game/roster GETs and changed remote membership
+before the second deliberate PUT; it cannot pass on a merely local unlock.
+Independent QA, architecture/security and design reviews cleared these fixes.
+Corrected local M2 then passed4/4 in group8830, exit0, host peak1265040KiB
+under a3.5GiB guard plus a hard512MiB database limit. All three service exits
+were observed, the ephemeral database was removed, remaining[], tripNone.
+
+The table below preserves the first published head's historical evidence.
+Current-head integration, deployment, Codex review and gate evidence is recorded
+in PR156's versioned packet; a prior-head pass is not substituted.
+
+The root owned execution and reported the following historical results on 8
 September 2026. Review agents did not launch tests or browser workers.
 
 | Validation | Observed result |
@@ -173,11 +202,25 @@ September 2026. Review agents did not launch tests or browser workers.
 | QA helper local validation | Strict typecheck of all fixtures and offline tests passed: 15 passed, 2 explicit deployed opt-ins skipped; group `93335`, exit 0, peak `846944 KiB`, cleanup `[]`. Independent source review is clear. This is not a deployed pass. |
 | Backlog tooling | Root-observed validation and export passed before this evidence refresh; the latest JSON edit still needs regeneration by root. |
 | Final combined revalidation | Passed: lint, typecheck, full API/app validation (488 app tests: 440 interactions and 48 layouts), 57 review-gate tests, contracts, build and strict typecheck of all e2e fixtures. The final browser/offline run passed 212 cases (197 browser plus 15 offline QA), with 2 explicit deployed opt-ins skipped. Group `94369`, exit 0, peak `1815312 KiB`, cleanup `[]`, trip `None`. |
-| Final child gates | Child PR number, exact-head CI/Codex/deployed QA and final readiness remain pending. |
+| First published head (historical) | `190cbf4`: CI34208810305 and QA34209247864 passed. Deployed17/17 cases included two synthetic accounts and real clock/goal/own-goal/edit/delete/finish, preserved observer draft/focus and zero observer writes. Group98395 exit0 peak1194144KiB, cleanup[];32 graph records and both auth fixtures removed with absence verification. Signed-in read-only report checked at320/390/430/768/1280 with current assets and no overflow. |
+| Corrected child gates | PR156's versioned packet is authoritative for the corrected head's tests, exact-head CI/Codex/deployed QA and final readiness. Earlier190cbf4 passes do not satisfy the new head. |
 
 No physical iOS/Android result is implied by these counts; #137 remains open.
 
 ## Independent design findings and dispositions
+
+- **GitHub Codex P1: path-only uncertainty settlement — fixed.** Review
+  [3956352766](https://github.com/ajfisher/3fc/pull/156#discussion_r3956352766)
+  demonstrated that a changed save could clear a barrier without settling the
+  original request. The legacy lock is now absorbing until explicit reload,
+  with no subsequent mutation dispatched even through synthetic controls.
+- **GitHub Codex P1: mid-batch cookie transition — fixed.** Review
+  [3956352772](https://github.com/ajfisher/3fc/pull/156#discussion_r3956352772)
+  demonstrated that early identity checks alone did not fence later apply.
+  Every batch now validates the session at its apply boundary, and authority
+  changes remain staged until that check succeeds. The non-atomic residual
+  limitation above remains explicit. Independent architecture/security review
+  cleared both source fixes; focused QA and renewed external evidence follow.
 
 - **Read-only result/log deferral — fixed.** Focus on a summary or goal action
   previously deferred the whole surface. Keyed updates now retain the actual

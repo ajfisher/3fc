@@ -19,7 +19,7 @@ head's CI, Codex, QA and browser evidence, including findings and disposition.
 | #136 / UX-05 | Reports and existing entry journeys | [#150](https://github.com/ajfisher/3fc/pull/150), `bfd4af7ab05e1e5a55eede4e716e851c0ab188e8` | [Results/entry map](results-entry-review.md) and versioned packet. Exact-head review:ready reconfirmed by root. |
 | #151 / UX-08 | Match navigation, correction exit and presentation follow-ups | [#154](https://github.com/ajfisher/3fc/pull/154), `a1cccc18a13e92843e1c8740cec374993afd1953` | [Match-flow map](match-flow-polish.md) and versioned packet. Review-ready before UX-09. |
 | #152 / UX-09 | Named claim return and complete Unassigned identities | [#155](https://github.com/ajfisher/3fc/pull/155), `dd8982e134fd055bb4f7e13ad5cb4053853a9de8` | [Join/Unassigned map](join-unassigned-review.md); final query transport. CI34201089422, QA34201253601 and Codex completion5581369750 verified by root; review:ready before UX-10. |
-| #153 / UX-10 | Bounded cross-client read freshness | `codex/design-match-refresh`; child PR not yet opened | [Refresh policy and acceptance map](match-refresh-review.md). Implementation and final local validation complete: 488 app tests (440 interactions/40 UX-10), local M2 4/4, final 197 browser plus 15 offline QA cases passed; 2 deployed opt-ins skipped. Independent source reviews clear. New-head external readiness pending. |
+| #153 / UX-10 | Bounded cross-client read freshness | [#156](https://github.com/ajfisher/3fc/pull/156), `codex/design-match-refresh` | [Refresh policy and acceptance map](match-refresh-review.md). Initial190cbf4 passed488 app, M2 4/4,197 browser plus15 offline and17 deployed acceptance/safety cases. Codex identified two P1s; corrected legacy uncertainty and apply-boundary identity safeguards require renewed current-head evidence in the versioned PR packet. |
 | #137 / UX-06 | Cross-stack acceptance | Final frontend PR plus this checklist | Initial 161 cross-stack browser cases and4 local M2 cases passed; subsequent parent evidence is in the maps/packets above. Refresh-child and physical-device evidence remain outstanding. Keep issue open. |
 
 Parent acceptance was completed before each child was implemented. Shared QA is
@@ -83,9 +83,20 @@ engineering review has cleared keyed DOM reconciliation and both new M2 tests.
 All local auth/log-helper source reviews are complete. Independent QA-helper
 review also cleared response-body settlement,
 exact ownership and retained-ledger safeguards; this is not deployed acceptance.
-Dispositions are in the [refresh map](match-refresh-review.md). There is no child
-PR number or completed exact-head CI/Codex/deployed QA gate yet. Physical #137
-checks remain pending; no merge is authorized.
+Dispositions are in the [refresh map](match-refresh-review.md). The child is
+PR156. Its first190cbf4 head passed CI34208810305 and QA34209247864, including17
+deployed cases, before Codex review5139831979 identified two P1s. The absorbing
+legacy write lock and final session probes are covered in the refresh map.
+PR156's packet supplies renewed validation and external evidence for the
+corrected head; prior-head passes are historical. Physical #137 checks remain
+pending; no merge is authorized.
+
+The corrected child passed450 interactions /498 total app tests, full API
+validation,57 review-gate tests, lint/typecheck/contracts/build,212 browser and
+offline safety cases (two deployed opt-ins skipped locally), and4 local M2
+cases. QA, architecture/security and design independently cleared the fixes.
+The versioned PR156 packet must supply renewed exact-head CI, deployed QA,
+Codex disposition and review-gate evidence before handoff.
 
 For #155's final head, see
 [CI34201089422](https://github.com/ajfisher/3fc/actions/runs/34201089422),

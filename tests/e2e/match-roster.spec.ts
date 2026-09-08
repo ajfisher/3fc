@@ -632,13 +632,14 @@ for (const outcome of ["before navigation", "after navigation", "uncertain"] as 
     await page.getByTestId("game-mode-run-tab").click();
     await expect(page.getByTestId("game-mode-run")).toBeFocused();
     if (outcome !== "before navigation") gate.release();
-    // Mutation controls unlock only after the response and roster refresh are
-    // handled, so a delayed success cannot pass while it is still in flight.
-    await expect(transfer).toBeEnabled();
+    // A confirmed response unlocks mutation controls. An ambiguous legacy
+    // response instead keeps them locked until deliberate reload.
     if (outcome === "uncertain") {
-      await expect(page.locator("#setup-error")).toHaveText("Assignment could not be confirmed. Retry this team choice or reload to check.");
+      await expect(page.locator("#setup-error")).toHaveText("Assignment could not be confirmed. Reload to check before making more changes.");
+      await expect(transfer).toBeDisabled();
       expect(fixture.assignments.get(playerId)).toBe("red");
     } else {
+      await expect(transfer).toBeEnabled();
       await expect(page.locator("#setup-status")).toBeHidden();
       await expect(page.locator("#setup-error")).toBeHidden();
       expect(fixture.assignments.get(playerId)).toBe("yellow");
@@ -646,14 +647,14 @@ for (const outcome of ["before navigation", "after navigation", "uncertain"] as 
     await expect(page.getByTestId("game-mode-run")).toBeFocused();
     await capture(page, testInfo, `assignment-${outcome.replaceAll(" ", "-")}-score-dark-390`);
     await page.getByTestId("game-mode-players-tab").click();
-    if (outcome === "uncertain") await expect(page.locator("#setup-error")).toContainText("Retry this team choice");
+    if (outcome === "uncertain") await expect(page.locator("#setup-error")).toContainText("Reload to check");
     else await expect(page.locator("#setup-status")).toBeHidden();
     expect(fixture.requests.filter(request => request.method === "PUT")).toHaveLength(1);
     expect(fixture.unexpected).toEqual([]);
   });
 }
 
-test("transfer offers only alternatives, keeps failures open and collapses after success", async ({ page }, testInfo) => {
+test("transfer offers only alternatives, locks uncertainty until reload and collapses after success", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await page.emulateMedia({ colorScheme: "dark" });
   const fixture = await installMatchFixture(page, { failTransferOnce: true });
@@ -687,15 +688,35 @@ test("transfer offers only alternatives, keeps failures open and collapses after
   await page.setViewportSize({ width: 390, height: 900 });
   await menu.locator('[data-team-id="blue"]').click();
   await expect(page.locator("#setup-error")).toBeVisible();
-  await expect(page.locator("#setup-error")).toHaveText("Assignment could not be confirmed. Retry this team choice or reload to check.");
+  await expect(page.locator("#setup-error")).toHaveText("Assignment could not be confirmed. Reload to check before making more changes.");
   await expect(page.locator("#setup-status")).toBeHidden();
   await expect(page.locator("#setup-error")).not.toContainText("failed");
   await expect(menu).toBeVisible();
-  await expect(menu.locator('[data-team-id="blue"]')).toBeEnabled();
-  await expect(menu.locator('[data-team-id="blue"]')).toBeFocused();
+  await expect(menu.locator('[data-team-id="blue"]')).toBeDisabled();
+  const reload = page.getByRole("button", { name: "Reload game", exact: true });
+  await expect(reload).toBeFocused();
+  await expect(reload).toBeInViewport();
+  expect(fixture.requests.filter(request => request.method === "PUT")).toHaveLength(1);
   expect(fixture.assignments.get(playerId)).toBe("red");
   await capture(page, testInfo, "match-transfer-failed-dark-390");
-  await page.keyboard.press("Enter");
+  // This deliberately activates Reload, not an invented same-path retry. The
+  // new page reads the fixture's current membership before another assignment.
+  fixture.assignments.set(playerId, "yellow");
+  const requestsBeforeReload = fixture.requests.length;
+  const [reloadedFrame] = await Promise.all([
+    page.waitForEvent("framenavigated", frame => frame === page.mainFrame()),
+    page.keyboard.press("Enter"),
+  ]);
+  expect(reloadedFrame.url()).toBe(`${origin}${gamePath}#teams`);
+  await expect(trigger).toBeEnabled();
+  await expectReady(page);
+  await expect(page.locator(`[data-ui="roster-team"][data-team-id="yellow"] [data-ui="roster-member"][data-player-id="${playerId}"]`)).toHaveCount(1);
+  const freshReads = fixture.requests.slice(requestsBeforeReload).filter(request => request.method === "GET").map(request => request.path);
+  for (const path of ["/v1/auth/session", apiGamePath, `${apiGamePath}/roster`]) expect(freshReads).toContain(path);
+  expect(fixture.requests.filter(request => request.method === "PUT")).toHaveLength(1);
+  await trigger.click();
+  menu = page.locator('[data-ui="transfer-menu"]:visible');
+  await menu.locator('[data-team-id="blue"]').click();
   await expect(page.locator(`[data-ui="roster-team"][data-team-id="blue"] [data-ui="roster-member"][data-player-id="${playerId}"]`)).toHaveCount(1);
   await expect(page.locator('[data-ui="transfer-menu"]:visible')).toHaveCount(0);
   await expect(trigger).toBeFocused();
