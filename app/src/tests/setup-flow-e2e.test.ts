@@ -13438,10 +13438,10 @@ for (const enrichment of ["capped", "failed", "empty", "public-metadata"] as con
   });
 }
 
-test("ux09 assigning a public Unassigned player stays single through a stale roster refresh", async () => {
+test("ux09 assigning a public Unassigned player stays single through a stale Unassigned refresh", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "ux09-assignment", role: "admin" });
   seedUx09Registration(apiState, "ux09-assignment", "public-joined", "Joined player");
-  const base = createMockFetch(apiState); let staleRoster: unknown; let assignments = 0; let release: (() => void) | undefined;
+  const base = createMockFetch(apiState); let staleUnassigned: unknown; let assignments = 0; let release: (() => void) | undefined;
   const page = await bootPage({
     html: renderGamePage("http://localhost:3001", { gameId: "ux09-assignment" }), url: "http://localhost:3000/games/ux09-assignment#teams",
     scriptFile: "setup-flow.js", apiState,
@@ -13453,8 +13453,13 @@ test("ux09 assigning a public Unassigned player stays single through a stale ros
         return new Promise<Response>(resolve => { release = () => { void base(input, init).then(resolve); }; });
       }
       if (path.endsWith("/roster")) {
-        if (assignments) return createJsonResponse(200, staleRoster);
-        const response = await base(input, init); staleRoster = await response.json(); return createJsonResponse(200, staleRoster);
+        const response = await base(input, init); const payload = await response.json() as Record<string, unknown>;
+        // Assignment reads are strongly consistent after a confirmed PUT.
+        // Defensively inject a stale optional Unassigned projection; the
+        // current backend normally filters assigned IDs from that collection.
+        if (assignments) payload.unassignedPlayers = staleUnassigned;
+        else staleUnassigned = payload.unassignedPlayers;
+        return createJsonResponse(200, payload);
       }
       return base(input, init);
     },
@@ -14883,3 +14888,152 @@ test("ux10 reload-locked finished correction can exit without discarding its dra
     assert.equal(page.document.querySelector('[data-action="retry-game-updates"]')?.textContent, "Reload game");
   } finally { release?.(); await flushAsync(); closeUx10Page(page); }
 });
+
+for (const scenario of ["failed-read", "malformed-read", "delayed-pre-confirmation-read", "remote-unassignment"] as const) {
+  test(`ux10 confirmed assignment overlay yields to later authoritative roster after ${scenario}`, async () => {
+    const delayedBeforeWrite = scenario === "delayed-pre-confirmation-read";
+    const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+    const writes: Array<{ path: string; body: string }> = []; let rosterReads = 0; let failNextRoster = false;
+    let holdBeforeWrite = false; let release: (() => void) | undefined; let heldSignal: AbortSignal | null | undefined;
+    const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "PUT") {
+        writes.push({ path, body: String(init.body) });
+        const confirmed = await base(input, init); failNextRoster = true; return confirmed;
+      }
+      if (path === "/v1/games/ux10-match/roster") {
+        rosterReads += 1;
+        if (holdBeforeWrite) {
+          holdBeforeWrite = false; heldSignal = init.signal; const snapshot = await base(input, init);
+          return new Promise<Response>(resolve => { release = () => resolve(snapshot); });
+        }
+        if (failNextRoster) {
+          failNextRoster = false;
+          return createJsonResponse(scenario === "malformed-read" ? 200 : 503, { error: "unavailable" });
+        }
+      }
+      return base(input, init);
+    } });
+    let observer: MutationObserver | undefined;
+    try {
+      if (delayedBeforeWrite) {
+        holdBeforeWrite = true; page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+        assert(release); assert(heldSignal); assert.equal(heldSignal.aborted, false);
+      }
+      const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+      assert(transfer instanceof page.window.HTMLButtonElement); dispatchClick(transfer);
+      const blue = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="blue"]');
+      assert(blue instanceof page.window.HTMLButtonElement); dispatchClick(blue); await flushAsync();
+      assert.equal(writes.length, 1); assert.deepEqual(writes[0], { path: "/v1/games/ux10-match/roster/player-ari", body: JSON.stringify({ teamId: "blue" }) });
+      assert.equal(apiState.roster.get("ux10-match:player-ari")?.teamId, "blue");
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Assignment was saved.*latest roster could not be loaded/);
+      const currentTeam = () => ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0]?.closest('[data-ui="roster-team"]')?.getAttribute("data-team-id");
+      assert.equal(currentTeam(), "blue", "a failed follow-up read must not erase a confirmed local assignment");
+      if (delayedBeforeWrite) {
+        assert.equal(heldSignal?.aborted, true, "the local PUT invalidates the previously captured full batch");
+        const observedTeams: Array<string | null | undefined> = [];
+        observer = new page.window.MutationObserver(() => { observedTeams.push(currentTeam()); });
+        observer.observe(page.document.getElementById("roster-teams")!, { childList: true, subtree: true });
+        release!(); await flushAsync();
+        assert.equal(observedTeams.includes("red"), false, "the old pre-confirmation response cannot briefly repaint the original team");
+        assert.equal(currentTeam(), "blue");
+        observer.disconnect(); observer = undefined;
+      }
+      // A second client has now made a newer authoritative assignment. It need
+      // not first echo this page's Blue overlay to supersede that confirmed data.
+      if (scenario === "remote-unassignment") apiState.roster.delete("ux10-match:player-ari");
+      else apiState.roster.get("ux10-match:player-ari")!.teamId = "yellow";
+      const readsBeforeFreshBatch = rosterReads;
+      page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+      assert.equal(rosterReads, readsBeforeFreshBatch + 1);
+      if (scenario === "remote-unassignment") {
+        assert.equal(currentTeam(), undefined, "a valid roster which no longer assigns the player also retires the confirmed overlay");
+        assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 0);
+        assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', "player-ari").length, 1);
+      } else {
+        assert.equal(currentTeam(), "yellow", "a completed, generation-valid full read retires the confirmed local overlay even when the current team differs");
+        assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1);
+        assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', "player-ari").length, 0);
+      }
+      assert.equal(writes.length, 1); assert.equal(page.navigations.length, 0);
+      assert.equal(page.window.location.hash, "#teams");
+    } finally { observer?.disconnect(); release?.(); await flushAsync(); closeUx10Page(page); }
+  });
+}
+
+for (const outcome of ["uncertain-owned", "uncertain-outside", "uncertain-score-nav", "confirmed-owned", "confirmed-outside", "confirmed-score-nav"] as const) {
+  test(`ux10 overlapping ambiguous metadata and clock preserve recovery after ${outcome} settlement`, async () => {
+    const clockConfirmed = outcome.startsWith("confirmed");
+    const focusDestination = outcome.endsWith("outside") ? "elsewhere" : outcome.endsWith("score-nav") ? "score-nav" : "clock";
+    const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled"); const base = createMockFetch(apiState);
+    const writes: Array<{ path: string; method: string; body: string; key: string | null }> = [];
+    let releaseMetadata: (() => void) | undefined; let releaseClock: (() => void) | undefined; let gameReads = 0;
+    const page = await bootUx10Page(apiState, { mode: "overview", fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method && init.method !== "GET") {
+        writes.push({ path, method: init.method, body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+        const response = await base(input, init);
+        return new Promise<Response>(resolve => {
+          const release = () => resolve(init.method !== "PATCH" && clockConfirmed ? response : createJsonResponse(503, { error: "unavailable" }));
+          if (init.method === "PATCH") releaseMetadata = release;
+          else releaseClock = release;
+        });
+      }
+      if (path === "/v1/games/ux10-match") gameReads += 1;
+      return base(input, init);
+    } });
+    try {
+      const toggle = page.document.querySelector('[data-action="toggle-game-edit"]');
+      const field = page.document.getElementById("game-edit-kickoff"); const form = page.document.getElementById("game-edit-form");
+      const status = page.document.getElementById("game-edit-status"); const thirdLength = page.document.getElementById("game-edit-third-length");
+      assert(toggle instanceof page.window.HTMLButtonElement && field instanceof page.window.HTMLInputElement && form instanceof page.window.HTMLFormElement);
+      assert(status instanceof page.window.HTMLSelectElement && thirdLength instanceof page.window.HTMLSelectElement);
+      dispatchClick(toggle); field.value = "2030-04-01T10:30"; field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      thirdLength.value = "25"; thirdLength.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+      field.focus(); dispatchSubmit(form); await flushAsync(); assert(releaseMetadata); assert.equal(writes.length, 1);
+      dispatchClick(qaGameNavigation(page).score);
+      const start = page.document.querySelector('[data-action="start-active-third"]');
+      const check = page.document.querySelector('[data-action="refresh-game-state"]');
+      assert(start instanceof page.window.HTMLButtonElement && check instanceof page.window.HTMLButtonElement);
+      assert.equal(start.disabled, false); start.focus(); dispatchClick(start); await flushAsync();
+      assert(releaseClock); assert.equal(writes.length, 2);
+      assert.equal(writes[1].path, "/v1/games/ux10-match/thirds/1/start"); assert.equal(writes[1].method, "POST");
+      const originalWrites = structuredClone(writes); const readsBeforeSettlement = gameReads;
+      assert(apiState.games.get("ux10-match")?.thirds[0].startedAt, "the clock write really committed before its response was lost");
+      releaseMetadata(); await flushAsync();
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Game changes could not be confirmed/);
+      let outside: HTMLElement | undefined;
+      if (focusDestination === "elsewhere") {
+        dispatchClick(qaGameNavigation(page).teams);
+        const search = page.document.getElementById("player-search"); assert(search instanceof page.window.HTMLInputElement);
+        outside = search; outside.focus();
+      } else if (focusDestination === "score-nav") {
+        outside = qaGameNavigation(page).teams; outside.focus();
+      }
+      releaseClock(); await flushAsync();
+      assert.equal(gameReads, readsBeforeSettlement, "the locked clock owner must not initiate an implicit reconciliation GET");
+      const reload = page.document.querySelector('[data-action="retry-game-updates"]');
+      assert(reload instanceof page.window.HTMLButtonElement);
+      assert.equal(interactionVisible(reload), true); assert.equal(reload.textContent, "Reload game");
+      if (!clockConfirmed) {
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed.*Reload/);
+        assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /Check the clock|retry finishing/);
+      }
+      assert.equal(start.disabled, true); assert.equal(check.hidden, clockConfirmed); assert.equal(check.disabled, true);
+      if (!clockConfirmed) assert.equal(start.getAttribute("data-third"), "1", "the unresolved clock still targets its original third");
+      assert.equal(field.value, "2030-04-01T10:30", "the earlier ambiguous metadata draft is not lost to clock completion");
+      assert.equal(status.value, "scheduled", "a confirmed clock start must not replace the ambiguous status draft with Live");
+      assert.equal(thirdLength.value, "25", "the full ambiguous metadata draft survives settlement");
+      if (focusDestination === "clock") {
+        assert.equal(page.document.activeElement, reload, "the only actionable recovery must receive the clock operation's retained focus");
+        assert.equal(page.window.location.hash, "#score");
+      } else {
+        assert.equal(page.document.activeElement, outside); assert.equal(page.window.location.hash, focusDestination === "score-nav" ? "#score" : "#teams");
+      }
+      check.disabled = false; dispatchClick(check); start.disabled = false; dispatchClick(start); await flushAsync();
+      assert.equal(gameReads, readsBeforeSettlement); assert.deepEqual(writes, originalWrites);
+      assert.equal(check.hidden, clockConfirmed, "synthetic recovery cannot change whether the original clock operation was confirmed");
+      assert.equal(page.navigations.length, 0);
+    } finally { releaseMetadata?.(); releaseClock?.(); await flushAsync(); closeUx10Page(page); }
+  });
+}

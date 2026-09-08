@@ -4938,7 +4938,7 @@
       };
     }
 
-    function applyRosterPayload(rosterPayload) {
+    function applyRosterPayload(rosterPayload, confirmedBeforeRead) {
       rosterTeams = Array.isArray(rosterPayload?.teams)
         ? rosterPayload.teams.map((team) => ({
             ...team,
@@ -4950,7 +4950,9 @@
         : [];
       const assignmentsById = new Map((Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : []).map((assignment) => [assignment.playerId, assignment]));
       for (const [playerId, assignment] of pendingAssignments) {
-        if (assignmentsById.get(playerId)?.teamId === assignment.teamId) pendingAssignments.delete(playerId);
+        // A confirmed local projection survives failed/pre-confirmation reads,
+        // not a later authoritative read that may include another transfer.
+        if (confirmedBeforeRead.get(playerId) === assignment) pendingAssignments.delete(playerId);
         else assignmentsById.set(playerId, assignment);
       }
       rosterAssignments = [...assignmentsById.values()];
@@ -4972,9 +4974,13 @@
     async function loadRosterSetup(options = {}) {
       if (!rosterControlsAvailable()) return;
       const version = ++rosterReadVersion;
+      const confirmedBeforeRead = new Map(pendingAssignments);
       const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET", cache: "no-store" });
       if (version !== rosterReadVersion) return;
-      applyRosterPayload(rosterPayload);
+      // Preserve independently valid assignments and the existing search
+      // fallback when only the optional complete-Unassigned DTO is unavailable.
+      if (!refreshRosterValid(rosterPayload, { allowUnavailableUnassigned: true })) throw new Error("The latest roster could not be loaded.");
+      applyRosterPayload(rosterPayload, confirmedBeforeRead);
       if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
       }
@@ -5361,7 +5367,7 @@
           accessAvailable = false;
         }
       }
-      statusInput.value = currentGame.status;
+      if (!metadataDirty) statusInput.value = currentGame.status;
       const success = operation.kind === "finish-game" ? "Game finished." : "Third " + operation.third + (operation.kind === "start" ? " started." : " finished.");
       if (!resultAvailable) showError("Game finished. The latest result could not be loaded. Reload to try again.", { includesOutcome: true });
       else if (!accessAvailable) showError("Game finished. Player details could not be refreshed. Reload to try again.", { includesOutcome: true });
@@ -5400,7 +5406,7 @@
         if (confirmed) await acceptClockOutcome(operation, feedback);
         else {
           operation.uncertain = true;
-          showError(operation.kind === "finish-game"
+          showError(refreshWriteLocked ? "The clock change could not be confirmed. Reload this game before making more changes." : operation.kind === "finish-game"
             ? "Game finish could not be confirmed. Check the clock or retry finishing this game."
             : "The clock change could not be confirmed. Check the clock before continuing.", { includesOutcome: true });
         }
@@ -5410,7 +5416,11 @@
         renderTimer();
         renderRosterSetup();
         renderLiveScoring();
-        if (confirmed && navigationRevision === gameNavigationRevision) {
+        if (refreshWriteLocked) {
+          // The lock wins even if the user moved focus: a late confirmation
+          // must not switch modes and hide their new recovery/navigation target.
+          if (ownsFocus && refreshRetry instanceof HTMLButtonElement && !refreshRetry.disabled && refreshRetry.isConnected && actionElementVisible(refreshRetry)) refreshRetry.focus();
+        } else if (confirmed && navigationRevision === gameNavigationRevision) {
           if (isGameFinished()) setGameMode("final", { focusPanel: ownsFocus });
           else if (operation.kind === "start") {
             setGameMode("run");
@@ -6000,14 +6010,14 @@
       setRefreshNotice(message);
     }
 
-    function refreshRosterValid(payload) {
+    function refreshRosterValid(payload, { allowUnavailableUnassigned = false } = {}) {
       const teams = payload?.teams;
       return Array.isArray(teams) && teams.length === 3 && new Set(teams.map((team) => team.teamId)).size === 3 &&
         teams.every((team) => ["red", "blue", "yellow"].includes(team?.teamId) && (!team.gameId || team.gameId === gameId)) &&
         Array.isArray(payload.roster) && new Set(payload.roster.map((item) => item.playerId)).size === payload.roster.length &&
         payload.roster.every((item) => usableEntityId(item?.playerId) && ["red", "blue", "yellow"].includes(item.teamId) &&
           (!item.gameId || item.gameId === gameId) && (!item.player || (item.player.playerId === item.playerId && typeof item.player.nickname === "string"))) &&
-        (payload.unassignedPlayers === undefined || (Array.isArray(payload.unassignedPlayers) && payload.unassignedPlayers.every((player) => usableEntityId(player?.playerId) && typeof player.nickname === "string" && player.nickname.trim())));
+        (allowUnavailableUnassigned || payload.unassignedPlayers === undefined || (Array.isArray(payload.unassignedPlayers) && payload.unassignedPlayers.every((player) => usableEntityId(player?.playerId) && typeof player.nickname === "string" && player.nickname.trim())));
     }
 
     function refreshGameValid(game) {
@@ -6119,6 +6129,7 @@
         const gamePath = `/v1/games/${encodeURIComponent(gameId)}`;
         const game = await read(gamePath);
         const goals = await read(`${gamePath}/goals`);
+        const confirmedBeforeRosterRead = new Map(pendingAssignments);
         const roster = full ? await read(`${gamePath}/roster`) : null;
         const teams = normalizeScoreboardTeams(goals?.scoreboard?.teams);
         const timeline = decodeGoalTimeline(goals?.timeline);
@@ -6132,7 +6143,7 @@
         applyAuthority(league);
         if (roster) {
           const before = JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]);
-          applyRosterPayload(roster);
+          applyRosterPayload(roster, confirmedBeforeRosterRead);
           if (JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]) !== before) draftRosterChanged = true;
         }
         if (editingGoalId && editingGoalSnapshot !== JSON.stringify(timeline.find((goal) => goal.eventId === editingGoalId))) editingGoalChanged = true;

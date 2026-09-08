@@ -98,6 +98,19 @@ cases. QA, architecture/security and design independently cleared the fixes.
 The versioned PR156 packet must supply renewed exact-head CI, deployed QA,
 Codex disposition and review-gate evidence before handoff.
 
+The a5c0cce head passed CI34212991839 and QA34213213028 with17/17 deployed
+acceptance/safety cases and verified cleanup. Its Codex review5140358917 then
+found two P2s: confirmed assignment projections could mask later transfers,
+and overlapping locked clock settlement could strand focus. Both fixes and
+independently reviewed compatibility/draft safeguards are in the refresh map.
+The subsequent460-test interaction file passed; renewed full/head-specific
+evidence belongs in the PR packet before readiness is claimed.
+The P2 follow-up then passed complete lint/typecheck/API/app508/contracts/build,
+57 review-gate tests and212 browser/offline cases (group33436, exit0,
+peak2424064KiB, remaining[]). Local M2 passed4/4 (group35714, exit0,
+peak1262288KiB plus bounded512MiB database), with all owned services and the
+disposable database removed. Exact-head external gates must still be renewed.
+
 For #155's final head, see
 [CI34201089422](https://github.com/ajfisher/3fc/actions/runs/34201089422),
 [QA34201253601](https://github.com/ajfisher/3fc/actions/runs/34201253601) and

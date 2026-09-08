@@ -85,6 +85,22 @@ The persistent Reload game action remains available, as do Sign out and
 read-only navigation. Deliberate Cancel/Escape and owned-failure recovery focus
 have visible fallback targets when their original trigger is disabled.
 
+Confirmed assignment projections have a different lifetime from uncertain
+writes. Capture their exact object identities immediately before a roster GET;
+a valid, owned response may retire only those captured projections, even when
+another client has since transferred or unassigned that player. Failed,
+malformed or pre-confirmation reads cannot retire a newer projection. Existing
+protected roster reads are complete/strongly consistent; no backend change is
+needed. Local loading still presents independently valid assigned rows with
+honest search fallback when only optional Unassigned data is unavailable; full
+background batches retain their stricter complete-data validation.
+
+If a legacy lock arrives during an already-forwarded clock operation, that lock
+prevents late clock mode changes independently of focus ownership. Settlement
+focuses the visible Reload action only when the clock still owns focus; it does
+not steal a later navigation/search target. A dirty metadata draft, including
+status and third length, is not overwritten by a confirmed clock response.
+
 ## Draft, authority and rendering ownership
 
 Separate read-only state updates from form initialization. The existing general
@@ -169,6 +185,31 @@ are not substitutes for child validation or exact-head external readiness.
 
 ## Confirmed local evidence and remaining work
 
+The P2 follow-up adds another ten cases (460 interactions / 60 UX-10 cases).
+The full file passed in group32873, exit0, peak1598416KiB, remaining[],
+tripNone after sixteen focused cases passed in group32624. The first focused
+invocation used the repository root rather than the app working directory and
+failed on a missing harness source path, not a product assertion; it exited
+cleanly before correction. An intervening full-file run found three existing
+optional-Unassigned fallback regressions, fixed without weakening mandatory
+roster validation, plus one fixture that incorrectly returned an old assignment
+snapshot after a confirmed PUT. The revised defensive fixture retains current
+assignment rows and an inconsistent optional Unassigned projection, preserving
+its exact-write and no-duplicate assertions. Separate tests retain genuine
+pre-confirmation stale-read and malformed-whole-response coverage. Independent
+review cleared the compatibility adjustment and the complete draft/focus cases.
+PR156's packet supplies the subsequent full repository, browser, M2 and
+external validation for this follow-up; a5c0cce is now historical evidence.
+
+The P2 follow-up's complete serialized repository and browser validation then
+passed in group33436, exit0, peak2424064KiB, remaining[], tripNone: lint,
+typecheck, full API/app tests (508 app tests:460 interactions+48 layouts),
+57 review-gate tests, contracts, build, strict browser-fixture compilation and
+212 browser/offline safety cases, with two deployment-only opt-ins skipped.
+The subsequent local M2 passed4/4 in group35714, exit0, peak1262288KiB host
+plus the hard512MiB database limit. All three service exits and ephemeral
+container removal were observed; remaining[], tripNone.
+
 The corrected worktree adds ten interaction cases (450 interactions / 498 total
 app tests, including 50 UX-10 cases). The complete interaction file passed in
 group3522, exit0, peak1877280KiB, remaining[]. Group4028 passed repository
@@ -208,6 +249,22 @@ September 2026. Review agents did not launch tests or browser workers.
 No physical iOS/Android result is implied by these counts; #137 remains open.
 
 ## Independent design findings and dispositions
+
+- **GitHub Codex P2: confirmed assignment retained indefinitely — fixed.**
+  [3956746999](https://github.com/ajfisher/3fc/pull/156#discussion_r3956746999)
+  on `a5c0cce` identified a confirmed local projection surviving a failed
+  immediate read and masking a subsequent remote transfer. Both roster read
+  paths now capture pre-request ownership and retire only confirmed projections
+  covered by a valid newer read. Regression variants cover failed503,
+  malformed200, delayed pre-confirmation snapshots and remote unassignment.
+- **GitHub Codex P2: locked clock recovery focus — fixed.**
+  [3956747005](https://github.com/ajfisher/3fc/pull/156#discussion_r3956747005)
+  on `a5c0cce` identified disabled recovery controls after overlapping metadata
+  and clock uncertainty. Clock settlement now respects the absorbing lock,
+  visible Reload and external focus. Independent reviewers also identified and
+  fixed late-confirmation mode takeover and status-draft replacement. Six
+  confirmed/uncertain × owned/other-page/same-page-navigation cases preserve all
+  three metadata fields, exact requests and no synthetic recovery dispatch.
 
 - **GitHub Codex P1: path-only uncertainty settlement — fixed.** Review
   [3956352766](https://github.com/ajfisher/3fc/pull/156#discussion_r3956352766)
