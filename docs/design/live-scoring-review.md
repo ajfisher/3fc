@@ -25,6 +25,7 @@ Existing rules, permissions and authenticated result behaviour remain intact.
 | Independent UX/accessibility | Shared delete/undo recovery must not sit inside the Record goal form; team relationships must not split across lines. | Recovery moved outside the form, with correctly scoped focus ownership; dot-arrow-dot relationship kept together. |
 | Root integration review | Delete/undo must not clear an unrelated draft. | Only confirmed create/edit, or removal of the currently edited event, resets the draft. |
 | Final integration review | Unavailable result copy must not claim a goal was saved after finishing a game. | Neutral result-refresh copy; the separate operation feedback retains the confirmed goal/game outcome. Regression asserts no invented goal-save claim after finish. |
+| Signed-in QA | Overview-to-scoring left the Score game entry visible; direct-link fixtures missed it. | Visibility now updates in the actual action-trigger loop, not the navigation-link loop. New browser test failed on the deployed source and passed after the fix; it covers return and Back/Forward with no mutations. Independently re-reviewed with no findings. |
 
 ## Acceptance map
 
@@ -68,3 +69,11 @@ Refreshed evidence: isolated finish recovery1/1 (group39807, peak434464KiB),
 complete interactions254/254 (group39878, peak1195712KiB), full
 lint/tests/contracts/build (group40073, peak1744320KiB), and all88 browser
 regressions (group41381, peak1851984KiB). Each exited0 with no descendants.
+
+Signed-in navigation follow-up: the new browser test demonstrably failed on the
+old source, then passed after correction (group42098, peak664448KiB). Complete
+scoring browser26/26 passed (group42201, peak1795408KiB). Current final evidence:
+interaction254/254 (group42442, peak1146544KiB), full lint/tests/contracts/build
+(group42651, peak1745840KiB), strict browser/M2 typecheck and focused navigation
+(group42354, peak479920KiB), all89 browser regressions (group43896,
+peak1617760KiB). Every validation group exited0 with no descendants remaining.

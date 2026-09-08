@@ -7075,6 +7075,7 @@ test("game page mode panels advance from overview through scoring to results", a
   assert.equal(page.document.activeElement, teams);
   dispatchClick(score);
   assert.equal(run.hidden, false);
+  assert.equal(score.hidden, true, "the entry action disappears synchronously while scoring");
   assert.equal(page.document.activeElement, run);
   assert.equal(page.window.location.hash, "#score");
   for (let third = 1; third <= 3; third += 1) {

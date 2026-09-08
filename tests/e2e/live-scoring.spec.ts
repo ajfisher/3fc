@@ -277,6 +277,30 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
 
 test.use({ timezoneId: "Australia/Melbourne", locale: "en-AU" });
 
+test("scoring entry and browser history show only the current task action", async ({ page }) => {
+  const fixture = await installScoringFixture(page, { status: "scheduled" });
+  await page.goto(`${origin}${gamePath}#overview`);
+  const entry = page.getByTestId("game-mode-run-tab");
+  const back = page.getByRole("button", { name: "Back to game", exact: true });
+  await expect(entry).toBeEnabled();
+  await entry.click();
+  await expect(page.getByTestId("game-mode-run")).toBeVisible();
+  await expect(entry).toBeHidden();
+  await expect(back).toBeVisible();
+  await back.click();
+  await expect(page.getByTestId("game-mode-structure")).toBeVisible();
+  await expect(entry).toBeVisible();
+  await expect(back).toBeHidden();
+  await page.goBack();
+  await expect(page.getByTestId("game-mode-run")).toBeVisible();
+  await expect(entry).toBeHidden();
+  await page.goForward();
+  await expect(page.getByTestId("game-mode-structure")).toBeVisible();
+  await expect(entry).toBeVisible();
+  expect(fixture.mutations()).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 for (const colorScheme of ["light", "dark"] as const) {
   for (const width of [320, 390, 430, 768, 1280]) {
     test(`live scoring native form and readable goals ${colorScheme} ${width}`, async ({ page }, testInfo) => {

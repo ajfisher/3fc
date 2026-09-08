@@ -2812,7 +2812,6 @@
           continue;
         }
         const active = tab.getAttribute("data-game-mode") === mode;
-        if (tab.id === "game-mode-tab-run") tab.hidden = active || !canScoreGame();
         if (tab instanceof HTMLAnchorElement) {
           if (active) tab.setAttribute("aria-current", "page"); else tab.removeAttribute("aria-current");
           tab.removeAttribute("aria-pressed");
@@ -2822,6 +2821,7 @@
 
       for (const trigger of gameModeTriggers) {
         if (trigger instanceof HTMLElement) {
+          if (trigger.id === "game-mode-tab-run") trigger.hidden = mode === "run" || !canScoreGame();
           trigger.setAttribute("data-current", trigger.getAttribute("data-game-mode") === mode ? "true" : "false");
         }
       }
