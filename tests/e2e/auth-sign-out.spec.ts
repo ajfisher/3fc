@@ -31,7 +31,7 @@ for (const colorScheme of ["light", "dark"] as const) {
         if (url.pathname === "/sign-in") return route.fulfill({ contentType: "text/html", body: renderSignInPage(origin, "/setup") });
         if (url.pathname === "/v1/auth/session") {
           const authenticated = !loggedOut && (request.headers().cookie ?? "").includes("threefc_session=fictional-session");
-          return route.fulfill({ status: authenticated ? 200 : 401, headers: { "cache-control": "no-store" }, contentType: "application/json", body: JSON.stringify(authenticated ? { authenticated: true, session: { email: "fixture@example.com" } } : { error: "unauthorized" }) });
+          return route.fulfill({ status: authenticated ? 200 : 401, headers: { "cache-control": "no-store" }, contentType: "application/json", body: JSON.stringify(authenticated ? { authenticated: true, session: { sessionId: "fictional-sign-out-session", email: "fixture@example.com" } } : { error: "unauthorized" }) });
         }
         if (url.pathname === "/v1/leagues") return route.fulfill({ json: { leagues: [] } });
         if (url.pathname === "/v1/auth/logout" && request.method() === "POST") {

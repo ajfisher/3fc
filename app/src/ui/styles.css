@@ -1053,7 +1053,8 @@ body {
   border-radius: var(--radius-lg);
 }
 
-[data-ui="run-recovery"] {
+[data-ui="run-recovery"],
+[data-ui="game-refresh-notice"] {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
@@ -1066,6 +1067,13 @@ body {
   background: var(--surface);
 
   p { margin: 0; }
+}
+
+[data-ui="game-refresh-notice"] {
+  min-width: 0;
+
+  p { flex: 1 1 18rem; min-width: 0; }
+  button { min-width: 44px; min-height: 44px; }
 }
 
 [data-ui="roster-workspace"],

@@ -128,7 +128,7 @@ async function installScoringFixture(page: Page, options: Options = {}) {
     const record: RequestRecord = { method, path: url.pathname, body, key: request.headers()["idempotency-key"] };
     requests.push(record);
     const reject = (code: number, message: string) => route.fulfill({ status: code, json: { error: code === 503 ? "unavailable" : "rejected", message } });
-    if (method === "GET" && url.pathname === "/v1/auth/session") return route.fulfill({ headers: { "cache-control": "no-store" }, json: { authenticated: true, session: { email: "scoring.fixture@example.com", userId: "fictional-scorekeeper" } } });
+    if (method === "GET" && url.pathname === "/v1/auth/session") return route.fulfill({ headers: { "cache-control": "no-store" }, json: { authenticated: true, session: { sessionId: "fictional-scoring-session", email: "scoring.fixture@example.com", userId: "fictional-scorekeeper" } } });
     if (method === "GET" && url.pathname === `/v1/leagues/${leagueId}`) return role === "unknown"
       ? reject(503, "League access could not be loaded.")
       : route.fulfill({ json: { leagueId, name: "Fictional Community Football League", access: { role } } });

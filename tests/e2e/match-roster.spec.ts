@@ -128,7 +128,7 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
     const body = request.postData() ? request.postDataJSON() as Record<string, unknown> : null;
     requests.push({ method, path: url.pathname, search: url.searchParams.get("search") ?? "", body, key: request.headers()["idempotency-key"] });
     if (method === "GET" && url.pathname === "/v1/auth/session") {
-      return route.fulfill({ headers: { "cache-control": "no-store" }, json: { authenticated: true, session: { email: "match.fixture@example.com", userId: "fictional-account" } } });
+      return route.fulfill({ headers: { "cache-control": "no-store" }, json: { authenticated: true, session: { sessionId: "fictional-match-session", email: "match.fixture@example.com", userId: "fictional-account" } } });
     }
     const forbidden = () => route.fulfill({ status: 403, json: { error: "forbidden", code: "league_access_required", message: "Access to this league is required." } });
     if (!readable && url.pathname.startsWith("/v1/")) return forbidden();

@@ -1008,7 +1008,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           })}
           <div data-ui="field">
             <label for="game-edit-status">Status</label>
-            <select id="game-edit-status" name="game-edit-status" data-ui="input" data-testid="game-edit-status">
+            <select id="game-edit-status" name="game-edit-status" data-ui="input" data-testid="game-edit-status" aria-describedby="game-edit-refresh-note">
               <option value="scheduled">Scheduled</option>
               <option value="live">Live</option>
               <option value="finished" disabled>Finished</option>
@@ -1016,12 +1016,16 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           </div>
           <div data-ui="field">
             <label for="game-edit-third-length">Third length</label>
-            <select id="game-edit-third-length" name="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length">
+            <select id="game-edit-third-length" name="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length" aria-describedby="game-edit-refresh-note">
               <option value="20">20 minutes</option>
               <option value="25">25 minutes</option>
               <option value="30">30 minutes</option>
             </select>
           </div>
+        </div>
+        <div id="game-edit-refresh-note" data-ui="run-recovery" role="status" aria-live="polite" hidden>
+          <p>The game has started. Reload before changing these details.</p>
+          ${renderButton("Reload game", "secondary", { type: "button", "data-action": "reload-game-details" })}
         </div>
         <div data-ui="game-details-actions">
           <button type="submit" data-ui="icon-button" data-variant="primary" aria-label="Save game" data-action="save-game" data-testid="save-game">${renderIcon("save")}<span data-ui="button-text">Save</span></button>
@@ -1263,6 +1267,13 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
         ${renderActivityStatus("Loading game data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
+        <section id="game-refresh-notice" data-ui="game-refresh-notice" aria-label="Game updates" hidden>
+          <p id="game-refresh-message" role="status" aria-live="polite"></p>
+          ${renderButton("Retry updates", "secondary", {
+            type: "button", "data-action": "retry-game-updates",
+            "aria-describedby": "game-refresh-message",
+          })}
+        </section>
         <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game">
           <div data-ui="game-mode-tabs">
             ${renderGameModeTab({ mode: "structure", label: "Overview", destination: "overview", active: true })}

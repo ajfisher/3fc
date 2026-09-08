@@ -1,18 +1,20 @@
-import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page, type Request, type Route } from "@playwright/test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   DeleteItemCommand, DescribeTableCommand, DynamoDBClient, GetItemCommand,
-  type AttributeValue, type GetItemCommandOutput,
+  QueryCommand, TransactWriteItemsCommand,
+  type AttributeValue, type GetItemCommandOutput, type QueryCommandOutput,
 } from "@aws-sdk/client-dynamodb";
-import { MagicLinkService } from "../../api/dist/auth/magic-link.js";
+import { MagicLinkService, magicLinkSubjectForEmail } from "../../api/dist/auth/magic-link.js";
 
 // Explicit opt-in only. No email is sent, no AJ session is loaded, no games/ACLs
-// are created or touched. Synthetic auth records are removed in finally.
+// are created or touched by the sign-out test. The separately opted-in refresh
+// test below creates only its conditional UUID-owned graph. Neither sends email.
 const enabled = process.env.THREEFC_QA_LOGOUT === "1";
 const site = "https://qa.3fc.football";
 const api = "https://qa-api.3fc.football";
@@ -515,6 +517,563 @@ test("isolated deployed QA sign-out and different-account recovery", async ({ br
     console.log(`QA fixture cleanup: ${report.recordsRemoved}/${fixtureRecords.length} records; ${report.contextsClosed}/${contexts.length} contexts; ${report.failures.length} failures`);
     if (report.failures.length > 0) {
       throw new Error(`QA fixture cleanup failed: ${report.failures.length} failures (${[...new Set(report.failures)].join(", ")})`);
+    }
+  }
+});
+
+type RefreshFixture = {
+  run: string; leagueId: string; seasonId: string; gameId: string; sessionId: string;
+  joinCode: string; playerIds: string[]; emails: [string, string]; createdAt: string;
+};
+type RefreshClient = {
+  send(command: GetItemCommand | DeleteItemCommand | QueryCommand | TransactWriteItemsCommand): Promise<unknown>;
+};
+type RefreshReplay = { scope: string; key: string };
+type RefreshWriteState = {
+  ordinal: number; method: string; path: string; key?: string;
+  state: "pending" | "confirmed" | "unconfirmed"; status?: number;
+};
+const refreshTeams = ["red", "blue", "yellow"] as const;
+
+function settleRefreshWrite(write: RefreshWriteState, status: number | null, completeBody: boolean, validBody: boolean) {
+  // A later response cannot erase earlier transport ambiguity for this attempt.
+  if (write.state !== "pending") return;
+  if (status !== null) write.status = status;
+  // Even a 4xx can be an ambiguous idempotency response. The isolated happy-path
+  // acceptance needs no automatic cleanup after a failed writer attempt.
+  write.state = completeBody && validBody && status !== null && status >= 200 && status < 300
+    ? "confirmed" : "unconfirmed";
+}
+
+function refreshCleanupQualified(seedConfirmed: boolean, closeFailures: number, ledgerFailed: boolean, writes: RefreshWriteState[]) {
+  return seedConfirmed && closeFailures === 0 && !ledgerFailed && writes.every(write => write.state === "confirmed");
+}
+
+function refreshWriteBodyValid(fixture: RefreshFixture, write: RefreshWriteState, body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const data = body as Record<string, unknown>;
+  if (!write.path.includes("/goals")) return data.gameId === fixture.gameId;
+  const goal = data[write.method === "DELETE" ? "deletedGoal" : "goal"];
+  if (!goal || typeof goal !== "object" || Array.isArray(goal)) return false;
+  const identity = goal as Record<string, unknown>;
+  return identity.gameId === fixture.gameId && typeof identity.eventId === "string" && identity.eventId.length > 0 &&
+    (write.method === "POST" || write.path === `/v1/games/${fixture.gameId}/goals/${encodeURIComponent(identity.eventId)}`);
+}
+
+async function cleanupSettledRefreshFixture(client: RefreshClient, fixture: RefreshFixture, replays: RefreshReplay[],
+  seedConfirmed: boolean, closeFailures: number, ledgerFailed: boolean, writes: RefreshWriteState[]) {
+  if (!refreshCleanupQualified(seedConfirmed, closeFailures, ledgerFailed, writes)) return { preserved: true, removed: 0 };
+  return { preserved: false, removed: await cleanupRefreshFixture(client, fixture, replays) };
+}
+
+function refreshRecoveryLedger(fixture: RefreshFixture, head: string, runId: string, seedState: string, graphState: string, writes: RefreshWriteState[], replays: RefreshReplay[]) {
+  // Deliberate projection: never serialize browser requests, headers, cookies,
+  // auth records or SDK objects. The fixture's game-session ID is not an auth
+  // bearer, but is omitted too; its deterministic scope is recoverable by run.
+  return {
+    version: 1, head, qaRun: runId, table: tableName, fixtureRun: fixture.run, createdAt: fixture.createdAt, seedState, graphState,
+    scope: { leagueId: fixture.leagueId, seasonId: fixture.seasonId, gameId: fixture.gameId, playerIds: [...fixture.playerIds] },
+    seedKeys: refreshSeedItems(fixture).map(item => ({ pk: item.pk?.S, sk: item.sk?.S })),
+    replays: replays.map(replay => ({ scope: replay.scope, key: replay.key })),
+    writes: writes.map(write => ({ ordinal: write.ordinal, method: write.method, path: write.path, key: write.key, state: write.state, status: write.status })),
+  };
+}
+
+function refreshFixture(run: string, createdAt = new Date().toISOString()): RefreshFixture {
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(run)) throw new Error("Invalid isolated fixture run");
+  const prefix = `codex-refresh-${run}`;
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return {
+    run, leagueId: `${prefix}-league`, seasonId: `${prefix}-season`, gameId: `${prefix}-game`,
+    sessionId: `${prefix}-session`, playerIds: refreshTeams.map(team => `${prefix}-${team}`),
+    emails: [`${prefix}-writer@example.com`, `${prefix}-observer@example.com`], createdAt,
+    joinCode: [...randomBytes(8)].map(byte => alphabet[byte % alphabet.length]).join(""),
+  };
+}
+
+function assertRefreshScope(fixture: RefreshFixture) {
+  const expected = refreshFixture(fixture.run, fixture.createdAt);
+  if (["leagueId", "seasonId", "gameId", "sessionId"].some(key => fixture[key as keyof RefreshFixture] !== expected[key as keyof RefreshFixture]) ||
+    JSON.stringify(fixture.playerIds) !== JSON.stringify(expected.playerIds) || JSON.stringify(fixture.emails) !== JSON.stringify(expected.emails) ||
+    !/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/.test(fixture.joinCode) || !Number.isFinite(Date.parse(fixture.createdAt))) {
+    throw new Error("Invalid isolated fixture scope");
+  }
+}
+
+function refreshSeedItems(fixture: RefreshFixture): FixtureItem[] {
+  assertRefreshScope(fixture);
+  const { leagueId, seasonId, gameId, sessionId, joinCode, createdAt } = fixture;
+  const writer = magicLinkSubjectForEmail(fixture.emails[0]);
+  const item = (pk: string, sk: string, entityType: string, data: Record<string, unknown>): FixtureItem => ({
+    pk: { S: pk }, sk: { S: sk }, entityType: { S: entityType }, data: { S: JSON.stringify(data) },
+    createdAt: { S: createdAt }, updatedAt: { S: createdAt }, qaFixtureRun: { S: fixture.run },
+  });
+  const season = { leagueId, seasonId, name: "Isolated QA season", slug: null, startsOn: null, endsOn: null };
+  const items = [
+    item(`LEAGUE#${leagueId}`, "METADATA", "league", { leagueId, name: "Isolated QA refresh league", slug: null, createdByUserId: writer }),
+    item(`LEAGUE#${leagueId}`, `SEASON#${seasonId}`, "season", season),
+    item(`SEASON#${seasonId}`, "METADATA", "season", season),
+    item(`GAME#${gameId}`, "METADATA", "game", { gameId, leagueId, seasonId, sessionId, joinCode,
+      gameStartTs: createdAt, status: "scheduled", thirdLengthMinutes: 20,
+      thirds: [1, 2, 3].map(third => ({ third, startedAt: null, finishedAt: null })), finishedAt: null, result: null }),
+    item(`JOIN_CODE#${joinCode}`, "METADATA", "gameJoinCode", { joinCode, gameId }),
+  ];
+  fixture.emails.forEach((email, index) => {
+    const userId = magicLinkSubjectForEmail(email);
+    items.push(item(`LEAGUE#${leagueId}`, `ACL#USER#${userId}`, "acl", { leagueId, userId,
+      role: index === 0 ? "admin" : "scorekeeper", grantedByUserId: writer }));
+  });
+  refreshTeams.forEach((teamId, index) => {
+    const name = ["Red", "Blue", "Yellow"][index];
+    const color = ["#d83b36", "#2364d2", "#e0a612"][index];
+    const playerId = fixture.playerIds[index];
+    items.push(
+      item(`LEAGUE#${leagueId}`, `SEASON#${seasonId}#TEAM#${teamId}`, "team", { leagueId, seasonId, teamId, name, color }),
+      item(`GAME#${gameId}`, `TEAM#${teamId}`, "gameTeam", { gameId, teamId, name, color, scored: 0, conceded: 0 }),
+      item(`PLAYER#${playerId}`, "PROFILE", "player", { playerId, nickname: ["QA Ari", "QA Bea", "QA Cy"][index], claimedByUserId: null }),
+      item(`GAME#${gameId}`, `PLAYER#${playerId}`, "gamePlayer", { gameId, playerId }),
+      item(`GAME#${gameId}`, `ROSTER#${teamId}#${playerId}`, "roster", { gameId, teamId, playerId }),
+    );
+  });
+  // No SESSION#date record or shared date index. All templates/overrides and the
+  // join lookup are complete, so normal GETs need no legacy repair writes.
+  return items;
+}
+
+function refreshSeedCommand(fixture: RefreshFixture) {
+  return new TransactWriteItemsCommand({ TransactItems: refreshSeedItems(fixture).map(Item => ({ Put: {
+    TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+  } })) });
+}
+
+function refreshRequestAllowed(fixture: RefreshFixture, observer: boolean, method: string, rawUrl: string, eventIds: ReadonlySet<string>) {
+  assertRefreshScope(fixture);
+  const url = new URL(rawUrl);
+  if (url.origin !== api) return false;
+  const game = `/v1/games/${fixture.gameId}`;
+  const readPaths = new Set(["/v1/auth/session", `/v1/leagues/${fixture.leagueId}`,
+    `/v1/leagues/${fixture.leagueId}/seasons/${fixture.seasonId}`,
+    game, `${game}/goals`, `${game}/roster`, `${game}/players`, `${game}/teams`]);
+  if (method === "OPTIONS" && !observer && !url.search && ["POST", "PATCH", "DELETE"].some(writeMethod =>
+    refreshRequestAllowed(fixture, false, writeMethod, rawUrl, eventIds))) return true;
+  if (isReadOnlyQaMethod(method)) return readPaths.has(url.pathname) && !url.search;
+  if (observer || url.search) return false;
+  if (method === "POST" && (url.pathname === `${game}/goals` || url.pathname === `${game}/finish` ||
+    refreshTeams.some((_team, index) => ["start", "finish"].some(action => url.pathname === `${game}/thirds/${index + 1}/${action}`)))) return true;
+  return ["PATCH", "DELETE"].includes(method) && [...eventIds].some(eventId => url.pathname === `${game}/goals/${encodeURIComponent(eventId)}`);
+}
+
+function refreshOwnedItem(fixture: RefreshFixture, item: FixtureItem, replays: RefreshReplay[]) {
+  const pk = item.pk?.S; const sk = item.sk?.S; const type = item.entityType?.S;
+  if (!pk || !sk || !type || !item.updatedAt?.S || !item.data?.S) return false;
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(item.data.S); } catch { return false; }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  if (pk === `GAME#${fixture.gameId}`) {
+    return ["game", "gameTeam", "gamePlayer", "roster", "goal", "goalEventId", "goalState", "goalAudit", "goalCorrectionOperation"].includes(type) && data.gameId === fixture.gameId &&
+      (type !== "game" || (data.leagueId === fixture.leagueId && data.seasonId === fixture.seasonId && data.sessionId === fixture.sessionId && data.joinCode === fixture.joinCode));
+  }
+  const seeded = refreshSeedItems(fixture).find(candidate => candidate.pk?.S === pk && candidate.sk?.S === sk);
+  if (seeded) return type === seeded.entityType?.S && item.data.S === seeded.data?.S && item.createdAt?.S === fixture.createdAt;
+  return type === "idempotency" && sk === "METADATA" && replays.some(replay =>
+    pk === `IDEMPOTENCY#${replay.scope}#${replay.key}` && data.scope === replay.scope && data.key === replay.key);
+}
+
+async function cleanupRefreshFixture(client: RefreshClient, fixture: RefreshFixture, replays: RefreshReplay[]) {
+  assertRefreshScope(fixture);
+  const items = new Map<string, FixtureItem>();
+  let cursor: Record<string, AttributeValue> | undefined;
+  const cursors = new Set<string>();
+  // Only the exact owned game partition is queried; generated goal/audit/state
+  // keys remain bounded here. All other records have an explicit key ledger.
+  for (let page = 0; page < 10; page += 1) {
+    const result = await client.send(new QueryCommand({ TableName: tableName, ConsistentRead: true,
+      KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": { S: `GAME#${fixture.gameId}` } }, ExclusiveStartKey: cursor })) as QueryCommandOutput;
+    for (const item of result.Items ?? []) items.set(`${item.pk?.S}|${item.sk?.S}`, item);
+    cursor = result.LastEvaluatedKey;
+    if (!cursor || Object.keys(cursor).length === 0) break;
+    const signature = JSON.stringify(cursor);
+    if (cursors.has(signature) || page === 9) throw new Error("refresh_cleanup_pagination_failed");
+    cursors.add(signature);
+  }
+  const keys = refreshSeedItems(fixture).filter(item => item.pk?.S !== `GAME#${fixture.gameId}`).map(item => ({ pk: item.pk, sk: item.sk }));
+  for (const replay of replays) keys.push({ pk: { S: `IDEMPOTENCY#${replay.scope}#${replay.key}` }, sk: { S: "METADATA" } });
+  for (const Key of keys) {
+    const result = await client.send(new GetItemCommand({ TableName: tableName, Key, ConsistentRead: true })) as GetItemCommandOutput;
+    if (result.Item) items.set(`${result.Item.pk?.S}|${result.Item.sk?.S}`, result.Item);
+  }
+  if ([...items.values()].some(item => !refreshOwnedItem(fixture, item, replays))) throw new Error("refresh_cleanup_owner_mismatch");
+  // Caller must already have confirmed every forwarded writer response and
+  // closed both contexts. Anchor-first deletion is additional protection, not
+  // evidence that an earlier Lambda has stopped writing.
+  const ordered = [...items.values()].sort((left, right) => Number(right.pk?.S === `GAME#${fixture.gameId}` && right.sk?.S === "METADATA") - Number(left.pk?.S === `GAME#${fixture.gameId}` && left.sk?.S === "METADATA"));
+  for (const item of ordered) {
+    await client.send(new DeleteItemCommand({ TableName: tableName, Key: { pk: item.pk, sk: item.sk },
+      ConditionExpression: "attribute_not_exists(pk) OR (#type = :type AND #data = :data AND #updated = :updated)",
+      ExpressionAttributeNames: { "#type": "entityType", "#data": "data", "#updated": "updatedAt" },
+      ExpressionAttributeValues: { ":type": item.entityType, ":data": item.data, ":updated": item.updatedAt } }));
+  }
+  const remaining = await client.send(new QueryCommand({ TableName: tableName, ConsistentRead: true,
+    KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": { S: `GAME#${fixture.gameId}` } }, Limit: 1 })) as QueryCommandOutput;
+  if (remaining.Items?.length) throw new Error("refresh_cleanup_records_remain");
+  for (const Key of keys) {
+    const result = await client.send(new GetItemCommand({ TableName: tableName, Key, ConsistentRead: true })) as GetItemCommandOutput;
+    if (result.Item) throw new Error("refresh_cleanup_records_remain");
+  }
+  return ordered.length;
+}
+
+test("QA refresh fixture writes and route allowlists are restricted to one UUID scope", () => {
+  const fixture = refreshFixture("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  const command = refreshSeedCommand(fixture);
+  expect(command.input.TransactItems).toHaveLength(22);
+  for (const entry of command.input.TransactItems ?? []) {
+    expect(entry.Put?.TableName).toBe(tableName);
+    expect(entry.Put?.ConditionExpression).toBe("attribute_not_exists(pk) AND attribute_not_exists(sk)");
+    expect(entry.Put?.Item?.pk?.S?.startsWith("SESSION#")).toBe(false);
+  }
+  const base = `${api}/v1/games/${fixture.gameId}`;
+  expect(refreshRequestAllowed(fixture, true, "GET", `${base}/goals`, new Set())).toBe(true);
+  expect(refreshRequestAllowed(fixture, false, "POST", `${base}/goals`, new Set())).toBe(true);
+  expect(refreshRequestAllowed(fixture, false, "OPTIONS", `${base}/thirds/1/start`, new Set())).toBe(true);
+  for (const [method, url] of [["POST", `${base}/goals`], ["DELETE", `${base}/goals/goal`], ["POST", `${api}/v1/auth/logout`]]) {
+    expect(refreshRequestAllowed(fixture, true, method, url, new Set(["goal"]))).toBe(false);
+  }
+  for (const url of [`${api}/v1/games/real-game/goals`, `${api}/v1/leagues/${fixture.leagueId}/access`, `${site}/v1/games/${fixture.gameId}/goals`, `${base}/goals?gameId=other`]) {
+    expect(refreshRequestAllowed(fixture, false, "POST", url, new Set())).toBe(false);
+  }
+  expect(refreshRequestAllowed(fixture, false, "DELETE", `${base}/goals/unknown`, new Set())).toBe(false);
+  expect(refreshRequestAllowed(fixture, false, "DELETE", `${base}/goals/owned`, new Set(["owned"]))).toBe(true);
+  expect(() => refreshSeedItems({ ...fixture, gameId: "real-game" })).toThrow();
+});
+
+test("QA refresh cleanup retains pending, uncertain, unclosed and unjournaled writes without reading or deleting records", async () => {
+  const fixture = refreshFixture("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  let calls = 0;
+  const forbidden: RefreshClient = { async send() { calls += 1; throw new Error("Unsafe cleanup reached DynamoDB"); } };
+  const pending = (): RefreshWriteState => ({ ordinal: 1, method: "POST", path: `/v1/games/${fixture.gameId}/goals`, key: "fixture-replay-key", state: "pending" });
+  const retain = async (write: RefreshWriteState, seed = true, closeFailures = 0, ledgerFailed = false) => {
+    expect(await cleanupSettledRefreshFixture(forbidden, fixture, [], seed, closeFailures, ledgerFailed, [write]))
+      .toEqual({ preserved: true, removed: 0 });
+    expect(calls).toBe(0);
+  };
+  await retain(pending()); // Browser close alone says nothing about Lambda.
+  for (const [status, completeBody, validBody] of [
+    [null, false, false], [200, false, true], [200, true, false],
+    [400, true, true], [409, true, true], [408, true, true], [429, true, true], [503, true, true],
+  ] as Array<[number | null, boolean, boolean]>) {
+    const write = pending(); settleRefreshWrite(write, status, completeBody, validBody);
+    expect(write.state).toBe("unconfirmed"); await retain(write);
+    // A later successful replay or event does not erase the earlier ambiguous
+    // attempt: that Lambda might still commit its idempotency record afterward.
+    settleRefreshWrite(write, 200, true, true);
+    expect(write.state).toBe("unconfirmed"); await retain(write);
+  }
+  const confirmed = pending(); settleRefreshWrite(confirmed, 201, true, true);
+  expect(confirmed.state).toBe("confirmed");
+  expect(refreshCleanupQualified(true, 0, false, [confirmed])).toBe(true);
+  await retain(confirmed, false); await retain(confirmed, true, 1); await retain(confirmed, true, 0, true);
+  expect(await cleanupSettledRefreshFixture(forbidden, fixture, [], true, 0, false, [confirmed, pending()]))
+    .toEqual({ preserved: true, removed: 0 });
+  expect(calls).toBe(0);
+});
+
+test("QA refresh settlement validates returned identities and its recovery projection excludes secrets", () => {
+  const fixture = refreshFixture("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "2026-09-08T00:00:00.000Z");
+  const path = `/v1/games/${fixture.gameId}`;
+  const write: RefreshWriteState = { ordinal: 1, method: "POST", path: `${path}/goals`, key: "non-secret-replay", state: "pending" };
+  const goal = { gameId: fixture.gameId, eventId: "fixture-goal" };
+  expect(refreshWriteBodyValid(fixture, write, { goal })).toBe(true);
+  expect(refreshWriteBodyValid(fixture, write, { goal: { ...goal, gameId: "other-game" } })).toBe(false);
+  expect(refreshWriteBodyValid(fixture, write, { goal: { ...goal, eventId: "" } })).toBe(false);
+  const correction = { ...write, method: "DELETE", path: `${path}/goals/fixture-goal` };
+  expect(refreshWriteBodyValid(fixture, correction, { deletedGoal: goal })).toBe(true);
+  expect(refreshWriteBodyValid(fixture, correction, { deletedGoal: { ...goal, eventId: "another-goal" } })).toBe(false);
+  expect(refreshWriteBodyValid(fixture, { ...write, path: `${path}/thirds/1/start` }, { gameId: fixture.gameId })).toBe(true);
+  expect(refreshWriteBodyValid(fixture, { ...write, path: `${path}/finish` }, { gameId: "other-game" })).toBe(false);
+  const secret = "DO-NOT-SERIALIZE-AUTH-SECRET";
+  const replay = { scope: `${fixture.emails[0]}:POST:${write.path}`, key: write.key!, token: secret };
+  const ledger = refreshRecoveryLedger(Object.assign(fixture, { cookie: secret, token: secret }), "a".repeat(40), "123", "confirmed", "preserved-for-recovery",
+    [Object.assign(write, { authorization: secret, request: { headers: { cookie: secret } } })], [replay]);
+  expect(ledger.seedKeys).toHaveLength(22);
+  expect(ledger.seedKeys).toEqual(refreshSeedItems(fixture).map(item => ({ pk: item.pk.S, sk: item.sk.S })));
+  expect(ledger.replays).toEqual([{ scope: replay.scope, key: replay.key }]);
+  expect(ledger.writes).toEqual([{ ordinal: 1, method: "POST", path: write.path, key: write.key, state: "pending", status: undefined }]);
+  expect(ledger.head).toBe("a".repeat(40)); expect(ledger.qaRun).toBe("123"); expect(ledger.fixtureRun).toBe(fixture.run);
+  const serialized = JSON.stringify(ledger);
+  expect(serialized).not.toContain(secret); expect(serialized).not.toContain(fixture.sessionId);
+  expect(serialized).not.toMatch(/AUTH_(?:SESSION|MAGIC)#|"(?:cookie|authorization|token|sessionId)"/);
+});
+
+test("QA refresh cleanup refuses ownership changes and conditions each exact delete", async () => {
+  const fixture = refreshFixture("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  for (const collision of ["none", "read", "delete"] as const) {
+    const items = new Map(refreshSeedItems(fixture).map(item => [`${item.pk.S}|${item.sk.S}`, structuredClone(item)]));
+    if (collision === "read") items.get(`GAME#${fixture.gameId}|METADATA`)!.data = { S: JSON.stringify({ gameId: "someone-else" }) };
+    const deletes: DeleteItemCommand[] = [];
+    const fake: RefreshClient = { async send(command) {
+      if (command instanceof TransactWriteItemsCommand) throw new Error("Unexpected seed during cleanup");
+      expect(command.input.TableName).toBe(tableName);
+      if (command instanceof QueryCommand) {
+        expect(command.input.ConsistentRead).toBe(true);
+        expect(command.input.ExpressionAttributeValues?.[":pk"]?.S).toBe(`GAME#${fixture.gameId}`);
+        return { Items: [...items.values()].filter(item => item.pk.S === `GAME#${fixture.gameId}`) };
+      }
+      const key = `${command.input.Key?.pk?.S}|${command.input.Key?.sk?.S}`;
+      if (command instanceof GetItemCommand) return { Item: structuredClone(items.get(key)) };
+      deletes.push(command);
+      expect(command.input.ConditionExpression).toContain("#data = :data AND #updated = :updated");
+      const current = items.get(key);
+      if (collision === "delete" && current) current.data = { S: JSON.stringify({ gameId: "changed-after-read" }) };
+      if (current?.data.S !== command.input.ExpressionAttributeValues?.[":data"].S ||
+        current?.updatedAt.S !== command.input.ExpressionAttributeValues?.[":updated"].S) throw new Error("conditional_delete_refused");
+      expect(current?.data).toEqual(command.input.ExpressionAttributeValues?.[":data"]);
+      expect(current?.updatedAt).toEqual(command.input.ExpressionAttributeValues?.[":updated"]);
+      items.delete(key); return {};
+    } };
+    if (collision !== "none") {
+      await expect(cleanupRefreshFixture(fake, fixture, [])).rejects.toThrow(collision === "read" ? "refresh_cleanup_owner_mismatch" : "conditional_delete_refused");
+      expect(deletes).toHaveLength(collision === "read" ? 0 : 1);
+      expect(items.size).toBe(22);
+    } else {
+      const write: RefreshWriteState = { ordinal: 1, method: "POST", path: `/v1/games/${fixture.gameId}/thirds/1/start`, state: "pending" };
+      settleRefreshWrite(write, 200, true, true);
+      expect(await cleanupSettledRefreshFixture(fake, fixture, [], true, 0, false, [write])).toEqual({ preserved: false, removed: 22 });
+      expect(items.size).toBe(0);
+      expect(deletes[0].input.Key).toEqual({ pk: { S: `GAME#${fixture.gameId}` }, sk: { S: "METADATA" } });
+    }
+  }
+});
+
+test("isolated deployed QA two-client match refresh", async ({ browser }) => {
+  test.skip(process.env.THREEFC_QA_MATCH_REFRESH !== "1", "Explicit isolated QA refresh acceptance only");
+  test.setTimeout(240_000);
+  expect(process.env.AWS_PROFILE).toBe("3fc-agent");
+  const head = process.env.THREEFC_QA_HEAD ?? ""; const runId = process.env.THREEFC_QA_RUN ?? "";
+  expect(head).toMatch(/^[a-f0-9]{40}$/);
+  await verifyApiProvenance(head, runId);
+  const client = new DynamoDBClient({ region: "ap-southeast-2" });
+  const fixture = refreshFixture(randomUUID());
+  const records: FixtureRecord[] = []; const contexts: BrowserContext[] = []; const replays: RefreshReplay[] = [];
+  const eventIds = new Set<string>();
+  const writes: RefreshWriteState[] = []; const requestStates = new WeakMap<Request, RefreshWriteState>();
+  const responseSettlements = new Set<Promise<void>>();
+  const recoveryDirectory = await mkdtemp(join(tmpdir(), "3fc-qa-refresh-recovery-"));
+  const recoveryPath = join(recoveryDirectory, "recovery.json");
+  let ledgerQueue: Promise<void> = Promise.resolve(); let ledgerFailed = false; let closing = false;
+  let seedState = "not-started"; let graphState = "not-created";
+  let blocked = 0; let transportFailed = false; let writerWrites = 0; let observerWrites = 0;
+  const persistLedger = () => {
+    // Serialize atomic replacement. Persist pending identities before dispatch;
+    // an abrupt exit therefore leaves an exact, non-secret recovery inventory.
+    const next = ledgerQueue.then(async () => {
+      const value = refreshRecoveryLedger(fixture, head, runId, seedState, graphState, writes, replays);
+      await writeFile(`${recoveryPath}.next`, JSON.stringify(value, null, 2), { mode: 0o600 });
+      await rename(`${recoveryPath}.next`, recoveryPath);
+    });
+    ledgerQueue = next.catch(() => { ledgerFailed = true; });
+    return next;
+  };
+  const persistSettlement = async () => {
+    try { await persistLedger(); } catch { /* Retain graph; never log raw filesystem or request errors. */ }
+  };
+  let phase = "QA account and table verification";
+  try {
+    await persistLedger();
+    console.log(`QA refresh non-secret recovery ledger: ${recoveryPath}`);
+    const table = await client.send(new DescribeTableCommand({ TableName: tableName }));
+    expect(table.Table?.TableArn).toBe("arn:aws:dynamodb:ap-southeast-2:301691475109:table/3fc-qa-app");
+    for (const email of fixture.emails) {
+      const tokenId = `codex-refresh-auth-${randomUUID()}`; const secret = randomBytes(32).toString("base64url");
+      records.push({ tokenId, email });
+      const magic = new MagicLinkService(client, { async sendMagicLink() { return {}; } }, {
+        tableName, appBaseUrl: site, callbackPath: "/auth/callback", tokenTtlSeconds: 300, sessionTtlSeconds: 300,
+      }, undefined, { tokenId: () => tokenId, tokenSecret: () => secret, sessionId: () => randomUUID() });
+      await magic.start(email);
+      const complete = await authRequest("/v1/auth/magic/complete", { token: `${tokenId}.${secret}` });
+      expect(complete.status).toBe(200);
+      const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark" });
+      contexts.push(context); await installSessionCookie(context, complete.headers);
+    }
+    phase = "conditional isolated fixture creation";
+    seedState = "pending"; graphState = "possibly-created"; await persistLedger();
+    try {
+      await client.send(refreshSeedCommand(fixture));
+      seedState = "confirmed"; graphState = "created"; await persistLedger();
+    } catch {
+      seedState = "unconfirmed"; await persistSettlement();
+      throw new Error("Isolated fixture creation was not confirmed");
+    }
+    const pages: Page[] = [];
+    let observerNavigations = 0;
+    for (const [index, context] of contexts.entries()) {
+      const observer = index === 1;
+      const page = await context.newPage(); pages.push(page);
+      page.on("response", response => {
+        const write = requestStates.get(response.request());
+        if (!write) return;
+        const settled = (async () => {
+          try {
+            // Headers alone do not prove completion. Await the actual body;
+            // every allowed handler awaits its durable writes before returning.
+            const bytes = await response.body();
+            let body: unknown;
+            try { body = JSON.parse(bytes.toString("utf8")); } catch { body = null; }
+            settleRefreshWrite(write, response.status(), true, refreshWriteBodyValid(fixture, write, body));
+          } catch { settleRefreshWrite(write, null, false, false); }
+          await persistSettlement();
+        })();
+        responseSettlements.add(settled);
+        void settled.finally(() => responseSettlements.delete(settled));
+      });
+      page.on("requestfailed", request => {
+        const write = requestStates.get(request);
+        if (!write) return;
+        settleRefreshWrite(write, null, false, false);
+        void persistSettlement();
+      });
+      await page.route(`${api}/**`, async route => {
+        let write: RefreshWriteState | undefined;
+        try {
+          const request = route.request(); const method = request.method();
+          if (closing || !refreshRequestAllowed(fixture, observer, method, request.url(), eventIds)) {
+            blocked += 1; await route.abort(); return;
+          }
+          if (!isReadOnlyQaMethod(method)) {
+            if (observer) observerWrites += 1; else writerWrites += 1;
+            const key = request.headers()["idempotency-key"];
+            const path = new URL(request.url()).pathname;
+            if (key) replays.push({ scope: `${fixture.emails[index]}:${method}:${path}`, key });
+            write = { ordinal: writes.length + 1, method, path, ...(key ? { key } : {}), state: "pending" };
+            writes.push(write); requestStates.set(request, write);
+            await persistLedger();
+            // A close can race the ledger write. Never continue afterward; the
+            // conservative pending record remains recoverable either way.
+            if (closing || ledgerFailed) throw new Error("Fixture writer is closing");
+          }
+          await route.continue();
+        } catch {
+          transportFailed = true;
+          if (write) { settleRefreshWrite(write, null, false, false); await persistSettlement(); }
+          try { await route.abort(); } catch { /* Closed owned route. */ }
+        }
+      });
+      await page.goto(`${site}/games/${fixture.gameId}#score`);
+      await verifySitePage(page, head);
+      await expect(page.locator('[data-action="start-active-third"]')).toBeEnabled();
+      expect(await page.evaluate(() => document.visibilityState === "visible")).toBe(true);
+    }
+    const [writer, observer] = pages;
+    observer.on("framenavigated", frame => { if (frame === observer.mainFrame()) observerNavigations += 1; });
+    phase = "remote clock start";
+    await writer.locator('[data-action="start-active-third"]').click();
+    await expect(writer.locator('[data-action="finish-active-third"]')).toBeEnabled();
+    await expect(observer.locator('[data-action="finish-active-third"]')).toBeEnabled({ timeout: 25000 });
+    const choose = async (page: Page, scorer: string) => {
+      await page.locator('#goal-scoring-team input[value="red"]').check();
+      await page.locator('#goal-conceding-team input[value="blue"]').check();
+      await page.locator("#goal-scorer").selectOption(scorer);
+    };
+    await choose(observer, fixture.playerIds[0]);
+    await observer.locator("#goal-assists-dropdown summary").click();
+    await observer.locator(`#goal-assists input[value="${fixture.playerIds[2]}"]`).check();
+    await observer.locator("#goal-scorer").focus();
+    phase = "remote normal goal and preserved draft";
+    await choose(writer, fixture.playerIds[0]);
+    await writer.locator('[data-action="save-goal"]').click();
+    await expect(writer.locator('[data-ui="goal-event"]')).toHaveCount(1);
+    const eventId = await writer.locator('[data-ui="goal-event"]').getAttribute("data-event-id");
+    if (!eventId) throw new Error("Fixture goal identity unavailable");
+    eventIds.add(eventId);
+    await expect(observer.locator('[data-ui="goal-event"]')).toHaveCount(1, { timeout: 20000 });
+    await expect(observer.locator('[data-ui="goal-scorer"]')).toHaveText("QA Ari");
+    await expect(observer.locator("#goal-scorer")).toHaveValue(fixture.playerIds[0]);
+    await expect(observer.locator("#goal-scorer")).toBeFocused();
+    await expect(observer.locator("#goal-assists-dropdown")).toHaveAttribute("open", "");
+    await expect(observer.locator(`#goal-assists input[value="${fixture.playerIds[2]}"]`)).toBeChecked();
+    const scores = (page: Page) => page.locator('#live-scoreboard [data-ui="score-team"]').evaluateAll(cards => cards.map(card => ({
+      teamId: card.getAttribute("data-team-id"), totals: [...card.querySelectorAll("dl > div")].map(row => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent]),
+    })));
+    await expect(writer.locator('#live-scoreboard [data-ui="score-team"]')).toHaveCount(3);
+    await expect(observer.locator('#live-scoreboard [data-ui="score-team"]')).toHaveCount(3);
+    expect(await scores(observer)).toEqual(await scores(writer));
+    expect(await scores(observer)).toEqual([
+      { teamId: "red", totals: [["Conceded", "0"], ["Scored", "1"]] },
+      { teamId: "blue", totals: [["Conceded", "1"], ["Scored", "0"]] },
+      { teamId: "yellow", totals: [["Conceded", "0"], ["Scored", "0"]] },
+    ]);
+    phase = "remote own-goal correction";
+    await writer.locator('[data-action="edit-goal"]').click();
+    await writer.locator("#goal-own-goal").check();
+    await writer.locator('#goal-conceding-team input[value="blue"]').check();
+    await writer.locator("#goal-scorer").selectOption(fixture.playerIds[1]);
+    await writer.locator('[data-action="save-goal"]').click();
+    await expect(writer.locator('[data-ui="goal-scorer"]')).toHaveText("QA Bea");
+    await expect(observer.locator('[data-ui="goal-scorer"]')).toHaveText("QA Bea", { timeout: 20000 });
+    await expect(observer.locator('[data-ui="own-goal-marker"]')).toBeVisible();
+    expect(await scores(observer)).toEqual(await scores(writer));
+    expect((await scores(observer)).map(team => team.totals)).toEqual([
+      [["Conceded", "0"], ["Scored", "0"]], [["Conceded", "1"], ["Scored", "0"]], [["Conceded", "0"], ["Scored", "0"]],
+    ]);
+    phase = "remote goal deletion";
+    writer.once("dialog", dialog => dialog.accept());
+    await writer.locator('[data-action="delete-goal"]').click();
+    await expect(writer.locator('[data-ui="goal-event"]')).toHaveCount(0);
+    await expect(observer.locator('[data-ui="goal-event"]')).toHaveCount(0, { timeout: 20000 });
+    phase = "remote finished result without navigation";
+    await writer.locator('[data-action="finish-active-third"]').click();
+    for (const third of [2, 3]) {
+      await expect(writer.locator('[data-action="start-active-third"]')).toHaveText(`Start Third ${third}`);
+      await writer.locator('[data-action="start-active-third"]').click();
+      await expect(writer.locator('[data-action="finish-active-third"]')).toBeEnabled();
+      await writer.locator('[data-action="finish-active-third"]').click();
+    }
+    await expect(writer.locator('[data-action="finish-game"]')).toBeEnabled();
+    await writer.locator('[data-action="finish-game"]').click();
+    await expect(writer.locator('[data-testid="game-result-outcome"]')).toHaveText("Draw");
+    await expect(observer.locator("#game-overview-status")).toHaveText("Finished", { timeout: 25000 });
+    await expect(observer.locator('[data-action="save-goal"]')).toBeDisabled();
+    expect(new URL(observer.url()).hash).toBe("#score");
+    expect(observerNavigations).toBe(0);
+    await observer.locator('[data-testid="game-mode-final-tab"]').click();
+    await expect(observer.locator('[data-testid="game-result-outcome"]')).toHaveText("Draw");
+    phase = "post-acceptance exact-head provenance";
+    for (const page of pages) {
+      await page.reload();
+      await expect(page.locator("#game-overview-status")).toHaveText("Finished");
+      await verifySitePage(page, head);
+    }
+    await verifyApiProvenance(head, runId);
+    // These are actual response-body completions, never a sleep or an inference
+    // from quiet traffic. An unanswered request remains pending and fails below.
+    await Promise.all([...responseSettlements]);
+    expect(blocked).toBe(0); expect(transportFailed).toBe(false); expect(observerWrites).toBe(0); expect(writerWrites).toBe(10);
+    expect(writes).toHaveLength(10); expect(writes.every(write => write.state === "confirmed")).toBe(true);
+    expect(ledgerFailed).toBe(false);
+    console.log(`QA refresh PASS head=${head} run=${runId}; two synthetic accounts, real clock/goal/edit/delete/finish reads, preserved draft/focus, zero observer writes, no automatic navigation`);
+  } catch {
+    throw new Error(`QA refresh failed during ${phase}; sensitive diagnostic detail suppressed`);
+  } finally {
+    // Closing a browser does NOT settle an already forwarded Lambda. Pending or
+    // ambiguous writes retain the complete graph even when both contexts close.
+    closing = true;
+    let closeFailures = 0;
+    for (const context of contexts) { try { await context.close(); } catch { closeFailures += 1; } }
+    await ledgerQueue;
+    let graphRemoved = 0; let graphFailed = false; let graphPreserved = false;
+    if (seedState !== "not-started") {
+      try {
+        const cleanup = await cleanupSettledRefreshFixture(client, fixture, replays, seedState === "confirmed", closeFailures, ledgerFailed, writes);
+        graphRemoved = cleanup.removed; graphPreserved = cleanup.preserved;
+        graphState = cleanup.preserved ? "preserved-for-recovery" : "removed-and-absence-verified";
+      } catch { graphFailed = true; graphState = "cleanup-incomplete-retain-recovery-ledger"; }
+    }
+    await persistSettlement();
+    const authReport = await cleanupQaFixtures(client, records, []);
+    client.destroy();
+    console.log(`QA refresh cleanup: ${graphRemoved} graph records; ${authReport.recordsRemoved}/${records.length} auth records; graph=${graphState}; recovery ledger=${recoveryPath}`);
+    if (closeFailures || graphPreserved || graphFailed || ledgerFailed || authReport.failures.length) {
+      throw new Error(`QA refresh cleanup incomplete; isolated recovery ledger: ${recoveryPath}`);
     }
   }
 });

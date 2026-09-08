@@ -16,13 +16,83 @@ head's CI, Codex, QA and browser evidence, including findings and disposition.
 | #134 / UX-03 | Match overview, navigation and teams | [#145](https://github.com/ajfisher/3fc/pull/145), `6f0085d1417d17415fe69af864e0f4cec3fabd66` | [Roster map](match-roster-review.md), role/permission and browser matrices. Review-ready. |
 | #147 / UX-07 | Kebab action surfaces, including both game lists | [#148](https://github.com/ajfisher/3fc/pull/148), `ce429963d4b667a67a0123e5c1ff3094aa43dc7f` | [Action-menu map](action-menu-review.md),63 browser/12 isolated QA cases and signed-in read-only menus. Review-ready. |
 | #135 / UX-04 | Scoring, clock and safe request recovery | [#149](https://github.com/ajfisher/3fc/pull/149), `b09ee27bb7c629e6a9cbcaa28e931d1729afbdb1` | [Scoring map](live-scoring-review.md),254 interactions/89 cross-surface browser/12 isolated QA cases and signed-in phone checks. Review-ready. |
-| #136 / UX-05 | Reports and existing entry journeys | [#150](https://github.com/ajfisher/3fc/pull/150), `codex/design-results-entry` | [Results/entry map](results-entry-review.md). Implementation and local acceptance complete; current-head external readiness is recorded in this branch's PR packet. |
-| #137 / UX-06 | Cross-stack acceptance | Final frontend PR plus this checklist | 161 cross-stack browser cases and4 local M2 cases passed; physical-device evidence below remains outstanding. Keep issue open. |
+| #136 / UX-05 | Reports and existing entry journeys | [#150](https://github.com/ajfisher/3fc/pull/150), `bfd4af7ab05e1e5a55eede4e716e851c0ab188e8` | [Results/entry map](results-entry-review.md) and versioned packet. Exact-head review:ready reconfirmed by root. |
+| #151 / UX-08 | Match navigation, correction exit and presentation follow-ups | [#154](https://github.com/ajfisher/3fc/pull/154), `a1cccc18a13e92843e1c8740cec374993afd1953` | [Match-flow map](match-flow-polish.md) and versioned packet. Review-ready before UX-09. |
+| #152 / UX-09 | Named claim return and complete Unassigned identities | [#155](https://github.com/ajfisher/3fc/pull/155), `dd8982e134fd055bb4f7e13ad5cb4053853a9de8` | [Join/Unassigned map](join-unassigned-review.md); final query transport. CI34201089422, QA34201253601 and Codex completion5581369750 verified by root; review:ready before UX-10. |
+| #153 / UX-10 | Bounded cross-client read freshness | `codex/design-match-refresh`; child PR not yet opened | [Refresh policy and acceptance map](match-refresh-review.md). Implementation and final local validation complete: 488 app tests (440 interactions/40 UX-10), local M2 4/4, final 197 browser plus 15 offline QA cases passed; 2 deployed opt-ins skipped. Independent source reviews clear. New-head external readiness pending. |
+| #137 / UX-06 | Cross-stack acceptance | Final frontend PR plus this checklist | Initial 161 cross-stack browser cases and4 local M2 cases passed; subsequent parent evidence is in the maps/packets above. Refresh-child and physical-device evidence remain outstanding. Keep issue open. |
 
 Parent acceptance was completed before each child was implemented. Shared QA is
 deployed serially, and each packet records its accepted deployment SHA before
 the next replaces it. A completed no-findings Codex comment naming the exact head
 is accepted per AJ's clarification; it is not mislabeled a formal review.
+Root has reconfirmed exact-head `review:ready` for all ten parent PRs:
+#141, #142, #143, #144, #145, #148, #149, #150, #154 and #155.
+
+## AJ's ten post-stack QA items
+
+These follow-ups supplement the original frontend plan; they do not imply that
+deferred player/public-performance features are implemented. The parent state is
+recorded separately from the refresh child so the whole list is not prematurely
+called complete. The first nine items are complete in reviewed parents #154 and
+#155; the tenth is implemented and awaiting final QA and external readiness.
+
+| Item | Requested outcome | Delivery / evidence |
+| --- | --- | --- |
+| 1 | Finished Correct result has an intentional correction surface and an exit, without an unrelated Score button. | #154: explicit Correction destination and zero-write Exit; pending/uncertain operations cannot be discarded. |
+| 2 | League Create season and Invite organiser belong in the kebab. | #154: labelled menu actions, preserved drafts, Cancel/Escape restores visible focus. |
+| 3 | Scheduled Score game belongs in the match navigation flow. | #154: native active destination; authority-aware link and existing readable/legacy hashes. |
+| 4 | Claim return names the player, and newly joined players appear directly in Unassigned. | #155: authenticated exact-identity query read, deliberate return claim, complete public Unassigned independent of top-20 search. |
+| 5 | Hide the upper Add player trigger while its form is open; restore it on Cancel. | #154: computed visibility and focus through cancel/redraw; unresolved creation identity is retained. |
+| 6 | Assignment success must not follow the user into Score. | #154: navigation and feedback ownership; late settled success cannot replace newer activity or recovery. |
+| 7 | Latest-goal padding matches other goal rows. | #154: equal geometry; latest emphasis changes the surface only. |
+| 8 | Remove Back to game because Overview already supplies that navigation. | #154: duplicate back/footer actions removed; one native destination set remains. |
+| 9 | Center scoreboard team labels and numbers. | #154: centered stable team columns, unchanged scored/conceded semantics. |
+| 10 | Other clients refresh scores after someone records or changes the game. | #153 / refresh child implemented and locally validated: bounded reads, draft preservation, lifecycle/authority guards and no poll-driven write settlement. 440 interactions (40 UX-10), 14 new two-client cases within final 197-browser pass, and local M2 4/4 pass; external QA/readiness pending. |
+
+UX-10's earlier full repository validation completed with exit 0: lint,
+typecheck, full API/app validation (486 app tests), 57 review-gate tests,
+contracts, build and diff check; process group `89559`, peak `1865248 KiB`,
+cleanup `[]`. The six-suite cross-surface browser matrix passed 183/183:
+group `91067`, exit 0, peak `1774288 KiB`, remaining `[]`, trip `None`, outputs
+under `/tmp/3fc-ux10-cross-surface/`.
+
+Two ordinary M2 failures were isolated before another full smoke run: the visible
+but busy new-player assignment control was fixed and proved with a held-read
+regression (focused case plus full 439 passed, group `92384`); an external join's
+old 10-second wait was corrected to a 25-second condition wait for scheduled
+15-second polling, backed by exact 14999/15000ms coverage. That focused case and
+the complete 440-test interaction file passed in group `93549`, exit 0, peak
+`1822800 KiB`, cleanup `[]`. This includes 40 UX-10 cases.
+
+Final local M2 then passed 4/4: group `94003`, exit 0, host peak `1323040 KiB`
+plus a hard 512 MiB Docker limit, remaining `[]`, all three service SIGTERM exits
+observed and ephemeral container removed. Strict all-fixture typechecking and
+QA-helper offline checks passed 15 cases with 2 explicit deployed opt-ins skipped
+(group `93335`, exit 0, peak `846944 KiB`, cleanup `[]`). Backlog validation/export
+also passed before this evidence refresh. Final combined revalidation then
+**passed** in group `94369`, exit 0, peak `1815312 KiB`, cleanup `[]`, trip `None`:
+lint/typecheck, full API/app validation (488 app tests: 440 interactions plus
+48 layouts), 57 review-gate tests, contracts, build, strict all-e2e typecheck and
+212 browser/offline cases (197 browser plus 15 offline QA), with 2 explicit
+deployed opt-ins skipped.
+
+Scoped independent design/source and three existing screenshot reviews found no
+material residual issue. Authorship remains disclosed; separate independent
+engineering review has cleared keyed DOM reconciliation and both new M2 tests.
+All local auth/log-helper source reviews are complete. Independent QA-helper
+review also cleared response-body settlement,
+exact ownership and retained-ledger safeguards; this is not deployed acceptance.
+Dispositions are in the [refresh map](match-refresh-review.md). There is no child
+PR number or completed exact-head CI/Codex/deployed QA gate yet. Physical #137
+checks remain pending; no merge is authorized.
+
+For #155's final head, see
+[CI34201089422](https://github.com/ajfisher/3fc/actions/runs/34201089422),
+[QA34201253601](https://github.com/ajfisher/3fc/actions/runs/34201253601) and
+[Codex completion5581369750](https://github.com/ajfisher/3fc/pull/155#issuecomment-5581369750).
+Earlier path-based transport passes are historical, not substitutes for this
+final query-head evidence. Physical-device checks below are still not executed.
 
 ## Required physical-device handoff
 

@@ -7,6 +7,7 @@
   let errorDetail = "";
   let errorIncludesOutcome = false;
   let statusRevision = 0;
+  let beforeGameWrite = null;
 
   function refreshShellReferences() {
     root = document.getElementById("setup-flow-root");
@@ -1382,27 +1383,35 @@
   }
 
   async function requestJson(path, init = {}) {
-    const response = await fetch(buildApiUrl(path), {
-      credentials: "include",
-      ...init,
-    });
+    const finishWrite = !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? beforeGameWrite?.(path, init.method) : null;
+    try {
+      const response = await fetch(buildApiUrl(path), {
+        credentials: "include",
+        ...init,
+      });
 
-    const text = await response.text();
-    let body = {};
+      const text = await response.text();
+      let body = {};
 
-    if (text.length > 0) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = { error: text };
+      if (text.length > 0) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = { error: text };
+        }
       }
-    }
 
-    return {
-      ok: response.ok,
-      status: response.status,
-      body,
-    };
+      const result = {
+        ok: response.ok,
+        status: response.status,
+        body,
+      };
+      finishWrite?.(result);
+      return result;
+    } catch (error) {
+      finishWrite?.(null);
+      throw error;
+    }
   }
 
   async function requestJsonOrThrow(path, init = {}) {
@@ -2597,7 +2606,7 @@
     setStatus("");
   }
 
-  async function initGamePage() {
+  async function initGamePage(authenticatedSession) {
     const gameId = resolveRouteEntityId("data-game-id", "games");
     if (!gameId) {
       return;
@@ -2719,6 +2728,18 @@
     const gameModeTriggers = [...root.querySelectorAll('[data-action="select-game-mode"][data-game-mode]')];
     const gameModePanels = [...root.querySelectorAll('[data-ui="game-mode-panel"][data-game-mode]')];
     let lastHandledGameHash = window.location.hash;
+    let metadataDirty = false;
+    let refreshAccountLocked = false;
+    let authorityRevision = 0;
+    let draftRosterChanged = false;
+    let editingGoalSnapshot = null;
+    let editingGoalChanged = false;
+    let refreshingPresentation = false;
+    const resultMarkup = new WeakMap();
+    for (const field of [kickoffInput, statusInput, thirdLengthInput]) {
+      field.addEventListener("input", () => { metadataDirty = true; renderTimer(); });
+      field.addEventListener("change", () => { metadataDirty = true; renderTimer(); });
+    }
 
     kickoffInput.addEventListener("input", () => {
       setFieldMessage("game-edit-kickoff");
@@ -2737,7 +2758,7 @@
     }
 
     function canCorrectFinishedGoals() {
-      return currentLeagueRole === "admin" && finishedResultEditing;
+      return !refreshAccountLocked && currentLeagueRole === "admin" && finishedResultEditing;
     }
 
     function finishedRosterControlsLocked() {
@@ -2745,7 +2766,7 @@
     }
 
     function isLeagueOperator() {
-      return currentLeagueRole === "admin" || currentLeagueRole === "scorekeeper";
+      return !refreshAccountLocked && (currentLeagueRole === "admin" || currentLeagueRole === "scorekeeper");
     }
 
     function canManageRoster() {
@@ -2757,16 +2778,16 @@
     }
 
     function canEditGame() {
-      return Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
+      return !refreshAccountLocked && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
     }
 
     function syncGameCapabilities() {
       if (currentLeagueRole !== "admin") closeActionMenu();
       const capabilities = {
-        admin: Boolean(currentGame) && currentLeagueRole === "admin",
+        admin: !refreshAccountLocked && Boolean(currentGame) && currentLeagueRole === "admin",
         roster: canManageRoster(),
         score: canScoreGame(),
-        correct: isGameFinished() && currentLeagueRole === "admin",
+        correct: !refreshAccountLocked && isGameFinished() && currentLeagueRole === "admin",
       };
       for (const element of document.querySelectorAll("[data-game-capability]")) {
         if (!(element instanceof HTMLElement)) continue;
@@ -2799,7 +2820,11 @@
       if (correctionTeams instanceof HTMLElement) correctionTeams.hidden = !capabilities.correct || finishedRosterEditing;
       const correctionResult = root.querySelector('[data-action="correct-finished-result"]');
       if (correctionResult instanceof HTMLElement) correctionResult.hidden = !capabilities.correct || finishedResultEditing;
-      setModeLabel("run", isGameFinished() ? "Correction" : "Score game");
+      setModeLabel("run", isGameFinished() && finishedResultEditing ? "Correction" : "Score game");
+      // A remotely finished game must not remove the current destination or
+      // silently enter correction mode. The draft remains here until navigation.
+      const scoreTab = document.getElementById("game-mode-tab-run");
+      if (scoreTab && !refreshAccountLocked && gameModePanels.some((panel) => panel.getAttribute("data-game-mode") === "run" && !panel.hidden)) scoreTab.hidden = false;
       const correctionActions = document.getElementById("finished-correction-actions");
       if (correctionActions) correctionActions.hidden = !capabilities.correct || !finishedResultEditing;
       const exit = root.querySelector('[data-action="exit-result-correction"]');
@@ -2997,9 +3022,16 @@
         scheduledOption.disabled = hasStarted;
       }
 
-      if (hasStarted && statusInput.value === "scheduled") {
+      if (!metadataDirty && hasStarted && statusInput.value === "scheduled") {
         statusInput.value = currentGame.status === "finished" ? "finished" : "live";
       }
+    }
+
+    function metadataRefreshConflict() {
+      if (!metadataDirty || !currentGame) return false;
+      const timer = buildTimerState(currentGame);
+      return timer.thirds.some((third) => third.startedAt !== null) &&
+        (statusInput.value === "scheduled" || thirdLengthInput.value !== String(timer.thirdLengthMinutes));
     }
 
     function renderTimer() {
@@ -3023,11 +3055,17 @@
         : { displayTime: "00:00", phase: "regulation" };
       const nextThird = nextStartableThird(timer);
 
-      if (document.getElementById("game-edit-region")?.hidden !== false) thirdLengthInput.value = String(timer.thirdLengthMinutes);
+      if (!metadataDirty && document.getElementById("game-edit-region")?.hidden !== false) thirdLengthInput.value = String(timer.thirdLengthMinutes);
       thirdLengthInput.disabled = !canEditGame() || hasStarted || gameMetadataPending;
       kickoffInput.disabled = !canEditGame() || gameMetadataPending;
       statusInput.disabled = !canEditGame() || gameMetadataPending;
-      saveButton.disabled = !canEditGame() || gameMetadataPending;
+      saveButton.disabled = !canEditGame() || gameMetadataPending || metadataRefreshConflict();
+      const metadataNote = document.getElementById("game-edit-refresh-note");
+      if (metadataNote) metadataNote.hidden = !metadataRefreshConflict();
+      for (const field of [statusInput, thirdLengthInput]) {
+        if (metadataRefreshConflict()) field.setAttribute("aria-describedby", "game-edit-refresh-note");
+        else field.removeAttribute("aria-describedby");
+      }
       deleteButton.hidden = currentLeagueRole !== "admin";
       deleteButton.disabled = currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
       if (gameFinished) {
@@ -3097,7 +3135,7 @@
       finishGameButton.textContent = gameFinished ? "Game finished" : clockOperation?.kind === "finish-game" ? "Retry finish game" : "Finish game";
       if (refreshGameStateButton instanceof HTMLButtonElement) {
         refreshGameStateButton.hidden = !clockOperation?.uncertain;
-        refreshGameStateButton.disabled = timerMutationPending || !clockOperation?.uncertain;
+        refreshGameStateButton.disabled = refreshAccountLocked || timerMutationPending || !clockOperation?.uncertain;
       }
       if (nextThird) {
         startThirdButton.setAttribute("data-third", String(nextThird));
@@ -3117,7 +3155,7 @@
 
       window.clearInterval(timerTickInterval);
       timerTickInterval = 0;
-      if (activeSegment && !gameFinished) {
+      if (activeSegment && !gameFinished && refreshVisible()) {
         timerTickInterval = window.setInterval(renderTimer, 1000);
       }
       renderGameResult();
@@ -3458,8 +3496,7 @@
       return teamsInMatchOrder(normalizeScoreboardTeams(currentGame?.result?.teams));
     }
 
-    function resultOutcome(teams) {
-      const result = currentGame?.result;
+    function resultOutcome(teams, result = currentGame?.result) {
       if (teams.length !== 3 || !result || !["win", "draw"].includes(result.outcome)) return null;
       // Check the supplied outcome against the same conceded/scored comparator,
       // never replace it with a newly computed winner when the response differs.
@@ -3467,6 +3504,79 @@
       const leaders = ranked.filter((team) => team.conceded === ranked[0].conceded && team.scored === ranked[0].scored);
       if (result.outcome === "draw") return result.winnerTeamId === null && leaders.length > 1 ? { kind: "draw", text: "Draw" } : null;
       return leaders.length === 1 && leaders[0].teamId === result.winnerTeamId ? { kind: "win", text: `${leaders[0].name} win` } : null;
+    }
+
+    function patchReadOnlyMarkup(surface, markup) {
+      // Retain actual controls/disclosures while read-only siblings change.
+      // Restore opaque IDs before comparing keys: HTML normalizes CR/NUL.
+      const template = document.createElement("template");
+      template.innerHTML = markup;
+      restorePlayerIdentities(template.content);
+      const active = document.activeElement;
+      const ownedFocus = surface.contains(active);
+      const key = (node) => node.nodeType === Node.ELEMENT_NODE
+        ? JSON.stringify([node.tagName, node.id, ...["data-ui", "data-testid", "data-event-id", "data-player-id", "data-team-id", "data-action", "data-role", "data-context"].map((name) => node.getAttribute(name))])
+        : String(node.nodeType);
+      const identities = new Map();
+      for (const node of surface.querySelectorAll("[data-player-id], [data-event-id]")) {
+        const identity = key(node);
+        identities.set(identity, identities.has(identity) ? null : node);
+      }
+      const retained = new Set();
+      const obsolete = [];
+      const runtimeAttribute = (node, name) =>
+        (node instanceof HTMLDetailsElement && name === "open") ||
+        (node === openActionMenu?.trigger && name === "aria-expanded") ||
+        (node === openActionMenu?.surface && ["hidden", "style", "popover"].includes(name));
+      function patch(parent, nextParent) {
+        const previous = [...parent.childNodes];
+        [...nextParent.childNodes].forEach((next, index) => {
+          let node = previous.find((candidate) => !retained.has(candidate) && key(candidate) === key(next));
+          const identified = identities.get(key(next));
+          if (!node && identified && !retained.has(identified)) node = identified;
+          if (!node) node = next.cloneNode(true);
+          else if (node.nodeType === Node.ELEMENT_NODE) {
+            for (const attribute of [...node.attributes]) {
+              if (!runtimeAttribute(node, attribute.name) && !next.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+            }
+            for (const attribute of [...next.attributes]) {
+              if (!runtimeAttribute(node, attribute.name) && node.getAttribute(attribute.name) !== attribute.value) node.setAttribute(attribute.name, attribute.value);
+            }
+            patch(node, next);
+          } else if (node.nodeValue !== next.nodeValue) node.nodeValue = next.nodeValue;
+          retained.add(node);
+          if (parent.childNodes[index] !== node) {
+            const before = parent.childNodes[index] ?? null;
+            // moveBefore preserves focus/popovers when a player changes teams;
+            // the fallback restores owned focus below without scrolling.
+            if (node.isConnected && typeof parent.moveBefore === "function") parent.moveBefore(node, before);
+            else parent.insertBefore(node, before);
+          }
+        });
+        obsolete.push(...previous);
+      }
+      patch(surface, template.content);
+      // Defer removals so keyed rows can move out of an earlier team list.
+      for (const node of obsolete) if (!retained.has(node)) node.remove();
+      if (ownedFocus && (!active.isConnected || active.matches(":disabled") || !actionElementVisible(active))) {
+        // Local mutation callbacks own their eventual focus destination. An
+        // interim surface focus would look like the user leaving that operation
+        // to trackInteractionFocus, preventing its exact-player restoration.
+        const mutationPending = gameMetadataPending || gameDeletionPending || goalMutationInFlight ||
+          timerMutationPending || rosterMutationPending || playerCreatePending;
+        if (!mutationPending && actionElementVisible(surface)) {
+          surface.setAttribute("tabindex", "-1");
+          surface.focus({ preventScroll: true });
+        }
+      } else if (ownedFocus && document.activeElement !== active) {
+        active.focus({ preventScroll: true });
+      }
+    }
+
+    function updateResultMarkup(markup) {
+      if (resultMarkup.get(gameResultSummaryElement) === markup) return;
+      patchReadOnlyMarkup(gameResultSummaryElement, markup);
+      resultMarkup.set(gameResultSummaryElement, markup);
     }
 
     function renderGameResult() {
@@ -3488,13 +3598,13 @@
             ? "The correction outcome could not be confirmed. Retry the same action."
             : "The latest match result could not be loaded. Reload to try again.";
         gameResultSummaryElement.hidden = false;
-        gameResultSummaryElement.innerHTML = `<section data-ui="result-board" data-state="unavailable">
+        updateResultMarkup(`<section data-ui="result-board" data-state="unavailable">
           <header>
             <span>Final result</span>
             <strong>${heading}</strong>
           </header>
           <p data-ui="empty-note">${message}</p>
-        </section>`;
+        </section>`);
         syncGameModeState();
         return;
       }
@@ -3502,7 +3612,7 @@
       const teams = resultTeams();
       if (!isGameFinished()) {
         gameResultSummaryElement.hidden = true;
-        gameResultSummaryElement.innerHTML = "";
+        updateResultMarkup("");
         syncGameModeState();
         return;
       }
@@ -3510,7 +3620,7 @@
       const outcome = resultOutcome(teams);
       const goalLogsLoaded = goalTimelineLoaded;
       gameResultSummaryElement.hidden = false;
-      gameResultSummaryElement.innerHTML = `<section data-ui="result-board"${outcome ? ` data-outcome="${outcome.kind}"` : ' data-state="unavailable"'}>
+      updateResultMarkup(`<section data-ui="result-board"${outcome ? ` data-outcome="${outcome.kind}"` : ' data-state="unavailable"'}>
         <header>
           ${outcome ? `<strong data-testid="game-result-outcome">${escapeHtml(outcome.text)}</strong>` : '<strong data-testid="result-unavailable">Result unavailable</strong><p data-ui="empty-note">The match result could not be loaded. Reload to try again.</p>'}
         </header>
@@ -3531,7 +3641,7 @@
             .join("")}
         </div>` : ""}
         ${goalLogsLoaded ? `${renderFinalAggregateStats()}${renderFinalFullGoalLog()}` : renderFinalGoalSummariesUnavailable()}
-      </section>`;
+      </section>`);
       syncGameModeState();
     }
 
@@ -3644,6 +3754,11 @@
       for (const player of goalOperation?.assistPlayers ?? []) {
         if (selected.has(player.playerId) && !rostered.some((candidate) => candidate.playerId === player.playerId)) rostered.push(player);
       }
+      if (draftRosterChanged) {
+        for (const playerId of selected) {
+          if (!rostered.some((player) => player.playerId === playerId)) rostered.push({ playerId, nickname: playerNickname(playerId), teamId: "" });
+        }
+      }
 
       if (rostered.length === 0) {
         goalAssistsElement.innerHTML = `<p data-ui="empty-note">No assist options yet.</p>`;
@@ -3682,11 +3797,12 @@
       });
     }
 
-    function renderGoalControls(seed = {}) {
+    function renderGoalControls(seed = {}, preserveNodes = false) {
       if (!liveControlsAvailable()) {
         return;
       }
 
+      if (!preserveNodes) {
       if (goalOperation) seed = goalOperation.draft;
       const ownGoal = seed.ownGoal ?? goalOwnGoalInput.checked;
       const previousScoringTeamId = seed.scoringTeamId ?? selectedGoalTeam(goalScoringTeamInput);
@@ -3716,7 +3832,7 @@
         ownGoal === Boolean(editingGoal.ownGoal) &&
         scoringTeamId === (editingGoal.scoringTeamId ?? null) &&
         concedingTeamId === editingGoal.concedingTeamId;
-      const selectedScorerLabel = selectedScorerId && (canPreserveHistoricalScorer || goalOperation !== null)
+      const selectedScorerLabel = selectedScorerId && (canPreserveHistoricalScorer || goalOperation !== null || draftRosterChanged)
         ? `${playerNickname(selectedScorerId)} (not currently rostered)`
         : null;
       renderSelectOptions(
@@ -3731,6 +3847,7 @@
         goalScorerInput.disabled = true;
       }
       renderGoalAssistChoices(goalScorerInput.value, seed.assistPlayerIds ?? null);
+      }
 
       const activeThird = activeThirdNumber();
       const gameFinished = isGameFinished();
@@ -3807,8 +3924,25 @@
         return;
       }
 
+      if (preserveNodes) {
+        const own = goalOwnGoalInput.checked;
+        const scoring = selectedGoalTeam(goalScoringTeamInput);
+        const conceding = selectedGoalTeam(goalConcedingTeamInput);
+        goalScoringTeamInput.disabled = own;
+        goalConcedingTeamInput.disabled = !own && !scoring;
+        goalScorerInput.disabled = !conceding || (!own && !scoring);
+        const selected = selectedAssistPlayerIds();
+        for (const input of goalAssistsElement.querySelectorAll("input")) input.disabled = !goalScorerInput.value || (!input.checked && selected.length >= 3);
+      }
       goalOwnGoalInput.disabled = false;
       saveGoalButton.disabled = false;
+
+      const conflict = goalDraftConflict();
+      if (conflict) {
+        saveGoalButton.disabled = true;
+        goalFormNote.textContent = conflict;
+        return;
+      }
 
       if (rosterTeams.length < 2) {
         saveGoalButton.disabled = true;
@@ -3856,6 +3990,52 @@
 
       saveGoalButton.disabled = false;
       goalFormNote.textContent = "";
+    }
+
+    function refreshGoalOptions() {
+      // Keep the native select, checkboxes and open disclosure alive. Reconcile
+      // choices by opaque identity; never drop a selected stale draft value.
+      const scorer = goalScorerInput.value;
+      const own = goalOwnGoalInput.checked;
+      const team = selectedGoalTeam(own ? goalConcedingTeamInput : goalScoringTeamInput);
+      const options = new Map(rosteredPlayersForTeam(team).map((player) => [player.playerId, player]));
+      for (const option of [...goalScorerInput.options]) {
+        if (!option.value) continue;
+        if (!options.has(option.value) && option.value !== scorer) option.remove();
+        else if (options.has(option.value)) option.textContent = options.get(option.value).nickname;
+      }
+      for (const player of options.values()) {
+        if (![...goalScorerInput.options].some((option) => option.value === player.playerId)) {
+          const option = document.createElement("option");
+          option.value = player.playerId;
+          option.textContent = player.nickname;
+          goalScorerInput.append(option);
+        }
+      }
+      goalScorerInput.value = scorer;
+      const players = new Map(rosteredPlayers().filter((player) => player.playerId !== scorer).map((player) => [player.playerId, player]));
+      for (const input of [...goalAssistsElement.querySelectorAll("input")]) {
+        if (!players.has(input.value) && !input.checked && input !== document.activeElement) input.closest("label")?.remove();
+      }
+      if (players.size) goalAssistsElement.querySelector('[data-ui="empty-note"]')?.remove();
+      for (const player of players.values()) {
+        let input = [...goalAssistsElement.querySelectorAll("input")].find((candidate) => candidate.value === player.playerId);
+        if (!input) {
+          const label = document.createElement("label");
+          label.setAttribute("data-ui", "check-row");
+          input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = player.playerId;
+          label.append(input, document.createElement("span"));
+          goalAssistsElement.append(label);
+        }
+        const label = input.closest("label")?.querySelector("span");
+        if (label) label.textContent = `${player.nickname} ${teamName(player.teamId)}`;
+      }
+      const selectedNames = selectedAssistPlayerIds().map((id) => playerNickname(id));
+      goalAssistsSummaryElement.textContent = selectedNames.length ? `${selectedNames.length} selected: ${selectedNames.join(", ")}` : "Choose assists";
+      if (selectedNames.length) goalAssistsSummaryElement.title = selectedNames.join(", ");
+      else goalAssistsSummaryElement.removeAttribute("title");
     }
 
     function renderThirdIndicator(third) {
@@ -4061,21 +4241,22 @@
       if (!(goalTimelineElement instanceof HTMLElement)) {
         return;
       }
+      const patchTimeline = (markup) => patchReadOnlyMarkup(goalTimelineElement, markup);
 
       if (!goalTimelineLoaded) {
-        goalTimelineElement.innerHTML = `<li data-ui="empty-note">Goal timeline unavailable.</li>`;
+        patchTimeline(`<li data-ui="empty-note">Goal timeline unavailable.</li>`);
         return;
       }
 
       if (goalTimeline.length === 0) {
-        goalTimelineElement.innerHTML = `<li data-ui="empty-note">No goals yet.</li>`;
+        patchTimeline(`<li data-ui="empty-note">No goals yet.</li>`);
         return;
       }
 
       const latestEventId = goalTimeline.at(-1)?.eventId ?? null;
       const finishedActionsDisabled =
         goalMutationInFlight || goalOperation !== null || timerMutationPending || clockOperation !== null || !canScoreGame();
-      goalTimelineElement.innerHTML = [...goalTimeline]
+      patchTimeline([...goalTimeline]
         .reverse()
         .map((goal, index) => {
           const assists =
@@ -4123,7 +4304,7 @@
             </div>
           </li>`;
         })
-        .join("");
+        .join(""));
     }
 
     function renderLiveScoring(seed = {}) {
@@ -4168,6 +4349,9 @@
 
     function resetGoalForm() {
       editingGoalId = null;
+      editingGoalSnapshot = null;
+      editingGoalChanged = false;
+      draftRosterChanged = false;
       if (goalOwnGoalInput instanceof HTMLInputElement) {
         goalOwnGoalInput.checked = false;
       }
@@ -4192,8 +4376,29 @@
       });
     }
 
+    function goalDraftConflict() {
+      if (editingGoalChanged) return "This goal changed in another session. Cancel this edit and open the latest goal.";
+      if (!draftRosterChanged) return null;
+      const scorer = goalScorerInput.value;
+      const own = goalOwnGoalInput.checked;
+      const scoring = own ? null : selectedGoalTeam(goalScoringTeamInput);
+      const conceding = selectedGoalTeam(goalConcedingTeamInput);
+      const original = editingGoalId ? goalTimeline.find((goal) => goal.eventId === editingGoalId) : null;
+      const historicalScorer = original && original.scorerPlayerId === scorer && original.ownGoal === own &&
+        original.scoringTeamId === scoring && original.concedingTeamId === conceding;
+      const ids = new Set(rosteredPlayers().map((player) => player.playerId));
+      if ((scorer && !historicalScorer && !rosteredPlayersForTeam(own ? conceding : scoring).some((player) => player.playerId === scorer)) ||
+        selectedAssistPlayerIds().some((id) => !ids.has(id) && !original?.assistPlayerIds.includes(id))) {
+        return "Teams changed. Review the scorer and assists before saving.";
+      }
+      return null;
+    }
+
     function populateGoalForm(goal) {
       editingGoalId = goal.eventId;
+      editingGoalSnapshot = JSON.stringify(goal);
+      editingGoalChanged = false;
+      draftRosterChanged = false;
       renderLiveScoring({
         ownGoal: Boolean(goal.ownGoal),
         scoringTeamId: goal.scoringTeamId ?? "",
@@ -4205,6 +4410,8 @@
     }
 
     function buildGoalPayload() {
+      const conflict = goalDraftConflict();
+      if (conflict) return { error: conflict };
       if (isGameFinished() && !canCorrectFinishedGoals()) {
         return {
           error: "Game finished. Admin role is required to correct the result.",
@@ -4470,7 +4677,7 @@
     }
 
     function assignmentButton(playerId, team, currentTeamId = null, context = "assign") {
-      const disabled = finishedRosterControlsLocked() || rosterMutationPending ? " disabled" : "";
+      const disabled = finishedRosterControlsLocked() || rosterMutationPending || playerCreatePending ? " disabled" : "";
       const active = currentTeamId === team.teamId;
       const nickname = playerNickname(playerId);
       const label =
@@ -4516,7 +4723,7 @@
     function transferControl(playerId, currentTeamId) {
       const menuId = transferMenuId(playerId);
       const open = openTransferPlayerId === playerId;
-      const disabled = finishedRosterControlsLocked() || rosterMutationPending ? " disabled" : "";
+      const disabled = finishedRosterControlsLocked() || rosterMutationPending || playerCreatePending ? " disabled" : "";
       const nickname = playerNickname(playerId);
       const alternatives = rosterTeams
         .filter((team) => team.teamId !== currentTeamId)
@@ -4552,7 +4759,7 @@
       const role = normalizeLeagueRole(access.role);
       const roleLabel =
         role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
-      const pendingDisabled = rosterMutationPending ? " disabled" : "";
+      const pendingDisabled = rosterMutationPending || playerCreatePending ? " disabled" : "";
       const actions = role === "admin" ? "" : renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname, `<div data-ui="access-actions">
           ${role !== "scorekeeper" ? `<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="scorekeeper"${pendingDisabled}>Make scorer</button>` : ""}
           <button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="admin"${pendingDisabled}>Make co-organiser</button>
@@ -4574,7 +4781,7 @@
       const section = playerPoolElement.closest('[data-ui="player-pool"]');
       if (section instanceof HTMLElement) section.hidden = !isLeagueOperator();
       if (!isLeagueOperator()) {
-        playerPoolElement.innerHTML = "";
+        patchReadOnlyMarkup(playerPoolElement, "");
         return;
       }
       const search = playerSearchInput.value.trim().toLocaleLowerCase();
@@ -4590,11 +4797,11 @@
           : rosterUnassignedPlayers === null && playerSearchState === "loading" ? "Loading players…"
             : rosterUnassignedPlayers === null ? "No players found in the available search."
               : search ? "No matching unassigned players." : "No unassigned players to show.";
-        playerPoolElement.innerHTML = `<p data-ui="empty-note">${message}</p>${limitedNote}`;
+        patchReadOnlyMarkup(playerPoolElement, `<p data-ui="empty-note">${message}</p>${limitedNote}`);
         return;
       }
 
-      playerPoolElement.innerHTML = players
+      patchReadOnlyMarkup(playerPoolElement, players
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
           return `<article data-ui="roster-player" ${playerIdentityAttribute(player.playerId)}>
@@ -4608,8 +4815,7 @@
             </div>
           </article>`;
         })
-        .join("") + limitedNote;
-      restorePlayerIdentities(playerPoolElement);
+        .join("") + limitedNote);
     }
 
     function renderRosterTeams() {
@@ -4618,11 +4824,11 @@
       }
 
       if (rosterTeams.length === 0) {
-        rosterTeamsElement.innerHTML = `<p data-ui="empty-note">${rosterDataLoaded ? "No teams found." : "Loading teams…"}</p>`;
+        patchReadOnlyMarkup(rosterTeamsElement, `<p data-ui="empty-note">${rosterDataLoaded ? "No teams found." : "Loading teams…"}</p>`);
         return;
       }
 
-      rosterTeamsElement.innerHTML = rosterTeams
+      patchReadOnlyMarkup(rosterTeamsElement, rosterTeams
         .map((team) => {
           const search = playerSearchInput.value.trim().toLocaleLowerCase();
           const allAssignments = rosterAssignments.filter((assignment) => assignment.teamId === team.teamId);
@@ -4649,14 +4855,13 @@
             </ul>
           </article>`;
         })
-        .join("");
-      restorePlayerIdentities(rosterTeamsElement);
+        .join(""));
     }
 
     function renderRosterSetup() {
       syncGameCapabilities();
       const focus = captureRosterFocus();
-      if (openActionMenu && (playerPoolElement?.contains(openActionMenu.menu) || rosterTeamsElement?.contains(openActionMenu.menu))) closeActionMenu();
+      const active = document.activeElement;
       const rosterLocked = finishedRosterControlsLocked();
       if (rosterLocked) {
         openTransferPlayerId = null;
@@ -4670,7 +4875,20 @@
       renderPlayerPool();
       renderRosterTeams();
       syncGameModeState();
-      restoreRosterFocus(focus);
+      if (openActionMenu && (playerPoolElement?.contains(openActionMenu.menu) || rosterTeamsElement?.contains(openActionMenu.menu))) {
+        // Older browsers may close a native popover when its row moves. Keep
+        // the same surface/trigger and restore only its presentation state.
+        if (openActionMenu.topLayer) {
+          try {
+            if (!openActionMenu.surface.matches(":popover-open")) openActionMenu.surface.showPopover({ source: openActionMenu.trigger });
+          } catch {
+            openActionMenu.topLayer = false;
+            openActionMenu.surface.removeAttribute("popover");
+          }
+        }
+        positionActionMenu();
+      } else if (openActionMenu && !openActionMenu.menu.isConnected) closeActionMenu();
+      if (focus && !active.isConnected) restoreRosterFocus(focus);
     }
 
     function captureRosterFocus() {
@@ -4717,12 +4935,7 @@
       };
     }
 
-    async function loadRosterSetup(options = {}) {
-      if (!rosterControlsAvailable()) return;
-      const version = ++rosterReadVersion;
-      const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET", cache: "no-store" });
-      if (version !== rosterReadVersion) return;
-
+    function applyRosterPayload(rosterPayload) {
       rosterTeams = Array.isArray(rosterPayload?.teams)
         ? rosterPayload.teams.map((team) => ({
             ...team,
@@ -4751,6 +4964,14 @@
       }
       for (const assignment of rosterAssignments) pendingCreatedPlayers.delete(assignment.playerId);
       rosterDataLoaded = true;
+    }
+
+    async function loadRosterSetup(options = {}) {
+      if (!rosterControlsAvailable()) return;
+      const version = ++rosterReadVersion;
+      const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET", cache: "no-store" });
+      if (version !== rosterReadVersion) return;
+      applyRosterPayload(rosterPayload);
       if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
       }
@@ -4832,7 +5053,10 @@
       const game = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
         method: "GET",
       });
+      applyGameView(game, true);
+    }
 
+    function applyGameView(game, updateForm = false) {
       currentGame = game;
       finishedResultState = "authoritative";
       if (game.status === "finished") {
@@ -4882,9 +5106,11 @@
         gameSeasonId.textContent = game.seasonId;
       }
 
-      kickoffInput.value = toLocalDateTimeInput(game.gameStartTs);
-      statusInput.value = game.status;
-      thirdLengthInput.value = String(parseThirdLengthMinutes(game.thirdLengthMinutes ?? game.timer?.thirdLengthMinutes));
+      if (updateForm || !metadataDirty) {
+        kickoffInput.value = toLocalDateTimeInput(game.gameStartTs);
+        statusInput.value = game.status;
+        thirdLengthInput.value = String(parseThirdLengthMinutes(game.thirdLengthMinutes ?? game.timer?.thirdLengthMinutes));
+      }
       renderTimer();
       syncGameModeState();
 
@@ -4900,6 +5126,8 @@
     }
 
     async function loadLeagueAccess() {
+      if (refreshAccountLocked) return;
+      const revision = ++authorityRevision;
       currentLeagueRole = null;
       ++playersReadVersion;
       knownRosterPlayers.clear();
@@ -4921,12 +5149,14 @@
         const league = await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(currentLeagueId)}`, {
           method: "GET",
         });
+        if (refreshAccountLocked || revision !== authorityRevision) return;
         if (league?.leagueId === currentLeagueId) {
           currentLeagueRole = normalizeLeagueRole(league?.access?.role);
           currentLeagueName = league.name;
           if (gameLeagueLink instanceof HTMLAnchorElement) gameLeagueLink.textContent = league.name;
         }
       } catch {
+        if (refreshAccountLocked || revision !== authorityRevision) return;
         currentLeagueRole = null;
       }
 
@@ -4950,7 +5180,7 @@
     });
 
     attachFormSubmit("game-edit-form", saveButton, async () => {
-      if (!canEditGame() || gameMetadataPending) {
+      if (!canEditGame() || gameMetadataPending || metadataRefreshConflict()) {
         return;
       }
 
@@ -4985,6 +5215,8 @@
             thirdLengthMinutes: parseThirdLengthMinutes(thirdLengthInput.value),
           }),
         });
+        if (refreshAccountLocked) return;
+        metadataDirty = false;
 
         try {
           await loadGame();
@@ -5002,14 +5234,18 @@
           showError("Game saved. The latest details couldn’t be loaded. Reload the page to check them.", { includesOutcome: true });
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not update game.";
-        showError(message);
-        setStatus("Game update failed.", "error");
+        if (uncertainReadBarriers.has(`PATCH:/v1/games/${encodeURIComponent(gameId)}`)) {
+          showError("Game changes could not be confirmed. Retry saving these details or reload to check.", { includesOutcome: true });
+        } else {
+          const message = error instanceof Error ? error.message : "Could not update game.";
+          showError(message);
+          setStatus("Game update failed.", "error");
+        }
       } finally {
         finishSaveFocus();
         gameMetadataPending = false;
         renderTimer();
-        saveButton.disabled = !canEditGame();
+        saveButton.disabled = !canEditGame() || metadataRefreshConflict();
         kickoffInput.disabled = !canEditGame();
         statusInput.disabled = !canEditGame();
         thirdLengthInput.disabled = !canEditGame() || buildTimerState(currentGame).thirds.some((third) => third.startedAt !== null);
@@ -5061,8 +5297,10 @@
     }
 
     async function reconcileClockOperation(operation) {
+      if (refreshAccountLocked) return false;
       try {
         const game = await requestJsonOrThrow("/v1/games/" + encodeURIComponent(gameId), { method: "GET", cache: "no-store" });
+        if (refreshAccountLocked) return false;
         currentGame = game;
         if (clockOutcomeObserved(operation)) {
           clockOperation = null;
@@ -5113,7 +5351,7 @@
     }
 
     async function performClockOperation(operation, initiator, readOnly = false) {
-      if (timerMutationPending || goalMutationInFlight || goalOperation || (!readOnly && !canScoreGame())) return;
+      if (refreshAccountLocked || timerMutationPending || goalMutationInFlight || goalOperation || (!readOnly && !canScoreGame())) return;
       const finishFocus = trackScoringOperationFocus(initiator);
       const navigationRevision = gameNavigationRevision;
       timerMutationPending = true;
@@ -5293,6 +5531,7 @@
         playerCreatePending = true;
         let committed = false;
         quickCreatePlayerButton.disabled = true;
+        renderRosterSetup();
         const feedback = beginGameFeedback("Adding player…");
 
         try {
@@ -5335,6 +5574,7 @@
         } finally {
           playerCreatePending = false;
           quickCreatePlayerButton.disabled = finishedRosterControlsLocked() || rosterMutationPending;
+          renderRosterSetup();
           if (finishFocus() && !playerNicknameInput.disabled) playerNicknameInput.focus();
         }
       });
@@ -5419,7 +5659,7 @@
               feedback,
             );
           } catch (error) {
-            if (isDefinitiveRequestRejection(error)) {
+            if (isDefinitiveRequestRejection(error) && !uncertainReadBarriers.has(`POST:/v1/leagues/${encodeURIComponent(currentLeagueId)}/access`)) {
               const message = error instanceof Error ? error.message : "Could not update scorer access.";
               showError(message);
               setStatus("Scorer access update failed.", "error");
@@ -5482,7 +5722,7 @@
             },
           );
         } catch (error) {
-          if (isDefinitiveRequestRejection(error)) {
+          if (isDefinitiveRequestRejection(error) && !uncertainReadBarriers.has(`PUT:/v1/games/${encodeURIComponent(gameId)}/roster/${encodeURIComponent(playerId)}`)) {
             const message = error instanceof Error ? error.message : "Could not assign player.";
             showError(message);
             setStatus("Roster assignment failed.", "error");
@@ -5556,15 +5796,9 @@
 
       goalAssistsElement.addEventListener("change", (event) => {
         const changedInput = event.target instanceof HTMLInputElement ? event.target : null;
-        const changedValue = changedInput?.value ?? "";
-        renderGoalAssistChoices(goalScorerInput.value);
-        const replacement = changedValue
-          ? [...goalAssistsElement.querySelectorAll('input[type="checkbox"]')]
-              .find((input) => input instanceof HTMLInputElement && input.value === changedValue)
-          : null;
-        if (replacement instanceof HTMLInputElement) {
-          replacement.focus();
-        }
+        if (changedInput?.checked && goalAssistsElement.querySelectorAll("input:checked").length > 3) changedInput.checked = false;
+        refreshGoalOptions();
+        renderGoalControls({}, true);
       });
 
       goalAssistsDropdown.addEventListener("keydown", (event) => {
@@ -5628,6 +5862,314 @@
       });
     }
 
+    // Read freshness is deliberately separate from the write/recovery owners.
+    // These endpoints are independent snapshots, not a concurrent-edit protocol.
+    const refreshRoot = root;
+    const refreshNotice = document.getElementById("game-refresh-notice");
+    const refreshMessage = document.getElementById("game-refresh-message");
+    const refreshRetry = root.querySelector('[data-action="retry-game-updates"]');
+    let refreshTimer = 0;
+    let refreshFlight = null;
+    let refreshGeneration = 0;
+    let refreshEpoch = 0;
+    let refreshFailures = 0;
+    let refreshLastFullAt = Date.now();
+    let refreshForceFull = false;
+    let refreshStarted = false;
+    let refreshSuspended = false;
+    let refreshRemoved = false;
+    const uncertainReadBarriers = new Set();
+
+    function refreshVisible() {
+      return !refreshRemoved && refreshRoot.isConnected && !refreshSuspended &&
+        document.visibilityState !== "hidden" && !accountRevalidating && !signOutPending && !signOutUnconfirmed;
+    }
+
+    function setRefreshNotice(message = "") {
+      const ownedFocus = !message && refreshNotice?.contains(document.activeElement);
+      if (refreshNotice) refreshNotice.hidden = !message;
+      if (refreshMessage && refreshMessage.textContent !== message) refreshMessage.textContent = message;
+      const label = refreshAccountLocked || uncertainReadBarriers.size ? "Reload game" : "Retry updates";
+      if (refreshRetry && refreshRetry.textContent !== label) refreshRetry.textContent = label;
+      if (ownedFocus) gameModePanels.find((panel) => !panel.hidden)?.focus({ preventScroll: true });
+    }
+
+    function refreshDelay() {
+      const cadence = currentGame?.status === "live" ? 5000 : 15000;
+      return Math.min(60000, cadence * (2 ** Math.min(refreshFailures, 4)));
+    }
+
+    function scheduleRefresh(delay = refreshDelay()) {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = 0;
+      if (!refreshStarted || !refreshVisible() || refreshAccountLocked || refreshFlight) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = 0;
+        void refreshMatch();
+      }, delay);
+    }
+
+    function invalidateRefresh() {
+      refreshGeneration += 1;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = 0;
+      if (refreshFlight) {
+        refreshFlight.cancelled = true;
+        window.clearTimeout(refreshFlight.deadline);
+        refreshFlight.controller.abort();
+      }
+    }
+
+    beforeGameWrite = (path, method) => {
+      if (refreshAccountLocked && path !== "/v1/auth/logout") throw new Error("Your account changed. Reload before making changes.");
+      // Synchronous and before fetch, including writes made outside this root.
+      refreshEpoch += 1;
+      invalidateRefresh();
+      scheduleRefresh();
+      const owner = `${method}:${path}`;
+      const dedicatedOwner = (goalOperation?.path === path && goalOperation.request.method === method) ||
+        (clockOperation?.path === path && clockOperation.request.method === method) ||
+        (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method);
+      return (result) => {
+        // These writes already have an explicit recovery owner. A clock GET
+        // can confirm its operation without replaying the POST; don't strand
+        // freshness behind an additional generic barrier.
+        if (dedicatedOwner) return;
+        if (!result || result.status >= 500 || [408, 429].includes(result.status)) uncertainReadBarriers.add(owner);
+        else if (result.ok) uncertainReadBarriers.delete(owner);
+      };
+    };
+
+    function localWriteOwnsState() {
+      return Boolean(gameMetadataPending || gameDeletionPending || goalMutationInFlight || timerMutationPending ||
+        rosterMutationPending || playerCreatePending || goalOperation || clockOperation || playerCreateAttempt || uncertainReadBarriers.size);
+    }
+
+    function discardPrivateEnrichment() {
+      ++playersReadVersion;
+      knownRosterPlayers.clear();
+      verifiedAdminPlayers.clear();
+      rosterPlayers = [];
+      playerSearchState = "unavailable";
+      finishedRosterEditing = false;
+      finishedResultEditing = false;
+      openTransferPlayerId = null;
+      closeActionMenu();
+    }
+
+    function lockRefreshAccount(message) {
+      refreshAccountLocked = true;
+      authorityRevision += 1;
+      currentLeagueRole = null;
+      discardPrivateEnrichment();
+      // Keep operation identity and drafts, but do not allow this page's old
+      // account to submit them under a newly switched cookie.
+      renderRosterSetup();
+      renderTimer();
+      renderGoalControls({}, true);
+      for (const button of goalTimelineElement?.querySelectorAll("button") ?? []) button.disabled = true;
+      setRefreshNotice(message);
+    }
+
+    function refreshRosterValid(payload) {
+      const teams = payload?.teams;
+      return Array.isArray(teams) && teams.length === 3 && new Set(teams.map((team) => team.teamId)).size === 3 &&
+        teams.every((team) => ["red", "blue", "yellow"].includes(team?.teamId) && (!team.gameId || team.gameId === gameId)) &&
+        Array.isArray(payload.roster) && new Set(payload.roster.map((item) => item.playerId)).size === payload.roster.length &&
+        payload.roster.every((item) => usableEntityId(item?.playerId) && ["red", "blue", "yellow"].includes(item.teamId) &&
+          (!item.gameId || item.gameId === gameId) && (!item.player || (item.player.playerId === item.playerId && typeof item.player.nickname === "string"))) &&
+        (payload.unassignedPlayers === undefined || (Array.isArray(payload.unassignedPlayers) && payload.unassignedPlayers.every((player) => usableEntityId(player?.playerId) && typeof player.nickname === "string" && player.nickname.trim())));
+    }
+
+    function refreshGameValid(game) {
+      if (game?.gameId !== gameId || game.leagueId !== currentLeagueId || game.seasonId !== currentSeasonId ||
+        !["scheduled", "live", "finished"].includes(game.status) || !Number.isFinite(Date.parse(game.gameStartTs))) return false;
+      const segments = game.timer?.thirds ?? game.thirds;
+      if (!Array.isArray(segments) || segments.length !== 3 || new Set(segments.map((segment) => segment?.third)).size !== 3 ||
+        ![20, 25, 30].includes(game.thirdLengthMinutes)) return false;
+      for (const segment of segments) {
+        if (!segment || ![1, 2, 3].includes(segment.third) ||
+          ![segment.startedAt, segment.finishedAt].every((value) => value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)))) ||
+          (segment.finishedAt && (!segment.startedAt || Date.parse(segment.finishedAt) < Date.parse(segment.startedAt)))) return false;
+        if (game.timer && segment.status !== (segment.finishedAt ? "finished" : segment.startedAt ? "running" : "not_started")) return false;
+      }
+      const sorted = [...segments].sort((left, right) => left.third - right.third);
+      if (sorted.some((segment, index) => index > 0 && segment.startedAt && !sorted[index - 1].finishedAt)) return false;
+      const running = sorted.filter((segment) => segment.startedAt && !segment.finishedAt);
+      const status = running.length ? "running" : sorted.every((segment) => segment.finishedAt) ? "complete" : sorted.some((segment) => segment.startedAt) ? "between_thirds" : "not_started";
+      if (running.length > 1 || (game.timer && (game.timer.thirdLengthMinutes !== game.thirdLengthMinutes || game.timer.status !== status || game.timer.activeThird !== (running[0]?.third ?? null)))) return false;
+      if (game.status === "finished") {
+        const result = game.result;
+        if (!normalizeScoreboardTeams(result?.teams).length || !["win", "draw"].includes(result?.outcome) ||
+          (result.outcome === "draw" ? result.winnerTeamId !== null : !["red", "blue", "yellow"].includes(result.winnerTeamId)) ||
+          result.comparator !== "fewest_conceded_then_most_scored" || !Number.isFinite(Date.parse(result.computedAt)) || !resultOutcome(result.teams, result)) return false;
+      }
+      return true;
+    }
+
+    function renderBackgroundState() {
+      refreshingPresentation = true;
+      try {
+        renderTimer();
+        renderLiveScoreboard();
+        refreshGoalOptions();
+        renderGoalControls({}, true);
+        renderGoalTimeline();
+        renderRosterSetup();
+        for (const button of goalTimelineElement?.querySelectorAll("button[data-event-id]") ?? []) {
+          button.disabled = !canScoreGame() || !goalTimeline.some((goal) => goal.eventId === button.getAttribute("data-event-id"));
+        }
+      } finally {
+        refreshingPresentation = false;
+      }
+    }
+
+    async function refreshMatch() {
+      if (!refreshStarted || refreshFlight || !refreshVisible() || refreshAccountLocked) return;
+      const flight = { controller: new AbortController(), generation: refreshGeneration, epoch: refreshEpoch, cancelled: false };
+      refreshFlight = flight;
+      const current = () => !flight.cancelled && flight.generation === refreshGeneration && flight.epoch === refreshEpoch && refreshVisible();
+      const full = refreshForceFull || Date.now() - refreshLastFullAt >= 15000;
+      flight.full = full;
+      refreshForceFull = false;
+      const deadline = window.setTimeout(() => {
+        if (!current()) return;
+        flight.cancelled = true;
+        flight.controller.abort();
+        refreshFailures += 1;
+        setRefreshNotice("Updates unavailable. Showing the last loaded game.");
+        // Do not release the flight until fetch/body consumption really settles.
+        // Even an abort-ignoring transport cannot cause overlapping requests.
+      }, 12000);
+      flight.deadline = deadline;
+      const read = async (path) => {
+        if (!current()) throw new Error("Superseded read");
+        const value = await requestJsonOrThrow(path, { method: "GET", cache: "no-store", signal: flight.controller.signal });
+        if (!current()) throw new Error("Superseded read");
+        return value;
+      };
+      try {
+        let league = null;
+        if (full) {
+          const session = (await read("/v1/auth/session"))?.session;
+          if (!usableEntityId(session?.sessionId) || !usableEntityId(session?.email) ||
+            session.sessionId !== authenticatedSession?.sessionId || session.email !== authenticatedSession?.email) {
+            lockRefreshAccount("Your sign-in changed. Reload this game before continuing.");
+            return;
+          }
+          league = await read(`/v1/leagues/${encodeURIComponent(currentLeagueId)}`);
+          if (league?.leagueId !== currentLeagueId || !normalizeLeagueRole(league?.access?.role)) throw new Error("Invalid league read");
+          const role = normalizeLeagueRole(league.access.role);
+          authorityRevision += 1;
+          if (role !== currentLeagueRole) {
+            discardPrivateEnrichment();
+            currentLeagueRole = role;
+            renderRosterSetup();
+            renderTimer();
+            renderGoalControls({}, true);
+          }
+        }
+        // Full authority revalidation is allowed during uncertainty. It cannot
+        // acknowledge, retry or supersede any in-flight or unconfirmed write.
+        if (localWriteOwnsState()) {
+          if (full) refreshLastFullAt = Date.now();
+          if (uncertainReadBarriers.size) setRefreshNotice("An earlier change is unconfirmed. Retry that action or reload to check the game.");
+          return;
+        }
+        const gamePath = `/v1/games/${encodeURIComponent(gameId)}`;
+        const game = await read(gamePath);
+        const goals = await read(`${gamePath}/goals`);
+        const roster = full ? await read(`${gamePath}/roster`) : null;
+        const teams = normalizeScoreboardTeams(goals?.scoreboard?.teams);
+        const timeline = decodeGoalTimeline(goals?.timeline);
+        if (!refreshGameValid(game) ||
+          !teams.length || goals.scoreboard.teams.some((team) => team.gameId && team.gameId !== gameId) || timeline === null ||
+          (roster && !refreshRosterValid(roster))) throw new Error("Invalid game read");
+        if (!current() || localWriteOwnsState()) return;
+        if (roster) {
+          const before = JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]);
+          applyRosterPayload(roster);
+          if (JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]) !== before) draftRosterChanged = true;
+        }
+        if (editingGoalId && editingGoalSnapshot !== JSON.stringify(timeline.find((goal) => goal.eventId === editingGoalId))) editingGoalChanged = true;
+        goalTimeline = timeline;
+        goalTimelineLoaded = true;
+        scoreboardTeams = teams;
+        scoreboardState = "authoritative";
+        applyGameView(game);
+        if (league && typeof league.name === "string") {
+          currentLeagueName = league.name;
+          if (gameLeagueLink) gameLeagueLink.textContent = league.name;
+        }
+        renderBackgroundState();
+        if (full) refreshLastFullAt = Date.now();
+        refreshFailures = 0;
+        setRefreshNotice();
+      } catch (error) {
+        if (current()) {
+          if (error?.statusCode === 401 || error?.statusCode === 403) lockRefreshAccount("Your access changed. Reload this game before continuing.");
+          else {
+            refreshFailures += 1;
+            setRefreshNotice("Updates unavailable. Showing the last loaded game.");
+          }
+        }
+      } finally {
+        window.clearTimeout(deadline);
+        refreshFlight = null;
+        if (refreshForceFull && refreshVisible() && !refreshAccountLocked) void refreshMatch();
+        else scheduleRefresh();
+      }
+    }
+
+    function requestFullRefresh() {
+      // Coalesce duplicate focus/visibility/manual signals into one flight.
+      if (refreshFlight?.full && !refreshFlight.cancelled) return;
+      refreshForceFull = true;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = 0;
+      if (!refreshFlight) void refreshMatch();
+    }
+
+    refreshRetry?.addEventListener("click", () => {
+      if (refreshAccountLocked || uncertainReadBarriers.size) {
+        navigateTo(`${window.location.pathname}${window.location.search}${window.location.hash}`, "reload");
+        return;
+      }
+      requestFullRefresh();
+    });
+    root.querySelector('[data-action="reload-game-details"]')?.addEventListener("click", () => {
+      navigateTo(`${window.location.pathname}${window.location.search}${window.location.hash}`, "reload");
+    });
+    function suspendRefresh() {
+      invalidateRefresh();
+      window.clearInterval(timerTickInterval);
+      timerTickInterval = 0;
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (!refreshVisible()) suspendRefresh();
+      else {
+        renderTimer();
+        requestFullRefresh();
+      }
+    });
+    window.addEventListener("focus", () => {
+      if (!refreshVisible()) return;
+      requestFullRefresh();
+    });
+    window.addEventListener("pagehide", () => { refreshSuspended = true; suspendRefresh(); });
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) { suspendRefresh(); return; }
+      refreshSuspended = false;
+      if (refreshStarted) requestFullRefresh();
+    });
+    const rootObserver = new MutationObserver(() => {
+      if (refreshRoot.isConnected) return;
+      refreshRemoved = true;
+      suspendRefresh();
+      rootObserver.disconnect();
+    });
+    rootObserver.observe(document.body, { childList: true, subtree: true });
+
     syncGameModeState();
     await loadGame();
     await loadLeagueAccess();
@@ -5662,6 +6204,10 @@
     if (goalsLoaded || isGameFinished()) {
       setStatus("");
     }
+    refreshStarted = true;
+    refreshLastFullAt = Date.now();
+    if (refreshForceFull) void refreshMatch();
+    else scheduleRefresh();
   }
 
   async function initJoinPage() {
@@ -6196,7 +6742,7 @@
       }
 
       if (page === "game") {
-        await initGamePage();
+        await initGamePage(authenticatedSession);
         return;
       }
 

@@ -1848,8 +1848,15 @@ function createManualTimers() {
     pendingCount(): number {
       return pending.size;
     },
+    elapsedMilliseconds(): number {
+      return now;
+    },
+    pendingDelays(): number[] {
+      return [...pending.values()].map(timer => timer.runAt - now).sort((left, right) => left - right);
+    },
     advanceBy(milliseconds: number): void {
       const target = now + milliseconds;
+      let callbacks = 0;
       while (true) {
         const next = [...pending.entries()]
           .filter(([, timer]) => timer.runAt <= target)
@@ -1858,6 +1865,7 @@ function createManualTimers() {
           break;
         }
         const [id, timer] = next;
+        assert(++callbacks <= 100, "A finite manual-timer advance must not execute an unbounded recurring loop");
         pending.delete(id);
         now = timer.runAt;
         timer.callback();
@@ -1903,6 +1911,7 @@ async function bootPage(input: {
   fetch?: ReturnType<typeof createMockFetch>;
   flushOnBoot?: boolean;
   captureInterval?: (callback: () => void) => number;
+  captureClearInterval?: (id: number) => void;
   sessionStorage?: Map<string, string>;
   timers?: ReturnType<typeof createManualTimers>;
 }) {
@@ -1957,9 +1966,9 @@ async function bootPage(input: {
   });
   Object.defineProperty(window, "setTimeout", {
     value: input.timers?.setTimeout ?? ((callback: () => void, delay = 0) => {
-      if (window.location.pathname.startsWith("/auth/callback") && (delay === 3000 || delay === 15000)) {
-        return 0;
-      }
+      // Long-running lifecycle work is advanced explicitly by its own tests.
+      // Synchronous recurring callbacks would recurse without a browser clock.
+      if (delay >= 1000) return 0;
       callback();
       return 0;
     }),
@@ -1974,9 +1983,15 @@ async function bootPage(input: {
     configurable: true,
   });
   Object.defineProperty(window, "clearInterval", {
-    value: () => undefined,
+    value: input.captureClearInterval ?? (() => undefined),
     configurable: true,
   });
+  if (input.timers) {
+    Object.defineProperty(window.Date, "now", {
+      value: () => Date.parse("2026-03-28T11:00:30.000Z") + input.timers!.elapsedMilliseconds(),
+      configurable: true,
+    });
+  }
 
   if (input.scriptFile === "setup-flow.js" && ["join", "invite"].includes(window.document.getElementById("setup-flow-root")?.getAttribute("data-page") ?? "")) {
     window.eval(readUiScript("auth-flow.js"));
@@ -6963,6 +6978,10 @@ for (const focusDestination of ["surface", "outside"] as const) {
       const beaAction = page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-bea"]');
       assert(beaAction instanceof page.window.HTMLButtonElement);
       const { surface: pendingSurface } = openActionMenuFor(beaAction);
+      const pendingActions = [...pendingSurface.querySelectorAll<HTMLButtonElement>('button[data-action="grant-player-access"]')];
+      assert.deepEqual(pendingActions.map(button => [button.getAttribute("data-role"), button.textContent?.trim(), button.disabled]), [
+        ["scorekeeper", "Make scorer", true], ["admin", "Make co-organiser", true],
+      ]);
       assert.equal(pendingSurface.querySelector("button:not(:disabled)"), null);
       assert.equal(page.document.activeElement, pendingSurface, "the all-disabled group itself receives focus");
       const outside = page.document.querySelector('[data-ui="site-nav"] a');
@@ -6973,7 +6992,17 @@ for (const focusDestination of ["surface", "outside"] as const) {
       await flushAsync();
       const replacement = page.document.getElementById("player-actions-player-bea");
       assert(replacement instanceof page.window.HTMLElement);
-      assert.notEqual(replacement, pendingSurface, "post-promotion player reads and pending-state cleanup redraw real roster markup");
+      assert.equal(replacement, pendingSurface, "keyed roster updates retain the actual focused group instead of replacing it");
+      const settledActions = [...replacement.querySelectorAll<HTMLButtonElement>('button[data-action="grant-player-access"]')];
+      assert.equal(settledActions.length, pendingActions.length);
+      settledActions.forEach((button, index) => assert.equal(button, pendingActions[index], "the existing native action controls survive the update"));
+      assert.deepEqual(settledActions.map(button => [button.getAttribute("data-role"), button.textContent?.trim(), button.disabled]), [
+        ["scorekeeper", "Make scorer", false], ["admin", "Make co-organiser", false],
+      ], "pending cleanup updates real disabled state in both the open and outside-focus cases");
+      const ariRow = page.document.querySelector('[data-ui="roster-member"][data-player-id="player-ari"]'); assert(ariRow);
+      assert.equal(ariRow.querySelector('[data-ui="claim-badge"]')?.getAttribute("aria-label"), "Scorer");
+      assert.equal(ariRow.querySelector('[data-action="grant-player-access"][data-role="scorekeeper"]'), null);
+      assert.equal(ariRow.querySelector('[data-action="grant-player-access"][data-role="admin"]')?.textContent?.trim(), "Make co-organiser");
       assert.equal(writes, 1);
       assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "ari@example.com")), "scorekeeper");
       assert.equal(apiState.leagueAccess.get(leagueAccessKey("three-sided-football-club", "bea@example.com")), undefined);
@@ -13626,3 +13655,939 @@ for (const collision of ["CR-LF", "NUL-replacement"] as const) {
     } finally { page.dom.window.close(); }
   });
 }
+
+function seedUx10Game(apiState: MockApiState, status: MockGame["status"] = "live", role: MockLeagueRole = "admin") {
+  const thirds = createDefaultThirdTimerSegments();
+  if (status === "live") thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+  seedGoalScoringGame(apiState, { gameId: "ux10-match", status, role, thirds });
+}
+
+async function bootUx10Page(apiState: MockApiState, options: {
+  mode?: string;
+  fetch?: ReturnType<typeof createMockFetch>;
+  captureInterval?: (callback: () => void) => number;
+  captureClearInterval?: (id: number) => void;
+} = {}) {
+  const timers = createManualTimers();
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "ux10-match" }),
+    url: "http://localhost:3000/games/ux10-match#" + (options.mode ?? "score"),
+    scriptFile: "setup-flow.js", apiState, timers, fetch: options.fetch,
+    captureInterval: options.captureInterval, captureClearInterval: options.captureClearInterval,
+  });
+  Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+  return { ...page, timers };
+}
+
+function closeUx10Page(page: Awaited<ReturnType<typeof bootUx10Page>>) {
+  page.window.dispatchEvent(new page.window.Event("pagehide"));
+  page.dom.window.close();
+}
+
+test("ux10 a committed new player stays assignment-disabled until post-create reads settle", async () => {
+  const apiState = createMockApiState();
+  seedUx10Game(apiState, "scheduled");
+  const base = createMockFetch(apiState);
+  let createdPlayerId: string | undefined;
+  let creates = 0;
+  let heldRoster = false;
+  let releaseRoster: (() => void) | undefined;
+  const assignments: Array<{ method: string; path: string; body: unknown }> = [];
+  const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (init.method === "POST" && path === "/v1/games/ux10-match/players") {
+      creates += 1;
+      createdPlayerId = (JSON.parse(String(init.body)) as { playerId: string }).playerId;
+    }
+    if (init.method === "PUT") assignments.push({ method: init.method, path, body: JSON.parse(String(init.body)) });
+    const response = await base(input, init);
+    if (init.method === "GET" && path === "/v1/games/ux10-match/roster" && createdPlayerId && !heldRoster) {
+      heldRoster = true;
+      return new Promise<Response>(resolve => { releaseRoster = () => resolve(response); });
+    }
+    return response;
+  } });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-player-create"]');
+    const form = page.document.getElementById("player-create-form");
+    const nickname = page.document.getElementById("player-nickname");
+    const add = page.document.querySelector('[data-action="quick-create-player"]');
+    assert(toggle instanceof page.window.HTMLButtonElement && form instanceof page.window.HTMLFormElement);
+    assert(nickname instanceof page.window.HTMLInputElement && add instanceof page.window.HTMLButtonElement);
+    toggle.click(); nickname.value = "Bea"; nickname.focus(); dispatchSubmit(form); await flushAsync();
+    assert.equal(creates, 1); assert(createdPlayerId && releaseRoster);
+    assert.equal(apiState.players.get(createdPlayerId)?.nickname, "Bea", "creation is already committed while its follow-up read is held");
+    const rows = ux09PlayerRows(page, '[data-ui="roster-player"]', createdPlayerId);
+    assert.equal(rows.length, 1);
+    const row = rows[0]; assert(row instanceof page.window.HTMLElement); assert.equal(interactionVisible(row), true);
+    const blue = row.querySelector('[data-action="assign-player"][data-team-id="blue"]');
+    assert(blue instanceof page.window.HTMLButtonElement);
+    assert.equal(blue.disabled, true, "a visible new card must not advertise an assignment click the busy handler will ignore");
+    assert.equal(add.disabled, true);
+    const existingTransfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+    assert(existingTransfer instanceof page.window.HTMLButtonElement); assert.equal(existingTransfer.disabled, true);
+    blue.click(); await flushAsync(); assert.equal(assignments.length, 0);
+
+    releaseRoster(); releaseRoster = undefined; await flushAsync();
+    const settledRow = ux09PlayerRows(page, '[data-ui="roster-player"]', createdPlayerId)[0];
+    assert(settledRow);
+    assert.equal(settledRow.querySelector('[data-action="assign-player"][data-team-id="blue"]'), blue,
+      "post-create completion must re-enable the actual preserved button, not depend on replacing the row");
+    assert.equal(blue.disabled, false); assert.equal(add.disabled, false); assert.equal(existingTransfer.disabled, false);
+    blue.focus(); blue.click(); await flushAsync();
+    assert.deepEqual(assignments, [{ method: "PUT", path: `/v1/games/ux10-match/roster/${encodeURIComponent(createdPlayerId)}`, body: { teamId: "blue" } }]);
+    assert.equal(apiState.roster.get(`ux10-match:${createdPlayerId}`)?.teamId, "blue");
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', createdPlayerId).length, 0);
+    const assigned = ux09PlayerRows(page, '[data-ui="roster-member"]', createdPlayerId);
+    assert.equal(assigned.length, 1); assert.equal(assigned[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "blue");
+    assert.equal(creates, 1);
+  } finally {
+    releaseRoster?.();
+    await flushAsync();
+    closeUx10Page(page);
+  }
+});
+
+test("ux10 a scheduled external join appears at the 15-second public roster refresh without changing local drafts", async () => {
+  const apiState = createMockApiState();
+  seedUx10Game(apiState, "scheduled");
+  apiState.games.get("ux10-match")!.joinCode = "ABCD2345";
+  const base = createMockFetch(apiState);
+  const observerRequests: Array<{ method: string; path: string }> = [];
+  const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+    observerRequests.push({ method: init.method ?? "GET", path: new URL(String(input)).pathname });
+    return base(input, init);
+  } });
+  try {
+    const rosterReads = () => observerRequests.filter(request => request.path === "/v1/games/ux10-match/roster").length;
+    const initialRosterReads = rosterReads(); assert(initialRosterReads > 0);
+    assert.equal(page.document.querySelectorAll('[data-ui="roster-player"]').length, 0);
+    const toggle = page.document.querySelector('[data-action="toggle-player-create"]');
+    const region = page.document.getElementById("player-create-region");
+    const nickname = page.document.getElementById("player-nickname");
+    const search = page.document.getElementById("player-search");
+    assert(toggle instanceof page.window.HTMLButtonElement && region instanceof page.window.HTMLElement);
+    assert(nickname instanceof page.window.HTMLInputElement && search instanceof page.window.HTMLInputElement);
+    toggle.click(); nickname.value = "Keep this local draft";
+    nickname.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    search.value = "Cy"; search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    search.focus(); search.setSelectionRange(0, 1);
+
+    // A separate client uses the real fixture join route after the observer's
+    // complete initial roster read. It is not an observer-page mutation.
+    const joined = await base("http://localhost:3001/v1/join/ABCD2345", {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "ux10-external-cy" },
+      body: JSON.stringify({ nickname: "Cy" }),
+    });
+    assert.equal(joined.status, 201);
+    const receipt = await joined.json() as { gameId: string; player: { playerId: string; nickname: string } };
+    assert.equal(receipt.gameId, "ux10-match"); assert.equal(receipt.player.nickname, "Cy");
+    assert(apiState.gamePlayers.has(`ux10-match:${receipt.player.playerId}`));
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', receipt.player.playerId).length, 0);
+
+    await advanceUx10(page, 14999);
+    assert.equal(rosterReads(), initialRosterReads, "scheduled roster polling must not run before 15 seconds");
+    assert(observerRequests.filter(request => request.path === "/v1/games/ux10-match/players").length >= 2,
+      "the local search has completed, but private capped search is not authority for the complete Unassigned collection");
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', receipt.player.playerId).length, 0);
+    assert.equal(page.document.activeElement, search);
+
+    await advanceUx10(page, 1);
+    assert.equal(rosterReads(), initialRosterReads + 1);
+    const rows = ux09PlayerRows(page, '[data-ui="roster-player"]', receipt.player.playerId);
+    assert.equal(rows.length, 1);
+    const row = rows[0]; assert(row instanceof page.window.HTMLElement);
+    assert.equal(interactionVisible(row), true); assert.equal(row.querySelector("strong")?.textContent, "Cy");
+    assert.equal(page.document.getElementById("player-nickname"), nickname); assert.equal(nickname.value, "Keep this local draft");
+    assert.equal(page.document.getElementById("player-search"), search); assert.equal(search.value, "Cy");
+    assert.equal(page.document.activeElement, search); assert.equal(search.selectionStart, 0); assert.equal(search.selectionEnd, 1);
+    assert.equal(region.hidden, false); assert.equal(interactionVisible(toggle), false);
+    assert.equal(page.window.location.hash, "#teams"); assert.equal(page.document.getElementById("setup-status")?.hidden, true);
+    assert.deepEqual(observerRequests.filter(request => request.method !== "GET"), [], "a read refresh never joins, claims or assigns for the observing page");
+  } finally { closeUx10Page(page); }
+});
+
+async function advanceUx10(page: Awaited<ReturnType<typeof bootUx10Page>>, milliseconds: number) {
+  const target = page.timers.elapsedMilliseconds() + milliseconds;
+  let steps = 0;
+  do {
+    assert(++steps <= 100, "Refresh timers must stay bounded within a finite virtual interval");
+    const remaining = target - page.timers.elapsedMilliseconds();
+    const next = page.timers.pendingDelays()[0];
+    page.timers.advanceBy(next === undefined ? remaining : Math.min(remaining, next));
+    await flushAsync();
+  } while (page.timers.elapsedMilliseconds() < target);
+}
+
+function setUx10Visible(page: Awaited<ReturnType<typeof bootUx10Page>>, visible: boolean) {
+  Object.defineProperty(page.document, "hidden", { value: !visible, configurable: true });
+  Object.defineProperty(page.document, "visibilityState", { value: visible ? "visible" : "hidden", configurable: true });
+  page.document.dispatchEvent(new page.window.Event("visibilitychange"));
+}
+
+function ux10Scores(page: Awaited<ReturnType<typeof bootUx10Page>>) {
+  return [...page.document.querySelectorAll('#live-scoreboard [data-ui="score-team"]')].map(card => ({
+    teamId: card.getAttribute("data-team-id"),
+    values: [...card.querySelectorAll("dl > div")].map(row => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent]),
+  }));
+}
+
+test("ux10 two clients observe goal creation correction and deletion without navigation or background writes", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState);
+  const base = createMockFetch(apiState); const observerWrites: string[] = [];
+  const writer = await bootUx10Page(apiState);
+  const observer = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (init.method && init.method !== "GET") observerWrites.push(String(input));
+    return base(input, init);
+  } });
+  try {
+    const draft = liveGoalControls(writer); draft.draft();
+    const assist = writer.document.querySelector('#goal-assists input[value="player-cy"]'); assert(assist instanceof writer.window.HTMLInputElement);
+    assist.checked = true; assist.dispatchEvent(new writer.window.Event("change", { bubbles: true }));
+    dispatchSubmit(draft.form); await flushAsync();
+    const eventId = [...apiState.goalEvents.keys()][0]; assert(eventId);
+    assert.equal(observer.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    const observerFocus = observer.document.getElementById("goal-own-goal"); assert(observerFocus instanceof observer.window.HTMLInputElement); observerFocus.focus();
+    await advanceUx10(observer, 4999);
+    assert.equal(observer.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    await advanceUx10(observer, 1);
+    assert.equal(observer.document.querySelectorAll('[data-ui="goal-event"]').length, 1);
+    assert.equal(observer.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), eventId);
+    assert.match(observer.document.getElementById("goal-timeline")?.textContent ?? "", /Ari[\s\S]*Assists: Cy/);
+    assert.deepEqual(ux10Scores(observer), ux10Scores(writer));
+    assert.equal(observer.document.activeElement, observerFocus);
+    const edit = writer.document.querySelector('[data-action="edit-goal"]'); assert(edit instanceof writer.window.HTMLButtonElement);
+    dispatchClick(edit); draft.scorer.value = "player-bea"; draft.scorer.dispatchEvent(new writer.window.Event("change", { bubbles: true }));
+    dispatchSubmit(draft.form); await flushAsync(); await advanceUx10(observer, 5000);
+    assert.equal(apiState.goalEvents.get(eventId)?.scorerPlayerId, "player-bea");
+    assert.equal(observer.document.querySelector('[data-ui="goal-scorer"]')?.textContent, "Bea");
+    const remove = writer.document.querySelector('[data-action="delete-goal"]'); assert(remove instanceof writer.window.HTMLButtonElement);
+    dispatchClick(remove); await flushAsync(); await advanceUx10(observer, 5000);
+    assert.equal(apiState.goalEvents.size, 0); assert.equal(observer.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    assert.deepEqual(ux10Scores(observer), ux10Scores(writer));
+    assert.equal(observer.window.location.hash, "#score"); assert.equal(observer.navigations.length, 0);
+    assert.equal(observerWrites.length, 0);
+  } finally { closeUx10Page(writer); closeUx10Page(observer); }
+});
+
+test("ux10 two clients observe clock transitions and finished own-goal result without automatic correction", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled");
+  const writer = await bootUx10Page(apiState); const observer = await bootUx10Page(apiState);
+  try {
+    const start = writer.document.querySelector('[data-action="start-active-third"]');
+    const finishThird = writer.document.querySelector('[data-action="finish-active-third"]');
+    const finishGame = writer.document.querySelector('[data-action="finish-game"]');
+    assert(start instanceof writer.window.HTMLButtonElement && finishThird instanceof writer.window.HTMLButtonElement && finishGame instanceof writer.window.HTMLButtonElement);
+    dispatchClick(start); await flushAsync(); await advanceUx10(observer, 15000);
+    assert.equal(observer.document.getElementById("game-overview-status")?.textContent, "Live");
+    const draft = liveGoalControls(writer);
+    draft.ownGoal.checked = true; draft.ownGoal.dispatchEvent(new writer.window.Event("change", { bubbles: true }));
+    draft.choose(draft.conceding, "blue"); draft.scorer.value = "player-cy"; draft.scorer.dispatchEvent(new writer.window.Event("change", { bubbles: true }));
+    dispatchSubmit(draft.form); await flushAsync();
+    dispatchClick(finishThird); await flushAsync(); await advanceUx10(observer, 5000);
+    assert.equal(observer.document.querySelector('[data-action="start-active-third"]')?.textContent, "Start Third 2");
+    for (const third of [2, 3]) {
+      assert.equal(start.textContent, "Start Third " + third);
+      dispatchClick(start); await flushAsync(); dispatchClick(finishThird); await flushAsync();
+    }
+    dispatchClick(finishGame); await flushAsync(); await advanceUx10(observer, 5000);
+    assert.equal(apiState.games.get("ux10-match")?.status, "finished");
+    assert.equal(observer.document.getElementById("game-overview-status")?.textContent, "Finished");
+    assert.equal(observer.window.location.hash, "#score", "a remote finish does not navigate the active scoring task");
+    const correction = observer.document.querySelector('[data-action="correct-finished-result"]'); assert(correction instanceof observer.window.HTMLButtonElement);
+    assert.equal(correction.hidden, false, "correction still requires deliberate opt-in");
+    const observerControls = liveGoalControls(observer); assert.equal(observerControls.save.disabled, true);
+    assert.equal(observer.document.getElementById("finished-correction-actions")?.hidden, true);
+    const results = observer.document.querySelector('[data-game-mode="final"][data-ui="game-mode-tab"]') ?? observer.document.querySelector('[data-testid="game-mode-final-tab"]');
+    assert(results instanceof observer.window.HTMLElement); dispatchClick(results);
+    assert.equal(observer.document.querySelector('[data-testid="game-result-outcome"]')?.textContent, "Draw");
+    assert.match(observer.document.querySelector('[data-testid="final-own-goal-stats"]')?.textContent ?? "", /Cy/);
+    assert.deepEqual(apiState.games.get("ux10-match")?.result?.teams.map(team => [team.teamId, team.scored, team.conceded]), [["red", 0, 0], ["yellow", 0, 0], ["blue", 0, 1]]);
+    assert.equal(observer.navigations.length, 0);
+  } finally { closeUx10Page(writer); closeUx10Page(observer); }
+});
+
+test("ux10 full refresh preserves a dirty metadata form while updating read-only overview", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled");
+  const page = await bootUx10Page(apiState, { mode: "overview" });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-game-edit"]'); const input = page.document.getElementById("game-edit-kickoff");
+    assert(toggle instanceof page.window.HTMLButtonElement && input instanceof page.window.HTMLInputElement);
+    dispatchClick(toggle); input.value = "2026-03-29T13:45"; input.dispatchEvent(new page.window.Event("input", { bubbles: true })); input.focus();
+    apiState.games.get("ux10-match")!.gameStartTs = "2026-03-30T03:00:00.000Z";
+    await advanceUx10(page, 15000);
+    assert.equal(input.value, "2026-03-29T13:45"); assert.equal(page.document.activeElement, input);
+    assert.equal(page.document.getElementById("game-edit-region")?.hidden, false);
+    assert.equal(page.document.getElementById("game-overview-kickoff")?.textContent, expectedSeasonKickoff("2026-03-30T03:00:00.000Z"));
+    assert.equal(page.window.location.hash, "#overview"); assert.equal(page.navigations.length, 0);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 refresh preserves open assists focus and exact draft when a selected player moves teams", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState);
+  const page = await bootUx10Page(apiState);
+  try {
+    const controls = liveGoalControls(page); controls.draft();
+    const details = page.document.getElementById("goal-assists-dropdown"); const assist = page.document.querySelector('#goal-assists input[value="player-cy"]');
+    assert(details instanceof page.window.HTMLDetailsElement && assist instanceof page.window.HTMLInputElement);
+    details.open = true; assist.checked = true; assist.dispatchEvent(new page.window.Event("change", { bubbles: true })); assist.focus();
+    seedLiveGoalEvent(apiState, "ux10-match", "remote-first");
+    await advanceUx10(page, 5000);
+    assert.equal(page.document.activeElement, assist); assert.equal(details.open, true);
+    assert.equal(controls.scorer.value, "player-ari"); assert.equal(assist.checked, true);
+    apiState.roster.get("ux10-match:player-ari")!.teamId = "yellow";
+    await advanceUx10(page, 10000);
+    assert.equal(controls.scorer.value, "player-ari", "remote team movement cannot silently change the chosen identity");
+    assert.equal(goalTeamValue(controls.scoring), "red"); assert.equal(goalTeamValue(controls.conceding), "blue");
+    assert.equal(page.document.querySelector<HTMLInputElement>('#goal-assists input[value="player-cy"]')?.checked, true);
+    assert.equal(details.open, true); assert.equal(page.document.activeElement?.getAttribute("value"), "player-cy");
+    assert.equal(controls.save.disabled, true);
+    assert.match((page.document.getElementById("goal-form-note")?.textContent ?? "") + (page.document.getElementById("game-refresh-message")?.textContent ?? ""), /changed|review|choose|team|roster/i);
+    dispatchSubmit(controls.form); await flushAsync(); assert.equal(apiState.goalEvents.size, 1);
+  } finally { closeUx10Page(page); }
+});
+
+for (const change of ["edited", "deleted"] as const) {
+  test(`ux10 externally ${change} goal keeps the correction draft but blocks stale submission`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState); seedLiveGoalEvent(apiState, "ux10-match", "editing-original");
+    const page = await bootUx10Page(apiState);
+    try {
+      const edit = page.document.querySelector('[data-action="edit-goal"]'); assert(edit instanceof page.window.HTMLButtonElement); dispatchClick(edit);
+      const controls = liveGoalControls(page); controls.scorer.value = "player-bea"; controls.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true })); controls.scorer.focus();
+      if (change === "deleted") apiState.goalEvents.delete("editing-original");
+      else Object.assign(apiState.goalEvents.get("editing-original")!, { scorerPlayerId: "player-cy", scoringTeamId: "blue", concedingTeamId: "yellow", updatedAt: "2026-03-28T11:02:00.000Z" });
+      await advanceUx10(page, 5000);
+      assert.equal(controls.scorer.value, "player-bea"); assert.equal(goalTeamValue(controls.scoring), "red");
+      assert.equal(controls.cancel.hidden, false); assert.equal(controls.save.disabled, true); assert.equal(page.document.activeElement, controls.scorer);
+      assert.match((page.document.getElementById("goal-form-note")?.textContent ?? "") + (page.document.getElementById("game-refresh-message")?.textContent ?? ""), /changed|removed|deleted|review/i);
+      dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(apiState.goalEvents.get("editing-original")?.scorerPlayerId, change === "deleted" ? undefined : "player-cy");
+      assert.equal(page.window.location.hash, "#score");
+    } finally { closeUx10Page(page); }
+  });
+}
+
+test("ux10 delayed pre-write goal read cannot roll back a confirmed local goal", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  let holdNext = false; let release: (() => void) | undefined; let heldSignal: AbortSignal | null | undefined;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (holdNext && init.method === "GET" && new URL(String(input)).pathname.endsWith("/goals")) {
+      holdNext = false; heldSignal = init.signal;
+      const snapshot = await base(input, init);
+      return new Promise<Response>(resolve => { release = () => resolve(snapshot); });
+    }
+    return base(input, init);
+  } });
+  try {
+    holdNext = true; await advanceUx10(page, 5000); assert(release);
+    const controls = liveGoalControls(page); controls.draft(); dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(apiState.goalEvents.size, 1);
+    const eventId = [...apiState.goalEvents.keys()][0];
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), eventId);
+    assert.equal(heldSignal?.aborted, true, "a local mutation invalidates and aborts earlier background ownership");
+    release(); await flushAsync();
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), eventId);
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 1);
+    assert.equal(goalTeamValue(controls.scoring), "");
+    assert.equal(page.document.getElementById("setup-status")?.textContent, "Goal recorded.");
+    assert.equal(page.window.location.hash, "#score");
+  } finally { closeUx10Page(page); }
+});
+
+for (const kind of ["create", "edit", "delete", "undo"] as const) {
+  test(`ux10 background refresh cannot settle an uncertain ${kind} or change its exact retry`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState);
+    if (kind !== "create") seedLiveGoalEvent(apiState, "ux10-match", "original-goal");
+    const base = createMockFetch(apiState);
+    const writes: Array<{ method: string; path: string; body: string; key: string | null }> = [];
+    let committed: Response | undefined;
+    const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname; const method = init.method ?? "GET";
+      if (path.includes("/goals") && method !== "GET") {
+        writes.push({ method, path, body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+        if (writes.length === 1) { committed = await base(input, init); return createJsonResponse(503, { error: "unavailable" }); }
+        assert(committed); return committed.clone();
+      }
+      return base(input, init);
+    } });
+    try {
+      const controls = liveGoalControls(page);
+      if (kind === "create") { controls.draft(); dispatchSubmit(controls.form); }
+      if (kind === "edit") {
+        const edit = page.document.querySelector('[data-action="edit-goal"]'); assert(edit instanceof page.window.HTMLButtonElement); dispatchClick(edit);
+        controls.scorer.value = "player-bea"; controls.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true })); dispatchSubmit(controls.form);
+      }
+      if (kind === "delete") { const remove = page.document.querySelector('[data-action="delete-goal"]'); assert(remove instanceof page.window.HTMLButtonElement); dispatchClick(remove); }
+      if (kind === "undo") dispatchClick(controls.undo);
+      await flushAsync(); assert.equal(writes.length, 1); assert(writes[0].key);
+      const originalDraft = { scoring: goalTeamValue(controls.scoring), conceding: goalTeamValue(controls.conceding), scorer: controls.scorer.value };
+      assert.equal(controls.retry.hidden, false);
+      seedLiveGoalEvent(apiState, "ux10-match", "newer-other-client-goal", 55);
+      await advanceUx10(page, 15000);
+      assert.equal(writes.length, 1, "read freshness never submits another goal mutation");
+      assert.equal(controls.retry.hidden, false); assert.equal(controls.save.disabled, true);
+      assert.deepEqual({ scoring: goalTeamValue(controls.scoring), conceding: goalTeamValue(controls.conceding), scorer: controls.scorer.value }, originalDraft);
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm/);
+      dispatchClick(controls.retry); await flushAsync();
+      assert.equal(writes.length, 2); assert.deepEqual(writes[1], writes[0]);
+      if (kind === "undo") assert.equal(JSON.parse(writes[1].body).expectedEventId, "original-goal");
+      if (kind === "edit" || kind === "delete") assert.equal(writes[1].path, "/v1/games/ux10-match/goals/original-goal");
+      assert.equal(apiState.goalEvents.has("newer-other-client-goal"), true);
+      assert.equal(controls.retry.hidden, true);
+    } finally { closeUx10Page(page); }
+  });
+}
+
+test("ux10 background positive clock read does not settle an unresolved explicit clock check", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled"); const base = createMockFetch(apiState);
+  let lost = false; let failReconciliation = false; let posts = 0;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (init.method === "POST" && path.endsWith("/thirds/1/start")) {
+      posts += 1; await base(input, init); lost = true; failReconciliation = true; return createJsonResponse(503, { error: "unavailable" });
+    }
+    if (failReconciliation && init.method === "GET" && path === "/v1/games/ux10-match") {
+      failReconciliation = false; return createJsonResponse(503, { error: "unavailable" });
+    }
+    return base(input, init);
+  } });
+  try {
+    const start = page.document.querySelector('[data-action="start-active-third"]'); const check = page.document.querySelector('[data-action="refresh-game-state"]');
+    assert(start instanceof page.window.HTMLButtonElement && check instanceof page.window.HTMLButtonElement);
+    dispatchClick(start); await flushAsync(); assert(lost); assert.equal(posts, 1); assert.equal(check.hidden, false);
+    await advanceUx10(page, 15000);
+    assert.equal(posts, 1); assert.equal(check.hidden, false, "only the explicit Check clock interaction may settle this operation");
+    assert.equal(liveGoalControls(page).save.disabled, true);
+    dispatchClick(check); await flushAsync(); assert.equal(posts, 1); assert.equal(check.hidden, true);
+    assert.equal(page.document.querySelector('[data-action="finish-active-third"]')?.textContent, "Finish Third 1");
+    seedLiveGoalEvent(apiState, "ux10-match", "after-clock-recovery"); await advanceUx10(page, 15000);
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "after-clock-recovery",
+      "explicit clock GET recovery must also release any refresh barrier owned by that clock operation");
+    assert.equal(posts, 1);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 failed background reads retain truthful stale data and explicit retry recovers", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); seedLiveGoalEvent(apiState, "ux10-match", "known-goal");
+  const base = createMockFetch(apiState); let fail = false; let failingReads = 0; let writes = 0;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (init.method && init.method !== "GET") writes += 1;
+    if (fail && new URL(String(input)).pathname.endsWith("/goals")) { failingReads += 1; return createJsonResponse(503, { error: "unavailable" }); }
+    return base(input, init);
+  } });
+  try {
+    const previous = ux10Scores(page); fail = true; await advanceUx10(page, 5000);
+    const notice = page.document.getElementById("game-refresh-notice"); const retry = page.document.querySelector('[data-action="retry-game-updates"]');
+    assert(notice instanceof page.window.HTMLElement && retry instanceof page.window.HTMLButtonElement);
+    assert.equal(interactionVisible(notice), true); assert.match(notice.textContent ?? "", /update|refresh|connect|latest|try/i);
+    assert.equal(failingReads, 1); if (ux10Scores(page).length) assert.deepEqual(ux10Scores(page), previous);
+    assert.doesNotMatch(page.document.getElementById("goal-timeline")?.textContent ?? "", /No goals yet/);
+    fail = false; seedLiveGoalEvent(apiState, "ux10-match", "new-goal", 55);
+    retry.focus(); dispatchClick(retry); dispatchClick(retry); await flushAsync();
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 2);
+    assert.equal(interactionVisible(notice), false); assert.equal(writes, 0);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 one hung refresh times out without overlapping until its fetch actually settles", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  let armed = false; let held = 0; let signal: AbortSignal | null | undefined; let release: (() => void) | undefined;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (armed && new URL(String(input)).pathname === "/v1/games/ux10-match") {
+      held += 1; signal = init.signal; const snapshot = await base(input, init);
+      return new Promise<Response>(resolve => { release = () => resolve(snapshot); });
+    }
+    return base(input, init);
+  } });
+  try {
+    apiState.games.get("ux10-match")!.gameStartTs = "2030-04-01T10:00:00.000Z";
+    armed = true; await advanceUx10(page, 5000); assert.equal(held, 1); assert(release); assert(signal);
+    await advanceUx10(page, 11999); assert.equal(signal.aborted, false); assert.equal(held, 1);
+    await advanceUx10(page, 1); assert.equal(signal.aborted, true);
+    const notice = page.document.getElementById("game-refresh-notice"); assert(notice instanceof page.window.HTMLElement); assert.equal(interactionVisible(notice), true);
+    await advanceUx10(page, 60000); assert.equal(held, 1, "abort does not imply actual fetch settlement");
+    const retry = page.document.querySelector('[data-action="retry-game-updates"]'); assert(retry instanceof page.window.HTMLButtonElement);
+    dispatchClick(retry); await flushAsync(); assert.equal(held, 1);
+    seedLiveGoalEvent(apiState, "ux10-match", "after-timeout");
+    apiState.games.get("ux10-match")!.gameStartTs = "2040-04-01T10:00:00.000Z";
+    const observedTitles: string[] = [];
+    const observer = new page.window.MutationObserver(() => { observedTitles.push(page.document.getElementById("game-title")?.textContent ?? ""); });
+    observer.observe(page.document.getElementById("game-title")!, { childList: true, subtree: true });
+    armed = false; release(); await flushAsync();
+    assert.equal(observedTitles.includes(expectedLocalDateHeading("2030-04-01T10:00:00.000Z")), false, "the expired batch never renders before its queued replacement");
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "after-timeout");
+    assert.equal(page.document.getElementById("game-title")?.textContent, expectedLocalDateHeading("2040-04-01T10:00:00.000Z"));
+    assert.equal(interactionVisible(notice), false);
+    observer.disconnect();
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 repeated failures back off within one bounded scheduled refresh", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState); let fail = false; let reads = 0;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (fail && new URL(String(input)).pathname === "/v1/games/ux10-match") { reads += 1; return createJsonResponse(503, { error: "unavailable" }); }
+    return base(input, init);
+  } });
+  try {
+    fail = true; await advanceUx10(page, 5000); assert.equal(reads, 1);
+    let previousDelay = 5000;
+    for (const expectedReads of [2, 3, 4, 5]) {
+      const delays = page.timers.pendingDelays(); assert.equal(delays.length, 1);
+      const delay = delays[0]; assert(delay >= previousDelay && delay <= 60000); previousDelay = delay;
+      await advanceUx10(page, delay - 1); assert.equal(reads, expectedReads - 1);
+      await advanceUx10(page, 1); assert.equal(reads, expectedReads);
+    }
+    assert(page.timers.pendingDelays()[0] <= 60000); assert.equal(page.timers.pendingCount(), 1);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 hidden and page lifecycle stop scheduling and foreground refresh runs once", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState); const reads: string[] = [];
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => { reads.push(new URL(String(input)).pathname); return base(input, init); } });
+  try {
+    const initial = reads.length; setUx10Visible(page, false);
+    await advanceUx10(page, 60000); assert.equal(reads.length, initial); assert.equal(page.timers.pendingCount(), 0);
+    seedLiveGoalEvent(apiState, "ux10-match", "while-hidden");
+    setUx10Visible(page, true); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "while-hidden");
+    assert.equal(reads.slice(initial).filter(path => path === "/v1/auth/session").length, 1);
+    assert.equal(reads.slice(initial).filter(path => path.endsWith("/goals")).length, 1);
+    assert.equal(page.timers.pendingCount(), 1);
+    page.window.dispatchEvent(new page.window.PageTransitionEvent("pagehide", { persisted: true })); const afterHide = reads.length;
+    await advanceUx10(page, 60000); assert.equal(reads.length, afterHide); assert.equal(page.timers.pendingCount(), 0);
+    page.window.dispatchEvent(new page.window.PageTransitionEvent("pageshow", { persisted: true })); await flushAsync();
+    assert.equal(reads.length, afterHide, "BFCache recovery belongs to the existing account reload boundary, not the polling coordinator");
+    assert.deepEqual(page.navigations, [{ url: "/games/ux10-match#score", mode: "reload" }]);
+    assert.equal(page.timers.pendingCount(), 0);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 live cadence separates frequent game reads from serial full capability and roster reads", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  const paths: string[] = []; let observe = false; let active = 0; let peak = 0;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (!observe) return base(input, init);
+    active += 1; peak = Math.max(peak, active); paths.push(new URL(String(input)).pathname);
+    try { return await base(input, init); } finally { active -= 1; }
+  } });
+  try {
+    observe = true; await advanceUx10(page, 5000);
+    assert.equal(paths.filter(path => path.endsWith("/goals")).length, 1);
+    assert.equal(paths.filter(path => path === "/v1/auth/session" || path.endsWith("/roster")).length, 0);
+    await advanceUx10(page, 5000);
+    assert.equal(paths.filter(path => path.endsWith("/goals")).length, 2);
+    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 0);
+    await advanceUx10(page, 5000);
+    assert.equal(paths.filter(path => path.endsWith("/goals")).length, 3);
+    assert.equal(paths.filter(path => path === "/v1/auth/session").length, 1);
+    assert.equal(paths.filter(path => path === "/v1/leagues/three-sided-football-club").length, 1);
+    assert.equal(paths.filter(path => path.endsWith("/roster")).length, 1);
+    assert.equal(peak, 1, "the background batch issues one request at a time"); assert.equal(active, 0);
+    assert.equal(page.timers.pendingCount(), 1);
+  } finally { closeUx10Page(page); }
+});
+
+for (const change of ["viewer", "expired", "different-account", "different-session"] as const) {
+  test(`ux10 ${change} refresh clears private authority without transferring the existing draft`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState);
+    apiState.players.get("player-ari")!.claimedByUserId = "private-player@example.com";
+    const base = createMockFetch(apiState); let writes = 0;
+    const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+      if (init.method && init.method !== "GET") writes += 1;
+      return base(input, init);
+    } });
+    try {
+      const controls = liveGoalControls(page); controls.draft(); controls.scorer.focus();
+      assert(page.document.querySelector('[data-action="grant-player-access"]'), "fixture initially has genuinely verified administrator enrichment");
+      if (change === "viewer") grantMockLeagueAccess(apiState, "three-sided-football-club", apiState.session!.email, "viewer");
+      else if (change === "expired") { apiState.session = null; apiState.cookieJar = ""; }
+      else {
+        const email = change === "different-account" ? "another-organiser@example.com" : apiState.session!.email;
+        apiState.session = { ...apiState.session!, sessionId: "replacement-session", email };
+        apiState.cookieJar = "threefc_session=replacement-session";
+        grantMockLeagueAccess(apiState, "three-sided-football-club", email, "admin");
+      }
+      await advanceUx10(page, 15000);
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+      assert.equal(page.document.querySelector('[data-ui="claim-badge"]'), null);
+      assert.equal(controls.scorer.value, "player-ari", "draft contents are not silently discarded on authority loss");
+      assert.equal(goalTeamValue(controls.scoring), "red"); assert.equal(goalTeamValue(controls.conceding), "blue");
+      assert.equal(controls.save.disabled, true);
+      controls.save.disabled = false; dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(writes, 0, "reenabling a DOM control cannot reuse prior session authority");
+      assert.equal(apiState.goalEvents.size, 0);
+      assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /private-player@example/);
+      if (change !== "viewer") {
+        const notice = page.document.getElementById("game-refresh-notice"); assert(notice instanceof page.window.HTMLElement);
+        assert.equal(interactionVisible(notice), true); assert.match(notice.textContent ?? "", /sign|account|session|reload/i);
+      }
+    } finally { closeUx10Page(page); }
+  });
+}
+
+test("ux10 a viewer receives refreshed public teams without operator search or mutation controls", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "live", "viewer"); const base = createMockFetch(apiState);
+  const paths: string[] = [];
+  const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => { paths.push(new URL(String(input)).pathname); return base(input, init); } });
+  try {
+    apiState.roster.get("ux10-match:player-ari")!.teamId = "yellow";
+    await advanceUx10(page, 15000);
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari"); assert.equal(row.length, 1);
+    assert.equal(row[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "yellow");
+    assert.equal(paths.filter(path => path === "/v1/players" || path === "/v1/games/ux10-match/players").length, 0);
+    assert.equal(page.document.querySelector('[data-action="assign-player"]'), null);
+    assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+    assert.equal(page.window.location.hash, "#teams");
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 refresh preserves a finished correction opt-in and its unchanged historical draft", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); seedLiveGoalEvent(apiState, "ux10-match", "historical-goal");
+  const game = apiState.games.get("ux10-match")!; game.status = "finished"; refreshMockFinishedResult(apiState, game, "2026-03-28T11:04:00.000Z");
+  const page = await bootUx10Page(apiState, { mode: "results" });
+  try {
+    enterFinishedCorrections(page);
+    const edit = page.document.querySelector('[data-action="edit-goal"]'); assert(edit instanceof page.window.HTMLButtonElement); dispatchClick(edit);
+    const controls = liveGoalControls(page); controls.scorer.value = "player-bea"; controls.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true })); controls.scorer.focus();
+    await advanceUx10(page, 15000);
+    assert.equal(page.window.location.hash, "#score"); assert.equal(page.document.getElementById("finished-correction-actions")?.hidden, false);
+    assert.equal(controls.scorer.value, "player-bea"); assert.equal(controls.save.disabled, false); assert.equal(controls.cancel.hidden, false);
+    assert.equal(page.document.activeElement, controls.scorer);
+    assert.equal(apiState.goalEvents.get("historical-goal")?.scorerPlayerId, "player-ari");
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 background finished snapshot cannot retire a lost finish request or rotate its key", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const game = apiState.games.get("ux10-match")!;
+  for (const third of game.thirds) { third.startedAt = "2026-03-28T11:00:10.000Z"; third.finishedAt = "2026-03-28T11:00:11.000Z"; }
+  const base = createMockFetch(apiState); const requests: Array<{ path: string; key: string | null }> = [];
+  let cached: Response | undefined; let failReconciliation = false;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (init.method === "POST" && path.endsWith("/finish")) {
+      requests.push({ path, key: readInitHeader(init, "idempotency-key") });
+      if (requests.length === 1) { cached = await base(input, init); failReconciliation = true; return createJsonResponse(503, { error: "unavailable" }); }
+      assert(cached); return cached.clone();
+    }
+    if (failReconciliation && path === "/v1/games/ux10-match") { failReconciliation = false; return createJsonResponse(503, { error: "unavailable" }); }
+    return base(input, init);
+  } });
+  try {
+    const finish = page.document.querySelector('[data-action="finish-game"]'); assert(finish instanceof page.window.HTMLButtonElement);
+    dispatchClick(finish); await flushAsync(); assert.equal(requests.length, 1); assert(requests[0].key);
+    assert.equal(apiState.games.get("ux10-match")?.status, "finished");
+    await advanceUx10(page, 15000);
+    assert.equal(requests.length, 1); assert.equal(finish.textContent, "Retry finish game"); assert.equal(finish.disabled, false);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed/);
+    dispatchClick(finish); await flushAsync(); assert.equal(requests.length, 2); assert.deepEqual(requests[1], requests[0]);
+    assert.equal(finish.textContent, "Game finished");
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 hidden held read is discarded and foreground keeps later navigation and focus", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  let holdNext = false; let release: (() => void) | undefined; let signal: AbortSignal | null | undefined; let held = 0;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (holdNext && new URL(String(input)).pathname.endsWith("/goals")) {
+      holdNext = false; held += 1; signal = init.signal; const snapshot = await base(input, init);
+      return new Promise<Response>(resolve => { release = () => resolve(snapshot); });
+    }
+    return base(input, init);
+  } });
+  try {
+    seedLiveGoalEvent(apiState, "ux10-match", "discarded-hidden-snapshot"); holdNext = true;
+    await advanceUx10(page, 5000); assert(release); assert(signal);
+    setUx10Visible(page, false); assert.equal(signal.aborted, true);
+    apiState.goalEvents.delete("discarded-hidden-snapshot"); seedLiveGoalEvent(apiState, "ux10-match", "fresh-foreground", 55);
+    setUx10Visible(page, true); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+    assert.equal(held, 1);
+    const navigation = qaGameNavigation(page); dispatchClick(navigation.teams); dispatchClick(navigation.score); dispatchClick(navigation.teams);
+    const search = page.document.getElementById("player-search"); assert(search instanceof page.window.HTMLInputElement); search.focus();
+    const appliedIds: string[] = [];
+    const observer = new page.window.MutationObserver(() => {
+      for (const row of page.document.querySelectorAll('[data-ui="goal-event"]')) appliedIds.push(row.getAttribute("data-event-id") ?? "");
+    });
+    observer.observe(page.document.getElementById("goal-timeline")!, { childList: true, subtree: true });
+    release(); await flushAsync();
+    assert.equal(appliedIds.includes("discarded-hidden-snapshot"), false, "an invalidated batch must not briefly render before its replacement");
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "fresh-foreground");
+    assert.equal(page.window.location.hash, "#teams"); assert.equal(page.document.activeElement, search);
+    assert.equal(page.timers.pendingCount(), 1); observer.disconnect();
+  } finally { closeUx10Page(page); }
+});
+
+for (const authority of ["different-session", "viewer"] as const) {
+  test(`ux10 a late pre-finish administrator read cannot reverse a newer ${authority} decision`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState);
+    const game = apiState.games.get("ux10-match")!;
+    for (const third of game.thirds) { third.startedAt = "2026-03-28T11:00:10.000Z"; third.finishedAt = "2026-03-28T11:00:11.000Z"; }
+    apiState.players.get("player-ari")!.claimedByUserId = "private-player@example.com";
+    const base = createMockFetch(apiState); let holdAccess = false; let release: (() => void) | undefined;
+    let privateReads = 0; let writes = 0;
+    const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method && init.method !== "GET") writes += 1;
+      if (path === "/v1/games/ux10-match/players") privateReads += 1;
+      if (init.method === "POST" && path.endsWith("/finish")) holdAccess = true;
+      if (holdAccess && init.method === "GET" && path === "/v1/leagues/three-sided-football-club") {
+        holdAccess = false; const oldAdmin = await base(input, init);
+        return new Promise<Response>(resolve => { release = () => resolve(oldAdmin); });
+      }
+      return base(input, init);
+    } });
+    try {
+      assert(page.document.querySelector('[data-action="grant-player-access"]'));
+      const finish = page.document.querySelector('[data-action="finish-game"]'); assert(finish instanceof page.window.HTMLButtonElement);
+      dispatchClick(finish); await flushAsync(); assert(release); assert.equal(writes, 1);
+      if (authority === "viewer") grantMockLeagueAccess(apiState, game.leagueId, apiState.session!.email, "viewer");
+      else {
+        apiState.session = { ...apiState.session!, sessionId: "new-account-session" };
+        apiState.cookieJar = "threefc_session=new-account-session";
+      }
+      page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+      const readsAfterDecision = privateReads;
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+      release(); await flushAsync();
+      assert.equal(privateReads, readsAfterDecision, "a held old administrator response cannot authorize a new private player lookup");
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+      assert.equal(page.document.querySelector('[data-ui="claim-badge"]'), null);
+      const correct = page.document.querySelector('[data-action="correct-finished-result"]'); assert(correct instanceof page.window.HTMLButtonElement);
+      assert.equal(interactionVisible(correct), false);
+      correct.hidden = false; correct.disabled = false; dispatchClick(correct);
+      assert.equal(page.document.getElementById("finished-correction-actions")?.hidden, true);
+      assert.equal(liveGoalControls(page).save.disabled, true); assert.equal(writes, 1);
+      assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /private-player@example/);
+    } finally { closeUx10Page(page); }
+  });
+}
+
+test("ux10 a changed session cannot use the unresolved clock read to settle the old account operation", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled"); const base = createMockFetch(apiState);
+  let posts = 0; let gameReads = 0; let failReconciliation = false;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (init.method === "POST" && path.endsWith("/thirds/1/start")) {
+      posts += 1; await base(input, init); failReconciliation = true; return createJsonResponse(503, { error: "unavailable" });
+    }
+    if (init.method === "GET" && path === "/v1/games/ux10-match") {
+      gameReads += 1;
+      if (failReconciliation) { failReconciliation = false; return createJsonResponse(503, { error: "unavailable" }); }
+    }
+    return base(input, init);
+  } });
+  try {
+    const start = page.document.querySelector('[data-action="start-active-third"]'); const check = page.document.querySelector('[data-action="refresh-game-state"]');
+    assert(start instanceof page.window.HTMLButtonElement && check instanceof page.window.HTMLButtonElement);
+    dispatchClick(start); await flushAsync(); assert.equal(posts, 1); assert.equal(check.hidden, false);
+    apiState.session = { ...apiState.session!, sessionId: "replacement-session" }; apiState.cookieJar = "threefc_session=replacement-session";
+    page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+    const readsAtLock = gameReads;
+    assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /sign-in changed/);
+    check.disabled = false; dispatchClick(check); await flushAsync();
+    assert.equal(gameReads, readsAtLock, "synthetic enabling cannot cause a reconciliation GET under a new session");
+    assert.equal(posts, 1); assert.equal(check.hidden, false, "an account lock does not retire the old unresolved operation");
+    assert.equal(liveGoalControls(page).save.disabled, true);
+  } finally { closeUx10Page(page); }
+});
+
+for (const defect of ["missing-third", "invalid-third-order", "inconsistent-winner"] as const) {
+  test(`ux10 ${defect} rejects the complete refresh batch without presenting mixed snapshots`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState); seedLiveGoalEvent(apiState, "ux10-match", "last-known-goal");
+    const base = createMockFetch(apiState); let corrupt = false;
+    let originalResult: GameResult | undefined;
+    const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+      const response = await base(input, init);
+      if (corrupt && init.method === "GET" && new URL(String(input)).pathname === "/v1/games/ux10-match") {
+        const game = await response.json() as MockGame & { timer?: { thirds: Array<ThirdTimerSegment & { status: string }> } };
+        if (defect === "missing-third") { game.thirds = game.thirds.slice(0, 2); if (game.timer) game.timer.thirds = game.timer.thirds.slice(0, 2); }
+        else if (defect === "invalid-third-order") {
+          game.thirds[1].startedAt = "2026-03-28T11:00:20.000Z";
+          if (game.timer) Object.assign(game.timer.thirds[1], { startedAt: "2026-03-28T11:00:20.000Z", status: "running" });
+        } else if (game.result) {
+          originalResult = structuredClone(game.result);
+          game.result.outcome = "win"; game.result.winnerTeamId = "blue";
+        }
+        return createJsonResponse(200, game);
+      }
+      return response;
+    } });
+    try {
+      const oldTitle = page.document.getElementById("game-title")?.textContent;
+      const oldStatus = page.document.getElementById("game-overview-status")?.textContent;
+      const oldScores = ux10Scores(page);
+      const game = apiState.games.get("ux10-match")!; game.gameStartTs = "2031-04-01T10:00:00.000Z";
+      seedLiveGoalEvent(apiState, "ux10-match", "unaccepted-remote-goal", 55);
+      apiState.roster.get("ux10-match:player-ari")!.teamId = "yellow";
+      if (defect === "inconsistent-winner") {
+        for (const third of game.thirds) { third.startedAt = "2026-03-28T11:00:10.000Z"; third.finishedAt = "2026-03-28T11:00:11.000Z"; }
+        game.status = "finished"; refreshMockFinishedResult(apiState, game, "2026-03-28T11:04:00.000Z");
+      }
+      corrupt = true; page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+      if (defect === "inconsistent-winner") {
+        // Assert outside fetch: an assertion thrown inside a read would itself
+        // become a caught transport failure and could make this test pass.
+        assert(originalResult, "the actual successful GET supplied a finished result to corrupt");
+        assert.equal(originalResult.comparator, "fewest_conceded_then_most_scored");
+        assert.equal(originalResult.winnerTeamId, "red", "only a valid baseline winner is changed to the wrong, but valid-enum, team");
+      }
+      const notice = page.document.getElementById("game-refresh-notice"); assert(notice instanceof page.window.HTMLElement);
+      assert.equal(interactionVisible(notice), true); assert.match(notice.textContent ?? "", /Updates unavailable/);
+      assert.equal(page.document.getElementById("game-title")?.textContent, oldTitle);
+      assert.equal(page.document.getElementById("game-overview-status")?.textContent, oldStatus);
+      assert.deepEqual(ux10Scores(page), oldScores);
+      assert.deepEqual([...page.document.querySelectorAll('[data-ui="goal-event"]')].map(row => row.getAttribute("data-event-id")), ["last-known-goal"]);
+      assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0]?.closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "red");
+      assert.equal(page.window.location.hash, "#score");
+    } finally { closeUx10Page(page); }
+  });
+}
+
+for (const lifecycle of ["hidden", "pagehide"] as const) {
+  test(`ux10 ${lifecycle} during a goal write prevents its late completion from restarting clock ticks`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+    const activeIntervals = new Set<number>(); let createdIntervals = 0; let release: (() => void) | undefined;
+    const page = await bootUx10Page(apiState, {
+      captureInterval: () => { const id = ++createdIntervals; activeIntervals.add(id); return id; },
+      captureClearInterval: id => { activeIntervals.delete(id); },
+      fetch: async (input, init = {}) => {
+        if (init.method === "POST" && new URL(String(input)).pathname.endsWith("/goals")) {
+          const committed = await base(input, init); return new Promise<Response>(resolve => { release = () => resolve(committed); });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      assert.equal(activeIntervals.size, 1);
+      const controls = liveGoalControls(page); controls.draft(); dispatchSubmit(controls.form); await flushAsync(); assert(release);
+      if (lifecycle === "hidden") setUx10Visible(page, false);
+      else page.window.dispatchEvent(new page.window.Event("pagehide"));
+      assert.equal(activeIntervals.size, 0); const createdAtHide = createdIntervals;
+      release(); await flushAsync();
+      assert.equal(apiState.goalEvents.size, 1); assert.equal(controls.retry.hidden, true);
+      assert.equal(createdIntervals, createdAtHide, "mutation refresh/finally rendering cannot resurrect a suspended one-second clock interval");
+      assert.equal(activeIntervals.size, 0); assert.equal(page.timers.pendingCount(), 0);
+    } finally { closeUx10Page(page); }
+  });
+}
+
+test("ux10 visibility and repeated focus signals coalesce while the foreground authority read is pending", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  let armed = false; let release: (() => void) | undefined; const reads: string[] = [];
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (armed) {
+      reads.push(path);
+      if (path === "/v1/auth/session" && !release) {
+        const response = await base(input, init); return new Promise<Response>(resolve => { release = () => resolve(response); });
+      }
+    }
+    return base(input, init);
+  } });
+  try {
+    setUx10Visible(page, false); armed = true; setUx10Visible(page, true);
+    page.window.dispatchEvent(new page.window.Event("focus")); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
+    assert(release); assert.deepEqual(reads, ["/v1/auth/session"]);
+    release(); await flushAsync();
+    assert.equal(reads.filter(path => path === "/v1/auth/session").length, 1);
+    assert.equal(reads.filter(path => path === "/v1/games/ux10-match").length, 1);
+    assert.equal(reads.filter(path => path.endsWith("/goals")).length, 1);
+    assert.equal(reads.filter(path => path.endsWith("/roster")).length, 1);
+    assert.equal(page.timers.pendingCount(), 1);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 foreground signals during initial game loading cannot start a competing refresh", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  let gameReads = 0; let release: (() => void) | undefined;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => {
+    if (init.method === "GET" && new URL(String(input)).pathname === "/v1/games/ux10-match") {
+      gameReads += 1;
+      if (gameReads === 1) { const response = await base(input, init); return new Promise<Response>(resolve => { release = () => resolve(response); }); }
+    }
+    return base(input, init);
+  } });
+  try {
+    assert(release); assert.equal(gameReads, 1);
+    page.window.dispatchEvent(new page.window.Event("focus")); setUx10Visible(page, false); setUx10Visible(page, true); await flushAsync();
+    assert.equal(gameReads, 1); assert.equal(page.timers.pendingCount(), 0);
+    release(); await flushAsync();
+    assert.equal(page.document.getElementById("game-overview-status")?.textContent, "Live");
+    assert.equal(gameReads, 2, "foreground revalidation is queued until initial loading completes, never overlapped with it");
+    assert.equal(page.timers.pendingCount(), 1);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 removing the game root stops the remaining recurring refresh", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState); let reads = 0;
+  const page = await bootUx10Page(apiState, { fetch: async (input, init = {}) => { reads += 1; return base(input, init); } });
+  try {
+    page.document.getElementById("setup-flow-root")?.remove(); await flushAsync();
+    const readsAtRemoval = reads; await advanceUx10(page, 60000);
+    assert.equal(reads, readsAtRemoval); assert.equal(page.timers.pendingCount(), 0);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 uncertain metadata retains the draft and blocks background application until explicit same-path success", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled"); const base = createMockFetch(apiState);
+  const writes: Array<{ path: string; method: string; body: string }> = [];
+  const page = await bootUx10Page(apiState, { mode: "overview", fetch: async (input, init = {}) => {
+    if (init.method === "PATCH") {
+      writes.push({ path: new URL(String(input)).pathname, method: init.method, body: String(init.body) });
+      const result = await base(input, init); return writes.length === 1 ? createJsonResponse(503, { error: "unavailable" }) : result;
+    }
+    return base(input, init);
+  } });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-game-edit"]'); const field = page.document.getElementById("game-edit-kickoff"); const form = page.document.getElementById("game-edit-form");
+    assert(toggle instanceof page.window.HTMLButtonElement && field instanceof page.window.HTMLInputElement && form instanceof page.window.HTMLFormElement);
+    const previousOverview = page.document.getElementById("game-overview-kickoff")?.textContent;
+    dispatchClick(toggle); field.value = "2030-04-01T10:30"; field.dispatchEvent(new page.window.Event("input", { bubbles: true })); dispatchSubmit(form); await flushAsync();
+    assert.equal(writes.length, 1); assert.equal(field.value, "2030-04-01T10:30"); assert.equal(page.document.getElementById("game-edit-region")?.hidden, false);
+    const uncertainty = page.document.getElementById("setup-error")?.textContent; assert.match(uncertainty ?? "", /could not be confirmed/);
+    apiState.games.get("ux10-match")!.gameStartTs = "2031-04-01T10:30:00.000Z";
+    page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync(); await advanceUx10(page, 15000);
+    assert.equal(writes.length, 1); assert.equal(field.value, "2030-04-01T10:30");
+    assert.equal(page.document.getElementById("game-overview-kickoff")?.textContent, previousOverview);
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    assert.equal(page.document.getElementById("setup-error")?.textContent, uncertainty);
+    dispatchSubmit(form); await flushAsync();
+    assert.equal(writes.length, 2); assert.deepEqual(writes[1], writes[0], "this is an explicit repeat of the existing metadata endpoint, not a polling mutation");
+    apiState.games.get("ux10-match")!.gameStartTs = "2032-04-01T10:30:00.000Z";
+    await advanceUx10(page, 15000);
+    assert.equal(page.document.getElementById("game-overview-kickoff")?.textContent, expectedSeasonKickoff("2032-04-01T10:30:00.000Z"));
+    assert.equal(page.document.getElementById("game-refresh-notice")?.hidden, true);
+    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+  } finally { closeUx10Page(page); }
+});
+
+test("ux10 uncertain assignment preserves the displayed team until an explicit same-choice success releases refresh", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);
+  const writes: Array<{ path: string; method: string; body: string }> = [];
+  const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+    if (init.method === "PUT") {
+      writes.push({ path: new URL(String(input)).pathname, method: init.method, body: String(init.body) });
+      const response = await base(input, init); return writes.length === 1 ? createJsonResponse(503, { error: "unavailable" }) : response;
+    }
+    return base(input, init);
+  } });
+  try {
+    const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]'); assert(transfer instanceof page.window.HTMLButtonElement); dispatchClick(transfer);
+    let yellow = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="yellow"]'); assert(yellow instanceof page.window.HTMLButtonElement);
+    dispatchClick(yellow); await flushAsync(); assert.equal(writes.length, 1); assert.equal(apiState.roster.get("ux10-match:player-ari")?.teamId, "yellow");
+    const uncertainty = page.document.getElementById("setup-error")?.textContent; assert.match(uncertainty ?? "", /Assignment could not be confirmed/);
+    seedLiveGoalEvent(apiState, "ux10-match", "remote-during-assignment-uncertainty");
+    page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync(); await advanceUx10(page, 15000);
+    const rows = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari"); assert.equal(rows.length, 1);
+    assert.equal(rows[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "red");
+    assert.equal(page.document.querySelectorAll('[data-ui="goal-event"]').length, 0);
+    assert.equal(page.document.getElementById("setup-error")?.textContent, uncertainty); assert.equal(writes.length, 1);
+    yellow = page.document.querySelector('[data-action="assign-player"][data-player-id="player-ari"][data-team-id="yellow"]'); assert(yellow instanceof page.window.HTMLButtonElement);
+    dispatchClick(yellow); await flushAsync(); assert.equal(writes.length, 2); assert.deepEqual(writes[1], writes[0]);
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1);
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0].closest('[data-ui="roster-team"]')?.getAttribute("data-team-id"), "yellow");
+    await advanceUx10(page, 15000);
+    assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "remote-during-assignment-uncertainty");
+    assert.equal(page.document.getElementById("game-refresh-notice")?.hidden, true);
+    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+  } finally { closeUx10Page(page); }
+});

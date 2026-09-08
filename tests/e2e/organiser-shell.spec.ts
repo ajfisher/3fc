@@ -85,7 +85,7 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
     const body = request.postData() ? request.postDataJSON() as Record<string, unknown> : null;
     requests.push({ method, path: url.pathname, body, key: request.headers()["idempotency-key"] });
     if (method === "GET" && url.pathname === "/v1/auth/session") {
-      return route.fulfill({ headers: { "cache-control": "no-store" }, json: { authenticated: true, session: { email: "organiser.fixture@example.com" } } });
+      return route.fulfill({ headers: { "cache-control": "no-store" }, json: { authenticated: true, session: { sessionId: "fictional-organiser-session", email: "organiser.fixture@example.com" } } });
     }
     if (method === "GET" && url.pathname === "/v1/leagues") {
       return route.fulfill({ json: { leagues: options.empty ? [] : [league] } });
