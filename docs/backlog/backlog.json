@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-07",
+  "version": "2026-09-08",
   "labels": [
     {
       "name": "area:infra",
@@ -2308,6 +2308,67 @@
           "Implementation and local acceptance complete: 352 interactions, 400 app/311 API tests, 161 cross-stack browser cases and 4 isolated local M2 cases. Current-head external readiness belongs to PR150's packet; this is not merge or release authority."
         ]
       }
+    },
+    {
+      "id": "UX-08",
+      "title": "Polish match navigation, correction exit and match-day presentation",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-05", "UX-07"],
+      "summary": "Address AJ's post-stack QA items 1-3 and 5-9 as a frontend-only follow-up above PR150.",
+      "scope": [
+        "Integrate scoring with match navigation, remove duplicate back/score actions and provide explicit zero-write finished-correction exit.",
+        "Move Create season and Invite organiser into the league kebab with visible focus restoration.",
+        "Hide the Add player disclosure trigger while its form is open; preserve draft, retry and rapid-entry behaviour.",
+        "Scope settled success feedback to its originating view, preserving failures and unresolved requests.",
+        "Equalize newest/older goal padding and center scoreboard headings, labels and numbers."
+      ],
+      "outOfScope": ["Join read-contract changes and cross-client refresh are separate UX-09 and UX-10 children.", "No scoring rules, API, permissions, dependencies, deployment changes, merge or production release."],
+      "acceptanceCriteria": [
+        "Scheduled/live scoring has one native navigation destination and active state; finished correction remains explicit and bookmarks do not arm it.",
+        "Exit correction returns to Results without writes, clears only unsaved correction draft and restores finished locks; unresolved writes remain retryable and cannot be discarded.",
+        "League action disclosure opens from kebab; Cancel/Escape returns visible focus, drafts survive and lazy invite loading remains idempotent.",
+        "Only the actual Add player submit is visible while entry is open; Cancel/Escape restores the trigger and focus, including after redraws.",
+        "Settled success does not persist or arrive late after navigation; errors, uncertain writes and newer operation feedback remain available.",
+        "Goal rows align consistently and team scoreboard columns are centered at phone widths, both themes and enlarged text."
+      ],
+      "testScenarios": ["Rendered semantics and exact control inventory.", "Keyboard, hash/history, role variants, correction cancel, pending/lost-response retries and late feedback.", "Computed visibility/focus for nested menu disclosures and player entry.", "Built-asset mobile/theme/zoom fixtures, serialized local suites and exact-head signed-in QA."],
+      "reviewRequirements": ["Independent design, frontend, engineering and QA reviews; no competing test workers.", "Architecture/security review of correction and retry ownership and preserved capabilities.", "Current-head Codex review, CI, QA and review:ready before child implementation; no merge."],
+      "delivery": {"asOf": "2026-09-08", "wave": "frontend-stack", "status": "implemented", "githubIssue": 151, "branch": "codex/design-match-flow-polish", "notes": ["AJ's follow-up QA; new PR above the eight reviewed, unmerged parents. Local417 app tests and167 browser scenarios pass; current-head CI/Codex/QA readiness is recorded in the PR packet."]}
+    },
+    {
+      "id": "UX-09",
+      "title": "Identify joining players and show them directly in Unassigned",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:api", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-08"],
+      "summary": "Address post-stack QA item 4 through narrow safe reads for existing join and assignment journeys.",
+      "scope": ["Identify the player being claimed after sign-in using an authenticated join-code/game-player-bound public identity read.", "Extend the authorized roster read with public-safe unassigned player identities; avoid the top-20 candidate-search cap.", "Implement local/Lambda, OpenAPI, session route and Serverless parity; preserve explicit claiming and assignment semantics."],
+      "outOfScope": ["No nickname-based identity merging, automatic claim, ownership-proof redesign or new scoring permission.", "No private identity exposure, join analytics, public results, new IAM privilege or production release."],
+      "acceptanceCriteria": ["Claim screen names the exact player, including sign-in return; invalid/mismatched context uses a safe error and does not claim automatically.", "New public joins appear in Unassigned without search, including beyond 20 players; assignment moves them once.", "Public DTOs never become admin-verified claim/access metadata; existing viewer and cross-league rules remain authoritative.", "Read contract, deployment routes and local/Lambda behaviour match; existing claim failures/finished-game locks remain unchanged."],
+      "testScenarios": ["Valid, missing, tampered, duplicate-nickname and cross-game join context with safe response shapes.", "More-than-20 registered/assigned players, join-to-Unassigned and one-row assignment.", "API/repository/session routes, local/Lambda contracts, privacy and deployed fixture acceptance."],
+      "reviewRequirements": ["Architecture, security and QA review before backend implementation and again on the completed diff.", "Independent design/frontend and engineering reviews, serialized validation, exact-head Codex/CI/QA and review gate."],
+      "delivery": {"asOf": "2026-09-08", "wave": "frontend-stack", "status": "planned", "githubIssue": 152, "notes": ["Architecture investigation complete; implementation waits for UX-08 parent gate."]}
+    },
+    {
+      "id": "UX-10",
+      "title": "Refresh other clients after match updates without disrupting local work",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-09"],
+      "summary": "Address post-stack QA item 10 with bounded cross-client read freshness using existing authenticated reads.",
+      "scope": ["One visible-page single-flight refresh coordinator with timeout/backoff and foreground refresh.", "Read generation and local mutation guards; changed read-only scores, log, clock, result and roster update without navigation/focus/draft churn.", "Retain exact unresolved request identity and expected-event undo checks; do not mistake read refresh for write confirmation."],
+      "outOfScope": ["No coordinated concurrent editing, WebSocket service, new write contract, automatic retry or permission change.", "No offline-first persistence, new production dependency or production release."],
+      "acceptanceCriteria": ["Two clients observe goal create/edit/delete, clock transitions and finished results without manual reload.", "Delayed pre-write reads cannot roll back a local commit; background reads cannot settle unresolved writes or replace their keys/body/event IDs.", "Dirty forms, open assists, focus and navigation survive refresh; roster changes do not silently clear drafted identities.", "Failed reads retain honest unavailable/stale state rather than zero totals or invented draws.", "Requests do not overlap, stop while hidden/unmounted, and remain bounded on repeated failures; ACL and privacy stay intact."],
+      "testScenarios": ["Two-client snapshots, out-of-order reads, held requests, lost responses, retry and newer-goal undo targeting.", "Dirty metadata/goal forms, roster transfers, open controls and focus preservation.", "Hidden/foreground lifecycle, request timeout/backoff, expired session, viewer/cross-league and scoring invariant regressions."],
+      "reviewRequirements": ["Architecture/security/engineering review of snapshot and mutation ownership before implementation.", "Independent design/frontend and QA review, serialized validation and two-client browser evidence.", "Current-head Codex, CI, QA and review:ready; complete issue-to-evidence handoff without merging."],
+      "delivery": {"asOf": "2026-09-08", "wave": "frontend-stack", "status": "planned", "githubIssue": 153, "notes": ["Read-freshness scope only; implementation waits for UX-09 parent gate."]}
     },
     {
       "id": "UX-06",

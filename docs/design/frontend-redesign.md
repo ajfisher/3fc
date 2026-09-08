@@ -130,8 +130,11 @@ reasons; only one surface opens, without changing row geometry. Escape restores
 trigger focus; outside interaction and Tab retain normal navigation. Keep
 informational and form disclosures unchanged.
 
-Use stable Overview and Teams destinations, and Results once finished. Scoring
-is an explicit task with Back to game, not a state-changing fourth tab. Default
+Use stable Overview, Teams and permitted Score game destinations, and Results
+once finished. AJ's post-stack QA supersedes the separate scoring-task button:
+navigation now owns the active state, with no duplicate Back to game action.
+Finished correction remains explicitly entered and has an Exit correction action.
+Default
 scheduled/live viewing to Overview and finished viewing to Results. Add readable
 `#overview`, `#teams`, `#score`, `#results` destinations while retaining existing
 `#structure`, `#players`, `#run`, `#final` and `#mode-*` compatibility. Honour

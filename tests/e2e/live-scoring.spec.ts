@@ -269,6 +269,49 @@ async function expectGeometry(page: Page) {
   expect(geometry.clippedNames, "Goal and selected-assist names must not be ellipsised or clipped").toEqual([]);
 }
 
+async function expectScoreAndGoalAlignment(page: Page) {
+  const geometry = await page.evaluate(() => {
+    const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+    const center = (rect: DOMRect) => rect.left + rect.width / 2;
+    const textRect = (element: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return { rect: range.getBoundingClientRect(), fragments: range.getClientRects().length };
+    };
+    return {
+      zoom,
+      teams: [...document.querySelectorAll<HTMLElement>('#live-scoreboard [data-ui="score-team"]')].map(team => {
+        const swatch = team.querySelector('[data-ui="team-swatch"]')!.getBoundingClientRect();
+        const name = textRect(team.querySelector("header strong")!);
+        const headerLeft = Math.min(swatch.left, name.rect.left);
+        const headerRight = Math.max(swatch.right, name.rect.right);
+        return { id: team.dataset.teamId, headingOffset: (headerLeft + headerRight) / 2 - center(team.getBoundingClientRect()),
+          totals: [...team.querySelectorAll("dt, dd")].map(element => {
+            const text = textRect(element);
+            const cell = element.parentElement!.getBoundingClientRect();
+            return { text: element.textContent, offset: center(text.rect) - center(cell), fragments: text.fragments };
+          }),
+        };
+      }),
+      rows: [...document.querySelectorAll<HTMLElement>('#goal-timeline [data-ui="goal-event"]')].map(row => {
+        const style = getComputedStyle(row);
+        return { latest: row.dataset.state === "latest", padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft] };
+      }),
+    };
+  });
+  expect(geometry.teams).toHaveLength(3);
+  for (const team of geometry.teams) {
+    expect(Math.abs(team.headingOffset), `${team.id} dot and heading are centered as one unit`).toBeLessThanOrEqual(1.5 * geometry.zoom);
+    for (const total of team.totals) {
+      expect(total.fragments, `${team.id} ${total.text} remains unfragmented`).toBe(1);
+      expect(Math.abs(total.offset), `${team.id} ${total.text} is centered in its total column`).toBeLessThanOrEqual(1.5 * geometry.zoom);
+    }
+  }
+  expect(geometry.rows.length).toBeGreaterThan(1);
+  expect(geometry.rows.filter(row => row.latest)).toHaveLength(1);
+  for (const row of geometry.rows) expect(row.padding, "Latest highlighting must not change the shared goal-row inset").toEqual(geometry.rows[0].padding);
+}
+
 async function capture(page: Page, testInfo: TestInfo, name: string) {
   const path = testInfo.outputPath(`${name}.png`);
   await page.screenshot({ path, fullPage: true });
@@ -277,23 +320,26 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
 
 test.use({ timezoneId: "Australia/Melbourne", locale: "en-AU" });
 
-test("scoring entry and browser history show only the current task action", async ({ page }) => {
+test("scoring is a stable native navigation destination with no redundant return action", async ({ page }) => {
   const fixture = await installScoringFixture(page, { status: "scheduled" });
   await page.goto(`${origin}${gamePath}#overview`);
-  const entry = page.getByTestId("game-mode-run-tab");
-  const back = page.getByRole("button", { name: "Back to game", exact: true });
-  await expect(entry).toBeEnabled();
+  const entry = page.getByTestId("game-mode-nav").getByRole("link", { name: "Score game", exact: true });
+  const overview = page.getByTestId("game-mode-structure-tab");
+  await expect(entry).toHaveAttribute("href", "#score");
+  await expect(page.getByRole("button", { name: "Score game", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Back to game", exact: true })).toHaveCount(0);
   await entry.click();
   await expect(page.getByTestId("game-mode-run")).toBeVisible();
-  await expect(entry).toBeHidden();
-  await expect(back).toBeVisible();
-  await back.click();
+  await expect(entry).toBeVisible();
+  await expect(entry).toHaveAttribute("aria-current", "page");
+  await overview.click();
   await expect(page.getByTestId("game-mode-structure")).toBeVisible();
   await expect(entry).toBeVisible();
-  await expect(back).toBeHidden();
+  await expect(entry).not.toHaveAttribute("aria-current", "page");
   await page.goBack();
   await expect(page.getByTestId("game-mode-run")).toBeVisible();
-  await expect(entry).toBeHidden();
+  await expect(entry).toBeVisible();
+  await expect(entry).toHaveAttribute("aria-current", "page");
   await page.goForward();
   await expect(page.getByTestId("game-mode-structure")).toBeVisible();
   await expect(entry).toBeVisible();
@@ -325,6 +371,7 @@ for (const colorScheme of ["light", "dark"] as const) {
       expect(await page.locator('#live-scoreboard [data-ui="score-team"]').evaluateAll(elements => elements.map(element => element.getAttribute("data-team-id")))).toEqual(teamIds);
       await expect(page.locator("#timer-phase-label")).toHaveText("Stoppage");
       await expect(latestGoals(page)).toHaveCount(3);
+      await expectScoreAndGoalAlignment(page);
       await expect(page.getByTestId("goal-timeline")).not.toContainText(/Assists: None|conceding tally only/);
       for (const chip of await page.locator('#goal-timeline [data-ui="goal-team-chip"]').all()) {
         await expect(chip).toHaveAttribute("aria-label", /^(Scoring|Conceding) team: (Red|Blue|Yellow)$/);
@@ -351,6 +398,7 @@ for (const colorScheme of ["light", "dark"] as const) {
     await page.getByTestId("goal-assists-dropdown").locator("summary").click();
     await assist(page, fixture.players[12].playerId).check();
     await expectGeometry(page);
+    await expectScoreAndGoalAlignment(page);
     await capture(page, testInfo, `live-scoring-simulated-css-zoom-200-${colorScheme}-768`);
     await page.locator("html").evaluate(element => { element.style.zoom = "1"; });
     await page.setViewportSize({ width: 640, height: 360 });
@@ -428,7 +476,8 @@ test("pending submit is latched and a later navigation keeps its focus", async (
     await page.getByTestId("game-mode-players-tab").click();
     await expect(page.getByTestId("game-mode-players")).toBeFocused();
     gate.release();
-    await expect(page.locator("#setup-status")).toContainText("Goal recorded.");
+    await expect.poll(() => fixture.goals.length).toBe(1);
+    await expect(page.locator("#setup-status")).toBeHidden();
     await expectReset(page);
     await expect(page.getByTestId("game-mode-players")).toBeVisible();
     await expect(page.getByTestId("game-mode-players")).toBeFocused();
@@ -528,6 +577,82 @@ test("unconfirmed undo retries its original event without removing a newer goal"
   expect(fixture.unexpected).toEqual([]);
 });
 
+test("finished correction has an explicit zero-write exit and cannot be rearmed by browser history", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const fixture = await installScoringFixture(page, { status: "finished" });
+  await openScoring(page, fixture);
+  const correction = page.getByTestId("game-mode-nav").getByRole("link", { name: "Correction", exact: true });
+  await expect(correction).toHaveAttribute("href", "#score");
+  await expect(correction).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("#finished-correction-actions").getByRole("heading", { name: "Correct result", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Score game", exact: true })).toHaveCount(0);
+  await page.getByTestId("game-mode-players-tab").click();
+  await expect(correction).toBeVisible();
+  await correction.click();
+  const exit = page.getByRole("button", { name: "Exit correction", exact: true });
+  await exit.focus();
+  await expectGeometry(page);
+  await capture(page, testInfo, "finished-correction-exit-dark-320");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("game-mode-final")).toBeVisible();
+  await expect(page.getByTestId("game-mode-final")).toBeFocused();
+  await expect(page).toHaveURL(`${origin}${gamePath}#results`);
+  await expect(page.getByTestId("game-mode-run-tab")).toBeHidden();
+  await expect(page.locator('[data-action="correct-finished-result"]')).toBeVisible();
+  await page.goBack();
+  await expect(page.getByTestId("game-mode-final")).toBeVisible();
+  await expect(page.getByTestId("game-mode-run-tab")).toBeHidden();
+  await page.locator('[data-action="correct-finished-result"]').click();
+  await expect(correction).toBeVisible();
+  expect(fixture.mutations()).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("pending and uncertain correction protects retry ownership until a confirmed exit", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const fixture = await installScoringFixture(page, { status: "finished" });
+  await openScoring(page, fixture);
+  await normalDraft(page, fixture);
+  const gate = deferred();
+  fixture.plans.push({ kind: "goal", gate, status: 503, commit: true });
+  await page.getByTestId("add-goal").click();
+  await expect.poll(() => fixture.mutations().length).toBe(1);
+  const exit = page.getByRole("button", { name: "Exit correction", exact: true });
+  await expect(exit).toBeDisabled();
+  await page.getByTestId("game-mode-final-tab").click();
+  await expect(page.getByTestId("game-mode-final")).toBeVisible();
+  await page.getByRole("link", { name: "Correction", exact: true }).click();
+  gate.release();
+  await expect(retryGoal(page)).toBeEnabled();
+  await expect(exit).toBeDisabled();
+  const reasonIds = (await exit.getAttribute("aria-describedby"))?.trim().split(/\s+/) ?? [];
+  expect(reasonIds.length, "Blocked exit has an associated readable reason").toBeGreaterThan(0);
+  for (const id of reasonIds) await expect(page.locator(`[id="${id}"]`)).toBeVisible();
+  await exit.dispatchEvent("click");
+  await expect(page.getByTestId("game-mode-run")).toBeVisible();
+  const messageBox = await page.locator('#live-scoreboard > [data-ui="empty-note"]').boundingBox();
+  const scoreboardBox = await page.locator("#live-scoreboard").boundingBox();
+  expect(messageBox).not.toBeNull(); expect(scoreboardBox).not.toBeNull();
+  expect(Math.abs(messageBox!.width - scoreboardBox!.width), "Recovery occupies the full scoreboard, not one empty team column").toBeLessThan(2);
+  await expectGeometry(page);
+  await capture(page, testInfo, "finished-correction-unconfirmed-dark-390");
+  await page.getByTestId("game-mode-final-tab").click();
+  await page.getByRole("link", { name: "Correction", exact: true }).click();
+  await retryGoal(page).click();
+  await expect(exit).toBeEnabled();
+  await expect(retryGoal(page)).toBeHidden();
+  expect(fixture.mutations()).toHaveLength(2);
+  expect(fixture.mutations()[1]).toEqual(fixture.mutations()[0]);
+  expect(fixture.goals).toHaveLength(4);
+  await exit.click();
+  await expect(page.getByTestId("game-mode-final")).toBeVisible();
+  expect(fixture.mutations()).toHaveLength(2);
+  expect(fixture.goals).toHaveLength(4);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test("fresh finished correction permits assists and clears a committed draft when reads fail", async ({ page }) => {
   const fixture = await installScoringFixture(page, { status: "finished" });
   await openScoring(page, fixture); await normalDraft(page, fixture);
@@ -578,7 +703,8 @@ test("delayed third response does not steal a later Teams destination", async ({
     await page.getByTestId("game-mode-players-tab").click();
     await expect(page.getByTestId("game-mode-players")).toBeFocused();
     gate.release();
-    await expect(page.locator("#setup-status")).toContainText("Third 1 started.");
+    await expect.poll(() => fixture.game.thirds[0]?.startedAt).toBe(now);
+    await expect(page.locator("#setup-status")).toBeHidden();
     await expect(page).toHaveURL(`${origin}${gamePath}#teams`);
     await expect(page.getByTestId("game-mode-players")).toBeFocused();
     expect(fixture.unexpected).toEqual([]);

@@ -26,10 +26,18 @@ type RecordedRequest = { method: string; path: string; search: string; body: Rec
 type FixtureOptions = {
   actor?: Actor; status?: GameStatus; largeRoster?: boolean; playersUnavailable?: boolean;
   delayAuthority?: boolean; failCreateOnce?: boolean; failTransferOnce?: boolean;
+  assignmentGate?: ReturnType<typeof deferred>;
+  metadataGate?: ReturnType<typeof deferred>;
 };
 const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
+
+function deferred() {
+  let release: () => void = () => {};
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
 
 async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
   const actor = options.actor ?? "admin";
@@ -83,6 +91,7 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
   const unexpected: string[] = [];
   let createFailures = options.failCreateOnce ? 1 : 0;
   let transferFailures = options.failTransferOnce ? 1 : 0;
+  let assignmentGate = options.assignmentGate;
   let releaseAuthority: () => void = () => {};
   const authority = new Promise<void>(resolve => { releaseAuthority = resolve; });
   const publicRoster = () => [...assignments].map(([playerId, teamId]) => ({
@@ -117,6 +126,19 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
     const forbidden = () => route.fulfill({ status: 403, json: { error: "forbidden", code: "league_access_required", message: "Access to this league is required." } });
     if (!readable && url.pathname.startsWith("/v1/")) return forbidden();
     if (method === "GET" && url.pathname === apiGamePath) return route.fulfill({ json: game });
+    if (method === "PATCH" && url.pathname === apiGamePath && body) {
+      if (!isAdmin || game.status === "finished") return forbidden();
+      if (options.metadataGate) await options.metadataGate.promise;
+      if (typeof body.gameStartTs !== "string" || !Number.isFinite(Date.parse(body.gameStartTs)) ||
+        !["scheduled", "live"].includes(String(body.status)) || typeof body.thirdLengthMinutes !== "number" ||
+        ![20, 25, 30].includes(body.thirdLengthMinutes)) {
+        return route.fulfill({ status: 400, json: { error: "invalid_game" } });
+      }
+      game.gameStartTs = body.gameStartTs;
+      game.status = body.status as GameStatus;
+      game.thirdLengthMinutes = body.thirdLengthMinutes;
+      return route.fulfill({ json: game });
+    }
     if (method === "GET" && url.pathname === `/v1/leagues/${leagueId}`) {
       if (options.delayAuthority) await authority;
       if (actor === "unknown") return route.fulfill({ status: 503, json: { error: "unavailable" } });
@@ -143,6 +165,8 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
     const assignment = new RegExp(`^${apiGamePath}/roster/([^/]+)$`).exec(url.pathname);
     if (method === "PUT" && assignment && body) {
       if (!isOperator || (status === "finished" && !isAdmin)) return forbidden();
+      const gate = assignmentGate; assignmentGate = undefined;
+      if (gate) await gate.promise;
       if (transferFailures-- > 0) return route.fulfill({ status: 503, json: { error: "unavailable", message: "Transfer could not be confirmed." } });
       const playerId = decodeURIComponent(assignment[1]);
       if (!players.some(player => player.playerId === playerId) || !teamIds.includes(body.teamId as TeamId)) return route.fulfill({ status: 400, json: { error: "invalid_assignment" } });
@@ -199,9 +223,9 @@ async function expectMatchGeometry(page: Page) {
   expect(geometry.narrowNameFields, "The Add player input retains usable full-row reading width").toEqual([]);
 }
 
-async function capture(page: Page, testInfo: TestInfo, name: string) {
+async function capture(page: Page, testInfo: TestInfo, name: string, fullPage = true) {
   const path = testInfo.outputPath(`${name}.png`);
-  await page.screenshot({ path, fullPage: true });
+  await page.screenshot({ path, fullPage });
   await testInfo.attach(name, { path, contentType: "image/png" });
 }
 
@@ -225,11 +249,13 @@ for (const colorScheme of ["light", "dark"] as const) {
       await expect(page.locator("#game-overview-third-length")).toContainText("20");
       await expect(page.locator("#game-overview-kickoff")).not.toHaveText(/Loading|fixture-match/);
       await expect(page.locator("#game-edit-region")).toBeHidden();
-      await expect(page.getByTestId("game-mode-nav").getByRole("link")).toHaveCount(2);
+      await expect(page.getByTestId("game-mode-nav").getByRole("link")).toHaveCount(3);
       await expect(page.getByTestId("game-mode-structure-tab")).toHaveAttribute("href", "#overview");
       await expect(page.getByTestId("game-mode-players-tab")).toHaveAttribute("href", "#teams");
       await expect(page.getByTestId("game-mode-final-tab")).toBeHidden();
-      await expect(page.getByTestId("game-mode-nav").getByTestId("game-mode-run-tab")).toHaveCount(0);
+      await expect(page.getByTestId("game-mode-nav").getByRole("link", { name: "Score game", exact: true })).toHaveAttribute("href", "#score");
+      await expect(page.getByRole("button", { name: "Score game", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Back to game", exact: true })).toHaveCount(0);
       await expect(page.locator('[data-action="toggle-game-edit"]')).toBeVisible();
       await expect(page.getByTestId("game-join-code-value")).toHaveText("FICTIONALJOIN");
       await expectMatchGeometry(page);
@@ -273,16 +299,21 @@ for (const colorScheme of ["light", "dark"] as const) {
       await create.focus();
       await page.keyboard.press("Enter");
       await expect(page.getByLabel("Player name", { exact: true })).toBeFocused();
+      await expect(create).toBeHidden();
+      await expect(create).toHaveAttribute("aria-expanded", "true");
+      await expect(page.getByRole("button", { name: "Add player", exact: true })).toHaveCount(1);
       await page.getByLabel("Player name", { exact: true }).fill("Unsent player draft");
       await expectMatchGeometry(page);
       if (width === 390 || (width === 320 && colorScheme === "dark")) await capture(page, testInfo, `match-add-player-${colorScheme}-${width}`);
       await page.locator("#player-create-form").getByRole("button", { name: "Cancel", exact: true }).focus();
       await page.keyboard.press("Enter");
       await expect(page.locator("#player-create-region")).toBeHidden();
+      await expect(create).toBeVisible();
       await expect(create).toBeFocused();
       await page.keyboard.press("Enter");
       await expect(page.getByLabel("Player name", { exact: true })).toHaveValue("Unsent player draft");
       await page.keyboard.press("Escape");
+      await expect(create).toBeVisible();
       await expect(create).toBeFocused();
       expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
       expect(fixture.unexpected).toEqual([]);
@@ -308,6 +339,48 @@ for (const status of ["scheduled", "live", "finished"] as const) {
   });
 }
 
+test("scheduled metadata save restores Edit game focus and reopens the saved values", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const gate = deferred();
+  const fixture = await installMatchFixture(page, { status: "scheduled", metadataGate: gate });
+  await page.goto(`${origin}${gamePath}#overview`);
+  await expectReady(page);
+  const edit = page.locator('[data-action="toggle-game-edit"]');
+  await edit.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Kickoff time", { exact: true })).toBeFocused();
+  await page.getByTestId("game-edit-third-length").selectOption("25");
+  const save = page.getByTestId("save-game");
+  await save.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => fixture.requests.filter(request => request.method === "PATCH").length).toBe(1);
+  await expect(save).toBeDisabled();
+  await expect(page.getByLabel("Kickoff time", { exact: true })).toBeDisabled();
+  await expect(page.getByTestId("game-edit-third-length")).toBeDisabled();
+  gate.release();
+  await expect(page.locator("#setup-status")).toHaveText("Game saved.");
+  await expect(page.locator("#setup-error")).toBeHidden();
+  await expect(page.locator("#game-edit-region")).toBeHidden();
+  await expect(edit).toBeEnabled();
+  await expect(edit).toBeFocused();
+  await expect(page.locator("#game-overview-third-length")).toHaveText("25 minutes");
+  await expectMatchGeometry(page);
+  await capture(page, testInfo, "match-metadata-saved-focus-dark-320");
+  // Reopen by the retained native keyboard focus, not by refocusing in code.
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Kickoff time", { exact: true })).toBeFocused();
+  await expect(page.getByTestId("game-edit-third-length")).toHaveValue("25");
+  await expect(save).toBeEnabled();
+  await page.locator("#game-edit-form").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(edit).toBeFocused();
+  expect(fixture.requests.filter(request => request.method !== "GET")).toMatchObject([{
+    method: "PATCH", path: apiGamePath,
+    body: { gameStartTs: kickoff, status: "scheduled", thirdLengthMinutes: 25 },
+  }]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test("match navigation, scoring task and browser history restore destination focus", async ({ page }) => {
   const fixture = await installMatchFixture(page, { status: "live" });
   await page.goto(`${origin}${gamePath}`);
@@ -326,7 +399,8 @@ test("match navigation, scoring task and browser history restore destination foc
   await expect(page).toHaveURL(`${origin}${gamePath}#score`);
   await expectOnlyMode(page, "run");
   await expect(page.getByTestId("game-mode-run")).toBeFocused();
-  await page.getByTestId("game-mode-run").getByRole("button", { name: "Back to game", exact: true }).click();
+  await expect(page.getByTestId("game-mode-run-tab")).toHaveAttribute("aria-current", "page");
+  await page.getByTestId("game-mode-structure-tab").click();
   await expect(page).toHaveURL(`${origin}${gamePath}#overview`);
   await expect(page.getByTestId("game-mode-structure")).toBeFocused();
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
@@ -439,7 +513,12 @@ test("match and player actions use the same keyboard-friendly kebab surfaces", a
   await expectActionSurfaceFits(page, playerSurface);
   expect((await player.boundingBox())!.height).toBeCloseTo(height, 1);
   await expectMatchGeometry(page);
-  await capture(page, testInfo, "player-kebab-open-dark-320");
+  // A full-page screenshot temporarily resizes/repositions the viewport and
+  // can legitimately dismiss a fixed menu whose trigger is scrolled away.
+  // Capture the actual viewport without changing the interaction under test.
+  await capture(page, testInfo, "player-kebab-open-dark-320", false);
+  await expect(playerSurface).toBeVisible();
+  await expect(playerSurface.locator('[data-action="grant-player-access"]').first()).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(playerTrigger).toBeFocused();
   await expect(playerSurface).toBeHidden();
@@ -500,11 +579,13 @@ test("native player entry preserves a failed draft and supports consecutive addi
   await expect(page.locator("#setup-error")).toBeVisible();
   await expect(input).toHaveValue("Fictional Late Arrival");
   await expect(page.getByTestId("quick-create-player")).toBeEnabled();
+  await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
   await input.focus();
   await page.keyboard.press("Enter");
   await expect(page.locator('#player-pool [data-ui="roster-player"]')).toHaveCount(3);
   await expect(input).toHaveValue("");
   await expect(input).toBeFocused();
+  await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
   const retries = fixture.requests.filter(request => request.method === "POST");
   expect(retries).toHaveLength(2);
   expect(retries[1].body).toEqual(retries[0].body);
@@ -518,6 +599,49 @@ test("native player entry preserves a failed draft and supports consecutive addi
   expect(fixture.requests.filter(request => request.method === "POST")).toHaveLength(3);
   expect(fixture.unexpected).toEqual([]);
 });
+
+for (const outcome of ["before navigation", "after navigation", "uncertain"] as const) {
+  test(`assignment feedback ${outcome} respects the current destination`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.emulateMedia({ colorScheme: "dark" });
+    const gate = deferred();
+    const fixture = await installMatchFixture(page, {
+      status: "live", assignmentGate: gate, failTransferOnce: outcome === "uncertain",
+    });
+    await page.goto(`${origin}${gamePath}#teams`);
+    await expectReady(page);
+    const playerId = fixture.players[2].playerId;
+    const transfer = page.locator(`[data-action="toggle-transfer"][data-player-id="${playerId}"]`);
+    await transfer.click();
+    await page.locator('[data-ui="transfer-menu"]:visible [data-team-id="yellow"]').click();
+    await expect.poll(() => fixture.requests.filter(request => request.method === "PUT").length).toBe(1);
+    if (outcome === "before navigation") {
+      gate.release();
+      await expect(page.locator("#setup-status")).toHaveText("Sam assigned to Yellow.");
+    }
+    await page.getByTestId("game-mode-run-tab").click();
+    await expect(page.getByTestId("game-mode-run")).toBeFocused();
+    if (outcome !== "before navigation") gate.release();
+    // Mutation controls unlock only after the response and roster refresh are
+    // handled, so a delayed success cannot pass while it is still in flight.
+    await expect(transfer).toBeEnabled();
+    if (outcome === "uncertain") {
+      await expect(page.locator("#setup-error")).toHaveText("Assignment could not be confirmed. Retry this team choice or reload to check.");
+      expect(fixture.assignments.get(playerId)).toBe("red");
+    } else {
+      await expect(page.locator("#setup-status")).toBeHidden();
+      await expect(page.locator("#setup-error")).toBeHidden();
+      expect(fixture.assignments.get(playerId)).toBe("yellow");
+    }
+    await expect(page.getByTestId("game-mode-run")).toBeFocused();
+    await capture(page, testInfo, `assignment-${outcome.replaceAll(" ", "-")}-score-dark-390`);
+    await page.getByTestId("game-mode-players-tab").click();
+    if (outcome === "uncertain") await expect(page.locator("#setup-error")).toContainText("Retry this team choice");
+    else await expect(page.locator("#setup-status")).toBeHidden();
+    expect(fixture.requests.filter(request => request.method === "PUT")).toHaveLength(1);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
 
 test("transfer offers only alternatives, keeps failures open and collapses after success", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 900 });
@@ -618,6 +742,17 @@ test("finished teams and result corrections require an explicit administrator ac
   await page.locator('[data-action="correct-finished-result"]').click();
   await expectOnlyMode(page, "run");
   await expect(page.getByTestId("game-mode-run")).toBeFocused();
+  await expect(page.getByTestId("game-mode-nav").getByRole("link", { name: "Correction", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.getByTestId("game-mode-structure-tab").click();
+  await expect(page.getByRole("link", { name: "Score game", exact: true })).toHaveCount(0);
+  await page.getByRole("link", { name: "Correction", exact: true }).click();
+  await page.getByRole("button", { name: "Exit correction", exact: true }).click();
+  await expectOnlyMode(page, "final");
+  await expect(page.getByTestId("game-mode-final")).toBeFocused();
+  await expect(page.getByTestId("game-mode-run-tab")).toBeHidden();
+  await expect(page.locator('[data-action="correct-finished-result"]')).toBeVisible();
+  await page.goBack();
+  await expectOnlyMode(page, "final");
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

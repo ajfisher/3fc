@@ -1125,6 +1125,8 @@ body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
+
+  > [data-ui="empty-note"] { grid-column: 1 / -1; }
 }
 
 [data-ui="score-team"] {
@@ -1132,10 +1134,12 @@ body {
   display: grid;
   gap: 0.5rem;
   min-width: 0;
+  text-align: center;
 
   header {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, auto);
+    justify-content: center;
     align-items: center;
     gap: 0.35rem;
 
@@ -2069,15 +2073,24 @@ body {
   gap: 0.5rem;
   min-width: 0;
   border-bottom: 1px solid var(--line);
-  padding: 0.75rem 0;
+  padding: 0.75rem;
   background: var(--surface);
 
   &[data-state="latest"] {
     background: var(--accent-soft);
-    padding: 0.75rem;
     border-radius: var(--radius-lg);
     border-bottom: 0;
   }
+}
+
+[data-ui="correction-actions"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  h2 { margin: 0; font-size: 1.25rem; }
+  p { flex-basis: 100%; }
 }
 
 [data-ui="goal-event-main"] {

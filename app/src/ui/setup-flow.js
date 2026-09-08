@@ -6,6 +6,7 @@
   let errorElement = null;
   let errorDetail = "";
   let errorIncludesOutcome = false;
+  let statusRevision = 0;
 
   function refreshShellReferences() {
     root = document.getElementById("setup-flow-root");
@@ -245,6 +246,7 @@
   }
 
   function setStatus(text, state = "default") {
+    ++statusRevision;
     if (!statusElement) {
       return;
     }
@@ -272,6 +274,7 @@
       statusElement.setAttribute("data-state", state);
     }
     syncFeedback();
+    return statusRevision;
   }
 
   // Keep operation outcomes and recovery together in one visible live region.
@@ -500,6 +503,7 @@
     const focusWasInside = panel.contains(document.activeElement);
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
     panel.hidden = !open;
+    if (trigger.hasAttribute("data-hide-when-expanded")) trigger.hidden = open || trigger.disabled;
     if (open && options.focus !== false) {
       const focusTarget = panel.querySelector("input, select, button, [tabindex]");
       if (focusTarget instanceof HTMLElement) {
@@ -508,7 +512,9 @@
       return;
     }
     if (!open && options.restoreFocus !== false && focusWasInside) {
-      trigger.focus();
+      // A disclosure action may live inside an already-dismissed kebab menu.
+      const returnTarget = trigger.closest('[data-ui="action-menu"]')?.querySelector('[data-action="toggle-action-menu"]') ?? trigger;
+      if (returnTarget instanceof HTMLElement && actionElementVisible(returnTarget) && !returnTarget.disabled) returnTarget.focus();
     }
   }
 
@@ -2763,7 +2769,15 @@
       for (const element of document.querySelectorAll("[data-game-capability]")) {
         if (!(element instanceof HTMLElement)) continue;
         const allowed = capabilities[element.getAttribute("data-game-capability")] === true;
-        element.hidden = !allowed || (element.id === "game-mode-tab-run" && gameModePanels.some((panel) => panel.getAttribute("data-game-mode") === "run" && !panel.hidden));
+        element.hidden = !allowed || (element.hasAttribute("data-hide-when-expanded") && element.getAttribute("aria-expanded") === "true");
+        if (element instanceof HTMLAnchorElement) {
+          if (allowed) element.removeAttribute("aria-disabled");
+          else element.setAttribute("aria-disabled", "true");
+          if (element.hasAttribute("data-mode-href")) {
+            if (allowed) element.setAttribute("href", element.getAttribute("data-mode-href"));
+            else element.removeAttribute("href");
+          }
+        }
         if (element instanceof HTMLButtonElement) {
           if (!allowed) {
             element.disabled = true;
@@ -2783,6 +2797,14 @@
       if (correctionTeams instanceof HTMLElement) correctionTeams.hidden = !capabilities.correct || finishedRosterEditing;
       const correctionResult = root.querySelector('[data-action="correct-finished-result"]');
       if (correctionResult instanceof HTMLElement) correctionResult.hidden = !capabilities.correct || finishedResultEditing;
+      setModeLabel("run", isGameFinished() ? "Correction" : "Score game");
+      const correctionActions = document.getElementById("finished-correction-actions");
+      if (correctionActions) correctionActions.hidden = !capabilities.correct || !finishedResultEditing;
+      const exit = root.querySelector('[data-action="exit-result-correction"]');
+      const exitLocked = Boolean(goalOperation || clockOperation || goalMutationInFlight || timerMutationPending);
+      if (exit instanceof HTMLButtonElement) exit.disabled = exitLocked;
+      const exitReason = document.getElementById("correction-exit-reason");
+      if (exitReason) exitReason.hidden = !exitLocked;
     }
 
     function humanGameStatus(value) {
@@ -2823,6 +2845,7 @@
     }
 
     function setGameMode(mode, options = {}) {
+      const previousMode = gameModePanels.find((panel) => !panel.hidden)?.getAttribute("data-game-mode");
       gameNavigationRevision += 1;
       closeActionMenu();
       if (!isGameMode(mode)) {
@@ -2830,6 +2853,7 @@
       }
       if (mode === "run" && !canScoreGame()) mode = isGameFinished() ? "final" : "structure";
       if (mode === "final" && !isGameFinished()) mode = canScoreGame() && buildTimerState(currentGame)?.status === "complete" ? "run" : "structure";
+      if (previousMode !== mode && statusElement?.getAttribute("data-state") === "success" && (!errorElement || errorElement.hidden)) setStatus("");
       const hashes = { structure: "overview", players: "teams", run: "score", final: "results" };
       if (options.history !== false) {
         const hash = `#${hashes[mode]}`;
@@ -2863,7 +2887,7 @@
 
       for (const trigger of gameModeTriggers) {
         if (trigger instanceof HTMLElement) {
-          if (trigger.id === "game-mode-tab-run") trigger.hidden = mode === "run" || !canScoreGame();
+          if (trigger.id === "game-mode-tab-run") trigger.hidden = !canScoreGame();
           trigger.setAttribute("data-current", trigger.getAttribute("data-game-mode") === mode ? "true" : "false");
         }
       }
@@ -2875,6 +2899,17 @@
           panel.scrollIntoView?.({ block: "start" });
         }
       }
+    }
+
+    function beginGameFeedback(message) {
+      return { navigation: gameNavigationRevision, revision: setStatus(message, "default") };
+    }
+
+    function finishGameFeedback(message, owner) {
+      // A late settled success must not replace a newer operation's feedback,
+      // or follow the organiser to a different view. Errors/recovery stay put.
+      if (owner.revision !== statusRevision || (errorElement && !errorElement.hidden)) return;
+      setStatus(owner.navigation === gameNavigationRevision ? message : "", "success");
     }
 
     function gameModeFromHash() {
@@ -2890,18 +2925,6 @@
         return requested;
       }
 
-      if (!currentGame) {
-        return "structure";
-      }
-
-      if (isGameFinished()) {
-        return "final";
-      }
-
-      return "structure";
-    }
-
-    function gameModeAfterGameSave() {
       if (!currentGame) {
         return "structure";
       }
@@ -4338,7 +4361,7 @@
       scoreboardState = "refreshing";
       if (isGameFinished()) finishedResultState = "refreshing";
       clearError();
-      setStatus(`${progress}…`, "default");
+      const feedback = beginGameFeedback(`${progress}…`);
       renderLiveScoring();
       renderTimer();
       let committed = false;
@@ -4392,7 +4415,7 @@
             : `${saved}, but the latest scores and goal timeline could not be loaded. Reload to try again.`, { includesOutcome: true });
         } else if (!gameRefreshed) {
           showError(`${saved}, but the finished result could not be refreshed.`, { includesOutcome: true });
-        } else setStatus(`${saved}.`, "success");
+        } else finishGameFeedback(`${saved}.`, feedback);
       } catch {
         // Refresh/render failure after a confirmed commit is not a failed write.
         if (committed) {
@@ -4906,11 +4929,13 @@
       setFieldMessage("game-edit-kickoff");
 
       gameMetadataPending = true;
+      const saveNavigation = gameNavigationRevision;
+      const finishSaveFocus = trackInteractionFocus(gameEditRegion);
       saveButton.disabled = true;
       kickoffInput.disabled = true;
       statusInput.disabled = true;
       thirdLengthInput.disabled = true;
-      setStatus("Saving game updates…", "default");
+      const feedback = beginGameFeedback("Saving game updates…");
 
       try {
         await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}`, {
@@ -4927,9 +4952,16 @@
 
         try {
           await loadGame();
-          setDisclosureState(gameEditToggle, gameEditRegion, false);
-          setGameMode(gameModeAfterGameSave(), { focusPanel: true });
-          setStatus("Game saved.", "success");
+          gameMetadataPending = false;
+          renderTimer();
+          const ownsFocus = finishSaveFocus();
+          if (saveNavigation === gameNavigationRevision) {
+            setDisclosureState(gameEditToggle, gameEditRegion, false, { restoreFocus: false });
+            // Disabling a focused native input can blur it to body. The captured
+            // interaction still owns restoration unless the user moved away.
+            if (ownsFocus && gameEditToggle instanceof HTMLButtonElement && !gameEditToggle.disabled && actionElementVisible(gameEditToggle)) gameEditToggle.focus();
+          }
+          finishGameFeedback("Game saved.", feedback);
         } catch {
           showError("Game saved. The latest details couldn’t be loaded. Reload the page to check them.", { includesOutcome: true });
         }
@@ -4938,7 +4970,9 @@
         showError(message);
         setStatus("Game update failed.", "error");
       } finally {
+        finishSaveFocus();
         gameMetadataPending = false;
+        renderTimer();
         saveButton.disabled = !canEditGame();
         kickoffInput.disabled = !canEditGame();
         statusInput.disabled = !canEditGame();
@@ -5004,7 +5038,7 @@
       return false;
     }
 
-    async function acceptClockOutcome(operation) {
+    async function acceptClockOutcome(operation, feedback) {
       let accessAvailable = true;
       let resultAvailable = true;
       if (operation.kind === "finish-game") {
@@ -5039,7 +5073,7 @@
       const success = operation.kind === "finish-game" ? "Game finished." : "Third " + operation.third + (operation.kind === "start" ? " started." : " finished.");
       if (!resultAvailable) showError("Game finished. The latest result could not be loaded. Reload to try again.", { includesOutcome: true });
       else if (!accessAvailable) showError("Game finished. Player details could not be refreshed. Reload to try again.", { includesOutcome: true });
-      else { clearError(); setStatus(success, "success"); }
+      else { finishGameFeedback(success, feedback); }
     }
 
     async function performClockOperation(operation, initiator, readOnly = false) {
@@ -5048,7 +5082,7 @@
       const navigationRevision = gameNavigationRevision;
       timerMutationPending = true;
       clearError();
-      setStatus(readOnly ? "Checking clock…" : operation.kind === "finish-game" ? "Finishing game…" : (operation.kind === "start" ? "Starting third " : "Finishing third ") + operation.third + "…", "default");
+      const feedback = beginGameFeedback(readOnly ? "Checking clock…" : operation.kind === "finish-game" ? "Finishing game…" : (operation.kind === "start" ? "Starting third " : "Finishing third ") + operation.third + "…");
       renderTimer();
       renderLiveScoring();
       let confirmed = false;
@@ -5071,7 +5105,7 @@
             confirmed = await reconcileClockOperation(operation);
           }
         }
-        if (confirmed) await acceptClockOutcome(operation);
+        if (confirmed) await acceptClockOutcome(operation, feedback);
         else {
           operation.uncertain = true;
           showError(operation.kind === "finish-game"
@@ -5133,6 +5167,15 @@
     root.addEventListener("click", (event) => {
       const target = event.target;
       const action = target instanceof Element ? target.closest("[data-action]")?.getAttribute("data-action") : null;
+      if (action === "exit-result-correction") {
+        if (!isGameFinished() || !canCorrectFinishedGoals() || goalOperation || clockOperation || goalMutationInFlight || timerMutationPending) return;
+        finishedResultEditing = false;
+        resetGoalForm();
+        renderLiveScoring();
+        manualGameModeSelected = true;
+        setGameMode("final", { focusPanel: true });
+        return;
+      }
       if (action === "edit-finished-teams" || action === "correct-finished-result") {
         if (!isGameFinished() || currentLeagueRole !== "admin") return;
         if (action === "edit-finished-teams") finishedRosterEditing = true;
@@ -5152,6 +5195,7 @@
       }
       event.preventDefault();
       if (trigger instanceof HTMLButtonElement && trigger.disabled) return;
+      if (trigger.getAttribute("aria-disabled") === "true") return;
 
       const mode = trigger.getAttribute("data-game-mode");
       manualGameModeSelected = true;
@@ -5213,7 +5257,7 @@
         playerCreatePending = true;
         let committed = false;
         quickCreatePlayerButton.disabled = true;
-        setStatus("Adding player…", "default");
+        const feedback = beginGameFeedback("Adding player…");
 
         try {
           const response = await requestJsonOrThrow(playerCreateAttempt.request.path, playerCreateAttempt.request.init);
@@ -5231,7 +5275,7 @@
           try {
             await loadRosterSetup({ updateStatus: false });
             await loadPlayerSearch();
-            setStatus("Player added.", "success");
+            finishGameFeedback("Player added.", feedback);
           } catch {
             showError("Player added. The latest teams couldn’t be loaded. Reload to check them.", { includesOutcome: true });
           }
@@ -5315,7 +5359,7 @@
           target.disabled = true;
           renderRosterSetup();
           clearError();
-          setStatus("Updating scorer access…", "default");
+          const feedback = beginGameFeedback("Updating scorer access…");
 
           try {
             await requestJsonOrThrow(`/v1/leagues/${encodeURIComponent(currentLeagueId)}/access`, {
@@ -5332,11 +5376,11 @@
             const player = verifiedAdminPlayers.get(playerId);
             if (player) verifiedAdminPlayers.set(playerId, { ...player, access: { ...player.access, role } });
             await loadPlayerSearch();
-            setStatus(
+            finishGameFeedback(
               role === "admin"
                 ? "Player can now co-organise and score."
                 : "Player can now score this league's games.",
-              "success",
+              feedback,
             );
           } catch (error) {
             if (isDefinitiveRequestRejection(error)) {
@@ -5385,7 +5429,7 @@
         const isTransferAssignment = target.closest('[data-ui="transfer-menu"]') !== null;
         renderRosterSetup();
         clearError();
-        setStatus("Assigning player…", "default");
+        const feedback = beginGameFeedback("Assigning player…");
 
         let committedAssignment;
         try {
@@ -5445,9 +5489,9 @@
         if (!refreshFailed) {
           const player = playerById(playerId);
           const team = teamById(teamId);
-          setStatus(
+          finishGameFeedback(
             `${player?.nickname ?? "Player"} assigned to ${team?.name ?? teamId}.`,
-            "success",
+            feedback,
           );
         }
         rosterMutationPending = false;
@@ -5517,7 +5561,7 @@
       cancelGoalEditButton.addEventListener("click", () => {
         if (goalMutationInFlight || goalOperation || timerMutationPending || clockOperation) return;
         resetGoalForm();
-        setStatus("Goal edit cancelled.", "default");
+        setStatus("");
         focusNextGoal();
       });
 

@@ -205,6 +205,19 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(name, { path, contentType: "image/png" });
 }
 
+const leagueActions = (page: Page) => page.locator('[data-action="toggle-action-menu"][aria-controls="league-actions"]');
+
+async function chooseLeagueAction(page: Page, action: "toggle-create-season" | "toggle-organiser-invite") {
+  const trigger = leagueActions(page);
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#league-actions")).toBeVisible();
+  const item = page.getByTestId(action);
+  await item.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#league-actions")).toBeHidden();
+}
+
 test.use({ timezoneId: "Australia/Melbourne" });
 
 for (const colorScheme of ["light", "dark"] as const) {
@@ -262,18 +275,29 @@ for (const colorScheme of ["light", "dark"] as const) {
       await expect(seasons.getByRole("cell", { name: "Dates not set", exact: true })).toBeVisible();
       await expect(page.getByTestId("toggle-create-season")).toHaveText("Create season");
       await expect(page.getByTestId("toggle-organiser-invite")).toHaveText("Invite organiser");
+      await expect(page.getByTestId("toggle-create-season")).toBeHidden();
+      await expect(page.getByTestId("toggle-organiser-invite")).toBeHidden();
       await expect(page.getByTestId("delete-league")).toBeHidden();
       await expectGeometry(page);
       if (shouldCapture) await capture(page, testInfo, `league-${colorScheme}-${width}`);
-      const more = page.locator('[data-ui="header-actions"] [data-action="toggle-action-menu"]');
+      const more = leagueActions(page);
       await more.focus();
       await page.keyboard.press("Enter");
       await expect(page.getByTestId("delete-league")).toBeVisible();
-      await expect(page.getByTestId("delete-league")).toBeFocused();
-      await expectActionSurfaceFits(page, page.locator('[data-ui="header-actions"] [data-ui="action-menu-surface"]'));
+      await expect(page.getByTestId("toggle-create-season")).toBeFocused();
+      await expect(page.locator("#league-actions").getByRole("button")).toHaveText(["Create season", "Invite organiser", "Delete league"]);
+      await expectActionSurfaceFits(page, page.locator("#league-actions"));
       await expectGeometry(page);
+      if (shouldCapture) await capture(page, testInfo, `league-actions-${colorScheme}-${width}`);
       await page.keyboard.press("Escape");
       await expect(page.getByTestId("delete-league")).toBeHidden();
+      await expect(more).toBeFocused();
+      await page.keyboard.press("Enter");
+      await page.keyboard.press("Enter");
+      await expect(page.getByLabel("Season name", { exact: true })).toBeFocused();
+      await expect(page.locator("#league-actions")).toBeHidden();
+      await page.getByRole("form", { name: "Create season", exact: true }).getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(page.locator("#league-create-season-region")).toBeHidden();
       await expect(more).toBeFocused();
 
       await seasonLink.click();
@@ -470,11 +494,9 @@ test("organiser invitation opens intentionally and reuses its fictional share li
   await expectSharedShell(page, leagueName);
   await expect(page.getByRole("table", { name: "Seasons", exact: true })).toBeVisible();
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
-  await page.getByTestId("toggle-create-season").click();
+  await chooseLeagueAction(page, "toggle-create-season");
   await page.getByLabel("Season name", { exact: true }).fill("Keep the season draft");
-  const invite = page.getByTestId("toggle-organiser-invite");
-  await invite.focus();
-  await page.keyboard.press("Enter");
+  await chooseLeagueAction(page, "toggle-organiser-invite");
   const form = page.getByRole("form", { name: "Invite organiser", exact: true });
   await expect(form).toBeVisible();
   await expect(page.locator("#league-create-season-region")).toBeHidden();
@@ -488,8 +510,8 @@ test("organiser invitation opens intentionally and reuses its fictional share li
   await form.getByRole("button", { name: "Cancel", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(form).toBeHidden();
-  await expect(invite).toBeFocused();
-  await page.keyboard.press("Enter");
+  await expect(leagueActions(page)).toBeFocused();
+  await chooseLeagueAction(page, "toggle-organiser-invite");
   await expect(form).toBeVisible();
   await expect(page.getByLabel("Organiser email", { exact: true })).toHaveValue("recipient.fixture@example.com");
   await expect(page.locator("#organiser-share-invite-code")).toHaveText("FICTIONAL-ORGANISER-INVITE");
@@ -498,7 +520,8 @@ test("organiser invitation opens intentionally and reuses its fictional share li
   expect(writes[0]).toMatchObject({ method: "POST", path: `${apiLeaguePath}/organiser-invites`, body: { email: null } });
   expect(writes[0].key).toBeTruthy();
   await page.keyboard.press("Escape");
-  await page.getByTestId("toggle-create-season").click();
+  await expect(leagueActions(page)).toBeFocused();
+  await chooseLeagueAction(page, "toggle-create-season");
   await expect(page.getByLabel("Season name", { exact: true })).toHaveValue("Keep the season draft");
   expect(fixture.unexpected).toEqual([]);
 });
@@ -559,8 +582,9 @@ test("league loading starts neutral with creation and invitation controls hidden
   await expect(page.getByText("No seasons yet.", { exact: true })).toBeHidden();
   fixture.releaseAuthority();
   await expectSharedShell(page, leagueName);
-  await expect(page.getByTestId("toggle-create-season")).toBeVisible();
-  await expect(page.getByTestId("toggle-organiser-invite")).toBeVisible();
+  await expect(leagueActions(page)).toBeVisible();
+  await expect(page.getByTestId("toggle-create-season")).toBeHidden();
+  await expect(page.getByTestId("toggle-organiser-invite")).toBeHidden();
   await expect(page.getByRole("table", { name: "Seasons", exact: true })).toBeVisible();
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -615,7 +639,7 @@ test("native Enter creates a league and a season once with existing scoped desti
   expect(leagueWrites[0].key).toBeTruthy();
 
   await page.goto(`${origin}${leaguePath}`);
-  await page.getByTestId("toggle-create-season").click();
+  await chooseLeagueAction(page, "toggle-create-season");
   await expect(page.getByLabel("Season name", { exact: true })).toBeFocused();
   await page.getByLabel("Season name", { exact: true }).fill("Fictional Autumn Season");
   await page.keyboard.press("Enter");

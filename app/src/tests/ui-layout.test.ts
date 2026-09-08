@@ -787,7 +787,7 @@ test("scoring uses one score/clock surface and a labelled native goal form", () 
   }
 });
 
-test("match destinations are stable links and scoring is a separate permitted task", () => {
+test("match destinations include one permitted scoring link and explicit correction exit", () => {
   const dom = new JSDOM(renderGamePage("/api", { gameId: "opaque-game-id" }));
   try {
     const document = dom.window.document;
@@ -801,20 +801,21 @@ test("match destinations are stable links and scoring is a separate permitted ta
     assert.equal(document.getElementById("game-subtitle")?.hasAttribute("hidden"), true);
 
     const destinations = [...document.querySelectorAll('[data-ui="game-mode-nav"] a')];
-    assert.deepEqual(destinations.map((anchor) => anchor.getAttribute("href")), ["#overview", "#teams", "#results"]);
-    assert.deepEqual(destinations.map((anchor) => anchor.textContent?.trim()), ["Overview", "Teams", "Results"]);
+    assert.deepEqual(destinations.map((anchor) => anchor.getAttribute("href")), ["#overview", "#teams", null, "#results"]);
+    assert.equal(destinations[2]?.getAttribute("data-mode-href"), "#score", "scoring link activates only after authority loads");
+    assert.deepEqual(destinations.map((anchor) => anchor.textContent?.trim()), ["Overview", "Teams", "Score game", "Results"]);
     assert.equal(destinations[0]?.getAttribute("aria-current"), "page");
     assert.equal(destinations[1]?.hasAttribute("aria-current"), false);
-    assert.equal(destinations[2]?.hasAttribute("hidden"), true, "results require a loaded finished game");
+    assert.equal(destinations[3]?.hasAttribute("hidden"), true, "results require a loaded finished game");
     assert.equal(document.querySelectorAll('[role="tablist"], [role="tab"], [role="tabpanel"], [role="toolbar"]').length, 0);
     assert.equal(document.querySelectorAll("[data-mode-meta]").length, 0);
     const score = document.querySelector('[data-testid="game-mode-run-tab"]');
-    assert(score instanceof dom.window.HTMLButtonElement);
-    assert.equal(score.closest("nav"), null);
+    assert(score instanceof dom.window.HTMLAnchorElement);
+    assert.equal(score.closest("nav")?.getAttribute("aria-label"), "Game");
     assert.equal(score.closest("#setup-flow-root") !== null, true);
-    assert.equal(score.textContent, "Score game");
+    assert.equal(score.textContent?.trim(), "Score game");
     assert.equal(score.hidden, true);
-    assert.equal(score.disabled, true);
+    assert.equal(score.getAttribute("data-game-capability"), "score");
 
     const actions = document.querySelector('[data-ui="action-menu"]');
     assert(actions instanceof dom.window.HTMLDivElement);
@@ -829,7 +830,10 @@ test("match destinations are stable links and scoring is a separate permitted ta
     const finish = document.querySelectorAll('[data-testid="finish-game"]');
     assert.equal(finish.length, 1);
     assert.equal(finish[0]?.closest("#game-mode-run") !== null, true);
-    assert.equal(document.querySelector('#game-mode-run [data-action="select-game-mode"][data-game-mode="structure"]')?.textContent, "Back to game");
+    assert.equal(document.querySelector('#game-mode-run [data-action="select-game-mode"][data-game-mode="structure"]'), null);
+    assert.equal(document.querySelector('[data-action="exit-result-correction"]')?.textContent, "Exit correction");
+    assert.equal(document.getElementById("finished-correction-actions")?.hidden, true);
+    assert.equal(document.querySelectorAll('[data-action="select-game-mode"][data-game-mode="run"]').length, 1);
     const correction = document.querySelector('[data-action="correct-finished-result"]');
     assert.equal(correction?.closest("#game-mode-final") !== null, true);
     assert.equal(correction?.hasAttribute("hidden"), true);

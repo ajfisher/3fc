@@ -337,11 +337,14 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         </div>
         <details data-ui="reference-details"><summary>Reference ID</summary><small data-ui="reference-id" id="league-reference">League ID: ${safeLeagueId || "Loading…"}</small></details>
         <div data-ui="header-actions" role="group" aria-label="League actions">
-          ${renderIconButton({
+          ${renderActionMenu({
+            id: "league-actions",
+            label: "Actions for this league",
+            attributes: { "data-management-only": "", hidden: "" },
+            content: renderIconButton({
             icon: "calendar-plus",
             label: "Create season",
             text: "Create season",
-            variant: "primary",
             attributes: {
               "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-create-season",
@@ -349,8 +352,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
               "aria-controls": "league-create-season-region",
               "aria-expanded": "false",
             },
-          })}
-          ${renderIconButton({
+          }) + renderIconButton({
             icon: "user-round-plus",
             label: "Invite organiser",
             text: "Invite organiser",
@@ -361,12 +363,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
               "aria-controls": "league-organiser-invite-region",
               "aria-expanded": "false",
             },
-          })}
-          ${renderActionMenu({
-            id: "league-actions",
-            label: "Actions for this league",
-            attributes: { "data-management-only": "", hidden: "" },
-            content: renderIconButton({
+          }) + renderIconButton({
               icon: "trash-2",
               label: "Delete league",
               text: "Delete league",
@@ -960,13 +957,13 @@ export interface GameContextPageInput {
 }
 
 function renderGameModeTab(input: {
-  mode: "structure" | "players" | "final";
+  mode: "structure" | "players" | "run" | "final";
   label: string;
-  destination: "overview" | "teams" | "results";
+  destination: "overview" | "teams" | "score" | "results";
   active?: boolean;
 }): string {
   const tabId = `game-mode-tab-${input.mode}`;
-  return `<a data-ui="game-mode-tab" id="${tabId}" href="#${input.destination}"${input.active ? ' aria-current="page"' : ""} data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab"${input.mode === "final" ? " hidden" : ""}>
+  return `<a data-ui="game-mode-tab" id="${tabId}"${input.mode === "run" ? ' data-mode-href="#score" aria-disabled="true"' : ` href="#${input.destination}"`}${input.active ? ' aria-current="page"' : ""} data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab"${input.mode === "final" || input.mode === "run" ? " hidden" : ""}${input.mode === "run" ? ' data-game-capability="score"' : ""}>
     <span data-mode-label="${input.mode}">${escapeHtml(input.label)}</span>
   </a>`;
 }
@@ -1095,7 +1092,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         icon: "circle-plus", label: "Add player", text: "Add player", variant: "primary",
         attributes: {
           "data-action": "toggle-player-create", "data-game-capability": "roster", hidden: "", disabled: "",
-          "aria-expanded": "false", "aria-controls": "player-create-region",
+          "aria-expanded": "false", "aria-controls": "player-create-region", "data-hide-when-expanded": "",
         },
       })}
       ${renderIconButton({
@@ -1132,21 +1129,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <div id="roster-teams" data-ui="roster-grid" data-testid="roster-teams"></div>
       </section>
     </div>`,
-    `<div data-ui="mode-actions">
-      ${renderButton("Back to game", "secondary", {
-        type: "button",
-        "data-action": "select-game-mode",
-        "data-game-mode": "structure",
-        "data-testid": "game-mode-back-structure",
-      })}
-      ${renderButton("Score game", "primary", {
-        type: "button",
-        "data-game-capability": "score", hidden: "", disabled: "",
-        "data-action": "select-game-mode",
-        "data-game-mode": "run",
-        "data-testid": "game-mode-next-run",
-      })}
-    </div>`,
+    "",
     "panel-game-roster",
   );
   const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip" role="group" aria-label="Team scores">
@@ -1278,16 +1261,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           <div data-ui="game-mode-tabs">
             ${renderGameModeTab({ mode: "structure", label: "Overview", destination: "overview", active: true })}
             ${renderGameModeTab({ mode: "players", label: "Teams", destination: "teams" })}
+            ${renderGameModeTab({ mode: "run", label: "Score game", destination: "score" })}
             ${renderGameModeTab({ mode: "final", label: "Results", destination: "results" })}
           </div>
         </nav>
-        <div data-ui="match-task-actions">
-          ${renderButton("Score game", "primary", {
-            type: "button", id: "game-mode-tab-run",
-            "data-action": "select-game-mode", "data-game-mode": "run", "data-testid": "game-mode-run-tab",
-            "data-game-capability": "score", hidden: "", disabled: "",
-          })}
-        </div>
         <section data-ui="game-mode-panels" data-testid="game-grid">
           <section data-ui="game-mode-panel" id="game-mode-structure" aria-labelledby="game-mode-tab-structure" data-game-mode="structure" data-testid="game-mode-structure">
             ${gameDetailsPanel}
@@ -1296,11 +1273,14 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             ${rosterPanel}
           </section>
           <section data-ui="game-mode-panel" id="game-mode-run" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
-            <div data-ui="match-task-actions">
-              ${renderButton("Back to game", "secondary", {
-                type: "button", "data-action": "select-game-mode", "data-game-mode": "structure",
+            <section id="finished-correction-actions" data-ui="correction-actions" aria-labelledby="finished-correction-heading" hidden>
+              <h2 id="finished-correction-heading">Correct result</h2>
+              ${renderButton("Exit correction", "secondary", {
+                type: "button", "data-action": "exit-result-correction",
+                "aria-describedby": "correction-exit-reason",
               })}
-            </div>
+              <p id="correction-exit-reason" data-ui="field-hint" hidden>Resolve the pending goal change before exiting correction. You can still view Overview, Teams or Results.</p>
+            </section>
             <div data-ui="run-console" data-testid="run-console">
               <section data-ui="run-match-summary" data-testid="run-match-summary" aria-label="Score and clock">
                 ${scorePanel}

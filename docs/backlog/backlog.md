@@ -70,6 +70,9 @@ Generated from `docs/backlog/backlog.json`.
 | `UX-07` | Replace management accordions with consistent kebab action menus | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-03` |
 | `UX-04` | Redesign focused live scoring and goal feedback | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-07` |
 | `UX-05` | Redesign authenticated results and existing entry journeys | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-04` |
+| `UX-08` | Polish match navigation, correction exit and match-day presentation | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-05`, `UX-07` |
+| `UX-09` | Identify joining players and show them directly in Unassigned | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-08` |
+| `UX-10` | Refresh other clients after match updates without disrupting local work | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-09` |
 | `UX-06` | Complete cross-stack mobile, role and release-readiness acceptance | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-01`, `M1-13`, `UX-02`, `UX-03`, `UX-07`, `UX-04`, `UX-05` |
 | `M3-07` | Harden player ownership eligibility before portal expansion | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M2-02`, `M1-04` |
 | `M3-08` | Add bounded linked-player history and participant home | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-05`, `M3-01` |
@@ -102,6 +105,9 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-07` | frontend-stack | review-ready | [#147](https://github.com/ajfisher/3fc/issues/147) | codex/design-action-menus |
 | `UX-04` | frontend-stack | review-ready | [#135](https://github.com/ajfisher/3fc/issues/135) | codex/design-live-scoring |
 | `UX-05` | frontend-stack | implemented | [#136](https://github.com/ajfisher/3fc/issues/136) | codex/design-results-entry |
+| `UX-08` | frontend-stack | implemented | [#151](https://github.com/ajfisher/3fc/issues/151) | codex/design-match-flow-polish |
+| `UX-09` | frontend-stack | planned | [#152](https://github.com/ajfisher/3fc/issues/152) | - |
+| `UX-10` | frontend-stack | planned | [#153](https://github.com/ajfisher/3fc/issues/153) | - |
 | `UX-06` | frontend-stack | partial | [#137](https://github.com/ajfisher/3fc/issues/137) | codex/design-results-entry |
 | `M3-07` | deferred-player-portal | planned | [#138](https://github.com/ajfisher/3fc/issues/138) | - |
 | `M3-08` | deferred-player-portal | planned | [#139](https://github.com/ajfisher/3fc/issues/139) | - |

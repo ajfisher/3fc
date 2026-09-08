@@ -604,6 +604,7 @@ async function createAndAssignPlayer(
   if (!(await page.locator("#player-create-region").isVisible())) {
     await page.locator('[data-action="toggle-player-create"]').click();
   }
+  await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
   await page.locator("#player-nickname").fill(nickname);
   await page.getByTestId("quick-create-player").click();
 
@@ -623,8 +624,11 @@ async function createAndAssignPlayer(
 }
 
 async function selectGameMode(page: Page, mode: "structure" | "players" | "run" | "final"): Promise<void> {
-  await page.getByTestId(`game-mode-${mode}-tab`).click();
+  const destination = page.getByTestId("game-mode-nav").getByTestId(`game-mode-${mode}-tab`);
+  await expect(destination).toHaveJSProperty("tagName", "A");
+  await destination.click();
   await expect(page.getByTestId(`game-mode-${mode}`)).toBeVisible();
+  await expect(destination).toHaveAttribute("aria-current", "page");
 }
 
 async function startThird(page: Page, third: 1 | 2 | 3): Promise<void> {
@@ -960,7 +964,10 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.locator("#league-title")).toHaveText(leagueName);
 
       const createSeasonToggle = page.getByTestId("toggle-create-season");
+      await expect(createSeasonToggle).toBeHidden();
+      await page.locator('[data-action="toggle-action-menu"][aria-controls="league-actions"]').click();
       await createSeasonToggle.click();
+      await expect(page.locator("#league-actions")).toBeHidden();
       await expect(createSeasonToggle).toHaveAttribute("aria-expanded", "true");
       await expect(page.locator("#season-name")).toBeFocused();
       await page.locator("#season-name").fill(seasonName);

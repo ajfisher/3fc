@@ -31,7 +31,7 @@ slice below refines its copy while keeping the same timer and recovery contract.
 | Home | Neutral “Welcome”; “Leagues” first; “Create a new league” below the existing list. No email-local-part name guess or speculative cross-league game summary. |
 | Empty league list | “No leagues to show.” Only after the authorised list responds, with the creation form opened once without stealing focus. |
 | League/season navigation | Home plus actual league/season names. On phones, omit the duplicate breadcrumb Home from display/tab order and visually hide its non-interactive current item; the H1 supplies the full name. Season retains its real parent link. Full breadcrumbs remain on desktop. Generic League/Season only while loading, never an opaque route ID as the heading. |
-| Management actions | Visible Create season, Invite organiser and Create game verbs. Rare actions sit behind a vertical-three-dot button named “Actions for {entity}”; the floating surface uses visible action verbs. No More/Manage action accordions, or management controls while authority is unknown. |
+| Management actions | League Create season, Invite organiser and Delete league sit behind the vertical-three-dot button named “Actions for this league”; the floating surface uses visible action verbs. Create game retains its season action. No More/Manage action accordions, or management controls while authority is unknown. |
 | Reference data | “Reference ID” collapsed in the heading area; “Additional options” contains friendly URL and creation IDs. |
 | Native forms | Visible label, Create/Send action and Cancel. Cancel preserves the draft and returns focus to the opener. |
 | Invite by email | “Only this email address can accept.” This material restriction stays at the choice, unlike routine permission narration. |
@@ -48,7 +48,7 @@ request fan-out. Existing sign-out and invitation outcome feedback remain.
 
 | Surface/state | Reviewed treatment |
 | --- | --- |
-| Match navigation | Stable Overview and Teams; Results after confirmed finish. Score game is an explicit task with Back to game, not a changing clock/navigation label. |
+| Match navigation | Overview, Teams and permitted Score game are stable native destinations; Results appears after confirmed finish. Explicit finished correction is labelled Correction with an Exit correction action. No duplicate Back to game action. |
 | Overview | Actual date, kickoff, status and third length. Edit game opens only when requested and authorised. Join game and Reference IDs are optional details. |
 | Teams | Unassigned candidates when available, then Red, Blue and Yellow. Assigned identities appear once. Search players filters current-game names. |
 | Add player | Player name, Add player and Cancel. Native Enter submission; retained failed/uncertain input and safe consecutive additions. |

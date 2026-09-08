@@ -1984,6 +1984,15 @@ function openActionMenuFor(element: HTMLElement) {
   return { menu, trigger, surface };
 }
 
+function interactionVisible(element: HTMLElement): boolean {
+  const window = element.ownerDocument.defaultView!;
+  for (let ancestor: HTMLElement | null = element; ancestor; ancestor = ancestor.parentElement) {
+    const style = window.getComputedStyle(ancestor);
+    if (ancestor.hidden || style.display === "none" || style.visibility === "hidden") return false;
+  }
+  return element.isConnected;
+}
+
 function dispatchSubmit(form: HTMLFormElement): void {
   form.dispatchEvent(new form.ownerDocument.defaultView!.Event("submit", { bubbles: true, cancelable: true }));
 }
@@ -3836,6 +3845,7 @@ test("organiser shell disclosure cancellation preserves drafts, nested options a
     assert(toggle instanceof page.window.HTMLButtonElement && region instanceof page.window.HTMLElement);
     assert(name instanceof page.window.HTMLInputElement && cancel instanceof page.window.HTMLButtonElement);
     assert(options instanceof page.window.HTMLDetailsElement);
+    const menu = openActionMenuFor(toggle);
     dispatchClick(toggle);
     name.value = "An unfinished season";
     options.open = true;
@@ -3844,13 +3854,16 @@ test("organiser shell disclosure cancellation preserves drafts, nested options a
     cancel.focus();
     dispatchClick(cancel);
     assert.equal(region.hidden, true);
-    assert.equal(page.document.activeElement, toggle);
+    assert.equal(page.document.activeElement, menu.trigger);
+    assert.equal(interactionVisible(menu.trigger), true);
+    openActionMenuFor(toggle);
     dispatchClick(toggle);
     assert.equal(name.value, "An unfinished season");
     assert.equal(options.open, true);
     name.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(region.hidden, true);
-    assert.equal(page.document.activeElement, toggle);
+    assert.equal(page.document.activeElement, menu.trigger);
+    assert.equal(interactionVisible(menu.trigger), true);
     const action = page.document.querySelector('#league-actions button');
     assert(action instanceof page.window.HTMLButtonElement);
     const { trigger, surface } = openActionMenuFor(action);
@@ -3955,9 +3968,11 @@ test("league page loads reusable organiser share invites and sends direct email 
 
   assert.equal(apiState.lastOrganiserInviteRequest, null);
   assert.equal(inviteRegion.hidden, true);
+  openActionMenuFor(createSeasonToggle);
   dispatchClick(createSeasonToggle);
   assert.equal(createSeasonRegion.hidden, false);
   assert.equal(leaguePage.document.activeElement?.id, "season-name");
+  const leagueMenu = openActionMenuFor(inviteToggle);
   dispatchClick(inviteToggle);
   await flushAsync();
 
@@ -3985,9 +4000,14 @@ test("league page loads reusable organiser share invites and sends direct email 
   const inviteLink = leaguePage.document.getElementById("organiser-share-invite-link");
   assert(inviteLink instanceof leaguePage.window.HTMLAnchorElement);
   assert.equal(inviteLink.href, "http://localhost:3000/invites?code=ABCD2345");
-  dispatchClick(inviteToggle);
+  const cancelInvite = inviteRegion.querySelector('[data-action="cancel-disclosure"]');
+  assert(cancelInvite instanceof leaguePage.window.HTMLButtonElement);
+  cancelInvite.focus();
+  dispatchClick(cancelInvite);
   assert.equal(inviteRegion.hidden, true);
-  assert.equal(leaguePage.document.activeElement, inviteToggle);
+  assert.equal(leaguePage.document.activeElement, leagueMenu.trigger);
+  assert.equal(interactionVisible(leagueMenu.trigger), true);
+  openActionMenuFor(inviteToggle);
   dispatchClick(inviteToggle);
   await flushAsync();
   assert.deepEqual(shareRequest.body, { email: null });
@@ -6039,6 +6059,7 @@ test("match player native submit latches SVG clicks and retries the frozen origi
   assert(input instanceof page.window.HTMLInputElement);
   assert(add instanceof page.window.HTMLButtonElement);
   dispatchClick(toggle);
+  assert.equal(interactionVisible(toggle), false);
   input.value = "New player";
   input.focus();
   dispatchSubmit(form);
@@ -6061,6 +6082,15 @@ test("match player native submit latches SVG clicks and retries the frozen origi
   await flushAsync();
   assert.equal(input.value, "New player");
   assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /original nickname/);
+  assert.equal(interactionVisible(toggle), false, "pending and failed renders must not duplicate Add player");
+  const cancel = page.document.querySelector('[data-action="cancel-player-create"]');
+  assert(cancel instanceof page.window.HTMLButtonElement);
+  cancel.focus(); dispatchClick(cancel);
+  assert.equal(interactionVisible(toggle), true);
+  assert.equal(page.document.activeElement, toggle);
+  dispatchClick(toggle);
+  assert.equal(input.value, "New player", "closing an uncertain attempt does not cancel or replace it");
+  assert.equal(interactionVisible(toggle), false);
   input.value = "Next player";
   dispatchSubmit(form);
   await flushAsync();
@@ -6221,18 +6251,22 @@ test("match player committed addition survives refresh failure and cancellation 
   assert(form instanceof page.window.HTMLFormElement);
   assert(input instanceof page.window.HTMLInputElement);
   dispatchClick(toggle);
+  assert.equal(interactionVisible(toggle), false);
   input.value = "Nico";
   dispatchSubmit(form);
   await flushAsync();
   assert.equal(input.value, "");
   assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Player added\./);
   assert.match(page.document.getElementById("player-pool")?.textContent ?? "", /Nico/);
+  assert.equal(interactionVisible(toggle), false, "post-commit capability redraw retains the open form's ownership");
   input.value = "Draft";
   dispatchClick(cancel);
   assert.equal(page.document.getElementById("player-create-region")?.hidden, true);
+  assert.equal(interactionVisible(toggle), true);
   assert.equal(page.document.activeElement, toggle);
   dispatchClick(toggle);
   assert.equal(input.value, "Draft");
+  assert.equal(interactionVisible(toggle), false);
   assert.equal(page.document.activeElement, input);
 });
 
@@ -7083,7 +7117,7 @@ test("game page mode panels switch without resetting a goal draft", async () => 
   assert(runMode instanceof page.window.HTMLElement);
   assert(playersMode instanceof page.window.HTMLElement);
   assert(playersTab instanceof page.window.HTMLAnchorElement);
-  assert(runTab instanceof page.window.HTMLButtonElement);
+  assert(runTab instanceof page.window.HTMLAnchorElement);
   assert(scoringTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(concedingTeamInput instanceof page.window.HTMLFieldSetElement);
   assert(scorerInput instanceof page.window.HTMLSelectElement);
@@ -7195,7 +7229,7 @@ test("game page mode panels advance from overview through scoring to results", a
   assert(results instanceof page.window.HTMLElement);
   assert(teamsTab instanceof page.window.HTMLAnchorElement);
   assert(resultsTab instanceof page.window.HTMLAnchorElement);
-  assert(score instanceof page.window.HTMLButtonElement);
+  assert(score instanceof page.window.HTMLAnchorElement);
   assert(start instanceof page.window.HTMLButtonElement);
   assert(finish instanceof page.window.HTMLButtonElement);
   assert(finishGame instanceof page.window.HTMLButtonElement);
@@ -7209,7 +7243,8 @@ test("game page mode panels advance from overview through scoring to results", a
   assert.equal(page.document.activeElement, teams);
   dispatchClick(score);
   assert.equal(run.hidden, false);
-  assert.equal(score.hidden, true, "the entry action disappears synchronously while scoring");
+  assert.equal(score.hidden, false, "the current scoring destination remains in stable navigation");
+  assert.equal(score.getAttribute("aria-current"), "page");
   assert.equal(page.document.activeElement, run);
   assert.equal(page.window.location.hash, "#score");
   for (let third = 1; third <= 3; third += 1) {
@@ -7398,13 +7433,14 @@ test("game page keeps early scoring unavailable until game authority has loaded"
 
   assert(structureMode instanceof page.window.HTMLElement);
   assert(runMode instanceof page.window.HTMLElement);
-  assert(gameStateTab instanceof page.window.HTMLButtonElement);
+  assert(gameStateTab instanceof page.window.HTMLAnchorElement);
 
   dispatchClick(gameStateTab);
   await flushAsync();
   assert.equal(structureMode.hidden, false);
   assert.equal(runMode.hidden, true);
-  assert.equal(gameStateTab.disabled, true);
+  assert.equal(gameStateTab.hidden, true);
+  assert.equal(gameStateTab.getAttribute("aria-disabled"), "true");
 
   const game = apiState.games.get("game-state-loading");
   assert(game);
@@ -7413,7 +7449,8 @@ test("game page keeps early scoring unavailable until game authority has loaded"
 
   assert.equal(structureMode.hidden, false);
   assert.equal(runMode.hidden, true);
-  assert.equal(gameStateTab.disabled, false);
+  assert.equal(gameStateTab.hidden, false);
+  assert.notEqual(gameStateTab.getAttribute("aria-disabled"), "true");
   dispatchClick(gameStateTab);
   assert.equal(runMode.hidden, false);
 });
@@ -7451,7 +7488,7 @@ test("game page opens completed live timers in overview with explicit scoring ta
   assert.equal(finalMode.hidden, true);
   assert.equal(page.document.getElementById("game-mode-structure")?.hidden, false);
   const score = page.document.querySelector('[data-testid="game-mode-run-tab"]');
-  assert(score instanceof page.window.HTMLButtonElement);
+  assert(score instanceof page.window.HTMLAnchorElement);
   dispatchClick(score);
   assert.equal(runMode.hidden, false);
   assert.equal(finishGameButton.disabled, false);
@@ -8157,7 +8194,7 @@ for (const kind of ["start", "finish-game"] as const) {
       dispatchClick(teams);
       if (navigation === "away-back") {
         const score = page.document.getElementById("game-mode-tab-run");
-        assert(score instanceof page.window.HTMLButtonElement);
+        assert(score instanceof page.window.HTMLAnchorElement);
         dispatchClick(score);
       }
       const expectedHash = navigation === "away" ? "#teams" : "#score";
@@ -12699,3 +12736,397 @@ for (const item of [
     } finally { page.dom.window.close(); }
   });
 }
+
+function qaGameNavigation(page: Awaited<ReturnType<typeof bootPage>>) {
+  const overview = page.document.getElementById("game-mode-tab-structure");
+  const teams = page.document.getElementById("game-mode-tab-players");
+  const score = page.document.getElementById("game-mode-tab-run");
+  const results = page.document.getElementById("game-mode-tab-final");
+  const exit = page.document.querySelector('[data-action="exit-result-correction"]');
+  assert(overview instanceof page.window.HTMLAnchorElement && teams instanceof page.window.HTMLAnchorElement);
+  assert(score instanceof page.window.HTMLAnchorElement && results instanceof page.window.HTMLAnchorElement);
+  assert(exit instanceof page.window.HTMLButtonElement);
+  return { overview, teams, score, results, exit };
+}
+
+test("qa navigation exits finished correction without a write or revoking independent team editing", async () => {
+  const apiState = createMockApiState();
+  const game = seedResultsEntry(apiState, "exit-correction", "admin");
+  seedLiveGoalEvent(apiState, game.gameId, "unchanged-goal");
+  refreshMockFinishedResult(apiState, game, "2026-03-28T11:02:00.000Z");
+  const before = JSON.stringify({ game: apiState.games.get(game.gameId), goals: [...apiState.goalEvents.values()], roster: [...apiState.roster.values()] });
+  const base = createMockFetch(apiState);
+  let writes = 0;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: game.gameId }), url: `http://localhost:3000/games/${game.gameId}`,
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => { if (init.method && init.method !== "GET") writes += 1; return base(input, init); },
+  });
+  try {
+    const nav = qaGameNavigation(page);
+    assert.equal(interactionVisible(nav.score), false);
+    enterFinishedCorrections(page, true);
+    enterFinishedCorrections(page);
+    assert.equal(nav.score.textContent?.trim(), "Correction");
+    assert.equal(interactionVisible(nav.score), true);
+    assert.equal(nav.score.getAttribute("aria-current"), "page");
+    assert.equal(page.document.querySelectorAll('[data-action="select-game-mode"][data-game-mode="run"]').length, 1);
+    assert.equal([...page.document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Back to game"), false);
+    const controls = liveGoalControls(page); controls.draft();
+    const assist = page.document.querySelector('#goal-assists input[value="player-bea"]');
+    assert(assist instanceof page.window.HTMLInputElement); assist.checked = true;
+    assist.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+    nav.exit.focus(); dispatchClick(nav.exit);
+    assert.equal(page.window.location.hash, "#results");
+    assert.equal(page.document.activeElement, page.document.getElementById("game-mode-final"));
+    assert.equal(interactionVisible(nav.score), false);
+    assert.equal(controls.save.disabled, true); assert.equal(controls.undo.disabled, true);
+    assert.equal(goalTeamValue(controls.scoring), ""); assert.equal(controls.scorer.value, "");
+    assert.equal(page.document.querySelectorAll('#goal-assists input:checked').length, 0);
+    const correct = page.document.querySelector('[data-action="correct-finished-result"]');
+    assert(correct instanceof page.window.HTMLButtonElement); assert.equal(interactionVisible(correct), true);
+    for (const legacyHash of ["#score", "#mode-run"]) {
+      page.window.history.pushState(null, "", legacyHash);
+      page.window.dispatchEvent(new page.window.PopStateEvent("popstate"));
+      assert.equal(page.window.location.hash, "#results", "history must not re-arm a disarmed correction");
+      assert.equal(controls.save.disabled, true);
+    }
+    dispatchClick(nav.teams);
+    assert.equal(page.document.querySelectorAll('[data-action="toggle-transfer"]').length, 3, "exiting result correction does not revoke separately requested roster editing");
+    dispatchClick(nav.results); dispatchClick(correct);
+    assert.equal(page.window.location.hash, "#score");
+    assert.equal(goalTeamValue(controls.scoring), ""); assert.equal(controls.scorer.value, "");
+    controls.draft();
+    assert.equal(controls.save.disabled, false, "only explicit correction entry re-arms scoring");
+    assert.equal(writes, 0);
+    assert.equal(JSON.stringify({ game: apiState.games.get(game.gameId), goals: [...apiState.goalEvents.values()], roster: [...apiState.roster.values()] }), before);
+  } finally { page.dom.window.close(); }
+});
+
+test("qa navigation cannot exit a pending or uncertain correction and preserves its exact retry", async () => {
+  const apiState = createMockApiState();
+  const game = seedResultsEntry(apiState, "exit-unresolved", "admin");
+  seedLiveGoalEvent(apiState, game.gameId, "original-goal");
+  refreshMockFinishedResult(apiState, game, "2026-03-28T11:02:00.000Z");
+  const base = createMockFetch(apiState);
+  let release: (() => void) | undefined;
+  let replay: unknown;
+  const requests: Array<{ path: string; body: string; key: string | null }> = [];
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: game.gameId }), url: `http://localhost:3000/games/${game.gameId}`,
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      if (init.method === "PATCH") {
+        requests.push({ path: new URL(String(input)).pathname, body: String(init.body), key: readInitHeader(init, "idempotency-key") });
+        if (requests.length === 1) {
+          const response = await base(input, init); assert.equal(response.ok, true); replay = await response.json();
+          return new Promise<Response>((resolve) => { release = () => resolve(createJsonResponse(503, { error: "unavailable" })); });
+        }
+        return createJsonResponse(200, replay);
+      }
+      return base(input, init);
+    },
+  });
+  try {
+    enterFinishedCorrections(page);
+    const nav = qaGameNavigation(page); const controls = liveGoalControls(page);
+    const edit = page.document.querySelector('[data-action="edit-goal"]');
+    assert(edit instanceof page.window.HTMLButtonElement); dispatchClick(edit);
+    controls.scorer.value = "player-bea"; controls.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+    dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(requests.length, 1); assert.equal(nav.exit.disabled, true);
+    const reason = page.document.getElementById(nav.exit.getAttribute("aria-describedby") ?? "");
+    assert(reason instanceof page.window.HTMLElement); assert.equal(interactionVisible(reason), true);
+    assert.ok(reason.textContent?.trim());
+    nav.exit.disabled = false; dispatchClick(nav.exit);
+    assert.equal(page.window.location.hash, "#score", "the handler guards synthetic activation while pending");
+    assert(release); release(); await flushAsync();
+    assert.equal(nav.exit.disabled, true); assert.equal(controls.retry.disabled, false);
+    nav.exit.disabled = false; dispatchClick(nav.exit);
+    assert.equal(page.window.location.hash, "#score");
+    assert.equal(controls.retry.hidden, false); assert.equal(controls.retry.disabled, false);
+    dispatchClick(nav.results);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Could not confirm/);
+    dispatchClick(nav.score);
+    assert.equal(controls.scorer.value, "player-bea");
+    dispatchClick(controls.retry); await flushAsync();
+    assert.equal(requests.length, 2); assert.ok(requests[0].key); assert.deepEqual(requests[1], requests[0]);
+    assert.equal(apiState.goalEvents.get("original-goal")?.scorerPlayerId, "player-bea");
+    assert.equal(nav.exit.disabled, false); nav.exit.focus(); dispatchClick(nav.exit);
+    assert.equal(page.window.location.hash, "#results");
+    assert.equal(requests.length, 2);
+  } finally { page.dom.window.close(); }
+});
+
+test("qa navigation permits exiting a definitively rejected correction without resubmission", async () => {
+  const apiState = createMockApiState(); seedResultsEntry(apiState, "exit-rejected", "admin");
+  const base = createMockFetch(apiState); let writes = 0;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "exit-rejected" }), url: "http://localhost:3000/games/exit-rejected",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      if (init.method === "POST" && new URL(String(input)).pathname.endsWith("/goals")) { writes += 1; return createJsonResponse(400, { error: "validation_error", message: "Choose a valid scorer." }); }
+      return base(input, init);
+    },
+  });
+  try {
+    enterFinishedCorrections(page); const nav = qaGameNavigation(page); const controls = liveGoalControls(page);
+    controls.draft(); dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(writes, 1); assert.equal(nav.exit.disabled, false);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Choose a valid scorer/);
+    dispatchClick(nav.exit); assert.equal(page.window.location.hash, "#results");
+    assert.equal(writes, 1); assert.equal(apiState.goalEvents.size, 0);
+  } finally { page.dom.window.close(); }
+});
+
+for (const role of ["viewer", "scorekeeper"] as const) {
+  test("qa navigation correction links and synthetic actions remain locked for finished " + role, async () => {
+    const apiState = createMockApiState(); seedResultsEntry(apiState, "exit-role", role);
+    const base = createMockFetch(apiState); let writes = 0;
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "exit-role" }), url: "http://localhost:3000/games/exit-role#score",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => { if (init.method && init.method !== "GET") writes += 1; return base(input, init); },
+    });
+    try {
+      const nav = qaGameNavigation(page); const controls = liveGoalControls(page);
+      const correct = page.document.querySelector('[data-action="correct-finished-result"]');
+      assert(correct instanceof page.window.HTMLButtonElement);
+      assert.equal(interactionVisible(nav.score), false); assert.equal(interactionVisible(nav.exit), false);
+      assert.equal(interactionVisible(correct), false);
+      correct.disabled = false; dispatchClick(correct); nav.exit.disabled = false; dispatchClick(nav.exit); dispatchClick(nav.score);
+      dispatchSubmit(controls.form);
+      assert.equal(page.window.location.hash, "#results"); assert.equal(controls.save.disabled, true); assert.equal(writes, 0);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+test("qa navigation clears completed roster feedback only when changing destination", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "feedback-complete", role: "admin" });
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "feedback-complete" }), url: "http://localhost:3000/games/feedback-complete#teams", scriptFile: "setup-flow.js", apiState });
+  try {
+    const nav = qaGameNavigation(page);
+    const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+    assert(transfer instanceof page.window.HTMLButtonElement); dispatchClick(transfer);
+    const choice = page.document.querySelector('#transfer-options-player-ari [data-team-id="blue"]');
+    assert(choice instanceof page.window.HTMLButtonElement); dispatchClick(choice); await flushAsync();
+    const status = page.document.getElementById("setup-status"); assert(status instanceof page.window.HTMLElement);
+    assert.match(status.textContent ?? "", /Ari assigned to Blue/); assert.equal(interactionVisible(status), true);
+    dispatchClick(nav.teams); assert.equal(interactionVisible(status), true, "reselecting the current destination retains useful confirmation");
+    dispatchClick(nav.score); assert.equal(interactionVisible(status), false);
+    assert.doesNotMatch(status.textContent ?? "", /assigned to/);
+    dispatchClick(nav.teams); assert.equal(interactionVisible(status), false, "old confirmation is not resurrected on return");
+  } finally { page.dom.window.close(); }
+});
+
+for (const outcome of ["success", "success-returned", "rejected", "uncertain", "refresh-failed"] as const) {
+  test("qa navigation late assignment " + outcome + " retains truthful feedback without stealing the new destination", async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "feedback-late", role: "admin" });
+    const base = createMockFetch(apiState); let release: (() => void) | undefined; let committed = false; let writes = 0;
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "feedback-late" }), url: "http://localhost:3000/games/feedback-late#teams",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (init.method === "PUT") {
+          writes += 1;
+          return new Promise<Response>((resolve) => { release = () => { void (async () => {
+            if (outcome === "rejected") { resolve(createJsonResponse(403, { error: "forbidden", message: "Assignment is not allowed." })); return; }
+            const response = await base(input, init); committed = response.ok;
+            resolve(outcome === "uncertain" ? createJsonResponse(503, { error: "unavailable" }) : response);
+          })(); }; });
+        }
+        if (committed && outcome === "refresh-failed" && new URL(String(input)).pathname.endsWith("/roster")) return createJsonResponse(503, { error: "unavailable" });
+        return base(input, init);
+      },
+    });
+    try {
+      const nav = qaGameNavigation(page);
+      const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+      assert(transfer instanceof page.window.HTMLButtonElement); dispatchClick(transfer);
+      const choice = page.document.querySelector('#transfer-options-player-ari [data-team-id="blue"]');
+      assert(choice instanceof page.window.HTMLButtonElement); choice.focus(); dispatchClick(choice); await flushAsync();
+      assert.equal(writes, 1);
+      dispatchClick(nav.score);
+      const run = page.document.getElementById("game-mode-run"); assert(run instanceof page.window.HTMLElement);
+      assert.equal(page.document.activeElement, run);
+      if (outcome === "success-returned") dispatchClick(nav.teams);
+      const selectedPanel = outcome === "success-returned" ? page.document.getElementById("game-mode-players") : run;
+      const status = page.document.getElementById("setup-status"); assert(status instanceof page.window.HTMLElement);
+      assert.equal(status.getAttribute("data-activity"), "loading"); assert.equal(interactionVisible(status), true);
+      assert(release); release(); await flushAsync();
+      assert.equal(page.window.location.hash, outcome === "success-returned" ? "#teams" : "#score");
+      assert.equal(page.document.activeElement, selectedPanel); assert.equal(writes, 1);
+      const error = page.document.getElementById("setup-error"); assert(error instanceof page.window.HTMLElement);
+      if (outcome === "success" || outcome === "success-returned") {
+        assert.equal(interactionVisible(status), false); assert.equal(interactionVisible(error), false);
+        assert.doesNotMatch(status.textContent ?? "", /assigned to/);
+      } else {
+        assert.equal(interactionVisible(error), true);
+        assert.match(error.textContent ?? "", outcome === "rejected" ? /Assignment is not allowed/
+          : outcome === "uncertain" ? /Assignment could not be confirmed/ : /Assignment was saved, but/);
+        dispatchClick(nav.overview); assert.equal(interactionVisible(error), true, "navigation does not erase recovery instructions");
+      }
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const close of ["Cancel", "Escape"] as const) {
+  test("qa navigation Add player disclosure remains singular through redraw and " + close, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "player-disclosure", role: "admin" });
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "player-disclosure" }), url: "http://localhost:3000/games/player-disclosure#teams", scriptFile: "setup-flow.js", apiState });
+    try {
+      const nav = qaGameNavigation(page);
+      const toggle = page.document.querySelector('[data-action="toggle-player-create"]');
+      const cancel = page.document.querySelector('[data-action="cancel-player-create"]');
+      const input = page.document.getElementById("player-nickname");
+      const form = page.document.getElementById("player-create-form");
+      assert(toggle instanceof page.window.HTMLButtonElement && cancel instanceof page.window.HTMLButtonElement);
+      assert(input instanceof page.window.HTMLInputElement && form instanceof page.window.HTMLFormElement);
+      dispatchClick(toggle); assert.equal(interactionVisible(toggle), false); assert.equal(page.document.activeElement, input);
+      input.value = "Consecutive player"; dispatchSubmit(form); await flushAsync();
+      assert.equal(input.value, ""); assert.equal(interactionVisible(toggle), false, "a capability redraw cannot reveal a duplicate entry action");
+      input.value = "Next draft"; input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      dispatchClick(nav.overview); dispatchClick(nav.teams);
+      assert.equal(interactionVisible(toggle), false); assert.equal(interactionVisible(form), true); assert.equal(input.value, "Next draft");
+      if (close === "Cancel") { cancel.focus(); dispatchClick(cancel); }
+      else { input.focus(); input.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
+      assert.equal(interactionVisible(form), false); assert.equal(interactionVisible(toggle), true); assert.equal(page.document.activeElement, toggle);
+      dispatchClick(toggle); assert.equal(interactionVisible(toggle), false); assert.equal(input.value, "Next draft"); assert.equal(page.document.activeElement, input);
+      assert.equal([...apiState.players.values()].filter((player) => player.nickname === "Consecutive player").length, 1);
+      assert.equal([...apiState.players.values()].filter((player) => player.nickname === "Next draft").length, 0);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const pending of ["patch", "refresh"] as const) {
+  test("qa navigation delayed metadata " + pending + " preserves later destination and focus", async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "metadata-navigation", role: "admin" });
+    const base = createMockFetch(apiState); let release: (() => void) | undefined; let committed = false; let held = false; let writes = 0;
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "metadata-navigation" }), url: "http://localhost:3000/games/metadata-navigation#overview",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        const path = new URL(String(input)).pathname;
+        if (init.method === "PATCH") {
+          writes += 1;
+          if (pending === "patch") return new Promise<Response>((resolve) => { release = () => { void base(input, init).then((response) => { committed = response.ok; resolve(response); }); }; });
+          const response = await base(input, init); committed = response.ok; return response;
+        }
+        if (pending === "refresh" && committed && !held && path === "/v1/games/metadata-navigation") {
+          held = true;
+          return new Promise<Response>((resolve) => { release = () => { void base(input, init).then(resolve); }; });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const nav = qaGameNavigation(page);
+      const toggle = page.document.querySelector('[data-action="toggle-game-edit"]');
+      const input = page.document.getElementById("game-edit-kickoff");
+      const form = page.document.getElementById("game-edit-form");
+      assert(toggle instanceof page.window.HTMLButtonElement && input instanceof page.window.HTMLInputElement && form instanceof page.window.HTMLFormElement);
+      dispatchClick(toggle); input.value = "2026-03-28T10:30"; input.focus();
+      input.dispatchEvent(new page.window.Event("input", { bubbles: true })); dispatchSubmit(form); await flushAsync();
+      assert.equal(writes, 1); assert(release);
+      dispatchClick(nav.teams);
+      if (pending === "refresh") dispatchClick(nav.overview);
+      const outside = page.document.querySelector('[data-ui="site-nav"] a'); assert(outside instanceof page.window.HTMLAnchorElement); outside.focus();
+      release(); await flushAsync();
+      assert.equal(committed, true); assert.equal(writes, 1);
+      assert.equal(apiState.games.get("metadata-navigation")?.gameStartTs, new Date("2026-03-28T10:30").toISOString());
+      assert.equal(page.window.location.hash, pending === "patch" ? "#teams" : "#overview");
+      assert.equal(page.document.activeElement, outside);
+      assert.equal(page.document.getElementById("game-edit-region")?.hidden, false, "a late settlement cannot dismiss the form after newer navigation");
+      const status = page.document.getElementById("setup-status"); assert(status instanceof page.window.HTMLElement);
+      assert.equal(interactionVisible(status), false); assert.doesNotMatch(status.textContent ?? "", /Game saved/);
+      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+test("qa navigation metadata success restores a reusable Edit game control and focus", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "metadata-success", role: "admin" });
+  const base = createMockFetch(apiState); let writes = 0;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "metadata-success" }), url: "http://localhost:3000/games/metadata-success#overview",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => { if (init.method === "PATCH") writes += 1; return base(input, init); },
+  });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-game-edit"]');
+    const input = page.document.getElementById("game-edit-kickoff");
+    const form = page.document.getElementById("game-edit-form");
+    const region = page.document.getElementById("game-edit-region");
+    assert(toggle instanceof page.window.HTMLButtonElement && input instanceof page.window.HTMLInputElement);
+    assert(form instanceof page.window.HTMLFormElement && region instanceof page.window.HTMLElement);
+    toggle.focus(); dispatchClick(toggle);
+    assert.equal(page.document.activeElement, input);
+    input.value = "2026-03-28T10:30";
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true })); dispatchSubmit(form); await flushAsync();
+    assert.equal(writes, 1);
+    assert.equal(apiState.games.get("metadata-success")?.gameStartTs, new Date("2026-03-28T10:30").toISOString());
+    assert.equal(region.hidden, true);
+    assert.equal(toggle.disabled, false, "settlement must clear the pending lock before focus restoration");
+    assert.equal(interactionVisible(toggle), true); assert.equal(page.document.activeElement, toggle);
+    const status = page.document.getElementById("setup-status"); assert(status instanceof page.window.HTMLElement);
+    assert.equal(status.textContent, "Game saved."); assert.equal(interactionVisible(status), true);
+    dispatchClick(toggle);
+    assert.equal(region.hidden, false); assert.equal(page.document.activeElement, input); assert.equal(input.disabled, false);
+    assert.equal(input.value, "2026-03-28T10:30");
+    assert.equal(writes, 1, "reopening a saved form never resubmits it");
+  } finally { page.dom.window.close(); }
+});
+
+test("qa navigation an older assignment cannot clear newer goal activity feedback", async () => {
+  const apiState = createMockApiState();
+  const thirds = createDefaultThirdTimerSegments(); thirds[0].startedAt = "2026-03-28T11:00:10.000Z";
+  seedGoalScoringGame(apiState, { gameId: "feedback-ownership", status: "live", role: "admin", thirds });
+  const base = createMockFetch(apiState);
+  let releaseAssignment: (() => void) | undefined; let releaseGoal: (() => void) | undefined;
+  let assignments = 0; let goals = 0;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "feedback-ownership" }), url: "http://localhost:3000/games/feedback-ownership#teams",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      if (init.method === "PUT") {
+        assignments += 1;
+        return new Promise<Response>((resolve) => { releaseAssignment = () => { void base(input, init).then(resolve); }; });
+      }
+      if (init.method === "POST" && new URL(String(input)).pathname.endsWith("/goals")) {
+        goals += 1;
+        return new Promise<Response>((resolve) => { releaseGoal = () => { void base(input, init).then(resolve); }; });
+      }
+      return base(input, init);
+    },
+  });
+  try {
+    const nav = qaGameNavigation(page);
+    const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+    assert(transfer instanceof page.window.HTMLButtonElement); dispatchClick(transfer);
+    const choice = page.document.querySelector('#transfer-options-player-ari [data-team-id="blue"]');
+    assert(choice instanceof page.window.HTMLButtonElement); choice.focus(); dispatchClick(choice); await flushAsync();
+    assert.equal(assignments, 1); assert(releaseAssignment);
+    dispatchClick(nav.score);
+    const controls = liveGoalControls(page); controls.draft();
+    // The scorer stays on Red when Ari's pending transfer commits.
+    controls.scorer.value = "player-bea"; controls.scorer.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+    controls.scorer.focus(); dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(goals, 1); assert(releaseGoal);
+    const status = page.document.getElementById("setup-status"); assert(status instanceof page.window.HTMLElement);
+    assert.equal(status.textContent, "Saving goal…"); assert.equal(status.getAttribute("data-activity"), "loading");
+    assert.equal(interactionVisible(status), true);
+    releaseAssignment(); await flushAsync();
+    assert.equal(apiState.roster.get("feedback-ownership:player-ari")?.teamId, "blue");
+    assert.equal(apiState.goalEvents.size, 0, "the newer goal is still pending when the earlier assignment settles");
+    assert.equal(status.textContent, "Saving goal…", "navigation-only ownership must not clear a newer operation's activity");
+    assert.equal(status.getAttribute("data-activity"), "loading"); assert.equal(interactionVisible(status), true);
+    assert.equal(controls.save.disabled, true); assert.equal(assignments, 1); assert.equal(goals, 1);
+    releaseGoal(); await flushAsync();
+    assert.equal(apiState.goalEvents.size, 1);
+    assert.equal([...apiState.goalEvents.values()][0].scorerPlayerId, "player-bea");
+    assert.equal(status.textContent, "Goal recorded."); assert.equal(status.getAttribute("data-state"), "success");
+    assert.equal(interactionVisible(status), true);
+    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+    assert.equal(assignments, 1); assert.equal(goals, 1);
+  } finally { page.dom.window.close(); }
+});
