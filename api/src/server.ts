@@ -36,6 +36,7 @@ import {
 } from "./auth/acl.js";
 import {
   buildCorsHeaders,
+  getCookieValue,
   isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
@@ -47,6 +48,7 @@ import {
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
+  buildExpiredSessionCookie,
   DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
@@ -87,6 +89,7 @@ import {
 } from "./data/repository.js";
 import type { LeagueInviteRecord, GameRecord } from "./data/types.js";
 import { buildHealthResponse } from "./index.js";
+import { readJoinPlayerContext, readRosterPlayerData, unavailableJoinPlayerContext, type PlayerReadRepository } from "./player-reads.js";
 import { logAuthRateLimit, logMagicLinkEvent, logRequest, logRequestError } from "./logging.js";
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
@@ -965,21 +968,11 @@ async function buildRosterResponse(game: {
   updatedAt: string;
 }) {
   const teams = await readGameTeams(game);
-  const roster = await repository.listGameRoster(game.gameId);
-  const playersById = new Map(
-    (
-      await Promise.all(
-        [...new Set(roster.map((assignment) => assignment.playerId))].map((playerId) =>
-          repository.getPlayer(playerId),
-        ),
-      )
-    )
-      .filter((player) => player !== null)
-      .map((player) => [player.playerId, toPublicPlayer(player)]),
-  );
+  const { roster, playersById, unassignedPlayers } = await readRosterPlayerData(repository, game.gameId);
 
   return {
     teams,
+    unassignedPlayers,
     roster: roster
       .map((assignment) => ({
         ...assignment,
@@ -2965,6 +2958,62 @@ async function handleMagicLinkStart(
   }
 }
 
+export async function handleLocalJoinPlayerContextRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  session: AuthSessionRecord | null;
+  rawJoinCode: string;
+  rawQueryString: string;
+  playerRepository?: PlayerReadRepository;
+}): Promise<number> {
+  const headers = { "Cache-Control": "no-store" };
+  if (!input.session) {
+    sendJsonWithCors(input.request, input.response, 401, {
+      error: "unauthorized", message: "Valid session cookie required.",
+    }, headers);
+    return 401;
+  }
+  const result = await readJoinPlayerContext(input.playerRepository ?? repository, input.rawJoinCode, input.rawQueryString);
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
+export async function handleLocalLogoutRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  sessionService?: Pick<MagicLinkService, "revokeSession">;
+  cookieName?: string;
+  cookieSecure?: boolean;
+}): Promise<number> {
+  const { request, response } = input;
+  if (!isStateChangeOriginPermitted("POST", request.headers.origin, CORS_ALLOWED_ORIGINS)) {
+    return forbiddenOrigin(request, response);
+  }
+  const cookieName = input.cookieName ?? SESSION_COOKIE_NAME;
+  const headers = { "Cache-Control": "no-store" };
+  try {
+    const sessionId = getCookieValue(request.headers.cookie, cookieName);
+    if (sessionId) {
+      await (input.sessionService ?? magicLinkService).revokeSession(sessionId);
+    }
+    response.writeHead(204, {
+      ...buildCorsHeaders(request.headers.origin, CORS_ALLOWED_ORIGINS),
+      ...headers,
+      "Set-Cookie": buildExpiredSessionCookie(cookieName, input.cookieSecure ?? SESSION_COOKIE_SECURE),
+    });
+    response.end();
+    return 204;
+  } catch {
+    // Deletion may have committed before response loss. Preserve the credential
+    // for idempotent retry and keep diagnostics free of cookie/SDK details.
+    sendJsonWithCors(request, response, 503, {
+      error: "logout_unavailable",
+      message: "Sign out could not be confirmed. Please try again.",
+    }, headers);
+    return 503;
+  }
+}
+
 async function handleMagicLinkComplete(
   request: IncomingMessage,
   response: ServerResponse,
@@ -3045,7 +3094,7 @@ async function handleMagicLinkComplete(
   }
 }
 
-async function handleGetAuthSession(
+export async function handleGetAuthSession(
   request: IncomingMessage,
   response: ServerResponse,
   session: AuthSessionRecord,
@@ -3053,7 +3102,7 @@ async function handleGetAuthSession(
   sendJsonWithCors(request, response, 200, {
     authenticated: true,
     session,
-  });
+  }, { "Cache-Control": "no-store" });
 
   return 200;
 }
@@ -3083,7 +3132,7 @@ async function enforceSessionIfRequired(
     sendJsonWithCors(request, response, 401, {
       error: "unauthorized",
       message: "Valid session cookie required.",
-    });
+    }, { "Cache-Control": "no-store" });
 
     return { allowed: false, session: null, status: 401 };
   }
@@ -3091,7 +3140,7 @@ async function enforceSessionIfRequired(
     sendJsonWithCors(request, response, 401, {
       error: "unauthorized",
       message: "Session is missing, invalid, or expired.",
-    });
+    }, { "Cache-Control": "no-store" });
 
     return { allowed: false, session: null, status: 401 };
   }
@@ -3166,6 +3215,11 @@ async function start(): Promise<void> {
 
       if (method === "POST" && route === "/v1/dev/send-email") {
         status = await handleSendDevEmail(request, response);
+        return;
+      }
+
+      if (method === "POST" && route === "/v1/auth/logout") {
+        status = await handleLocalLogoutRoute({ request, response });
         return;
       }
 
@@ -3284,6 +3338,15 @@ async function start(): Promise<void> {
               },
             };
           },
+        });
+        return;
+      }
+
+      const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/player-context$/);
+      if (method === "GET" && joinPlayerContextMatch) {
+        status = await handleLocalJoinPlayerContextRoute({
+          request, response, session: authGate.session,
+          rawJoinCode: joinPlayerContextMatch[1], rawQueryString: requestUrl.search.slice(1),
         });
         return;
       }
@@ -5403,6 +5466,12 @@ async function start(): Promise<void> {
       status = 404;
       sendJsonWithCors(request, response, status, { error: "Not found" });
     } catch (error) {
+      if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
+        const result = unavailableJoinPlayerContext();
+        status = result.statusCode;
+        sendJsonWithCors(request, response, status, result.payload, { "Cache-Control": "no-store" });
+        return;
+      }
       status = 500;
 
       logRequestError({

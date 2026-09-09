@@ -18,6 +18,7 @@ import {
 import { authorizeProtectedMutation } from "./auth/acl.js";
 import {
   buildCorsHeaders,
+  getCookieValue,
   isMagicLinkStartOriginPermitted,
   isStateChangeOriginPermitted,
   parseAllowedOrigins,
@@ -38,6 +39,7 @@ import {
 import { resolveSessionFromCookie } from "./auth/session-guard.js";
 import {
   buildSessionCookie,
+  buildExpiredSessionCookie,
   DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
   resolveSessionCookieSecureFlag,
@@ -85,6 +87,7 @@ import type {
   UpdateGoalResult,
 } from "./data/types.js";
 import { logAuthRateLimit, logMagicLinkEvent, logRequest, logRequestError } from "./logging.js";
+import { readJoinPlayerContext, readRosterPlayerData, unavailableJoinPlayerContext } from "./player-reads.js";
 
 const FINISHED_REPAIR_RETRY_DELAYS_MS = [25, 50, 100] as const;
 const FINISHED_REPAIR_MAX_ATTEMPTS = 3;
@@ -131,6 +134,7 @@ interface SessionLookup {
 }
 
 interface MagicLinkServiceContract extends SessionLookup {
+  revokeSession(sessionId: string): Promise<void>;
   start(email: string, options?: MagicLinkStartOptions): Promise<{
     email: string;
     expiresAt: string;
@@ -408,6 +412,7 @@ interface RepositoryContract {
   }>;
   getPlayer(
     playerId: string,
+    options?: { consistentRead?: boolean },
   ): Promise<
     | {
         playerId: string;
@@ -452,7 +457,10 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listGamePlayers(gameId: string): Promise<
+  getGamePlayer(gameId: string, playerId: string): Promise<{
+    gameId: string; playerId: string; createdAt: string; updatedAt: string;
+  } | null>;
+  listGamePlayers(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<
     Array<{
       gameId: string;
       playerId: string;
@@ -472,7 +480,7 @@ interface RepositoryContract {
     createdAt: string;
     updatedAt: string;
   }>;
-  listGameRoster(gameId: string): Promise<
+  listGameRoster(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<
     Array<{
       gameId: string;
       teamId: TeamId;
@@ -1501,21 +1509,11 @@ async function buildRosterResponse(repository: RepositoryContract, game: {
   updatedAt: string;
 }) {
   const teams = await readGameTeams(repository, game);
-  const roster = await repository.listGameRoster(game.gameId);
-  const playersById = new Map(
-    (
-      await Promise.all(
-        [...new Set(roster.map((assignment) => assignment.playerId))].map((playerId) =>
-          repository.getPlayer(playerId),
-        ),
-      )
-    )
-      .filter((player) => player !== null)
-      .map((player) => [player.playerId, toPublicPlayer(player)]),
-  );
+  const { roster, playersById, unassignedPlayers } = await readRosterPlayerData(repository, game.gameId);
 
   return {
     teams,
+    unassignedPlayers,
     roster: roster
       .map((assignment) => ({
         ...assignment,
@@ -2648,6 +2646,35 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         return forbiddenOrigin(origin, dependencies.corsAllowedOrigins);
       }
 
+      if (method === "POST" && route === "/v1/auth/logout") {
+        const headers = {
+          ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+          "cache-control": "no-store",
+        };
+        try {
+          const sessionId = getCookieValue(cookieHeader, dependencies.sessionCookieName);
+          if (sessionId) {
+            await dependencies.magicLinkService.revokeSession(sessionId);
+          }
+          status = 204;
+          return createNoContentResponse({
+            ...headers,
+            "set-cookie": buildExpiredSessionCookie(
+              dependencies.sessionCookieName,
+              dependencies.sessionCookieSecure,
+            ),
+          });
+        } catch {
+          // A lost delete response is uncertain, not a successful sign-out. Keep
+          // the cookie available for a safe retry; never expose SDK credentials.
+          status = 503;
+          return createJsonResponse(status, {
+            error: "logout_unavailable",
+            message: "Sign out could not be confirmed. Please try again.",
+          }, headers);
+        }
+      }
+
       if (method === "POST" && route === "/v1/auth/magic/start") {
         if (!isMagicLinkStartOriginPermitted(method, route, origin, dependencies.corsAllowedOrigins)) {
           status = 403;
@@ -2958,7 +2985,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               error: "unauthorized",
               message: "Valid session cookie required.",
             },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
           );
         }
         if (sessionResolution.failure === "invalid_session") {
@@ -2969,7 +2996,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               error: "unauthorized",
               message: "Session is missing, invalid, or expired.",
             },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
           );
         }
 
@@ -2977,6 +3004,15 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
       }
 
       if (session) {
+        const joinPlayerContextMatch = route.match(/^\/v1\/join\/([^/]+)\/player-context$/);
+        if (method === "GET" && joinPlayerContextMatch) {
+          const result = await readJoinPlayerContext(dependencies.repository, joinPlayerContextMatch[1], event.rawQueryString ?? "");
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, {
+            ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
+          });
+        }
+
         const aclResult = await authorizeProtectedMutation(
           method,
           route,
@@ -5663,7 +5699,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               authenticated: true,
               session,
             },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
           );
         }
       }
@@ -5675,6 +5711,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
       );
     } catch (error) {
+      if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
+        const result = unavailableJoinPlayerContext();
+        status = result.statusCode;
+        return createJsonResponse(status, result.payload, {
+          ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
+        });
+      }
       status = 500;
 
       logRequestError({

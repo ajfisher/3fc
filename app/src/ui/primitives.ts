@@ -131,6 +131,34 @@ export function renderIconButton(input: {
   return `<button ${htmlAttributes}>${renderIcon(input.icon)}${text}</button>`;
 }
 
+/** A compact action popover; content contains trusted, already-rendered controls. */
+export function renderActionMenu(input: {
+  id: string;
+  label: string;
+  content: string;
+  attributes?: Record<string, string>;
+}): string {
+  const attributes = Object.entries({ "data-ui": "action-menu", ...input.attributes })
+    .map(([name, value]) => `${name}="${escapeHtml(value)}"`)
+    .join(" ");
+
+  return `<div ${attributes}>
+    ${renderIconButton({
+      icon: "ellipsis-vertical",
+      label: input.label,
+      variant: "ghost",
+      attributes: {
+        "data-action": "toggle-action-menu",
+        "aria-expanded": "false",
+        "aria-controls": input.id,
+      },
+    })}
+    <div data-ui="action-menu-surface" id="${escapeHtml(input.id)}" role="group" aria-label="${escapeHtml(input.label)}" tabindex="-1" popover="manual" hidden>
+      ${input.content}
+    </div>
+  </div>`;
+}
+
 export function renderIconLink(input: {
   href: string;
   icon: IconName;

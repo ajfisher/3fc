@@ -118,6 +118,35 @@ curl -s -X POST http://localhost:3001/v1/auth/magic/complete \
   -d '{"token":"<copied-token>"}'
 ```
 
+### Sign out and switch account
+
+After signing in through the local browser, choose **Sign out** in the page header.
+The app sends a credentialed `POST /v1/auth/logout` to the local API. DynamoDB
+Local uses the same session deletion service as Lambda. The API returns empty
+HTTP 204 with an expired HttpOnly cookie; the browser returns to `/sign-in`,
+where a different email can request a fresh link. No JavaScript cookie access is
+needed. A failed or uncertain request keeps the page and offers a safe retry.
+
+A no-session route check does not send email or alter any account:
+
+```bash
+curl --fail --silent --show-error --output /dev/null --write-out '%{http_code}\n' \
+  --request POST http://localhost:3001/v1/auth/logout \
+  --header 'origin: http://localhost:3000'
+```
+
+Expected: `204`. Repeating it is safe. Do not paste live cookies or magic-link
+tokens into terminals, screenshots or review evidence. For authenticated browser
+acceptance, use dedicated QA accounts, never an organiser's real games/session.
+
+AWS deployment uses the existing `serverless.api-core.yml` core service and QA/
+production workflows. Their existing sequence publishes the site, then the API;
+Sign out safely retains retry if activated before the new route is available.
+Explicit POST/OPTIONS routes deploy with the API. Both workflows smoke the no-cookie 204, CORS, no-store and
+cookie-expiry attributes. Existing table-scoped `dynamodb:DeleteItem` permission
+already covers revocation; no Terraform change or migration is needed. Production
+release still requires AJ's explicit authorisation.
+
 Emails are persisted as newline-delimited JSON at:
 
 - `local/fake-ses/emails.jsonl`

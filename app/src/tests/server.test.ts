@@ -55,7 +55,7 @@ test("home route includes security headers", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /Dashboard/);
+  assert.match(response.body, /3FC Home/);
   assert.match(response.body, /data-testid="setup-flow-root"/);
   assert.match(response.body, /data-page="dashboard"/);
 });
@@ -68,12 +68,12 @@ test("component showcase routes render the setup shell", () => {
 
   const componentsResponse = executeRoute("GET", "/ui\/components");
   assert.equal(componentsResponse.statusCode, 200);
-  assert.match(componentsResponse.body, /Navigation items/);
-  assert.match(componentsResponse.body, /Player representation/);
-  assert.match(componentsResponse.body, /Information table/);
-  assert.match(componentsResponse.body, /Field validation/);
-  assert.match(componentsResponse.body, /Row action list/);
-  assert.match(componentsResponse.body, /Popover modal prompt/);
+  assert.match(componentsResponse.body, /Component examples/);
+  assert.match(componentsResponse.body, /Players and team choices/);
+  assert.match(componentsResponse.body, /Match totals/);
+  assert.match(componentsResponse.body, /Validation and feedback/);
+  assert.match(componentsResponse.body, /Actions/);
+  assert.match(componentsResponse.body, /Confirmation prompt/);
 });
 
 test("sign-in route renders dedicated auth page", () => {
@@ -82,7 +82,7 @@ test("sign-in route renders dedicated auth page", () => {
   assert.equal(response.statusCode, 200);
   assertSecurityHeaders(response.headers);
   assert.equal(response.headers["Content-Type"], "text/html; charset=utf-8");
-  assert.match(response.body, /League organiser sign in/);
+  assert.match(response.body, /Sign in to 3FC/);
   assert.doesNotMatch(response.body, /Sign in before setup/);
   assert.match(response.body, /id="auth-magic-form"/);
   assert.match(response.body, /id="auth-return-to"/);

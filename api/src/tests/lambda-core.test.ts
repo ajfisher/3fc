@@ -271,6 +271,8 @@ interface HarnessConfig {
     | ((input: { email: string; clientIp: string }) => RateLimitDecision);
   magicLinkStartDelayMs?: number;
   magicLinkStartError?: Error;
+  getSessionError?: Error;
+  revokeSessionError?: Error;
   beforeIdempotencyRecordRead?: (input: {
     scope: string;
     key: string;
@@ -301,6 +303,158 @@ function createEvent(input: {
       },
     },
   };
+}
+
+function createJoinContextHarness(role?: "admin" | "scorekeeper" | "viewer") {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const gameId = "game-context";
+  const players = Object.fromEntries(Array.from({ length: 46 }, (_, index) => {
+    const opaqueIds = ["player%2Fopaque", "player%ZZopaque", "player+opaque", "player opaque", "player&opaque=1", "player-\rlegacy", "player-\u0000legacy", "Zoë ⚽", "player/opaque\\identity"];
+    const playerId = index >= 37 ? opaqueIds[index - 37] : `player-${index}`;
+    return [playerId, { playerId, nickname: "Same name", claimedByUserId: index === 45 ? "private-owner@example.com" : null, createdAt: stamp, updatedAt: stamp }];
+  }));
+  return createHarness({
+    sessions: { "context-session": { sessionId: "context-session", email: "reader@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" } },
+    games: { [gameId]: { gameId, joinCode: "ABCD2345", leagueId: "league-context", seasonId: "season", sessionId: "session", status: "scheduled", gameStartTs: stamp, createdAt: stamp, updatedAt: stamp } },
+    seasons: { season: { seasonId: "season", leagueId: "league-context", name: "Context season", slug: null, startsOn: null, endsOn: null, createdAt: stamp, updatedAt: stamp } },
+    players,
+    gamePlayers: Object.fromEntries(Object.keys(players).map((playerId) => [`${gameId}:${playerId}`, { gameId, playerId, createdAt: stamp, updatedAt: stamp }])),
+    rosterAssignments: Object.fromEntries(Object.keys(players).slice(0, 21).map((playerId) => [`${gameId}:${playerId}`, { gameId, playerId, teamId: "red" as const, createdAt: stamp, updatedAt: stamp }])),
+    leagueAccess: role ? { "league-context:reader@example.com": { leagueId: "league-context", userId: "reader@example.com", role, grantedByUserId: "admin", createdAt: stamp, updatedAt: stamp } } : {},
+  });
+}
+
+function joinContextEvent(code: string, playerId: string, headers?: Record<string, string>): ApiGatewayHttpEvent {
+  const event = createEvent({ method: "GET", path: `/v1/join/${code}/player-context`, headers });
+  event.rawQueryString = new URLSearchParams({ playerId }).toString();
+  return event;
+}
+
+test("core lambda join context is session and membership bound without granting access or claiming", async () => {
+  const harness = createJoinContextHarness();
+  for (const cookie of [undefined, "threefc_session=invalid"]) {
+    const denied = await harness.handler(joinContextEvent("abcd2345", "player/opaque\\identity", cookie ? { Cookie: cookie } : {}));
+    assert.equal(denied.statusCode, 401); assert.equal(denied.headers["cache-control"], "no-store");
+    assert.doesNotMatch(denied.body, /Same name|private-owner/);
+  }
+  const headers = { Cookie: "threefc_session=context-session", Origin: "https://qa.3fc.football" };
+  const response = await harness.handler(joinContextEvent("abcd2345", "player/opaque\\identity", headers));
+  assert.equal(response.statusCode, 200); assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(response.headers["Access-Control-Allow-Origin"], "https://qa.3fc.football");
+  const body = JSON.parse(response.body);
+  assert.equal(body.gameId, "game-context"); assert.equal(body.joinCode, "ABCD2345");
+  assert.equal(body.player.playerId, "player/opaque\\identity"); assert.equal(body.player.nickname, "Same name");
+  assert.deepEqual(Object.keys(body.player).sort(), ["createdAt", "nickname", "playerId", "updatedAt"]);
+  assert.doesNotMatch(response.body, /private-owner|reader@example|claimedByUserId|access/);
+  assert.equal(harness.players.get("player/opaque\\identity")?.claimedByUserId, "private-owner@example.com");
+  assert.equal(harness.grantedLeagueAccess.length, 0); assert.equal(harness.createdPlayers.length, 0);
+  const roster = await harness.handler(createEvent({ method: "GET", path: "/v1/games/game-context/roster", headers }));
+  assert.equal(roster.statusCode, 403, "join context is not league access");
+  const unavailable = [];
+  harness.players.set("unlinked-player", { playerId: "unlinked-player", nickname: "Same name", claimedByUserId: null, createdAt: "2026-02-23T00:00:00.000Z", updatedAt: "2026-02-23T00:00:00.000Z" });
+  for (const [code, id] of [["BCDE2345", "player-1"], ["ABCD2345", "missing"], ["ABCD2345", "unlinked-player"]]) {
+    const result = await harness.handler(joinContextEvent(code, id, headers));
+    assert.equal(result.statusCode, 404); assert.equal(result.headers["cache-control"], "no-store"); unavailable.push(JSON.parse(result.body));
+  }
+  assert.deepEqual(unavailable[0], unavailable[1]);
+  assert.deepEqual(unavailable[0], unavailable[2]);
+  for (const code of ["short", "%E0%A4%A"]) {
+    const result = await harness.handler(joinContextEvent(code, "player-1", headers));
+    assert.equal(result.statusCode, 400); assert.equal(result.headers["cache-control"], "no-store");
+  }
+});
+
+for (const playerId of ["player/opaque\\identity", "player%2Fopaque", "player%ZZopaque", "player+opaque", "player opaque", "player&opaque=1", "player-\rlegacy", "player-\u0000legacy", "Zoë ⚽"]) {
+  test("core lambda fixed join context query preserves exact identity: " + encodeURIComponent(playerId), async () => {
+    const harness = createJoinContextHarness();
+    const event = joinContextEvent("ABCD2345", playerId);
+    assert.equal(event.rawPath, "/v1/join/ABCD2345/player-context", "opaque identity never enters either gateway path field");
+    assert.equal(event.requestContext?.http?.path, event.rawPath);
+    const anonymous = await harness.handler(event);
+    assert.equal(anonymous.statusCode, 401);
+    assert.equal(anonymous.headers["cache-control"], "no-store");
+    event.headers = { Cookie: "threefc_session=context-session" };
+    const response = await harness.handler(event);
+    assert.equal(response.statusCode, 200);
+    assert.equal(JSON.parse(response.body).player.playerId, playerId, "decode the raw query value exactly once");
+    assert.equal(response.headers["cache-control"], "no-store");
+    assert.equal(harness.createdPlayers.length, 0);
+    assert.equal(harness.grantedLeagueAccess.length, 0);
+
+    const unavailable = createHarness({ getSessionError: new Error("private session diagnostic") });
+    const failed = await unavailable.handler(event);
+    assert.equal(failed.statusCode, 503);
+    assert.equal(failed.headers["cache-control"], "no-store");
+    assert.doesNotMatch(failed.body, /private|diagnostic/);
+  });
+}
+
+test("core lambda join context rejects missing duplicate unknown and malformed query identities after authentication", async () => {
+  const harness = createJoinContextHarness();
+  for (const query of [undefined, "", "playerId", "playerId=", "playerId=%20", "playerId=%ZZ", "playerId=%E0%A4%A", "playerId=%ED%A0%80", "playerId=\ud800", "playerId=one&playerId=two", "playerId=one&%70layerId=two", "other=one", "playerId=one&other=two"]) {
+    const event = createEvent({ method: "GET", path: "/v1/join/ABCD2345/player-context" });
+    event.rawQueryString = query;
+    const anonymous = await harness.handler(event);
+    assert.equal(anonymous.statusCode, 401); assert.equal(anonymous.headers["cache-control"], "no-store");
+    event.headers = { Cookie: "threefc_session=context-session" };
+    const response = await harness.handler(event);
+    assert.equal(response.statusCode, 400); assert.equal(response.headers["cache-control"], "no-store");
+    assert.deepEqual(JSON.parse(response.body), { error: "bad_request", message: "This player link is invalid." });
+  }
+  assert.equal(harness.getGameCalls.length, 0);
+  assert.equal(harness.createdPlayers.length, 0); assert.equal(harness.grantedLeagueAccess.length, 0);
+});
+
+test("core lambda removed join path transport and extra segments fail closed while legacy path precedence is unchanged", async () => {
+  const harness = createJoinContextHarness();
+  const headers = { Cookie: "threefc_session=context-session" };
+  for (const path of ["/v1/join/ABCD2345/players/player/opaque", "/v1/join/ABCD2345/players/player-1", "/v1/join/ABCD2345/player-context/extra"]) {
+    const invalid = await harness.handler(createEvent({ method: "GET", path, headers }));
+    assert.equal(invalid.statusCode, 404);
+    assert.doesNotMatch(invalid.body, /Same name|playerId/);
+  }
+  assert.equal(harness.getGameCalls.length, 0);
+  const legacy = createEvent({ method: "GET", path: "/v1/auth/session", headers });
+  legacy.rawPath = "/legacy-context-precedence";
+  const session = await harness.handler(legacy);
+  assert.equal(session.statusCode, 200);
+  assert.equal(JSON.parse(session.body).authenticated, true);
+});
+
+test("core lambda join context session-store failures are generic and never cacheable", async () => {
+  const harness = createHarness({ getSessionError: new Error("private SDK credentials diagnostic") });
+  const response = await harness.handler(joinContextEvent("ABCD2345", "player-one", { Cookie: "threefc_session=unavailable" }));
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.deepEqual(JSON.parse(response.body), { error: "unavailable", message: "Player details could not be loaded. Try again." });
+  assert.doesNotMatch(response.body, /private|SDK|credentials/);
+});
+
+for (const role of ["admin", "scorekeeper", "viewer"] as const) {
+  test("core lambda roster exposes complete public unassigned identities to authorized " + role, async () => {
+    const harness = createJoinContextHarness(role);
+    const headers = { Cookie: "threefc_session=context-session" };
+    const request = () => harness.handler(createEvent({ method: "GET", path: "/v1/games/game-context/roster", headers }));
+    const response = await request(); assert.equal(response.statusCode, 200);
+    const body = JSON.parse(response.body);
+    assert.equal(body.roster.length, 21); assert.equal(body.unassignedPlayers.length, 25);
+    assert.equal(new Set(body.unassignedPlayers.map((entry: { playerId: string }) => entry.playerId)).size, 25);
+    assert.doesNotMatch(response.body, /private-owner|reader@example|claimedByUserId|"access"/);
+    const join = await harness.handler(createEvent({ method: "POST", path: "/v1/join/ABCD2345", body: { nickname: "New public join" }, headers: { "Idempotency-Key": "new-public-join" } }));
+    assert.equal(join.statusCode, 201);
+    const joinedId = JSON.parse(join.body).player.playerId;
+    const after = JSON.parse((await request()).body);
+    assert.equal(after.unassignedPlayers.length, 26);
+    assert.equal(after.unassignedPlayers.filter((entry: { playerId: string }) => entry.playerId === joinedId).length, 1);
+    if (role !== "viewer") {
+      const assignment = await harness.handler(createEvent({ method: "PUT", path: "/v1/games/game-context/roster/" + encodeURIComponent(joinedId), headers, body: { teamId: "blue" } }));
+      assert.equal(assignment.statusCode, 200);
+      const moved = JSON.parse((await request()).body);
+      assert.equal(moved.unassignedPlayers.some((entry: { playerId: string }) => entry.playerId === joinedId), false);
+      assert.equal(moved.roster.filter((entry: { playerId: string }) => entry.playerId === joinedId).length, 1);
+    }
+    assert.equal(harness.players.get(joinedId)?.claimedByUserId, null);
+  });
 }
 
 function normalizePayloadForTestHash(value: unknown): unknown {
@@ -358,6 +512,7 @@ function completedThirdTimerSegments(): ThirdTimerSegment[] {
 }
 
 function createHarness(config: HarnessConfig = {}) {
+  const revokedSessions: string[] = [];
   const createdLeagues: CreatedLeagueInput[] = [];
   const createdSeasons: CreatedSeasonInput[] = [];
   const createdSessions: CreatedSessionInput[] = [];
@@ -793,7 +948,13 @@ function createHarness(config: HarnessConfig = {}) {
     corsAllowedOrigins: ["https://qa.3fc.football"],
     appBaseUrl: "https://qa.3fc.football",
     magicLinkService: {
+      async revokeSession(sessionId: string) {
+        revokedSessions.push(sessionId);
+        if (config.revokeSessionError) throw config.revokeSessionError;
+        if (config.sessions) delete config.sessions[sessionId];
+      },
       async getSession(sessionId: string) {
+        if (config.getSessionError) throw config.getSessionError;
         return config.sessions?.[sessionId] ?? null;
       },
       async start(email: string, options) {
@@ -1540,6 +1701,9 @@ function createHarness(config: HarnessConfig = {}) {
       async listGamePlayers(gameId: string) {
         return [...gamePlayers.values()].filter((player) => player.gameId === gameId);
       },
+      async getGamePlayer(gameId: string, playerId: string) {
+        return gamePlayers.get(`${gameId}:${playerId}`) ?? null;
+      },
       async assignRosterPlayer(input) {
         if (assignRosterPlayerStateChangedOnce) {
           assignRosterPlayerStateChangedOnce = false;
@@ -2015,6 +2179,7 @@ function createHarness(config: HarnessConfig = {}) {
     linkedGamePlayers,
     magicLinkStarts,
     magicLinkCompletes,
+    revokedSessions,
     magicLinkRateLimitChecks,
     grantedLeagueAccess,
     listGamesForSeasonCalls,
@@ -2424,6 +2589,74 @@ test("core lambda returns rate limit response before starting magic-link auth", 
     },
   ]);
   assert.deepEqual(harness.magicLinkStarts, []);
+});
+
+test("core lambda logout revokes only the cookie session and immediately rejects it", async () => {
+  const session = (sessionId: string): MockSessionRecord => ({
+    sessionId, email: "organiser@example.com", createdAt: "2026-09-07T00:00:00Z", expiresAt: "2026-09-15T00:00:00Z",
+  });
+  const harness = createHarness({
+    sessionCookieSecure: true,
+    sessions: { first: session("first"), second: session("second") },
+  });
+  const event = createEvent({
+    method: "POST", path: "/v1/auth/logout",
+    headers: { Origin: "https://qa.3fc.football" },
+    cookies: ["theme=%", "threefc_session=first"],
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await harness.handler(event);
+    assert.equal(response.statusCode, 204);
+    assert.equal(response.body, "");
+    assert.equal(response.headers["cache-control"], "no-store");
+    assert.equal(response.headers["Access-Control-Allow-Origin"], "https://qa.3fc.football");
+    assert.equal(response.headers["Access-Control-Allow-Credentials"], "true");
+    assert.match(response.headers["set-cookie"], /^threefc_session=;/);
+    for (const attribute of ["Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0", "Secure", "Expires=Thu, 01 Jan 1970 00:00:00 GMT"]) {
+      assert.ok(response.headers["set-cookie"].includes(attribute), attribute);
+    }
+    assert.ok(!response.headers["set-cookie"].includes("Domain="));
+  }
+  assert.deepEqual(harness.revokedSessions, ["first", "first"]);
+  for (const [sessionId, expected] of [["first", 401], ["second", 200]] as const) {
+    const response = await harness.handler(createEvent({ method: "GET", path: "/v1/auth/session", headers: { Cookie: `threefc_session=${sessionId}` } }));
+    assert.equal(response.statusCode, expected);
+    assert.equal(response.headers["cache-control"], "no-store");
+  }
+});
+
+test("core lambda logout safely expires missing and malformed cookies without session lookup", async () => {
+  const harness = createHarness();
+  for (const cookie of ["", "threefc_session=%", "threefc_session=", "theme=%", `threefc_session=${"x".repeat(10000)}`]) {
+    const response = await harness.handler(createEvent({ method: "POST", path: "/v1/auth/logout", headers: { Cookie: cookie } }));
+    assert.equal(response.statusCode, 204);
+    assert.equal(response.body, "");
+    assert.match(response.headers["set-cookie"], /Max-Age=0/);
+    assert.ok(!response.headers["set-cookie"].includes("Secure"));
+  }
+  assert.deepEqual(harness.revokedSessions, []);
+});
+
+test("core lambda logout rejects foreign origins before revocation and supports preflight", async () => {
+  const harness = createHarness();
+  const denied = await harness.handler(createEvent({ method: "POST", path: "/v1/auth/logout", headers: { Origin: "https://evil.example", Cookie: "threefc_session=first" } }));
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.headers["set-cookie"], undefined);
+  assert.deepEqual(harness.revokedSessions, []);
+  const preflight = await harness.handler(createEvent({ method: "OPTIONS", path: "/v1/auth/logout", headers: { Origin: "https://qa.3fc.football" } }));
+  assert.equal(preflight.statusCode, 204);
+  assert.equal(preflight.headers["Access-Control-Allow-Credentials"], "true");
+  assert.deepEqual(harness.revokedSessions, []);
+});
+
+test("core lambda logout retains retry cookie and hides SDK detail after storage failure", async () => {
+  const harness = createHarness({ revokeSessionError: new Error("private-session-id secret SDK diagnostic") });
+  const response = await harness.handler(createEvent({ method: "POST", path: "/v1/auth/logout", headers: { Cookie: "threefc_session=first", Origin: "https://qa.3fc.football" } }));
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.deepEqual(JSON.parse(response.body), { error: "logout_unavailable", message: "Sign out could not be confirmed. Please try again." });
+  assert.doesNotMatch(response.body, /private-session-id|secret SDK/);
 });
 
 test("core lambda completes magic-link auth and returns a session cookie", async () => {

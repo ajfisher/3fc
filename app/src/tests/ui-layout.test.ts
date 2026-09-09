@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { JSDOM } from "jsdom";
+
 import {
   renderComponentShowcasePage,
   renderGamePage,
+  renderInvitePage,
   renderJoinPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
   renderSignInPage,
   renderSetupHomePage,
+  renderStatusPage,
 } from "../ui/layout.js";
 import {
+  renderActionMenu,
   renderButton,
   renderDataTable,
   renderIcon,
@@ -26,6 +31,98 @@ import {
   renderStepChip,
   renderValidatedField,
 } from "../ui/primitives.js";
+
+test("customer page copy excludes every rejected design concept, including accessible descriptions", () => {
+  const apiBaseUrl = "https://qa-api.3fc.football";
+  const pages = [
+    ["dashboard", renderSetupHomePage(apiBaseUrl)],
+    ["league", renderLeaguePage(apiBaseUrl, "fixture-league")],
+    ["scoped season", renderSeasonPage(apiBaseUrl, "fixture-season", "fixture-league")],
+    ["legacy season", renderSeasonPage(apiBaseUrl, "fixture-season")],
+    ["game including all workflow panels", renderGamePage(apiBaseUrl, { gameId: "fixture-game" })],
+    ["join with code", renderJoinPage(apiBaseUrl, "ABCD2345")],
+    ["join without code", renderJoinPage(apiBaseUrl, "")],
+    ["invite with code", renderInvitePage(apiBaseUrl, "ABCD2345")],
+    ["invite without code", renderInvitePage(apiBaseUrl, "")],
+    ["sign in", renderSignInPage(apiBaseUrl, "/setup")],
+    ["magic-link completion", renderMagicLinkCallbackPage(apiBaseUrl)],
+    ["status", renderStatusPage("Page unavailable", "Please try again.")],
+  ] as const;
+  // Keep the complete rejected-copy contract from docs/design/frontend-redesign.md
+  // explicit. Split paired slogans/sentences so either half is caught on its own.
+  const rejectedCopy = [
+    "One account for playing and organising",
+    "Your context",
+    "Permissions follow the league and game you open",
+    "Your player history stays with your account",
+    "Your games, people and progress",
+    "Your week with 3FC",
+    "Only games linked to your player profile count towards your performance",
+    "Account access is managed separately from team assignment",
+    "Scoring tools for this game",
+    "Your access applies across this league",
+    "Organiser invitations and league-wide scorer access belong here, separate from player participation",
+  ];
+  const normalize = (copy: string): string => copy.toLowerCase().replace(/[\s.,;:!?–—-]+/g, " ").trim();
+
+  for (const [page, html] of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      const strings = [document.documentElement.textContent ?? ""];
+      // textContent deliberately includes hidden panels and sr-only descriptions.
+      // Read naming attributes separately: moving filler out of view must not
+      // silently reintroduce it for screen-reader or tooltip users.
+      for (const element of document.querySelectorAll("[aria-label], [aria-description], [title], [alt], [placeholder]")) {
+        for (const attribute of ["aria-label", "aria-description", "title", "alt", "placeholder"]) {
+          strings.push(element.getAttribute(attribute) ?? "");
+        }
+      }
+      for (const copy of strings) {
+        const normalized = normalize(copy);
+        for (const rejected of rejectedCopy) {
+          assert.equal(normalized.includes(normalize(rejected)), false, `${page} contains rejected copy: ${rejected}`);
+        }
+      }
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
+test("sign out belongs to the existing account-capable shells and is initially hidden", () => {
+  const api = "http://localhost:3001";
+  const pages = [
+    renderSetupHomePage(api), renderLeaguePage(api, "league"),
+    renderSeasonPage(api, "season", "league"), renderSeasonPage(api, "season"),
+    renderGamePage(api, { gameId: "game" }), renderInvitePage(api, "ABCD2345"),
+    renderJoinPage(api, "ABCD2345"),
+  ];
+  for (const html of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const actions = dom.window.document.getElementById("account-actions");
+      const button = dom.window.document.getElementById("sign-out");
+      const feedback = dom.window.document.getElementById("sign-out-status");
+      assert(actions instanceof dom.window.HTMLElement);
+      assert(button instanceof dom.window.HTMLButtonElement);
+      assert(feedback instanceof dom.window.HTMLElement);
+      assert.equal(actions.closest('[data-ui="hero"]') !== null, true);
+      assert.equal(actions.hidden, true);
+      assert.equal(button.disabled, true);
+      assert.equal(button.type, "button");
+      assert.equal(button.textContent, "Sign out");
+      assert.equal(feedback.hidden, true);
+      assert.equal(feedback.getAttribute("role"), "status");
+      assert.equal(feedback.getAttribute("aria-live"), "polite");
+      assert.equal(dom.window.document.querySelectorAll("#sign-out").length, 1);
+    } finally {
+      dom.window.close();
+    }
+  }
+  assert.doesNotMatch(renderSignInPage(api, "/setup"), /id="sign-out"/);
+  assert.doesNotMatch(renderMagicLinkCallbackPage(api), /id="sign-out"/);
+});
 
 test("primitives render expected semantic and data-ui hooks", () => {
   const button = renderButton("Continue", "danger");
@@ -94,6 +191,98 @@ test("primitives render expected semantic and data-ui hooks", () => {
   assert.throws(() => renderIcon("missing-icon" as never), /Unsupported icon/);
 });
 
+test("action menu primitive renders a hidden native action group with an escaped labelled kebab", () => {
+  const id = 'actions-"<&';
+  const label = 'Actions for A < B & "friends"';
+  const dom = new JSDOM(renderActionMenu({
+    id,
+    label,
+    content: renderButton("Delete", "danger", { type: "button", "data-action": "delete-example" }),
+    attributes: { "data-management-only": "", hidden: "", "data-entity-name": label },
+  }));
+  try {
+    const document = dom.window.document;
+    const wrapper = document.querySelector('[data-ui="action-menu"]');
+    const trigger = wrapper?.querySelector('[data-action="toggle-action-menu"]');
+    const surface = document.getElementById(id);
+    assert(wrapper instanceof dom.window.HTMLDivElement);
+    assert(trigger instanceof dom.window.HTMLButtonElement);
+    assert(surface instanceof dom.window.HTMLDivElement);
+    assert.equal(wrapper.hidden, true);
+    assert.equal(wrapper.hasAttribute("data-management-only"), true);
+    assert.equal(wrapper.getAttribute("data-entity-name"), label);
+    assert.equal(trigger.type, "button");
+    assert.equal(trigger.getAttribute("aria-label"), label);
+    assert.equal(trigger.getAttribute("title"), label);
+    assert.equal(trigger.getAttribute("aria-controls"), surface.id);
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(trigger.textContent, "");
+    assert.equal(trigger.querySelector('[data-icon="ellipsis-vertical"]')?.getAttribute("aria-hidden"), "true");
+    assert.equal(surface.hidden, true);
+    assert.equal(surface.getAttribute("popover"), "manual");
+    assert.equal(surface.getAttribute("role"), "group");
+    assert.equal(surface.getAttribute("aria-label"), label);
+    assert.equal(surface.tabIndex, -1);
+    assert.equal(surface.parentElement, wrapper, "actions retain their delegated event owner");
+    assert.equal(surface.querySelector('[data-action="delete-example"]')?.textContent, "Delete");
+    assert.equal(document.querySelectorAll('details, summary, [role="menu"], [role="menuitem"], [aria-haspopup]').length, 0);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("league, season and game headers expose deletion only inside closed permission-gated action popovers", () => {
+  const pages = [
+    { html: renderLeaguePage("/api", "league"), id: "league-actions", action: "delete-league", label: "Actions for this league" },
+    { html: renderSeasonPage("/api", "season", "league"), id: "season-actions", action: "delete-season", label: "Actions for this season" },
+    { html: renderSeasonPage("/api", "season"), id: "season-actions", action: "delete-season", label: "Actions for this season" },
+    { html: renderGamePage("/api", { gameId: "game" }), id: "game-actions", action: "delete-game", label: "Actions for this game" },
+  ];
+  for (const { html, id, action, label } of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      const surface = document.getElementById(id);
+      const wrapper = surface?.closest('[data-ui="action-menu"]');
+      const trigger = wrapper?.querySelector('[data-action="toggle-action-menu"]');
+      const deletion = document.querySelector(`[data-action="${action}"]`);
+      assert(surface instanceof dom.window.HTMLDivElement);
+      assert(wrapper instanceof dom.window.HTMLDivElement);
+      assert(trigger instanceof dom.window.HTMLButtonElement);
+      assert(deletion instanceof dom.window.HTMLButtonElement);
+      assert.equal(document.querySelectorAll(`[id="${id}"]`).length, 1);
+      assert.equal(document.querySelectorAll(`[data-action="${action}"]`).length, 1);
+      assert.equal(wrapper.hidden, true);
+      assert.equal(wrapper.hasAttribute("data-management-only") || wrapper.getAttribute("data-game-capability") === "admin", true);
+      assert.equal(wrapper.closest('[data-ui="hero"]') !== null, true);
+      assert.equal(surface.hidden, true);
+      assert.equal(surface.getAttribute("role"), "group");
+      assert.equal(surface.getAttribute("aria-label"), label);
+      assert.equal(trigger.getAttribute("aria-label"), label);
+      assert.equal(trigger.getAttribute("aria-controls"), id);
+      assert.equal(trigger.getAttribute("aria-expanded"), "false");
+      assert.equal(trigger.textContent?.trim(), "");
+      assert.equal(trigger.querySelector('[data-icon="ellipsis-vertical"][aria-hidden="true"]') !== null, true);
+      assert.equal(deletion.closest('[data-ui="action-menu-surface"]'), surface);
+      assert.equal(deletion.disabled, true);
+      assert.equal(deletion.closest("details"), null);
+      assert.equal(document.querySelectorAll('[data-ui="more-actions"], [role="menu"], [role="menuitem"]').length, 0);
+      if (id === "game-actions") {
+        assert.deepEqual([...surface.querySelectorAll("button, a")].map((control) => control.textContent?.trim()), ["Create another game", "Delete game"]);
+        assert.equal(document.getElementById("game-title")?.parentElement, wrapper.parentElement);
+        for (const selector of ['[data-ui="reference-ids"]', '[data-ui="join-disclosure"]', '#goal-assists-dropdown']) {
+          // Informational and form disclosures retain native details semantics.
+          const disclosure = document.querySelector(selector);
+          assert(disclosure instanceof dom.window.HTMLDetailsElement);
+          assert.equal(disclosure.open, false);
+        }
+      }
+    } finally {
+      dom.window.close();
+    }
+  }
+});
+
 test("setup home page includes stepwise setup panels and setup-flow script", () => {
   const html = renderSetupHomePage("https://qa-api.3fc.football");
 
@@ -102,6 +291,7 @@ test("setup home page includes stepwise setup panels and setup-flow script", () 
   assert.match(html, /data-testid="panel-dashboard-create-league"/);
   assert.match(html, /data-testid="panel-dashboard-leagues"/);
   assert.match(html, /id="dashboard-welcome">Welcome</);
+  assert.match(html, /<title>3FC Home<\/title>/);
   assert.match(html, /data-ui="activity-status" id="setup-status" role="status" aria-live="polite" data-activity="loading"/);
   assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
   assert.match(html, /data-ui="activity-message" class="sr-only">Checking sign-in state…/);
@@ -142,6 +332,58 @@ test("management pages render routine progress as a quiet activity indicator", (
   }
 });
 
+test("organiser shells use real navigation, intentional forms and no authority before loading", () => {
+  const pages = [
+    { html: renderSetupHomePage("/api"), formIds: ["create-league-form"], title: "Welcome" },
+    { html: renderLeaguePage("/api", "opaque-league-id"), formIds: ["create-season-form", "organiser-invite-form"], title: "League" },
+    { html: renderSeasonPage("/api", "opaque-season-id", "opaque-league-id"), formIds: ["create-game-form"], title: "Season" },
+    { html: renderSeasonPage("/api", "opaque-season-id"), formIds: ["create-game-form"], title: "Season" },
+  ];
+  for (const { html, formIds, title } of pages) {
+    const dom = new JSDOM(html);
+    try {
+      const document = dom.window.document;
+      assert.equal(document.querySelector("h1")?.textContent, title);
+      assert.equal(document.querySelector('nav[aria-label="Primary"] a')?.getAttribute("href"), "/setup");
+      assert.doesNotMatch(document.body.textContent ?? "", /Start here if|Select a league to manage|Manage seasons for|Create a season inside|Add a game into|Scheduled and live games, ordered|Finished games, with the most recent/);
+      assert.equal(document.querySelectorAll('[data-ui="hero-kicker"]').length, 0);
+      assert.equal(document.querySelectorAll('a[href*="performance"], a[href*="standings"]').length, 0);
+      for (const formId of formIds) {
+        const form = document.getElementById(formId);
+        assert(form instanceof dom.window.HTMLFormElement);
+        assert.equal(form.getAttribute("aria-label")?.length! > 0, true);
+        assert.equal(form.querySelectorAll('button[type="submit"]').length, 1);
+        assert.equal(form.querySelector('[data-action="cancel-disclosure"]')?.getAttribute("type"), "button");
+        assert.equal(form.closest('[data-ui="disclosure-panel"]')?.hasAttribute("hidden"), true);
+        assert.equal(form.querySelectorAll("form").length, 0, "forms must not nest");
+      }
+      for (const input of document.querySelectorAll('input[id$="friendly-url"]')) {
+        const details = input.closest("details");
+        assert(details instanceof dom.window.HTMLDetailsElement);
+        assert.equal(details.open, false);
+        assert.equal(details.querySelector("summary")?.textContent, "Additional options");
+      }
+      for (const control of document.querySelectorAll("button[data-management-only]")) {
+        assert.equal((control as HTMLButtonElement).disabled, true);
+      }
+      const actions = document.querySelector('[data-ui="action-menu"]');
+      if (actions) {
+        assert.equal(actions.hasAttribute("hidden"), true);
+        assert.equal(actions.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded"), "false");
+        assert.equal(actions.querySelector('[data-ui="action-menu-surface"]')?.hasAttribute("hidden"), true);
+        assert.equal(actions.querySelectorAll('[data-variant="danger"]').length, 1);
+      }
+      assert.equal(document.querySelectorAll('[data-ui="more-actions"], details:has([data-action^="delete-"])').length, 0);
+      for (const reference of document.querySelectorAll('[data-ui="reference-id"]')) {
+        assert.equal(reference.closest("details")?.hasAttribute("open"), false);
+      }
+      for (const empty of document.querySelectorAll('[id$="-empty"]')) {
+        assert.equal(empty.hasAttribute("hidden"), true, "loading must not flash an empty result");
+      }
+    } finally { dom.window.close(); }
+  }
+});
+
 test("setup pages can version UI asset URLs for deployments", () => {
   const previousVersion = process.env.THREEFC_ASSET_VERSION;
   process.env.THREEFC_ASSET_VERSION = "abc1234";
@@ -173,11 +415,12 @@ test("league page includes season create form and seasons table", () => {
   assert.match(html, /data-league-id="league-1"/);
   assert.match(html, /id="league-reference">League ID: league-1/);
   assert.match(html, /data-testid="toggle-create-season"/);
-  assert.match(html, /data-ui="header-actions" role="toolbar" aria-label="League actions"/);
+  assert.match(html, /data-ui="header-actions" role="group" aria-label="League actions"/);
   assert.match(html, /data-testid="toggle-organiser-invite"/);
   assert.match(html, /aria-controls="league-create-season-region"/);
   assert.match(html, /id="league-create-season-region" data-ui="disclosure-panel" hidden/);
   assert.match(html, /Share the link or code below or send an invite via email/);
+  assert.match(html, /Only this email address can accept\./);
   assert.doesNotMatch(html, /Share invite ready/);
   assert.match(html, /league-seasons-body/);
   assert.match(
@@ -204,7 +447,7 @@ test("season page includes game create form and games table", () => {
   assert.match(html, /data-season-id="season-1"/);
   assert.match(html, /id="season-reference">Season ID: season-1/);
   assert.match(html, /data-testid="toggle-create-game"/);
-  assert.match(html, /data-ui="header-actions" role="toolbar" aria-label="Season actions"/);
+  assert.match(html, /data-ui="header-actions" role="group" aria-label="Season actions"/);
   assert.match(html, /aria-controls="season-create-game-region"/);
   assert.match(html, /id="season-create-game-region" data-ui="disclosure-panel" hidden/);
   assert.doesNotMatch(html, /game-id-display/);
@@ -236,10 +479,13 @@ test("season page includes game create form and games table", () => {
   assert.doesNotMatch(html, /Season page ready|friendly URL/i);
 });
 
-test("component showcase page includes navigation, players, tables, validation, row actions, and modal", () => {
+test("component showcase uses labelled development data and working in-page destinations", () => {
   const html = renderComponentShowcasePage("https://qa-api.3fc.football");
 
   assert.match(html, /data-testid="component-showcase"/);
+  assert.match(html, /<h1>Design fixtures<\/h1>/);
+  assert.match(html, /Development fixtures only\./);
+  assert.match(html, /no account or game data is loaded or saved\./);
   assert.match(html, /data-testid="panel-navigation"/);
   assert.match(html, /data-testid="panel-player"/);
   assert.match(html, /data-testid="panel-table"/);
@@ -247,12 +493,81 @@ test("component showcase page includes navigation, players, tables, validation, 
   assert.match(html, /data-testid="panel-row-actions"/);
   assert.match(html, /data-testid="panel-modal"/);
   assert.match(html, /data-testid="panel-setup-composition"/);
-  assert.match(html, /data-testid="validation-invalid"/);
-  assert.match(html, /data-testid="validation-valid"/);
-  assert.match(html, /Delete game\\?/);
+  assert.match(html, /data-testid="panel-hidden-states"/);
+
+  const destinations = [...html.matchAll(/<a\b[^>]*href="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(destinations, [
+    "#fixture-controls", "#fixture-players", "#fixture-totals", "#fixture-feedback", "#fixture-totals",
+  ]);
+  for (const destination of destinations) {
+    assert.ok(html.includes(`id="${destination?.slice(1)}" tabindex="-1"`));
+  }
+  assert.doesNotMatch(html, /href="\/(?:standings|profile|games\/live)"/);
+  assert.doesNotMatch(html, /Season standings|Your context|Your games, people and progress/);
+  assert.doesNotMatch(html, /data-action="(?:edit|clone|delete)-game/);
+  assert.doesNotMatch(html, /<script[^>]+(?:setup-flow|auth-flow)\.js/);
+  assert.doesNotMatch(html, /<script[^>]+https?:\/\//);
+});
+
+test("component showcase includes native controls and functional or explicitly disabled action examples", () => {
+  const html = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+  for (const type of ["text", "email", "date", "datetime-local", "checkbox"]) {
+    assert.match(html, new RegExp(`type="${type}"`));
+  }
+  assert.match(html, /<label for="fixture-status">Game status<\/label>/);
+  assert.match(html, /<select data-ui="input" id="fixture-status" name="fixture-status">/);
+  assert.match(html, /autocomplete="email" inputmode="email" autocapitalize="none"/);
+  for (const variant of ["primary", "secondary", "ghost", "danger"]) {
+    assert.match(html, new RegExp(`data-variant="${variant}" type="button" data-modal-open="confirm-delete-game"`));
+  }
+  assert.match(html, /disabled="" aria-label="Save example, disabled"/);
+  assert.match(html, /disabled="" aria-busy="true"[^>]*aria-label="Saving example"/);
+  assert.match(html, /aria-label="View example match totals"/);
+  assert.match(html, /aria-label="Open example edit prompt"/);
+  assert.match(html, /aria-label="Open example delete prompt"/);
+  assert.match(html, /data-icon="loader-circle" aria-hidden="true"/);
   assert.match(html, /data-modal-open="confirm-delete-game"/);
   assert.match(html, /data-modal-confirm="confirm-delete-game"/);
+  assert.match(html, /Delete example game\?/);
+  assert.match(html, /Confirming will not delete a game\./);
   assert.match(html, /<script src="\/ui\/modal\.js" defer><\/script>/);
+  assert.doesNotMatch(html, /\son(?:click|change|submit)=/);
+});
+
+test("component showcase covers long names, three teams, match statuses and all thirds", () => {
+  const html = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+  assert.match(html, /Alexandra van der Westhuizen-Smith/);
+  assert.match(html, /<caption>Example finished game<\/caption>/);
+  assert.match(html, /<th scope="col">Team<\/th><th scope="col">Conceded<\/th><th scope="col">Scored<\/th>/);
+  assert.match(html, /type="radio" name="fixture-team" value="red" checked/);
+  assert.match(html, /type="radio" name="fixture-team" value="blue" \/>/);
+  assert.match(html, /type="radio" name="fixture-team" value="yellow" disabled/);
+  assert.match(html, /data-state="unclaimed" role="img" aria-label="Not claimed"/);
+  assert.match(html, /data-state="claimed" role="img" aria-label="Claimed"/);
+  for (const status of ["scheduled", "live", "finished"]) {
+    assert.match(html, new RegExp(`data-ui="status-chip" data-status="${status}"`));
+  }
+  for (const third of [1, 2, 3]) {
+    assert.match(html, new RegExp(`data-ui="third-indicator" data-third="${third}" role="img" aria-label="Third ${third} of 3"`));
+  }
+});
+
+test("component showcase exposes recovery copy and hidden-state fixtures for computed-visibility checks", () => {
+  const html = renderComponentShowcasePage("https://qa-api.3fc.football");
+
+  assert.match(html, /data-testid="validation-invalid"/);
+  assert.match(html, /data-testid="validation-valid"/);
+  assert.match(html, /data-state="loading" role="status">Loading games…/);
+  assert.match(html, /data-state="success" role="status">Player added\./);
+  assert.match(html, /data-state="error">Couldn’t load the teams\. Try again\./);
+  assert.match(html, /data-state="uncertain">We couldn’t confirm whether the goal was saved\. Your details are still here\./);
+  assert.match(html, /data-state="empty">No upcoming games\./);
+  for (const ui of ["auth-form", "claim-panel", "id-preview"]) {
+    assert.match(html, new RegExp(`data-ui="${ui}" data-testid="fixture-hidden-${ui}" hidden`));
+  }
+  assert.match(html, /data-ui="prompt-overlay" data-modal="confirm-delete-game" hidden/);
 });
 
 test("magic-link callback page includes auth flow script and callback messaging", () => {
@@ -265,7 +580,7 @@ test("magic-link callback page includes auth flow script and callback messaging"
   );
   assert.match(html, /data-testid="auth-callback-shell"/);
   assert.match(html, /Complete your sign-in/);
-  assert.match(html, /The browser will redirect to finish your sign in within a few seconds\. If not, please click the button below to continue/);
+  assert.match(html, /Sign-in starts in a few seconds\. Or continue below\./);
   assert.doesNotMatch(html, /3FC Auth/);
   assert.doesNotMatch(html, /Magic link ready/);
   assert.equal((html.match(/role="alert"/g) ?? []).length, 1);
@@ -281,8 +596,9 @@ test("sign-in page renders magic-link form and carries return path", () => {
 
   assert.match(html, /data-testid="signin-shell"/);
   assert.match(html, /data-testid="panel-signin-flow"/);
-  assert.match(html, /League organiser sign in/);
-  assert.match(html, /If you&#39;re a league organiser, put in your email address and we&#39;ll send you a magic link to sign in\. If this is your first time, once you&#39;ve signed in you can finish your account creation\./);
+  assert.match(html, /Sign in to 3FC/);
+  assert.match(html, /Send sign-in link/);
+  assert.doesNotMatch(html, /league organiser|finish your account creation/);
   assert.match(html, /id="auth-magic-form"/);
   assert.match(html, /id="auth-return-to"/);
   assert.match(html, /value="\/setup"/);
@@ -297,7 +613,7 @@ test("sign-in page renders magic-link form and carries return path", () => {
   assert.match(html, /<script src="\/ui\/auth-flow\.js" defer><\/script>/);
 });
 
-test("game page renders editable game metadata view", () => {
+test("game page retains game, roster and scoring hooks within the readable match shell", () => {
   const html = renderGamePage("https://qa-api.3fc.football", {
     gameId: "game-20260223-a1b2c3d4",
   });
@@ -318,20 +634,22 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, />Save<\/span>/);
   assert.match(
     html,
-    /data-ui="game-details-actions">[\s\S]*data-testid="save-game"[\s\S]*data-testid="game-mode-next-players"[\s\S]*<\/div>/,
+    /data-ui="game-details-actions">[\s\S]*data-testid="save-game"[\s\S]*data-action="cancel-game-edit"[\s\S]*<\/div>/,
   );
   assert.match(html, /data-testid="delete-game"/);
   assert.match(html, /data-testid="delete-game"[^>]*disabled="disabled"/);
   assert.match(html, /id="game-delete-lock-reason" hidden/);
   assert.match(html, /data-testid="create-another-game"/);
-  assert.match(html, /role="toolbar" aria-label="Game actions"/);
-  assert.ok(html.indexOf('aria-label="Game actions"') < html.indexOf('data-testid="setup-flow-root"'));
+  assert.match(html, /data-ui="action-menu" data-game-capability="admin" hidden/);
+  assert.ok(html.indexOf('aria-label="Actions for this game"') < html.indexOf('data-testid="setup-flow-root"'));
   assert.equal((html.match(/data-action="delete-game"/g) ?? []).length, 1);
   assert.match(html, /data-testid="player-create-row"/);
-  assert.match(html, /data-ui="inline-input-actions"/);
+  assert.doesNotMatch(html, /data-ui="inline-input-actions"/);
+  assert.match(html, /id="game-league-link">League/);
+  assert.match(html, /id="game-season-link">Season/);
   assert.match(html, /id="player-nickname"[\s\S]*data-testid="quick-create-player"/);
-  assert.match(html, /aria-label="Create player"/);
-  assert.match(html, /aria-label="Add players"/);
+  assert.match(html, /aria-label="Add player"/);
+  assert.match(html, /aria-label="View teams"/);
   assert.match(html, /data-testid="game-mode-nav"/);
   assert.match(html, /data-testid="game-mode-structure-tab"/);
   assert.match(html, /data-testid="game-mode-players-tab"/);
@@ -368,7 +686,7 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="game-result-summary"/);
   assert.match(html, /data-testid="panel-game-final"/);
   assert.match(html, /data-testid="finalisation-board"/);
-  assert.match(html, />Match Summary</);
+  assert.match(html, />Match summary</);
   assert.doesNotMatch(html, />Run game</);
   assert.doesNotMatch(html, /Record goals first/);
   assert.doesNotMatch(html, />Finalisation</);
@@ -391,8 +709,8 @@ test("game page renders editable game metadata view", () => {
     "Roster setup should appear before live scoring in the game workflow.",
   );
   assert.ok(
-    html.indexOf('data-testid="panel-game-live"') < html.indexOf('data-testid="panel-game-timer"'),
-    "Run mode should prioritize live scoring before timer controls.",
+    html.indexOf('data-testid="panel-game-timer"') < html.indexOf('data-testid="panel-game-live"'),
+    "Run mode coordinates scores and clock before goal entry.",
   );
   assert.ok(
     html.indexOf('data-testid="panel-game-timer"') < html.indexOf('data-testid="run-latest-goals"'),
@@ -417,7 +735,165 @@ test("game page renders editable game metadata view", () => {
   assert.match(html, /data-testid="roster-teams"/);
 });
 
-test("join page renders player registration shell", () => {
+test("scoring uses one score/clock surface and a labelled native goal form", () => {
+  const dom = new JSDOM(renderGamePage("/api", { gameId: "fictional-live-game" }));
+  try {
+    const document = dom.window.document;
+    const summary = document.querySelector('[data-testid="run-match-summary"]');
+    assert.equal(summary?.getAttribute("aria-label"), "Score and clock");
+    assert.ok(summary?.querySelector('[data-testid="live-scoreboard"]'));
+    assert.ok(summary?.querySelector('[data-testid="panel-game-timer"]'));
+    assert.equal(document.querySelectorAll('[data-testid="panel-game-timer"]').length, 1);
+    assert.equal(document.querySelectorAll('[data-testid="live-scoreboard"]').length, 1);
+    assert.doesNotMatch(document.body.textContent ?? "", /Start or stop the current third\./);
+
+    const form = document.querySelector("#goal-form");
+    assert.equal(form?.tagName, "FORM");
+    assert.equal(form?.getAttribute("aria-labelledby"), "run-goal-form-heading");
+    for (const [id, label] of [["goal-scoring-team", "Scoring team"], ["goal-conceding-team", "Conceding team"]]) {
+      const field: Element | null | undefined = form?.querySelector(`#${id}`);
+      assert.equal(field?.tagName, "FIELDSET");
+      assert.equal(field?.querySelector("legend")?.textContent, label);
+      assert.equal(field?.hasAttribute("disabled"), true);
+      assert.ok(field?.querySelector('[data-ui="goal-team-options"]'));
+      assert.equal(field?.querySelector("select"), null);
+    }
+    const formChildren = [...(form?.children ?? [])];
+    assert.ok(formChildren.findIndex(el => el.querySelector("#goal-own-goal")) < formChildren.findIndex(el => el.id === "goal-scoring-team"));
+    const save = form?.querySelector('[data-testid="add-goal"]');
+    assert.equal(save?.getAttribute("type"), "submit");
+    assert.equal(save?.textContent, "Record goal");
+    assert.equal(form?.querySelector('[data-testid="cancel-goal-edit"]')?.getAttribute("type"), "button");
+    assert.equal(document.querySelector('[data-testid="undo-last-goal"]')?.closest("form"), null);
+    assert.equal(document.querySelector('[data-testid="undo-last-goal"]')?.closest('[data-testid="run-latest-goals"]')?.tagName, "SECTION");
+    assert.equal(document.querySelector('[data-testid="undo-last-goal"]')?.textContent, "Undo last goal");
+    for (const action of ["retry-goal-operation", "refresh-game-state"]) {
+      const button = document.querySelector(`[data-action="${action}"]`);
+      assert.equal(button?.getAttribute("type"), "button");
+      assert.equal(button?.hasAttribute("hidden"), true);
+      assert.equal(button?.hasAttribute("disabled"), true);
+      assert.equal(button?.closest("form"), null);
+    }
+    const recovery = document.querySelector("#goal-operation-recovery");
+    assert.equal(recovery?.hasAttribute("hidden"), true);
+    assert.equal(recovery?.querySelector('[data-action="retry-goal-operation"]')?.getAttribute("aria-describedby"), "goal-operation-note");
+    assert.ok(recovery?.querySelector("#goal-operation-note"));
+    const assists = form?.querySelector("#goal-assists-dropdown");
+    assert.equal(assists?.tagName, "DETAILS");
+    assert.equal(assists?.hasAttribute("open"), false);
+    assert.match(assists?.textContent ?? "", /Up to 3 players/);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("match destinations include one permitted scoring link and explicit correction exit", () => {
+  const dom = new JSDOM(renderGamePage("/api", { gameId: "opaque-game-id" }));
+  try {
+    const document = dom.window.document;
+    assert.equal(document.querySelector("h1")?.textContent, "Game");
+    assert.equal(document.querySelector('[data-ui="hero-kicker"]'), null);
+    assert.equal(document.querySelector('nav[aria-label="Primary"] a')?.getAttribute("href"), "/setup");
+    assert.equal(document.querySelector('[data-ui="breadcrumbs"]')?.tagName, "NAV");
+    assert.equal(document.querySelector('[data-ui="breadcrumbs"] ol')?.children.length, 4);
+    assert.equal(document.querySelectorAll("#game-league-link, #game-season-link").length, 2);
+    assert.equal(document.getElementById("game-subtitle")?.textContent, "");
+    assert.equal(document.getElementById("game-subtitle")?.hasAttribute("hidden"), true);
+
+    const destinations = [...document.querySelectorAll('[data-ui="game-mode-nav"] a')];
+    assert.deepEqual(destinations.map((anchor) => anchor.getAttribute("href")), ["#overview", "#teams", null, "#results"]);
+    assert.equal(destinations[2]?.getAttribute("data-mode-href"), "#score", "scoring link activates only after authority loads");
+    assert.deepEqual(destinations.map((anchor) => anchor.textContent?.trim()), ["Overview", "Teams", "Score game", "Results"]);
+    assert.equal(destinations[0]?.getAttribute("aria-current"), "page");
+    assert.equal(destinations[1]?.hasAttribute("aria-current"), false);
+    assert.equal(destinations[3]?.hasAttribute("hidden"), true, "results require a loaded finished game");
+    assert.equal(document.querySelectorAll('[role="tablist"], [role="tab"], [role="tabpanel"], [role="toolbar"]').length, 0);
+    assert.equal(document.querySelectorAll("[data-mode-meta]").length, 0);
+    const score = document.querySelector('[data-testid="game-mode-run-tab"]');
+    assert(score instanceof dom.window.HTMLAnchorElement);
+    assert.equal(score.closest("nav")?.getAttribute("aria-label"), "Game");
+    assert.equal(score.closest("#setup-flow-root") !== null, true);
+    assert.equal(score.textContent?.trim(), "Score game");
+    assert.equal(score.hidden, true);
+    assert.equal(score.getAttribute("data-game-capability"), "score");
+
+    const actions = document.querySelector('[data-ui="action-menu"]');
+    assert(actions instanceof dom.window.HTMLDivElement);
+    assert.equal(actions.hidden, true);
+    assert.equal(actions.querySelector('[data-action="toggle-action-menu"]')?.getAttribute("aria-expanded"), "false");
+    assert.equal(actions.querySelector('[data-ui="action-menu-surface"]')?.hasAttribute("hidden"), true);
+    assert.equal(actions.querySelector('[data-testid="delete-game"]') !== null, true);
+    assert.equal(actions.querySelector('[data-testid="create-another-game"]') !== null, true);
+    assert.equal(actions.querySelector("#game-delete-lock-reason")?.classList.contains("sr-only"), false);
+    assert.equal(actions.querySelector("#game-delete-lock-reason")?.textContent, "Finished games can’t be deleted.");
+
+    const finish = document.querySelectorAll('[data-testid="finish-game"]');
+    assert.equal(finish.length, 1);
+    assert.equal(finish[0]?.closest("#game-mode-run") !== null, true);
+    assert.equal(document.querySelector('#game-mode-run [data-action="select-game-mode"][data-game-mode="structure"]'), null);
+    assert.equal(document.querySelector('[data-action="exit-result-correction"]')?.textContent, "Exit correction");
+    assert.equal(document.getElementById("finished-correction-actions")?.hidden, true);
+    assert.equal(document.querySelectorAll('[data-action="select-game-mode"][data-game-mode="run"]').length, 1);
+    const correction = document.querySelector('[data-action="correct-finished-result"]');
+    assert.equal(correction?.closest("#game-mode-final") !== null, true);
+    assert.equal(correction?.hasAttribute("hidden"), true);
+    assert.equal(correction?.getAttribute("data-game-capability"), "correct");
+    assert.equal(correction?.textContent?.trim(), "Correct result");
+    const ids = [...document.querySelectorAll("[id]")].map((element) => element.id);
+    assert.equal(new Set(ids).size, ids.length, "stable controller hooks are unique");
+  } finally { dom.window.close(); }
+});
+
+test("match overview is readable before intentional editing and roster entry is keyboard-submittable", () => {
+  const dom = new JSDOM(renderGamePage("/api", { gameId: "opaque-game-id" }));
+  try {
+    const document = dom.window.document;
+    for (const id of ["game-overview-kickoff", "game-overview-status", "game-overview-third-length"]) {
+      const value = document.getElementById(id);
+      assert.equal(value?.tagName, "DD");
+      assert.equal(value?.closest("form"), null);
+      assert.equal(value?.closest('[data-ui="game-overview"]') !== null, true);
+    }
+    for (const { formId, regionId, toggle, cancel, submit } of [
+      { formId: "game-edit-form", regionId: "game-edit-region", toggle: "toggle-game-edit", cancel: "cancel-game-edit", submit: "save-game" },
+      { formId: "player-create-form", regionId: "player-create-region", toggle: "toggle-player-create", cancel: "cancel-player-create", submit: "quick-create-player" },
+    ]) {
+      const form = document.getElementById(formId);
+      const opener = document.querySelector(`[data-action="${toggle}"]`);
+      assert(form instanceof dom.window.HTMLFormElement);
+      assert.equal(form.getAttribute("aria-label")?.length! > 0, true);
+      assert.equal(form.closest(`#${regionId}`)?.hasAttribute("hidden"), true);
+      assert.equal(form.closest(`#${regionId}`)?.hasAttribute("data-game-capability"), false, "disclosure state is independent of permission visibility");
+      assert.equal(form.querySelectorAll("form").length, 0);
+      assert.equal(form.querySelectorAll('button[type="submit"]').length, 1);
+      assert.equal(form.querySelector(`[data-action="${submit}"]`)?.getAttribute("type"), "submit");
+      assert.equal(form.querySelector(`[data-action="${submit}"] [data-ui="icon"]`)?.getAttribute("aria-hidden"), "true");
+      assert.equal(form.querySelector(`[data-action="${cancel}"]`)?.getAttribute("type"), "button");
+      assert.equal(opener?.getAttribute("aria-expanded"), "false");
+      assert.equal(opener?.getAttribute("aria-controls"), regionId);
+      assert.equal(opener?.hasAttribute("hidden"), true);
+    }
+    assert.equal(document.querySelector('label[for="player-nickname"]')?.textContent, "Player name");
+    assert.equal(document.querySelector('[data-testid="quick-create-player"]')?.textContent?.trim(), "Add player");
+    assert.equal(document.querySelectorAll("#player-search").length, 1);
+    assert.equal(document.querySelector("#player-pool-title")?.textContent, "Unassigned");
+    assert.equal(document.querySelector("#player-pool")?.textContent, "");
+    assert.equal(document.querySelector("#roster-teams")?.textContent, "");
+    assert.equal(document.querySelector('[data-action="edit-finished-teams"]')?.getAttribute("data-game-capability"), "correct");
+    assert.equal(document.querySelector('[data-action="edit-finished-teams"]')?.hasAttribute("hidden"), true);
+    for (const [selector, label] of [
+      ['[data-ui="join-disclosure"]', "Join game"], ['[data-ui="reference-ids"]', "Reference IDs"],
+    ]) {
+      const details = document.querySelector(selector);
+      assert(details instanceof dom.window.HTMLDetailsElement);
+      assert.equal(details.open, false);
+      assert.equal(details.querySelector("summary")?.textContent, label);
+    }
+    assert.doesNotMatch(document.body.textContent ?? "", /Roster setup|Create players and assign|Edit core game metadata|Review the final result and player statistics/);
+  } finally { dom.window.close(); }
+});
+
+test("join page renders one useful player entry surface", () => {
   const html = renderJoinPage("https://qa-api.3fc.football", "join0001");
 
   assert.match(html, /data-testid="join-shell"/);
@@ -431,4 +907,39 @@ test("join page renders player registration shell", () => {
   assert.match(html, /data-testid="join-claim-actions"/);
   assert.match(html, /data-testid="join-signin-link"/);
   assert.match(html, /data-testid="claim-player"/);
+  assert.match(html, />Player name</);
+  assert.match(html, /Use the name the scorekeeper expects\./);
+  assert.doesNotMatch(html, /join-result-game/);
+  const dom = new JSDOM(html);
+  try {
+    const document = dom.window.document;
+    assert.doesNotMatch(document.body.textContent ?? "", /Player registration|3FC Join|scoring access/);
+    assert.equal(document.querySelectorAll('h1').length, 1);
+    assert.equal(document.querySelectorAll('h2').length, 0);
+    assert.equal(document.querySelectorAll('#join-code-value').length, 1);
+    assert(document.querySelector('[data-layout="auth"] #join-game-form'));
+  } finally { dom.window.close(); }
+});
+
+test("entry pages load the same versioned return validator once before their controller", () => {
+  const previous = process.env.THREEFC_ASSET_VERSION;
+  process.env.THREEFC_ASSET_VERSION = "entry-fixture";
+  try {
+    for (const html of [renderJoinPage("https://qa-api.3fc.football", "ABCD2345"),
+      renderInvitePage("https://qa-api.3fc.football", "ABCD2345")]) {
+      const dom = new JSDOM(html);
+      try {
+        const document = dom.window.document;
+        const scripts = [...document.querySelectorAll('script')].map(script => script.getAttribute('src'));
+        assert.deepEqual(scripts, ["/ui/auth-flow.js?v=entry-fixture", "/ui/setup-flow.js?v=entry-fixture"]);
+        assert(document.body.getAttribute('data-return-target-patterns'));
+        assert.equal(document.querySelectorAll('[data-ui="hero"]').length, 1);
+        assert.equal(document.querySelectorAll('h2').length, 0);
+        assert.doesNotMatch(html, /Pending|Join the league setup team|3FC Invite/);
+      } finally { dom.window.close(); }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.THREEFC_ASSET_VERSION;
+    else process.env.THREEFC_ASSET_VERSION = previous;
+  }
 });

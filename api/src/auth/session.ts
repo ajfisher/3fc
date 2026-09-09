@@ -38,7 +38,15 @@ export function buildSessionCookie(
   return parts.join("; ");
 }
 
+export function buildExpiredSessionCookie(cookieName: string, secure: boolean): string {
+  return `${buildSessionCookie(cookieName, "", "1970-01-01T00:00:00.000Z", secure)}; Max-Age=0`;
+}
+
 export function isAuthenticatedApiRoute(method: string, route: string): boolean {
+  if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
+    return true;
+  }
+
   if (method === "GET" && route === "/v1/leagues") {
     return true;
   }

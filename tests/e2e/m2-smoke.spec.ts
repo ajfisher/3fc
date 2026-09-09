@@ -601,6 +601,10 @@ async function createAndAssignPlayer(
   teamId: "red" | "blue" | "yellow",
   onCreatedPlayerId: (playerId: string) => void,
 ): Promise<string> {
+  if (!(await page.locator("#player-create-region").isVisible())) {
+    await page.locator('[data-action="toggle-player-create"]').click();
+  }
+  await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
   await page.locator("#player-nickname").fill(nickname);
   await page.getByTestId("quick-create-player").click();
 
@@ -620,8 +624,11 @@ async function createAndAssignPlayer(
 }
 
 async function selectGameMode(page: Page, mode: "structure" | "players" | "run" | "final"): Promise<void> {
-  await page.getByTestId(`game-mode-${mode}-tab`).click();
+  const destination = page.getByTestId("game-mode-nav").getByTestId(`game-mode-${mode}-tab`);
+  await expect(destination).toHaveJSProperty("tagName", "A");
+  await destination.click();
   await expect(page.getByTestId(`game-mode-${mode}`)).toBeVisible();
+  await expect(destination).toHaveAttribute("aria-current", "page");
 }
 
 async function startThird(page: Page, third: 1 | 2 | 3): Promise<void> {
@@ -934,7 +941,7 @@ test.describe("M2 local-stack smoke", () => {
       await page.getByTestId("send-magic-link").click();
       const magicStartResponse = await magicStartResponsePromise;
       magicLinkStartConsumedRateLimit = didMagicLinkStartConsumeRateLimit(magicStartResponse.status());
-      await expect(page.locator("#auth-status")).toContainText("Magic link sent");
+      await expect(page.locator("#auth-status")).toContainText("Sign-in link sent");
 
       const magicLink = await waitForMagicLink(email);
       await page.goto(magicLink);
@@ -948,6 +955,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("setup-shell")).toBeVisible();
 
       await page.locator("#league-name").fill(leagueName);
+      await page.locator('#create-league-form [data-ui="additional-options"] > summary').click();
       await page.locator("#league-friendly-url").fill(leagueSlug);
       await Promise.all([
         page.waitForURL(`**/leagues/${leagueSlug}`),
@@ -956,10 +964,14 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.locator("#league-title")).toHaveText(leagueName);
 
       const createSeasonToggle = page.getByTestId("toggle-create-season");
+      await expect(createSeasonToggle).toBeHidden();
+      await page.locator('[data-action="toggle-action-menu"][aria-controls="league-actions"]').click();
       await createSeasonToggle.click();
+      await expect(page.locator("#league-actions")).toBeHidden();
       await expect(createSeasonToggle).toHaveAttribute("aria-expanded", "true");
       await expect(page.locator("#season-name")).toBeFocused();
       await page.locator("#season-name").fill(seasonName);
+      await page.locator('#create-season-form [data-ui="additional-options"] > summary').click();
       await page.locator("#season-friendly-url").fill(seasonSlug);
       await Promise.all([
         page.waitForURL(`**/seasons/${seasonSlug}`),
@@ -984,6 +996,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.locator("#game-title")).not.toHaveText(gameId);
       await expect(page.getByTestId("game-mode-structure")).toBeVisible();
       await expect(page.getByTestId("game-mode-players")).toBeHidden();
+      await page.locator('[data-ui="join-disclosure"] > summary').click();
       const joinCodeValue = page.getByTestId("game-join-code-value");
       await expect(joinCodeValue).toHaveText(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
       const joinCode = (await joinCodeValue.innerText()).trim();
@@ -1030,7 +1043,10 @@ test.describe("M2 local-stack smoke", () => {
 
       await selectGameMode(page, "players");
       await page.locator("#player-search").fill("Cy");
-      await expect(page.locator('[data-ui="roster-player"]').filter({ hasText: "Cy" })).toBeVisible();
+      // This external join can follow the initial complete roster snapshot.
+      // Scheduled matches refresh it every 15 seconds; private search is not
+      // the authority for Unassigned. Await that real refresh, not a fixed sleep.
+      await expect(page.locator('[data-ui="roster-player"]').filter({ hasText: "Cy" })).toBeVisible({ timeout: 25000 });
       await page.locator("#player-search").fill("");
 
       const ariPlayerId = await createAndAssignPlayer(page, ariNickname, "red", (playerId) => {
@@ -1044,8 +1060,8 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("add-goal")).toBeVisible();
       await expect(page.getByTestId("undo-last-goal")).toBeVisible();
       await startThird(page, 1);
-      await page.locator("#goal-scoring-team").selectOption("red");
-      await page.locator("#goal-conceding-team").selectOption("blue");
+      await page.locator('#goal-scoring-team input[type="radio"][value="red"]').check();
+      await page.locator('#goal-conceding-team input[type="radio"][value="blue"]').check();
       await page.locator("#goal-scorer").selectOption(ariPlayerId);
       await page.getByTestId("goal-assists-dropdown").locator("summary").click();
       await page.locator(`#goal-assists input[value="${beaPlayerId}"]`).check();
@@ -1056,8 +1072,8 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("goal-timeline").locator('[data-ui="goal-team-chip"][data-team-id="blue"]')).toHaveAttribute("aria-label", "Conceding team: Blue");
       await expect(page.getByTestId("goal-timeline")).toContainText(`Assists: ${beaNickname}`);
       await expect(page.getByTestId("goal-timeline").locator('[data-ui="third-indicator"][aria-label="Third 1 of 3"]')).toBeVisible();
-      await expect(page.locator("#goal-scoring-team")).toHaveValue("");
-      await expect(page.locator("#goal-conceding-team")).toHaveValue("");
+      await expect(page.locator('#goal-scoring-team input:checked')).toHaveCount(0);
+      await expect(page.locator('#goal-conceding-team input:checked')).toHaveCount(0);
       await expect(page.locator("#goal-scorer")).toHaveValue("");
       await expect(page.locator('[data-ui="score-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(page.locator('[data-ui="score-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
@@ -1071,13 +1087,17 @@ test.describe("M2 local-stack smoke", () => {
       await startThird(page, 3);
       await finishThird(page, 3);
 
-      await expect(page.getByTestId("game-mode-final")).toBeVisible();
+      // Finishing the last third is not finalisation. Stay in scoring until
+      // the organiser explicitly finishes the game and the API confirms it.
+      await expect(page.getByTestId("game-mode-run")).toBeVisible();
+      await expect(page.getByTestId("game-mode-final-tab")).toBeHidden();
       await expect(page.getByTestId("finish-game")).toBeEnabled();
       await page.getByTestId("finish-game").click();
 
+      await expect(page.getByTestId("game-mode-final")).toBeVisible();
       await expect(page.getByTestId("game-result-summary")).toBeVisible();
-      await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match Summary" })).toBeVisible();
-      await expect(page.getByTestId("finalisation-context").locator("dt")).toHaveText("Status");
+      await expect(page.getByTestId("panel-game-final").getByRole("heading", { name: "Match summary" })).toBeVisible();
+      await expect(page.getByTestId("finalisation-context")).toBeHidden();
       await expect(page.getByTestId("finalisation-context")).not.toContainText(/Game|Timeline/);
       await expect(page.getByTestId("game-result-outcome")).toHaveText("Red win");
       await expect(page.getByTestId("game-result-summary")).not.toContainText("Computed");
@@ -1086,7 +1106,7 @@ test.describe("M2 local-stack smoke", () => {
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="red"]')).toContainText(/Scored\s*1/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="blue"]')).toContainText(/Conceded\s*1/);
       await expect(resultTeams.locator('[data-ui="result-team"][data-team-id="blue"]')).toContainText(/Scored\s*0/);
-      await expect(page.getByTestId("final-team-log-red")).toContainText(ariNickname);
+      await expect(page.locator('[data-ui="final-team-log"]')).toHaveCount(0);
       await expect(page.getByTestId("final-scorer-stats").locator("li").filter({ hasText: ariNickname })).toContainText("1");
       await expect(page.getByTestId("final-assist-stats").locator("li").filter({ hasText: beaNickname })).toContainText("1");
       const fullGoalLog = page.getByTestId("final-full-goal-log");
@@ -1100,15 +1120,22 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("finish-game")).toHaveText("Game finished");
       await expect(page.getByTestId("delete-game")).toBeDisabled();
       await selectGameMode(page, "players");
+      await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
+      await page.locator('[data-action="edit-finished-teams"]').click();
+      if (!(await page.locator("#player-create-region").isVisible())) {
+        await page.locator('[data-action="toggle-player-create"]').click();
+      }
       await expect(page.getByTestId("quick-create-player")).toBeEnabled();
       await expectAllEnabled(page.locator('[data-action="assign-player"]'));
-      await selectGameMode(page, "run");
-      await expect(page.locator("#goal-scoring-team")).toHaveValue("");
-      await expect(page.locator("#goal-conceding-team")).toBeDisabled();
+      await selectGameMode(page, "final");
+      await page.locator('[data-action="correct-finished-result"]').click();
+      await expect(page.getByTestId("game-mode-run")).toBeVisible();
+      await expect(page.locator('#goal-scoring-team input:checked')).toHaveCount(0);
+      await expect(page.locator('#goal-conceding-team input[type="radio"]:enabled')).toHaveCount(0);
       await expect(page.locator("#goal-scorer")).toBeDisabled();
       await expect(page.getByTestId("add-goal")).toBeDisabled();
-      await page.locator("#goal-scoring-team").selectOption("red");
-      await page.locator("#goal-conceding-team").selectOption("blue");
+      await page.locator('#goal-scoring-team input[type="radio"][value="red"]').check();
+      await page.locator('#goal-conceding-team input[type="radio"][value="blue"]').check();
       await page.locator("#goal-scorer").selectOption(ariPlayerId);
       await expect(page.getByTestId("add-goal")).toBeEnabled();
       await expect(page.locator("#goal-form-note")).not.toContainText("final whistle");

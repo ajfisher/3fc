@@ -11,6 +11,46 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/auth/logout:
+    post:
+      summary: Sign out the session represented by the current cookie
+      operationId: logoutCurrentSession
+      description: >-
+        Deletes only the active session and expires its host-only HttpOnly cookie.
+        No body or idempotency key is needed. Missing, invalid, expired and repeated
+        sessions safely return 204. An allowed supplied Origin is required for browser
+        mutations under the existing origin policy. Consumed magic links cannot recreate
+        a deleted session. Independently issued sessions remain valid; copies of the same
+        session are all revoked. Requests authorized before deletion may finish.
+      responses:
+        "204":
+          description: Session revoked or already absent; response has no body
+          headers:
+            Set-Cookie:
+              description: Empty session cookie with Path=/, HttpOnly, SameSite=Lax, past Expires, Max-Age=0 and environment-appropriate Secure; no Domain
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Revocation could not be confirmed; preserve cookie for safe retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, message]
+                additionalProperties: false
+                properties:
+                  error:
+                    type: string
+                    const: logout_unavailable
+                  message:
+                    type: string
+                    const: Sign out could not be confirmed. Please try again.
   /v1/join:
     post:
       summary: Reject join registration without a join code
@@ -51,6 +91,45 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/JoinGameConflict"
+  /v1/join/{joinCode}/player-context:
+    get:
+      summary: Identify a joined player for an authenticated claim screen
+      description: Requires a valid session and the exact player link in the game identified by the join code. Supply the opaque playerId as the sole URL-encoded query parameter, decoded exactly once. Missing, duplicate, unknown or malformed query parameters return 400 after authentication. Returns public identity only; does not claim a player or grant access. All responses use Cache-Control no-store.
+      operationId: getJoinPlayerContext
+      parameters:
+        - name: joinCode
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 8
+            pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$"
+        - name: playerId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Public identity for the exact joined player
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinPlayerContextResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: Player details temporarily unavailable; retry the read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/leagues:
     post:
       summary: Create league
@@ -1715,6 +1794,36 @@ components:
         updatedAt:
           type: string
           format: date-time
+    PublicPlayer:
+      type: object
+      additionalProperties: false
+      required: [playerId, nickname, createdAt, updatedAt]
+      properties:
+        playerId:
+          type: string
+          minLength: 1
+        nickname:
+          type: string
+          minLength: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    JoinPlayerContextResponse:
+      type: object
+      additionalProperties: false
+      required: [gameId, joinCode, player]
+      properties:
+        gameId:
+          type: string
+          minLength: 1
+        joinCode:
+          type: string
+          pattern: "^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$"
+        player:
+          $ref: "#/components/schemas/PublicPlayer"
     Player:
       type: object
       required:
@@ -1968,6 +2077,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RosterAssignment"
+        unassignedPlayers:
+          type: array
+          description: Public identities linked to this game but absent from its returned assignments. Additive to the existing roster contract; unavailable on older API deployments.
+          items:
+            $ref: "#/components/schemas/PublicPlayer"
     GoalEvent:
       type: object
       required:

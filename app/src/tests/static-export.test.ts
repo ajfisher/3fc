@@ -53,7 +53,7 @@ test("buildStaticSite exports static route shells and ui assets", () => {
 
     const signInHtml = readFileSync(resolve(outputDir, "sign-in/index.html"), "utf8");
     assert.match(signInHtml, /id="auth-magic-form"/);
-    assert.match(signInHtml, /League organiser sign in/);
+    assert.match(signInHtml, /Sign in to 3FC/);
     assert.doesNotMatch(signInHtml, /3FC Auth/);
 
     const callbackHtml = readFileSync(resolve(outputDir, "auth/callback/index.html"), "utf8");
@@ -72,6 +72,11 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     const inviteHtml = readFileSync(resolve(outputDir, "invites/index.html"), "utf8");
     assert.match(inviteHtml, /data-page="invite"/);
     assert.match(inviteHtml, /data-invite-code=""/);
+    for (const entryHtml of [joinHtml, inviteHtml]) {
+      assert.match(entryHtml, /data-return-target-patterns=/);
+      assert.equal((entryHtml.match(/src="\/ui\/auth-flow\.js"/g) ?? []).length, 1);
+      assert(entryHtml.indexOf('/ui/auth-flow.js') < entryHtml.indexOf('/ui/setup-flow.js'));
+    }
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }

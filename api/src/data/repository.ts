@@ -3086,9 +3086,9 @@ export class ThreeFcRepository {
     return withTimestamps(payload, now, now);
   }
 
-  async getPlayer(playerId: string): Promise<PlayerRecord | null> {
+  async getPlayer(playerId: string, options: { consistentRead?: boolean } = {}): Promise<PlayerRecord | null> {
     requireNonEmpty("playerId", playerId);
-    const item = await this.getEntity(playerPk(playerId), profileSk());
+    const item = await this.getEntity(playerPk(playerId), profileSk(), options);
 
     if (!item || item.entityType !== ENTITY_TYPE.player) {
       return null;
@@ -3370,9 +3370,20 @@ export class ThreeFcRepository {
     );
   }
 
-  async listGamePlayers(gameId: string): Promise<GamePlayerRecord[]> {
+  async getGamePlayer(gameId: string, playerId: string): Promise<GamePlayerRecord | null> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "PLAYER#");
+    requireNonEmpty("playerId", playerId);
+    const item = await this.getEntity(gamePk(gameId), gamePlayerSk(playerId), { consistentRead: true });
+    if (item?.entityType !== ENTITY_TYPE.gamePlayer) return null;
+    const link = withTimestamps(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
+    return link.gameId === gameId && link.playerId === playerId ? link : null;
+  }
+
+  async listGamePlayers(gameId: string, options: { complete?: boolean; consistentRead?: boolean } = {}): Promise<GamePlayerRecord[]> {
+    requireNonEmpty("gameId", gameId);
+    const items = options.complete
+      ? await this.queryCompleteGameRoster(gameId, "PLAYER#", options)
+      : await this.queryByPrefix(gamePk(gameId), "PLAYER#", options);
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.gamePlayer)
@@ -3998,9 +4009,11 @@ export class ThreeFcRepository {
     return withTimestamps(payload, now, now);
   }
 
-  async listGameRoster(gameId: string): Promise<RosterAssignmentRecord[]> {
+  async listGameRoster(gameId: string, options: { complete?: boolean; consistentRead?: boolean } = {}): Promise<RosterAssignmentRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "ROSTER#");
+    const items = options.complete
+      ? await this.queryCompleteGameRoster(gameId, "ROSTER#", options)
+      : await this.queryByPrefix(gamePk(gameId), "ROSTER#", options);
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.roster)
@@ -6235,6 +6248,38 @@ export class ThreeFcRepository {
     }
 
     return parseStoredEntity(result.Item);
+  }
+
+  // Opt-in only for the complete roster read; existing query consumers retain
+  // their behaviour. Read pages serially and never silently return a partial list.
+  private async queryCompleteGameRoster(
+    gameId: string,
+    skPrefix: "PLAYER#" | "ROSTER#",
+    options: QueryByPrefixOptions,
+  ): Promise<Array<StoredEntity<unknown>>> {
+    const items: Array<StoredEntity<unknown>> = [];
+    let cursor: Record<string, AttributeValue> | undefined;
+    const seen = new Set<string>();
+    do {
+      const result = (await this.client.send(new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk and begins_with(sk, :skPrefix)",
+        ConsistentRead: options.consistentRead,
+        ExpressionAttributeValues: { ":pk": { S: gamePk(gameId) }, ":skPrefix": { S: skPrefix } },
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }))) as QueryCommandOutput;
+      items.push(...(result.Items ?? []).map((item) => parseStoredEntity(item)));
+      cursor = result.LastEvaluatedKey;
+      if (cursor && Object.keys(cursor).length === 0) cursor = undefined;
+      if (cursor) {
+        const key = JSON.stringify([cursor.pk?.S, cursor.sk?.S]);
+        if (cursor.pk?.S !== gamePk(gameId) || !cursor.sk?.S?.startsWith(skPrefix) || seen.has(key)) {
+          throw new Error("Roster continuation could not be confirmed.");
+        }
+        seen.add(key);
+      }
+    } while (cursor);
+    return items;
   }
 
   private async queryByPrefix(

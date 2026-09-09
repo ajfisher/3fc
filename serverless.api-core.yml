@@ -91,6 +91,12 @@ functions:
           method: GET
           path: /v1/auth/session
       - httpApi:
+          method: POST
+          path: /v1/auth/logout
+      - httpApi:
+          method: OPTIONS
+          path: /v1/auth/logout
+      - httpApi:
           method: OPTIONS
           path: /v1/auth/session
       - httpApi:
@@ -105,6 +111,12 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/join/{joinCode}
+      - httpApi:
+          method: GET
+          path: /v1/join/{joinCode}/player-context
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join/{joinCode}/player-context
       - httpApi:
           method: GET
           path: /v1/leagues

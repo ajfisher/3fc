@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DeleteItemCommand,
   GetItemCommand,
   PutItemCommand,
   TransactWriteItemsCommand,
@@ -27,9 +28,34 @@ class InMemoryMagicDynamoClient {
 
   private loseNextTransactionResponseBeforeCommit = false;
 
+  private failNextDelete = false;
+
+  private loseNextDeleteResponse = false;
+
   private readonly transactionClientTokens: string[] = [];
 
+  readonly commands: unknown[] = [];
+
   async send(command: unknown): Promise<unknown> {
+    this.commands.push(command);
+
+    if (command instanceof DeleteItemCommand) {
+      if (this.failNextDelete) {
+        this.failNextDelete = false;
+        throw new Error("Simulated storage failure before deletion.");
+      }
+      const key = command.input.Key;
+      if (!key) {
+        throw new Error("DeleteItemCommand is missing Key.");
+      }
+      this.items.delete(`${this.readString(key.pk, "pk")}|${this.readString(key.sk, "sk")}`);
+      if (this.loseNextDeleteResponse) {
+        this.loseNextDeleteResponse = false;
+        throw new Error("Simulated response loss after deletion.");
+      }
+      return {};
+    }
+
     if (command instanceof PutItemCommand) {
       const item = command.input.Item;
 
@@ -141,6 +167,14 @@ class InMemoryMagicDynamoClient {
 
   getTransactionClientTokens(): string[] {
     return [...this.transactionClientTokens];
+  }
+
+  failDeleteOnce(): void {
+    this.failNextDelete = true;
+  }
+
+  loseDeleteResponseOnce(): void {
+    this.loseNextDeleteResponse = true;
   }
 
   private conditionalCheckFailed(): Error {
@@ -651,6 +685,171 @@ test("session lookup returns null when session is expired", async () => {
   clock.advanceSeconds(3601);
   const expiredSession = await service.getSession("session-1");
   assert.equal(expiredSession, null);
+});
+
+test("session revocation deletes only its session and keeps magic-link recovery revoked", async () => {
+  const { client, service, sentMessages } = createHarness();
+  await service.start("player@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const completion = await service.complete(token);
+  const usedToken = structuredClone(client.getItem("AUTH_MAGIC#token-1", "METADATA"));
+
+  await service.revokeSession(completion.sessionId);
+
+  assert.equal(await service.getSession(completion.sessionId), null);
+  assert.equal(client.getItem(`AUTH_SESSION#${completion.sessionId}`, "METADATA"), undefined);
+  assert.deepEqual(client.getItem("AUTH_MAGIC#token-1", "METADATA"), usedToken);
+  const deletes = client.commands.filter((command) => command instanceof DeleteItemCommand);
+  assert.equal(deletes.length, 1);
+  assert.deepEqual(deletes[0].input, {
+    TableName: "threefc_test",
+    Key: { pk: { S: `AUTH_SESSION#${completion.sessionId}` }, sk: { S: "METADATA" } },
+  });
+  const sessionCreates = client.getTransactionClientTokens().length;
+  await assert.rejects(service.complete(token), (error: unknown) => {
+    assert(error instanceof MagicLinkAuthError);
+    assert.equal(error.code, "invalid_or_expired_magic_link");
+    return true;
+  });
+  assert.equal(client.getTransactionClientTokens().length, sessionCreates);
+});
+
+test("revocation immediately wins over stale eventually consistent session reads", async () => {
+  const { client, service, sentMessages } = createHarness();
+  await service.start("player@example.com");
+  await service.complete(extractTokenFromBody(sentMessages[0].body));
+  const staleSession = structuredClone(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+  await service.revokeSession("session-1");
+  const send = client.send.bind(client);
+  client.send = async (command: unknown): Promise<unknown> => {
+    if (command instanceof GetItemCommand && command.input.ConsistentRead !== true) {
+      return { Item: staleSession };
+    }
+    return send(command);
+  };
+
+  assert.equal(await service.getSession("session-1"), null);
+  const reads = client.commands.filter((command) => command instanceof GetItemCommand);
+  assert.equal(reads.at(-1)?.input.ConsistentRead, true);
+});
+
+test("lost logout responses are safely retryable without restoring the session", async () => {
+  const { client, service, sentMessages } = createHarness();
+  await service.start("player@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  await service.complete(token);
+  client.loseDeleteResponseOnce();
+
+  await assert.rejects(service.revokeSession("session-1"), /response loss after deletion/);
+  assert.equal(await service.getSession("session-1"), null);
+  await service.revokeSession("session-1");
+  await service.revokeSession("session-1");
+  await assert.rejects(service.complete(token), MagicLinkAuthError);
+  assert.equal(client.getItem("AUTH_SESSION#session-1", "METADATA"), undefined);
+});
+
+test("storage failure propagates without claiming the session was revoked", async () => {
+  const { client, service, sentMessages } = createHarness();
+  await service.start("player@example.com");
+  await service.complete(extractTokenFromBody(sentMessages[0].body));
+  client.failDeleteOnce();
+
+  await assert.rejects(service.revokeSession("session-1"), /storage failure before deletion/);
+  assert(await service.getSession("session-1"));
+  await service.revokeSession("session-1");
+  assert.equal(await service.getSession("session-1"), null);
+});
+
+test("revocation affects the recovered shared session but not independent sign-ins", async () => {
+  const { client, service, sentMessages } = createHarness();
+  await service.start("player@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  const first = await service.complete(token);
+  const recovered = await service.complete(token);
+  assert.equal(recovered.sessionId, first.sessionId);
+  await service.start("player@example.com");
+  const secondToken = extractTokenFromBody(sentMessages[1].body);
+  const independent = await service.complete(secondToken);
+  assert.notEqual(independent.sessionId, first.sessionId);
+
+  await Promise.all([
+    service.revokeSession(first.sessionId),
+    service.revokeSession(recovered.sessionId),
+  ]);
+
+  assert.equal(await service.getSession(recovered.sessionId), null);
+  assert(await service.getSession(independent.sessionId));
+  assert.equal((await service.complete(secondToken)).sessionId, independent.sessionId);
+  await assert.rejects(service.complete(token), MagicLinkAuthError);
+  assert.equal(client.getItem(`AUTH_SESSION#${first.sessionId}`, "METADATA"), undefined);
+});
+
+test("a completion response racing logout cannot recreate its deleted session", { timeout: 2000 }, async () => {
+  const { client, service, sentMessages } = createHarness();
+  await service.start("player@example.com");
+  const token = extractTokenFromBody(sentMessages[0].body);
+  await service.complete(token);
+  let signalRead: () => void = () => {};
+  let releaseRead: () => void = () => {};
+  const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+  const readRelease = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const send = client.send.bind(client);
+  let delayRead = true;
+  client.send = async (command: unknown): Promise<unknown> => {
+    const result = await send(command);
+    if (
+      delayRead &&
+      command instanceof GetItemCommand &&
+      command.input.Key?.pk?.S === "AUTH_SESSION#session-1"
+    ) {
+      delayRead = false;
+      signalRead();
+      await readRelease;
+    }
+    return result;
+  };
+  const recovery = service.complete(token);
+  await readStarted;
+  await service.revokeSession("session-1");
+  releaseRead();
+
+  // An in-flight response may carry the old ID, but that ID is no longer authorised.
+  assert.equal((await recovery).sessionId, "session-1");
+  assert.equal(await service.getSession("session-1"), null);
+  await assert.rejects(service.complete(token), MagicLinkAuthError);
+  assert.equal(client.getTransactionClientTokens().length, 1);
+});
+
+test("missing, unknown and invalid session identifiers are safe to revoke", async () => {
+  const { client, service } = createHarness();
+  const invalid = [
+    "", " ", "\t", "session\n1", "session\u00001", "session\u007f1",
+    "a".repeat(1025), "é".repeat(513),
+  ];
+  for (const sessionId of invalid) {
+    assert.equal(await service.getSession(sessionId), null);
+    await service.revokeSession(sessionId);
+  }
+  assert.equal(client.commands.length, 0);
+
+  for (const sessionId of ["unknown-session", "opaque:legacy+id/=", "a".repeat(1024), "é".repeat(512)]) {
+    await service.revokeSession(sessionId);
+    assert.equal(await service.getSession(sessionId), null);
+  }
+  assert.equal(client.commands.filter((command) => command instanceof DeleteItemCommand).length, 4);
+});
+
+test("expired sessions can be revoked without retaining their storage record", async () => {
+  const { client, service, sentMessages, clock } = createHarness();
+  await service.start("player@example.com");
+  await service.complete(extractTokenFromBody(sentMessages[0].body));
+  clock.advanceSeconds(3601);
+  assert.equal(await service.getSession("session-1"), null);
+  assert(client.getItem("AUTH_SESSION#session-1", "METADATA"));
+
+  await service.revokeSession("session-1");
+
+  assert.equal(client.getItem("AUTH_SESSION#session-1", "METADATA"), undefined);
 });
 
 test("expired token is rejected on completion", async () => {

@@ -13,6 +13,7 @@ test("generated Lucide asset contains exactly the local allow-list", () => {
   const generatedNames = Array.from(css.matchAll(/\[data-icon="([^"]+)"\]/g), (match) => match[1]);
 
   assert.deepEqual(generatedNames, [...ICON_NAMES]);
+  assert(generatedNames.includes("ellipsis-vertical"), "action menus use the locally generated kebab icon");
   assert.match(css, /data:image\/svg\+xml/);
   assert.doesNotMatch(css, /url\(["']?https?:\/\//);
 });

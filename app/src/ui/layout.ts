@@ -1,6 +1,7 @@
 import { APP_RETURN_TARGET_PATTERN_SOURCES } from "@3fc/contracts";
 
 import {
+  renderActionMenu,
   renderButton,
   renderDataTable,
   renderInputField,
@@ -58,96 +59,75 @@ function renderAuthScriptTag(): string {
   return `<script src="${escapeHtml(renderAssetPath("/ui/auth-flow.js"))}" defer></script>`;
 }
 
+function renderAccountActions(): string {
+  return `<div data-ui="account-actions" id="account-actions" hidden>
+    ${renderButton("Sign out", "secondary", {
+      type: "button",
+      id: "sign-out",
+      "data-testid": "sign-out",
+      disabled: "",
+    })}
+    <p data-ui="status-note" id="sign-out-status" role="status" aria-live="polite" hidden></p>
+  </div>`;
+}
+
+function renderManagementNavigation(home = false): string {
+  return `<div data-ui="site-header">
+    <nav data-ui="site-nav" aria-label="Primary"><a href="/setup"${home ? ' aria-current="page"' : ""}>Home</a></nav>
+    ${renderAccountActions()}
+  </div>`;
+}
+
+function renderFormCancel(): string {
+  return renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-disclosure" });
+}
+
+function renderAdditionalOptions(content: string): string {
+  return `<details data-ui="additional-options"><summary>Additional options</summary><div data-ui="form-fields">${content}</div></details>`;
+}
+
 function renderSetupFoundationPanels(): string {
-  const leaguePanel = renderPanel(
-    "League setup",
-    "Start with league identity and visibility defaults.",
-    [
-      renderInputField({
-        id: "league-name",
-        label: "League name",
-        placeholder: "Three Sided Football Club",
-        required: true,
-      }),
-      renderInputField({
-        id: "league-slug",
-        label: "League friendly URL",
-        placeholder: "three-sided-fc",
-        hint: "Used for readable public URLs.",
-      }),
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Save League", "primary", { "data-testid": "save-league" })}${renderButton("Reset", "ghost", { "data-testid": "reset-league" })}${renderButton("Cancel", "danger", { "data-testid": "cancel-league" })}</div>`,
-    "panel-league",
-  );
-
-  const seasonPanel = renderPanel(
-    "Season setup",
-    "Define season window and progression context.",
-    [
-      renderInputField({
-        id: "season-name",
-        label: "Season name",
-        placeholder: "2026 Season",
-        required: true,
-      }),
-      renderInputField({
-        id: "season-start",
-        label: "Starts on",
-        type: "date",
-      }),
-      renderInputField({
-        id: "season-end",
-        label: "Ends on",
-        type: "date",
-      }),
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Save Season", "secondary", { "data-testid": "save-season" })}</div>`,
-    "panel-season",
-  );
-
-  const sessionPanel = renderPanel(
-    "Session setup",
-    "Configure the day block where games are played.",
-    [
-      renderInputField({
-        id: "session-name",
-        label: "Session label",
-        placeholder: "Saturday Morning",
-        required: true,
-      }),
-      renderInputField({
-        id: "session-date",
-        label: "Session date",
-        type: "date",
-        required: true,
-      }),
-    ].join(""),
-    "",
-    "panel-session",
-  );
-
-  const gamePanel = renderPanel(
-    "Game setup",
-    "Pick kickoff and prepare scorekeeper-ready context.",
-    [
-      renderInputField({
-        id: "game-id",
-        label: "Game ID",
-        placeholder: "gm_2026_02_24_01",
-        required: true,
-      }),
-      renderInputField({
-        id: "game-kickoff",
-        label: "Kickoff time",
-        type: "datetime-local",
-        required: true,
-      }),
-    ].join(""),
-    `<div data-ui="button-row">${renderButton("Create Game", "primary", { "data-testid": "create-game" })}${renderButton("Preview", "secondary", { "data-testid": "preview-game" })}</div>`,
-    "panel-game",
-  );
-
-  return `<section data-ui="panel-grid">${leaguePanel}${seasonPanel}${sessionPanel}${gamePanel}</section>`;
+  return `<div data-ui="auth-form" data-testid="fixture-fields">
+    ${renderInputField({
+      id: "fixture-league-name",
+      label: "League name",
+      value: "North Melbourne Three-Sided Football Club",
+    })}
+    ${renderValidatedField({
+      id: "fixture-email",
+      label: "Email address",
+      type: "email",
+      value: "organiser@example.com",
+      inputAttributes: { autocomplete: "email", inputmode: "email", autocapitalize: "none" },
+    })}
+    ${renderInputField({
+      id: "fixture-season-start",
+      label: "Season starts",
+      type: "date",
+      value: "2026-09-13",
+    })}
+    ${renderInputField({
+      id: "fixture-kickoff",
+      label: "Kickoff time",
+      type: "datetime-local",
+      value: "2026-09-13T09:30",
+    })}
+    <div data-ui="field">
+      <label for="fixture-status">Game status</label>
+      <select data-ui="input" id="fixture-status" name="fixture-status">
+        <option value="scheduled">Scheduled</option>
+        <option value="live">Live</option>
+        <option value="finished">Finished</option>
+      </select>
+    </div>
+    <label data-ui="check-row" for="fixture-own-goal"><input id="fixture-own-goal" type="checkbox" />Own goal</label>
+    ${renderValidatedField({
+      id: "fixture-disabled-field",
+      label: "Finished game example",
+      value: "13 September 2026",
+      inputAttributes: { disabled: "" },
+    })}
+  </div>`;
 }
 
 function renderTableShell(input: {
@@ -174,6 +154,7 @@ function renderTableShell(input: {
 
 function renderDashboardHero(): string {
   return `<section data-ui="hero" data-layout="dashboard">
+    ${renderManagementNavigation(true)}
     <h1 id="dashboard-welcome">Welcome</h1>
   </section>`;
 }
@@ -181,35 +162,36 @@ function renderDashboardHero(): string {
 export function renderSetupHomePage(apiBaseUrl: string): string {
   const createLeaguePanel = renderPanel(
     "Create league",
-    "Start here if this account has no leagues yet.",
+    "",
     `${renderValidatedField({
       id: "league-name",
       label: "League name",
       placeholder: "Three Sided Football Club",
       required: true,
-    })}${renderValidatedField({
+    })}${renderAdditionalOptions(`${renderValidatedField({
       id: "league-friendly-url",
-      label: "League friendly URL",
+      label: "Friendly URL",
       placeholder: "three-sided-football-club",
-      hint: "Auto-filled from league name. Editable.",
-    })}<dl data-ui="id-preview"><div><dt>League ID</dt><dd id="league-id-display">Not generated yet</dd></div></dl>`,
+    })}<dl data-ui="id-preview"><div><dt>League ID</dt><dd id="league-id-display">Not generated yet</dd></div></dl>`)}`,
     `<div data-ui="button-row">${renderButton("Create league", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-league",
       "data-testid": "create-league",
-    })}</div>`,
+    })}${renderFormCancel()}</div>`,
     "panel-dashboard-create-league",
   );
 
   const leaguesPanel = renderPanel(
     "Leagues",
-    "Select a league to manage seasons and games.",
+    "",
     renderTableShell({
       tableTestId: "dashboard-leagues-table",
       bodyId: "dashboard-leagues-body",
       emptyId: "dashboard-leagues-empty",
-      emptyText: "No leagues yet. Create your first league to begin.",
-      headers: ["League", "Actions"],
+      emptyText: "No leagues to show.",
+      headers: ["League"],
+      tableLabel: "Leagues",
+      emptyInitiallyHidden: true,
     }),
     "",
     "panel-dashboard-leagues",
@@ -220,7 +202,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3FC Dashboard</title>
+    <title>3FC Home</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
@@ -231,12 +213,12 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
         <section data-ui="panel-stack" data-testid="dashboard-grid">
           ${leaguesPanel}
-          <div data-ui="page-toolbar" role="toolbar" aria-label="Dashboard actions">
+          <div data-ui="page-toolbar" role="group" aria-label="Home actions">
             ${renderIconButton({
               icon: "circle-plus",
               label: "Create a new league",
               text: "Create a new league",
-              variant: "primary",
+              variant: "secondary",
               attributes: {
                 "data-action": "toggle-create-league",
                 "data-testid": "toggle-create-league",
@@ -246,7 +228,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
             })}
           </div>
           <section id="dashboard-create-league-region" data-ui="disclosure-panel" hidden>
-            ${createLeaguePanel}
+            <form id="create-league-form" data-ui="management-form" aria-label="Create league" novalidate>${createLeaguePanel}</form>
           </section>
         </section>
       </section>
@@ -258,10 +240,9 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
 
 export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   const safeLeagueId = escapeHtml(leagueId);
-  const leagueHeading = safeLeagueId.length > 0 ? safeLeagueId : "League";
   const createSeasonPanel = renderPanel(
     "Create season",
-    "Create a season inside this league.",
+    "",
     `${renderValidatedField({
       id: "season-name",
       label: "Season name",
@@ -269,35 +250,38 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
       required: true,
     })}${renderInputField({
       id: "season-start",
-      label: "Season start date",
+      label: "Start date",
       type: "date",
     })}${renderInputField({
       id: "season-end",
-      label: "Season end date",
+      label: "End date",
       type: "date",
-    })}${renderValidatedField({
+    })}${renderAdditionalOptions(`${renderValidatedField({
       id: "season-friendly-url",
-      label: "Season friendly URL",
+      label: "Friendly URL",
       placeholder: "2026-season",
-      hint: "Auto-filled from season name. Editable.",
-    })}<dl data-ui="id-preview"><div><dt>Season ID</dt><dd id="season-id-display">Not generated yet</dd></div></dl>`,
+    })}<dl data-ui="id-preview"><div><dt>Season ID</dt><dd id="season-id-display">Not generated yet</dd></div></dl>`)}`,
     `<div data-ui="button-row">${renderButton("Create season", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-season",
       "data-testid": "create-season",
-    })}</div>`,
+      "data-management-only": "",
+      disabled: "",
+    })}${renderFormCancel()}</div>`,
     "panel-league-create-season",
   );
 
   const seasonsPanel = renderPanel(
     "Seasons",
-    "Manage seasons for this league.",
+    "",
     renderTableShell({
       tableTestId: "league-seasons-table",
       bodyId: "league-seasons-body",
       emptyId: "league-seasons-empty",
-      emptyText: "No seasons yet. Create one to add games.",
+      emptyText: "No seasons yet.",
       headers: ["Season name", "Dates", "Actions"],
+      tableLabel: "Seasons",
+      emptyInitiallyHidden: true,
     }),
     "",
     "panel-league-seasons",
@@ -307,7 +291,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
     "Invite organiser",
     "Share the link or code below or send an invite via email.",
     `<section data-ui="section-stack" aria-labelledby="organiser-share-invite-heading">
-      <h3 id="organiser-share-invite-heading">Share code/link</h3>
+      <h3 id="organiser-share-invite-heading">Share invite</h3>
       <p data-ui="status-note" id="organiser-share-invite-status" aria-live="polite"></p>
       <dl data-ui="id-preview" data-testid="organiser-share-invite-result" id="organiser-share-invite-result">
         <div><dt>Invite code</dt><dd id="organiser-share-invite-code">Open this panel to load</dd></div>
@@ -321,15 +305,17 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         label: "Organiser email",
         type: "email",
         placeholder: "coach@example.com",
-        hint: "Sends a one-time invite restricted to this email.",
+        hint: "Only this email address can accept.",
+        inputAttributes: { autocomplete: "email", inputmode: "email", autocapitalize: "none" },
       })}
-      <p data-ui="status-note" id="organiser-invite-email-status" aria-live="polite"></p>
     </section>`,
     `<div data-ui="button-row">${renderButton("Send email invite", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-organiser-invite",
       "data-testid": "create-organiser-invite",
-    })}</div>`,
+      "data-management-only": "",
+      disabled: "",
+    })}${renderFormCancel()}</div>`,
     "panel-league-organiser-invite",
   );
 
@@ -344,40 +330,50 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="league-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / League</span>
+        ${renderManagementNavigation()}
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><span id="league-breadcrumb-name" aria-current="page">League</span></li></ol></nav>
         <div data-ui="hero-title-row">
-          <h1 id="league-title">${leagueHeading}</h1>
-          <small data-ui="reference-id" id="league-reference">League ID: ${safeLeagueId || "Loading…"}</small>
+          <h1 id="league-title">League</h1>
         </div>
-        <div data-ui="header-actions" role="toolbar" aria-label="League actions">
-          ${renderIconButton({
+        <details data-ui="reference-details"><summary>Reference ID</summary><small data-ui="reference-id" id="league-reference">League ID: ${safeLeagueId || "Loading…"}</small></details>
+        <div data-ui="header-actions" role="group" aria-label="League actions">
+          ${renderActionMenu({
+            id: "league-actions",
+            label: "Actions for this league",
+            attributes: { "data-management-only": "", hidden: "" },
+            content: renderIconButton({
             icon: "calendar-plus",
             label: "Create season",
+            text: "Create season",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-create-season",
               "data-testid": "toggle-create-season",
               "aria-controls": "league-create-season-region",
               "aria-expanded": "false",
             },
-          })}
-          ${renderIconButton({
+          }) + renderIconButton({
             icon: "user-round-plus",
             label: "Invite organiser",
+            text: "Invite organiser",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-organiser-invite",
               "data-testid": "toggle-organiser-invite",
               "aria-controls": "league-organiser-invite-region",
               "aria-expanded": "false",
             },
-          })}
-          ${renderIconButton({
-            icon: "trash-2",
-            label: "Delete league",
-            variant: "danger",
-            attributes: {
-              "data-action": "delete-league",
-              "data-testid": "delete-league",
-            },
+          }) + renderIconButton({
+              icon: "trash-2",
+              label: "Delete league",
+              text: "Delete league",
+              variant: "danger",
+              attributes: {
+                "data-action": "delete-league",
+                "data-testid": "delete-league",
+                "data-management-only": "", disabled: "",
+              },
+            }),
           })}
         </div>
       </section>
@@ -387,11 +383,12 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
         <section data-ui="panel-stack" data-testid="league-grid">
           ${seasonsPanel}
           <section id="league-create-season-region" data-ui="disclosure-panel" hidden>
-            ${createSeasonPanel}
+            <form id="create-season-form" data-ui="management-form" aria-label="Create season" novalidate>${createSeasonPanel}</form>
           </section>
           <section id="league-organiser-invite-region" data-ui="disclosure-panel" hidden>
-            ${organiserInvitePanel}
+            <form id="organiser-invite-form" data-ui="management-form" aria-label="Invite organiser" novalidate>${organiserInvitePanel}</form>
           </section>
+          <p data-ui="status-note" id="organiser-invite-email-status" role="status" aria-live="polite" hidden></p>
         </section>
       </section>
     </main>
@@ -402,7 +399,6 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
 
 export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string {
   const safeInviteCode = escapeHtml(inviteCode.trim().toUpperCase());
-  const inviteHeading = safeInviteCode.length > 0 ? safeInviteCode : "Organiser invite";
   const hasCode = safeInviteCode.length > 0;
 
   return `<!doctype html>
@@ -413,21 +409,16 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
     <title>3FC Organiser Invite</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="invite-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Invite</span>
+      <section data-ui="hero" data-layout="auth">
+        ${renderAccountActions()}
         <h1>Organiser invite</h1>
-        <p data-ui="hero-copy">Code <code>${inviteHeading}</code></p>
-      </section>
-      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="invite" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-invite-code="${safeInviteCode}">
+        <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="invite" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-invite-code="${safeInviteCode}">
         ${renderActivityStatus("Checking sign-in state…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
-        <section data-ui="panel-grid" data-testid="invite-grid">
-          ${renderPanel(
-            "Accept invite",
-            "Join the league setup team.",
-            `<form data-ui="auth-form" id="organiser-invite-code-form" ${hasCode ? "hidden" : ""} novalidate>
+        <div data-testid="panel-organiser-invite">
+            <form data-ui="auth-form" id="organiser-invite-code-form" ${hasCode ? "hidden" : ""} novalidate>
               ${renderValidatedField({
                 id: "organiser-invite-code-input",
                 label: "Invite code",
@@ -442,8 +433,7 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
             </form>
             <section data-ui="claim-panel" id="organiser-invite-acceptance" data-testid="organiser-invite-acceptance" ${hasCode ? "" : "hidden"}>
               <dl data-ui="id-preview">
-                <div><dt>Invite code</dt><dd id="organiser-invite-accept-code">${inviteHeading}</dd></div>
-                <div><dt>League</dt><dd id="organiser-invite-league">Pending</dd></div>
+                <div><dt>Invite code</dt><dd id="organiser-invite-accept-code">${safeInviteCode}</dd></div>
               </dl>
               <div data-ui="button-row">
                 ${renderButton("Accept invite", "primary", {
@@ -453,13 +443,12 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
                 })}
                 <a data-ui="button-secondary" id="organiser-invite-league-link" data-testid="organiser-invite-league-link" href="/setup" hidden>Open league</a>
               </div>
-            </section>`,
-            "",
-            "panel-organiser-invite",
-          )}
+            </section>
+        </div>
         </section>
       </section>
     </main>
+    ${renderAuthScriptTag()}
     ${renderSetupScriptTag()}
   </body>
 </html>`;
@@ -468,10 +457,9 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
 export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId = ""): string {
   const safeSeasonId = escapeHtml(seasonId);
   const safeLeagueId = escapeHtml(leagueId);
-  const seasonHeading = safeSeasonId.length > 0 ? safeSeasonId : "Season";
   const createGamePanel = renderPanel(
     "Create game",
-    "Add a game into this season.",
+    "",
     `${renderValidatedField({
       id: "game-date",
       label: "Game date",
@@ -492,16 +480,17 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
       </select>
     </div>`,
     `<div data-ui="button-row">${renderButton("Create game", "primary", {
-      type: "button",
+      type: "submit",
       "data-action": "create-game",
       "data-testid": "create-game",
-    })}</div>`,
+      "data-management-only": "", disabled: "",
+    })}${renderFormCancel()}</div>`,
     "panel-season-create-game",
   );
 
   const upcomingGamesPanel = renderPanel(
     "Upcoming games",
-    "Scheduled and live games, ordered by kickoff.",
+    "",
     renderTableShell({
       tableTestId: "season-upcoming-games-table",
       bodyId: "season-upcoming-games-body",
@@ -517,7 +506,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
 
   const completedGamesPanel = renderPanel(
     "Completed games",
-    "Finished games, with the most recent first.",
+    "",
     renderTableShell({
       tableTestId: "season-completed-games-table",
       bodyId: "season-completed-games-body",
@@ -542,30 +531,41 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="season-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-season-id="${safeSeasonId}" data-league-id="${safeLeagueId}">
       <section data-ui="hero">
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="season-league-link" href="/setup">League</a> / Season</span>
+        ${renderManagementNavigation()}
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><a id="season-league-link"${safeLeagueId ? ` href="/leagues/${encodeURIComponent(leagueId)}"` : ""}>League</a></li><li><span id="season-breadcrumb-name" aria-current="page">Season</span></li></ol></nav>
         <div data-ui="hero-title-row">
-          <h1 id="season-title">${seasonHeading}</h1>
-          <small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading…"}</small>
+          <h1 id="season-title">Season</h1>
         </div>
-        <div data-ui="header-actions" role="toolbar" aria-label="Season actions">
+        <details data-ui="reference-details"><summary>Reference ID</summary><small data-ui="reference-id" id="season-reference">Season ID: ${safeSeasonId || "Loading…"}</small></details>
+        <div data-ui="header-actions" role="group" aria-label="Season actions">
           ${renderIconButton({
             icon: "calendar-plus",
             label: "Create game",
+            text: "Create game",
+            variant: "primary",
             attributes: {
+              "data-management-only": "", hidden: "", disabled: "",
               "data-action": "toggle-create-game",
               "data-testid": "toggle-create-game",
               "aria-controls": "season-create-game-region",
               "aria-expanded": "false",
             },
           })}
-          ${renderIconButton({
-            icon: "trash-2",
-            label: "Delete season",
-            variant: "danger",
-            attributes: {
-              "data-action": "delete-season",
-              "data-testid": "delete-season",
-            },
+          ${renderActionMenu({
+            id: "season-actions",
+            label: "Actions for this season",
+            attributes: { "data-management-only": "", hidden: "" },
+            content: renderIconButton({
+              icon: "trash-2",
+              label: "Delete season",
+              text: "Delete season",
+              variant: "danger",
+              attributes: {
+                "data-action": "delete-season",
+                "data-testid": "delete-season",
+                "data-management-only": "", disabled: "",
+              },
+            }),
           })}
         </div>
       </section>
@@ -576,7 +576,7 @@ export function renderSeasonPage(apiBaseUrl: string, seasonId: string, leagueId 
           ${upcomingGamesPanel}
           ${completedGamesPanel}
           <section id="season-create-game-region" data-ui="disclosure-panel" hidden>
-            ${createGamePanel}
+            <form id="create-game-form" data-ui="management-form" aria-label="Create game" novalidate>${createGamePanel}</form>
           </section>
         </section>
       </section>
@@ -594,21 +594,20 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>League organiser sign in | 3FC</title>
+    <title>Sign in to 3FC</title>
     ${renderStylesheetLink()}
   </head>
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="signin-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth" data-testid="panel-signin-flow">
-        <h1>League organiser sign in</h1>
-        <p data-ui="hero-copy">If you&#39;re a league organiser, put in your email address and we&#39;ll send you a magic link to sign in. If this is your first time, once you&#39;ve signed in you can finish your account creation.</p>
+        <h1>Sign in to 3FC</h1>
         <form data-ui="auth-form" id="auth-magic-form" novalidate>
           <input id="auth-return-to" type="hidden" value="${safeReturnTo}" />
           ${renderValidatedField({
             id: "auth-email",
             label: "Email address",
             type: "email",
-            placeholder: "organiser@3fc.football",
+            placeholder: "you@example.com",
             required: true,
             inputAttributes: {
               autocomplete: "email",
@@ -617,7 +616,7 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
               spellcheck: "false",
             },
           })}
-          <div data-ui="button-row">${renderButton("Send magic link", "primary", {
+          <div data-ui="button-row">${renderButton("Send sign-in link", "primary", {
             type: "submit",
             "data-action": "send-magic-link",
             "data-testid": "send-magic-link",
@@ -634,14 +633,14 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
 
 export function renderComponentShowcasePage(apiBaseUrl: string): string {
   const navigationPanel = renderPanel(
-    "Navigation items",
-    "Top-level route selection with active state styling.",
+    "Component examples",
+    "Development fixtures only. These names, dates and scores are examples; no account or game data is loaded or saved.",
     renderNavigation(
       [
-        { label: "Setup", href: "/setup", active: true },
-        { label: "Live Game", href: "/games/live" },
-        { label: "Standings", href: "/standings" },
-        { label: "Profile", href: "/profile" },
+        { label: "Controls", href: "#fixture-controls" },
+        { label: "Players", href: "#fixture-players" },
+        { label: "Match totals", href: "#fixture-totals" },
+        { label: "Feedback", href: "#fixture-feedback" },
       ],
       "component-nav",
     ),
@@ -650,43 +649,63 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   );
 
   const playersPanel = renderPanel(
-    "Player representation",
-    "Avatar + name rows suitable for roster and score events.",
+    "Players and team choices",
+    "Try choosing a team. Yellow is unavailable in this example.",
     `<div data-ui="player-grid" data-testid="player-grid">${[
       renderPlayerCard({ name: "Ari Fisher", subtitle: "Red Team" }, "player-ari"),
       renderPlayerCard({ name: "Mina G", subtitle: "Blue Team" }, "player-mina"),
-      renderPlayerCard({ name: "Chris Long", subtitle: "Yellow Team" }, "player-chris"),
-    ].join("")}</div>`,
+      renderPlayerCard({ name: "Alexandra van der Westhuizen-Smith", subtitle: "Yellow Team" }, "player-chris"),
+    ].join("")}</div>
+    <fieldset data-ui="field">
+      <legend>Example team</legend>
+      <div data-ui="button-row" data-testid="fixture-team-choices">
+        <label data-ui="team-chip" style="--team-color: #d43d3d"><input type="radio" name="fixture-team" value="red" checked /><span data-ui="team-chip-visual"><span>Red</span></span></label>
+        <label data-ui="team-chip" style="--team-color: #377cd6"><input type="radio" name="fixture-team" value="blue" /><span data-ui="team-chip-visual"><span>Blue</span></span></label>
+        <label data-ui="team-chip" style="--team-color: #d6ad22"><input type="radio" name="fixture-team" value="yellow" disabled /><span data-ui="team-chip-visual"><span>Yellow</span></span></label>
+      </div>
+    </fieldset>
+    <div data-ui="button-row" data-testid="fixture-claim-badges">
+      <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderIcon("circle-user-round")}</span>
+      <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="Claimed" title="Claimed">${renderIcon("user-round-check")}</span>
+    </div>`,
     "",
     "panel-player",
   );
 
   const tablePanel = renderPanel(
-    "Information table",
-    "Reusable table for standings, results, and summaries.",
-    renderDataTable({
-      tableId: "standings-table",
-      caption: "Season standings",
-      columns: ["Team", "P", "W", "D", "L", "GF", "GA"],
+    "Match totals",
+    "",
+    `${renderDataTable({
+      tableId: "fixture-match-totals",
+      caption: "Example finished game",
+      columns: ["Team", "Conceded", "Scored"],
       rows: [
-        ["Red", 8, 5, 2, 1, 19, 10],
-        ["Blue", 8, 4, 3, 1, 17, 11],
-        ["Yellow", 8, 2, 1, 5, 11, 18],
+        ["Red", 2, 4],
+        ["Blue", 4, 3],
+        ["Yellow", 3, 2],
       ],
-    }),
+    })}
+    <div data-ui="button-row" data-testid="fixture-status-chips">
+      <span data-ui="status-chip" data-status="scheduled">${renderIcon("calendar-clock")}<span>Scheduled</span></span>
+      <span data-ui="status-chip" data-status="live">${renderIcon("activity")}<span>Live</span></span>
+      <span data-ui="status-chip" data-status="finished">${renderIcon("circle-check")}<span>Finished</span></span>
+    </div>
+    <div data-ui="button-row" data-testid="fixture-thirds">
+      ${[1, 2, 3].map((third) => `<span data-ui="third-indicator" data-third="${third}" role="img" aria-label="Third ${third} of 3"></span>`).join("")}
+    </div>`,
     "",
     "panel-table",
   );
 
   const validationPanel = renderPanel(
-    "Field validation",
-    "Inline notice state for valid/invalid input feedback.",
+    "Validation and feedback",
+    "Example states, shown together for review.",
     `<div data-ui="validation-stack">
       <section data-ui="validation-card" data-state="invalid" data-testid="validation-invalid">
         <h3>Invalid email example</h3>
         ${renderValidatedField({
           id: "organizer-email-invalid",
-          label: "Organizer email",
+          label: "Organiser email",
           type: "email",
           value: "player-at-example.com",
           error: "Please provide a valid email address.",
@@ -696,67 +715,89 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
         <h3>Valid email example</h3>
         ${renderValidatedField({
           id: "organizer-email-valid",
-          label: "Organizer email",
+          label: "Organiser email",
           type: "email",
-          value: "organizer@example.com",
+          value: "organiser@example.com",
           success: "Email format looks valid.",
         })}
       </section>
+    </div>
+    <div data-ui="section-stack" data-testid="fixture-feedback-states">
+      <p data-ui="status-note" data-state="loading" role="status">Loading games…</p>
+      <p data-ui="status-note" data-state="success" role="status">Player added.</p>
+      <p data-ui="status-note" data-state="error">Couldn’t load the teams. Try again.</p>
+      <p data-ui="status-note" data-state="uncertain">We couldn’t confirm whether the goal was saved. Your details are still here.</p>
+      <p data-ui="status-note" data-state="empty">No upcoming games.</p>
     </div>`,
     "",
     "panel-validation",
   );
 
   const rowActionsPanel = renderPanel(
-    "Row action list",
-    "List rows with add/edit/delete style actions.",
-    renderRowActionList(
+    "Actions",
+    "Action examples open the confirmation prompt below. They do not change a game.",
+    `${renderRowActionList(
       [
         {
-          title: "Game 01 - Saturday AM",
-          subtitle: "Kickoff 10:00, Red vs Blue vs Yellow",
-          actions: [
-            { label: "Edit", action: "edit-game" },
-            { label: "Clone", action: "clone-game" },
-            { label: "Delete", action: "delete-game", tone: "danger" },
-          ],
+          title: "Sunday 13 September 2026",
+          subtitle: "9:30 am · North Melbourne Three-Sided Football Club",
+          actions: [],
         },
         {
-          title: "Game 02 - Saturday PM",
-          subtitle: "Kickoff 14:30, Red vs Blue vs Yellow",
-          actions: [
-            { label: "Edit", action: "edit-game-2" },
-            { label: "Delete", action: "delete-game-2", tone: "danger" },
-          ],
+          title: "Sunday 20 September 2026",
+          subtitle: "9:30 am · Spring 2026",
+          actions: [],
         },
       ],
       "game-row-actions",
-    ),
+    )}
+    <div data-ui="button-row" data-testid="fixture-button-variants">
+      ${(["primary", "secondary", "ghost", "danger"] as const).map((variant) => renderButton(`${variant[0]?.toUpperCase()}${variant.slice(1)} example`, variant, { type: "button", "data-modal-open": "confirm-delete-game" })).join("")}
+    </div>
+    <div data-ui="header-actions" role="group" aria-label="Example icon actions">
+      ${renderIconLink({ href: "#fixture-totals", icon: "eye", label: "View example match totals" })}
+      ${renderIconButton({ icon: "pencil", label: "Open example edit prompt", attributes: { "data-modal-open": "confirm-delete-game" } })}
+      ${renderIconButton({ icon: "trash-2", label: "Open example delete prompt", variant: "danger", attributes: { "data-modal-open": "confirm-delete-game" } })}
+    </div>
+    <div data-ui="button-row" data-testid="fixture-disabled-actions">
+      ${renderButton("Save", "primary", { type: "button", disabled: "", "aria-label": "Save example, disabled" })}
+      ${renderIconButton({ icon: "loader-circle", label: "Saving example", text: "Saving…", variant: "primary", attributes: { disabled: "", "aria-busy": "true" } })}
+    </div>`,
     "",
     "panel-row-actions",
   );
 
   const modalPanel = renderPanel(
-    "Popover modal prompt",
-    "Overlay prompt for destructive actions with confirm and cancel paths.",
+    "Confirmation prompt",
+    "Open, confirm, cancel or press Escape. No data is changed.",
     `${renderModalPrompt({
       id: "confirm-delete-game",
-      triggerLabel: "Open delete prompt",
-      title: "Delete game?",
-      message: "This action removes game timeline and scores for this game.",
-      cancelLabel: "Keep game",
-      confirmLabel: "Delete game",
-    })}<p data-ui="status-note" id="modal-note">No modal action has been confirmed yet.</p>`,
+      triggerLabel: "Open example prompt",
+      title: "Delete example game?",
+      message: "This is a component example. Confirming will not delete a game.",
+      cancelLabel: "Cancel",
+      confirmLabel: "Confirm example",
+    })}<p data-ui="status-note" id="modal-note" role="status"></p>`,
     "",
     "panel-modal",
   );
 
   const setupFoundationPanel = renderPanel(
-    "Setup shell composition",
-    "How primitives come together in the M1-07 setup journey.",
+    "Form controls",
+    "Try the native controls. These example values are not submitted.",
     renderSetupFoundationPanels(),
     "",
     "panel-setup-composition",
+  );
+
+  const hiddenStatesPanel = renderPanel(
+    "Hidden states",
+    "The form, claim panel and reference IDs below must remain invisible and out of the keyboard order.",
+    `<div data-ui="auth-form" data-testid="fixture-hidden-auth-form" hidden>${renderInputField({ id: "fixture-hidden-email", label: "Hidden email", type: "email" })}</div>
+    <section data-ui="claim-panel" data-testid="fixture-hidden-claim-panel" hidden>${renderButton("Hidden claim action", "primary", { type: "button" })}</section>
+    <dl data-ui="id-preview" data-testid="fixture-hidden-id-preview" hidden><div><dt>Example game ID</dt><dd>fixture-hidden-game</dd></div></dl>`,
+    "",
+    "panel-hidden-states",
   );
 
   return `<!doctype html>
@@ -769,16 +810,16 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
   </head>
   <body>
     <main data-ui="app-shell" data-testid="component-showcase">
-      ${renderDashboardHero()}
+      <section data-ui="hero"><h1>Design fixtures</h1></section>
       <div data-ui="section-stack">
         ${navigationPanel}
         <section data-ui="panel-grid" data-testid="component-grid">
-          ${playersPanel}
-          ${tablePanel}
-          ${validationPanel}
-          ${rowActionsPanel}
-          ${modalPanel}
-          ${setupFoundationPanel}
+          <section id="fixture-controls" tabindex="-1">${rowActionsPanel}${setupFoundationPanel}</section>
+          <section id="fixture-players" tabindex="-1">${playersPanel}</section>
+          <section id="fixture-totals" tabindex="-1">${tablePanel}</section>
+          <section id="fixture-feedback" tabindex="-1">${validationPanel}</section>
+          <section id="fixture-modal" tabindex="-1">${modalPanel}</section>
+          <section id="fixture-hidden-states" tabindex="-1">${hiddenStatesPanel}</section>
         </section>
       </div>
     </main>
@@ -802,7 +843,6 @@ export function renderStatusPage(title: string, message: string): string {
   <body>
     <main data-ui="app-shell">
       <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Auth</span>
         <h1>${safeTitle}</h1>
         <p data-ui="hero-copy">${safeMessage}</p>
       </section>
@@ -825,7 +865,7 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
     <main data-ui="app-shell" data-testid="auth-callback-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth">
         <h1 id="auth-callback-title">Complete your sign-in</h1>
-        <p data-ui="hero-copy" id="auth-callback-copy">The browser will redirect to finish your sign in within a few seconds. If not, please click the button below to continue</p>
+        <p data-ui="hero-copy" id="auth-callback-copy">Sign-in starts in a few seconds. Or continue below.</p>
         <div data-ui="button-row">
           ${renderButton("Complete sign-in", "primary", {
             type: "button",
@@ -846,7 +886,6 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
 
 export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
   const safeJoinCode = escapeHtml(joinCode);
-  const joinHeading = safeJoinCode.length > 0 ? safeJoinCode : "Join game";
 
   return `<!doctype html>
 <html lang="en">
@@ -856,27 +895,22 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
     <title>3FC Join</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
     <main data-ui="app-shell" data-testid="join-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
-      <section data-ui="hero">
-        <span data-ui="hero-kicker">3FC Join</span>
+      <section data-ui="hero" data-layout="auth">
+        ${renderAccountActions()}
         <h1>Join game</h1>
-        <p data-ui="hero-copy">Code <code>${joinHeading}</code></p>
-      </section>
-      <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="join" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-join-code="${safeJoinCode}">
+        <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="join" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-join-code="${safeJoinCode}">
         ${renderActivityStatus("", false)}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
-        <section data-ui="panel-grid" data-testid="join-grid">
-          ${renderPanel(
-            "Player registration",
-            "Enter the name that should appear on the scorekeeper roster.",
-            `<dl data-ui="id-preview" data-testid="join-context-details">
-              <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${joinHeading}</dd></div>
+        <div data-testid="panel-join-player">
+            <dl data-ui="id-preview" data-testid="join-context-details">
+              <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${safeJoinCode}</dd></div>
             </dl>
             <form data-ui="auth-form" id="join-game-form" novalidate>
               ${renderValidatedField({
                 id: "join-player-nickname",
-                label: "Nickname",
+                label: "Player name",
                 placeholder: "Ari",
                 required: true,
                 hint: "Use the name the scorekeeper expects.",
@@ -887,27 +921,35 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
                 "data-testid": "join-game",
               })}</div>
             </form>
-            <dl data-ui="id-preview" data-testid="join-result" id="join-result" hidden>
+            <dl data-ui="join-receipt" data-testid="join-result" id="join-result" hidden>
               <div><dt>Player</dt><dd id="join-result-player"></dd></div>
-              <div><dt>Game</dt><dd id="join-result-game"></dd></div>
             </dl>
             <section data-ui="claim-panel" data-testid="join-claim-actions" id="join-claim-actions" hidden>
-              <p data-ui="field-hint" id="join-claim-status">Sign in to claim this player for scoring access.</p>
+              <p data-ui="field-hint" id="join-claim-status" hidden></p>
               <div data-ui="button-row">
-                <a data-ui="button-secondary" id="join-signin-link" data-testid="join-signin-link" href="/sign-in">Sign in to claim</a>
+                <a data-ui="button-secondary" id="join-signin-link" data-testid="join-signin-link" href="/sign-in">Sign in to claim this player</a>
                 ${renderButton("Claim player", "primary", {
                   type: "button",
                   "data-action": "claim-player",
                   "data-testid": "claim-player",
+                  "aria-describedby": "join-result-player",
+                })}
+                ${renderButton("Retry lookup", "secondary", {
+                  type: "button",
+                  "data-action": "retry-join-context",
+                  hidden: "",
                 })}
               </div>
-            </section>`,
-            "",
-            "panel-join-player",
-          )}
+            </section>
+            ${renderButton("Join another player", "secondary", {
+              type: "button", "data-action": "join-another-player",
+              "data-testid": "join-another-player", hidden: "",
+            })}
+        </div>
         </section>
       </section>
     </main>
+    ${renderAuthScriptTag()}
     ${renderSetupScriptTag()}
   </body>
 </html>`;
@@ -923,27 +965,77 @@ export interface GameContextPageInput {
 function renderGameModeTab(input: {
   mode: "structure" | "players" | "run" | "final";
   label: string;
-  meta: string;
+  destination: "overview" | "teams" | "score" | "results";
   active?: boolean;
 }): string {
   const tabId = `game-mode-tab-${input.mode}`;
-  const panelId = `game-mode-${input.mode}`;
-  const controls = input.mode === "final" ? "" : ` aria-controls="${panelId}"`;
-  return `<button data-ui="game-mode-tab" type="button" id="${tabId}"${controls} aria-pressed="${
-    input.active ? "true" : "false"
-  }" data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab">
+  return `<a data-ui="game-mode-tab" id="${tabId}"${input.mode === "run" ? ' data-mode-href="#score" aria-disabled="true"' : ` href="#${input.destination}"`}${input.active ? ' aria-current="page"' : ""} data-action="select-game-mode" data-game-mode="${input.mode}" data-state="${input.active ? "active" : "idle"}" data-testid="game-mode-${input.mode}-tab"${input.mode === "final" || input.mode === "run" ? " hidden" : ""}${input.mode === "run" ? ' data-game-capability="score"' : ""}>
     <span data-mode-label="${input.mode}">${escapeHtml(input.label)}</span>
-    <small data-mode-meta="${input.mode}">${escapeHtml(input.meta)}</small>
-  </button>`;
+  </a>`;
 }
 
 export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput): string {
   const gameId = escapeHtml(input.gameId);
   const gameHeading = "Game";
   const gameDetailsPanel = renderPanel(
-    "Game details",
+    "Overview",
     "",
-    `<section data-ui="join-details" data-testid="game-join-details" aria-label="Join game details">
+    `<dl data-ui="game-overview">
+      <div><dt>Kickoff</dt><dd id="game-overview-kickoff">Loading…</dd></div>
+      <div><dt>Status</dt><dd id="game-overview-status">Loading…</dd></div>
+      <div><dt>Third length</dt><dd id="game-overview-third-length">Loading…</dd></div>
+    </dl>
+    <div data-ui="game-overview-actions">
+      ${renderIconButton({
+        icon: "pencil", label: "Edit game", text: "Edit game",
+        attributes: {
+          "data-action": "toggle-game-edit", "data-game-capability": "admin", hidden: "", disabled: "",
+          "aria-expanded": "false", "aria-controls": "game-edit-region",
+        },
+      })}
+      ${renderIconButton({
+        icon: "users", label: "View teams", text: "View teams",
+        attributes: {
+          "data-action": "select-game-mode", "data-game-mode": "players", "data-testid": "game-mode-next-players",
+        },
+      })}
+    </div>
+    <div id="game-edit-region" data-ui="disclosure-panel" hidden>
+      <form id="game-edit-form" data-ui="management-form" aria-label="Edit game" novalidate>
+        <div data-ui="game-fields">
+          ${renderValidatedField({
+            id: "game-edit-kickoff", label: "Kickoff time", type: "datetime-local", required: true,
+          })}
+          <div data-ui="field">
+            <label for="game-edit-status">Status</label>
+            <select id="game-edit-status" name="game-edit-status" data-ui="input" data-testid="game-edit-status" aria-describedby="game-edit-refresh-note">
+              <option value="scheduled">Scheduled</option>
+              <option value="live">Live</option>
+              <option value="finished" disabled>Finished</option>
+            </select>
+          </div>
+          <div data-ui="field">
+            <label for="game-edit-third-length">Third length</label>
+            <select id="game-edit-third-length" name="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length" aria-describedby="game-edit-refresh-note">
+              <option value="20">20 minutes</option>
+              <option value="25">25 minutes</option>
+              <option value="30">30 minutes</option>
+            </select>
+          </div>
+        </div>
+        <div id="game-edit-refresh-note" data-ui="run-recovery" role="status" aria-live="polite" hidden>
+          <p>The game has started. Reload before changing these details.</p>
+          ${renderButton("Reload game", "secondary", { type: "button", "data-action": "reload-game-details" })}
+        </div>
+        <div data-ui="game-details-actions">
+          <button type="submit" data-ui="icon-button" data-variant="primary" aria-label="Save game" data-action="save-game" data-testid="save-game">${renderIcon("save")}<span data-ui="button-text">Save</span></button>
+          ${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-game-edit" })}
+        </div>
+      </form>
+    </div>
+    <details data-ui="join-disclosure">
+      <summary>Join game</summary>
+      <section data-ui="join-details" data-testid="game-join-details" aria-label="Join game details">
       <div data-ui="join-qr-block">
         <h3>Join QR</h3>
         <div id="game-join-qr" data-ui="join-qr" data-testid="game-join-qr">Loading…</div>
@@ -952,7 +1044,8 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <div><dt>Join code</dt><dd id="game-join-code-value" data-testid="game-join-code-value">Loading…</dd></div>
         <div><dt>Join link</dt><dd><a id="game-join-link" data-testid="game-join-link" href="/join">Loading…</a></dd></div>
       </dl>
-    </section>
+      </section>
+    </details>
     <details data-ui="reference-ids" data-testid="game-reference-ids">
       <summary>Reference IDs</summary>
       <dl data-ui="id-preview" data-testid="game-context-details">
@@ -960,60 +1053,12 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <div><dt>League ID</dt><dd id="game-league-id">Loading…</dd></div>
         <div><dt>Season ID</dt><dd id="game-season-id">Loading…</dd></div>
       </dl>
-    </details>
-    <div data-ui="game-fields">
-      ${renderValidatedField({
-      id: "game-edit-kickoff",
-      label: "Kickoff time",
-      type: "datetime-local",
-      required: true,
-    })}
-    <div data-ui="field">
-      <label for="game-edit-status">Status</label>
-      <select id="game-edit-status" data-ui="input" data-testid="game-edit-status">
-        <option value="scheduled">Scheduled</option>
-        <option value="live">Live</option>
-        <option value="finished" disabled>Finished</option>
-      </select>
-    </div>
-    <div data-ui="field">
-      <label for="game-edit-third-length">Third length</label>
-      <select id="game-edit-third-length" data-ui="input" data-testid="game-edit-third-length">
-        <option value="20">20 minutes</option>
-        <option value="25">25 minutes</option>
-        <option value="30">30 minutes</option>
-      </select>
-    </div>
-    </div>`,
-    `<div data-ui="game-details-actions">
-      ${renderIconButton({
-        icon: "save",
-        label: "Save game",
-        text: "Save",
-        variant: "primary",
-        attributes: {
-          "data-action": "save-game",
-          "data-testid": "save-game",
-        },
-      })}
-      ${renderIconButton({
-        icon: "users",
-        label: "Add players",
-        text: "Add players",
-        attributes: {
-          "data-action": "select-game-mode",
-          "data-game-mode": "players",
-          "data-testid": "game-mode-next-players",
-        },
-      })}
-    </div>`,
+    </details>`,
+    "",
     "panel-game-details",
   );
   const timerPanel = `<section data-ui="run-timer-panel" data-testid="panel-game-timer" aria-labelledby="run-timer-heading">
-    <header data-ui="section-heading">
-      <h2 id="run-timer-heading">Clock</h2>
-      <p>Start or stop the current third.</p>
-    </header>
+    <h2 id="run-timer-heading" class="sr-only">Clock</h2>
     <div data-ui="timer-board" data-testid="third-timer">
       <div data-ui="run-timer-bar" data-testid="run-timer-bar">
         <div data-ui="timer-display" id="timer-display" data-testid="timer-display" tabindex="-1">
@@ -1032,6 +1077,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             "data-action": "finish-active-third",
             "data-testid": "finish-third",
           })}
+          ${renderButton("Refresh game", "secondary", {
+            type: "button", hidden: "", disabled: "",
+            "data-action": "refresh-game-state", "data-testid": "refresh-game-state",
+          })}
         </div>
       </div>
       <details data-ui="run-third-history" data-testid="run-third-history">
@@ -1046,33 +1095,43 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     </div>
   </section>`;
   const rosterPanel = renderPanel(
-    "Roster setup",
-    "Create players and assign them to game teams.",
-    `<div data-ui="inline-create" data-testid="player-create-row">
-      <div data-ui="field" data-validated="true">
-        <label for="player-nickname">Player nickname</label>
-        <div data-ui="inline-input-actions">
-          <input data-ui="input" data-state="default" id="player-nickname" name="player-nickname" type="text" placeholder="Ari" aria-describedby="player-nickname-notice" />
-          ${renderIconButton({
-            icon: "circle-plus",
-            label: "Create player",
-            variant: "primary",
-            attributes: {
-              "data-action": "quick-create-player",
-              "data-testid": "quick-create-player",
-            },
-          })}
+    "Teams",
+    "",
+    `<div data-ui="roster-actions">
+      ${renderIconButton({
+        icon: "circle-plus", label: "Add player", text: "Add player", variant: "primary",
+        attributes: {
+          "data-action": "toggle-player-create", "data-game-capability": "roster", hidden: "", disabled: "",
+          "aria-expanded": "false", "aria-controls": "player-create-region", "data-hide-when-expanded": "",
+        },
+      })}
+      ${renderIconButton({
+        icon: "pencil", label: "Edit teams", text: "Edit teams",
+        attributes: { "data-action": "edit-finished-teams", "data-game-capability": "correct", hidden: "", disabled: "" },
+      })}
+    </div>
+    <div id="player-create-region" data-ui="disclosure-panel" hidden>
+      <form id="player-create-form" data-ui="management-form" aria-label="Add player" novalidate>
+        <div data-ui="inline-create" data-testid="player-create-row">
+          <div data-ui="field" data-validated="true">
+            <label for="player-nickname">Player name</label>
+            <input data-ui="input" data-state="default" id="player-nickname" name="player-nickname" type="text" placeholder="Ari" autocomplete="off" aria-describedby="player-nickname-notice" />
+            <div data-ui="field-message"><p data-ui="field-hint" id="player-nickname-notice" data-default-message="" data-default-kind="empty"></p></div>
+          </div>
         </div>
-        <div data-ui="field-message"><p data-ui="field-hint" id="player-nickname-notice" data-default-message="" data-default-kind="empty"></p></div>
-      </div>
+        <div data-ui="game-details-actions">
+          <button type="submit" data-ui="icon-button" data-variant="primary" aria-label="Add player" data-action="quick-create-player" data-testid="quick-create-player">${renderIcon("circle-plus")}<span data-ui="button-text">Add player</span></button>
+          ${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-player-create" })}
+        </div>
+      </form>
     </div>
     <div data-ui="field">
       <label for="player-search">Search players</label>
-      <input data-ui="input" id="player-search" name="player-search" type="search" placeholder="Nickname" autocomplete="off" />
+      <input data-ui="input" id="player-search" name="player-search" type="search" autocomplete="off" />
     </div>
     <div data-ui="roster-workspace" data-testid="roster-workspace">
       <section data-ui="player-pool" aria-labelledby="player-pool-title">
-        <h3 id="player-pool-title">Players</h3>
+        <h3 id="player-pool-title">Unassigned</h3>
         <div id="player-pool" data-ui="player-list" data-testid="player-pool"></div>
       </section>
       <section data-ui="roster-board" aria-labelledby="roster-board-title">
@@ -1080,23 +1139,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         <div id="roster-teams" data-ui="roster-grid" data-testid="roster-teams"></div>
       </section>
     </div>`,
-    `<div data-ui="mode-actions">
-      ${renderButton("Game", "secondary", {
-        type: "button",
-        "data-action": "select-game-mode",
-        "data-game-mode": "structure",
-        "data-testid": "game-mode-back-structure",
-      })}
-      ${renderButton("Run", "primary", {
-        type: "button",
-        "data-action": "select-game-mode",
-        "data-game-mode": "run",
-        "data-testid": "game-mode-next-run",
-      })}
-    </div>`,
+    "",
     "panel-game-roster",
   );
-  const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip">
+  const scorePanel = `<div data-ui="run-score-strip" data-testid="run-score-strip" role="group" aria-label="Team scores">
     <div data-ui="live-scoreboard" id="live-scoreboard" data-testid="live-scoreboard"></div>
   </div>`;
   const livePanel = `<div data-ui="run-scoring-panel" data-testid="panel-game-live">
@@ -1104,32 +1150,32 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <header>
         <h2 id="run-goal-form-heading">Record goal</h2>
       </header>
-      <div data-ui="run-goal-form">
-        <div data-ui="field">
-          <label for="goal-scoring-team">Scoring team</label>
-          <select id="goal-scoring-team" data-ui="input" data-testid="goal-scoring-team"></select>
-        </div>
-        <div data-ui="field">
-          <label for="goal-conceding-team">Conceding team</label>
-          <select id="goal-conceding-team" data-ui="input" data-testid="goal-conceding-team"></select>
-        </div>
+      <form id="goal-form" data-ui="run-goal-form" aria-labelledby="run-goal-form-heading" novalidate>
+        <label data-ui="check-row" for="goal-own-goal">
+          <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
+          <span>Own goal</span>
+        </label>
+        <fieldset id="goal-scoring-team" data-ui="goal-team-field" data-testid="goal-scoring-team" disabled>
+          <legend>Scoring team</legend>
+          <div data-ui="goal-team-options"></div>
+        </fieldset>
+        <fieldset id="goal-conceding-team" data-ui="goal-team-field" data-testid="goal-conceding-team" disabled>
+          <legend>Conceding team</legend>
+          <div data-ui="goal-team-options"></div>
+        </fieldset>
         <div data-ui="field">
           <label for="goal-scorer">Scorer</label>
           <select id="goal-scorer" data-ui="input" data-testid="goal-scorer"></select>
         </div>
-        <label data-ui="check-row" data-density="secondary" for="goal-own-goal">
-          <input id="goal-own-goal" type="checkbox" data-testid="goal-own-goal" />
-          <span>Own goal</span>
-        </label>
         <details id="goal-assists-dropdown" data-ui="run-secondary-scoring" data-testid="goal-assists-dropdown">
           <summary><span>Assists</span><span id="goal-assists-summary" data-ui="assist-summary">Choose assists</span>${renderIcon("chevron-down")}</summary>
+          <p data-ui="field-hint">Up to 3 players</p>
           <div id="goal-assists" data-ui="assist-list" data-testid="goal-assists"></div>
         </details>
-      </div>
       <p data-ui="field-hint" id="goal-form-note">Start a third and assign players before scoring.</p>
       <div data-ui="button-row" data-priority="scoring">
-        ${renderButton("Add goal", "primary", {
-          type: "button",
+        ${renderButton("Record goal", "primary", {
+          type: "submit",
           "data-action": "save-goal",
           "data-testid": "add-goal",
         })}
@@ -1138,40 +1184,36 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           "data-action": "cancel-goal-edit",
           "data-testid": "cancel-goal-edit",
         })}
-        ${renderButton("Undo last", "danger", {
-          type: "button",
-          "data-action": "undo-last-goal",
-          "data-testid": "undo-last-goal",
-        })}
       </div>
+      </form>
     </section>
   </div>`;
-  const latestGoalsPanel = `<details data-ui="run-latest-goals" data-testid="run-latest-goals" open>
-      <summary>Latest goals</summary>
+  const latestGoalsPanel = `<section data-ui="run-latest-goals" data-testid="run-latest-goals" aria-labelledby="latest-goals-heading">
+      <header data-ui="latest-goals-heading">
+        <h2 id="latest-goals-heading">Latest goals</h2>
+        ${renderButton("Undo last goal", "secondary", {
+          type: "button", "data-action": "undo-last-goal", "data-testid": "undo-last-goal",
+        })}
+      </header>
       <ol id="goal-timeline" data-ui="goal-timeline" data-testid="goal-timeline"></ol>
-    </details>`;
+    </section>`;
   const finalPanel = renderPanel(
-    "Match Summary",
-    "Review the final result and player statistics.",
+    "Match summary",
+    "",
     `<div data-ui="finalisation-board" data-testid="finalisation-board">
-      <dl data-ui="final-summary-status" data-testid="finalisation-context">
+      <dl data-ui="final-summary-status" data-testid="finalisation-context" hidden>
         <div><dt>Status</dt><dd id="final-game-status">Loading…</dd></div>
       </dl>
       <div data-ui="game-result-summary" id="game-result-summary" data-testid="game-result-summary" hidden></div>
     </div>`,
-    `<div data-ui="button-row">
-      ${renderButton("Finish game", "primary", {
-        type: "button",
-        "data-action": "finish-game",
-        "data-testid": "finish-game",
-      })}
-    </div>
-    <div data-ui="mode-actions">
-      ${renderButton("Run", "secondary", {
-        type: "button",
-        "data-action": "select-game-mode",
-        "data-game-mode": "run",
+    `<div data-ui="mode-actions">
+      ${renderIconButton({
+        icon: "pencil", label: "Correct result", text: "Correct result",
+        attributes: {
+        "data-action": "correct-finished-result",
+        "data-game-capability": "correct", hidden: "", disabled: "",
         "data-testid": "game-mode-back-run",
+        },
       })}
     </div>`,
     "panel-game-final",
@@ -1188,14 +1230,19 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
     <main data-ui="app-shell" data-testid="game-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero">
-        <span data-ui="hero-kicker"><a href="/setup">Dashboard</a> / <a id="game-league-link" href="/setup">League</a> / <a id="game-season-link" href="/setup">Season</a> / Game</span>
+        ${renderManagementNavigation()}
+        <nav data-ui="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/setup">Home</a></li><li><a id="game-league-link">League</a></li><li><a id="game-season-link">Season</a></li><li><span aria-current="page">Game</span></li></ol></nav>
+        <div data-ui="hero-title-row">
         <h1 id="game-title">${gameHeading}</h1>
-        <p data-ui="hero-copy" id="game-subtitle">Loading game details…</p>
-        <div data-ui="header-actions" role="toolbar" aria-label="Game actions">
-          ${renderIconLink({
+        ${renderActionMenu({
+          id: "game-actions",
+          label: "Actions for this game",
+          attributes: { "data-game-capability": "admin", hidden: "" },
+          content: `${renderIconLink({
             href: "/setup",
             icon: "calendar-plus",
             label: "Create another game",
+            text: "Create another game",
             attributes: {
               id: "create-another-game-link",
               "data-testid": "create-another-game",
@@ -1204,6 +1251,7 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
           ${renderIconButton({
             icon: "trash-2",
             label: "Delete game",
+            text: "Delete game",
             variant: "danger",
             attributes: {
               "data-action": "delete-game",
@@ -1211,18 +1259,27 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
               disabled: "disabled",
             },
           })}
-          <span class="sr-only" id="game-delete-lock-reason" hidden>Finished games cannot be deleted.</span>
+          <p data-ui="field-hint" id="game-delete-lock-reason" hidden>Finished games can’t be deleted.</p>`,
+        })}
         </div>
+        <p data-ui="hero-copy" id="game-subtitle" hidden></p>
       </section>
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="game" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-game-id="${gameId}">
         ${renderActivityStatus("Loading game data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
-        <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game workflow">
-          <div data-ui="game-mode-tabs" aria-label="Game workflow modes">
-            ${renderGameModeTab({ mode: "structure", label: "Game", meta: "Setup", active: true })}
-            ${renderGameModeTab({ mode: "players", label: "Players", meta: "Roster" })}
-            ${renderGameModeTab({ mode: "run", label: "Run", meta: "Timer" })}
-            ${renderGameModeTab({ mode: "final", label: "Final", meta: "Summary" })}
+        <section id="game-refresh-notice" data-ui="game-refresh-notice" aria-label="Game updates" hidden>
+          <p id="game-refresh-message" role="status" aria-live="polite"></p>
+          ${renderButton("Retry updates", "secondary", {
+            type: "button", "data-action": "retry-game-updates",
+            "aria-describedby": "game-refresh-message",
+          })}
+        </section>
+        <nav data-ui="game-mode-nav" data-testid="game-mode-nav" aria-label="Game">
+          <div data-ui="game-mode-tabs">
+            ${renderGameModeTab({ mode: "structure", label: "Overview", destination: "overview", active: true })}
+            ${renderGameModeTab({ mode: "players", label: "Teams", destination: "teams" })}
+            ${renderGameModeTab({ mode: "run", label: "Score game", destination: "score" })}
+            ${renderGameModeTab({ mode: "final", label: "Results", destination: "results" })}
           </div>
         </nav>
         <section data-ui="game-mode-panels" data-testid="game-grid">
@@ -1233,11 +1290,35 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             ${rosterPanel}
           </section>
           <section data-ui="game-mode-panel" id="game-mode-run" aria-labelledby="game-mode-tab-run" data-game-mode="run" data-testid="game-mode-run" data-mode-layout="run" hidden>
+            <section id="finished-correction-actions" data-ui="correction-actions" aria-labelledby="finished-correction-heading" hidden>
+              <h2 id="finished-correction-heading">Correct result</h2>
+              ${renderButton("Exit correction", "secondary", {
+                type: "button", "data-action": "exit-result-correction",
+                "aria-describedby": "correction-exit-reason",
+              })}
+              <p id="correction-exit-reason" data-ui="field-hint" hidden>Resolve the pending goal change before exiting correction. You can still view Overview, Teams or Results.</p>
+            </section>
             <div data-ui="run-console" data-testid="run-console">
-              ${scorePanel}
+              <section data-ui="run-match-summary" data-testid="run-match-summary" aria-label="Score and clock">
+                ${scorePanel}
+                ${timerPanel}
+              </section>
+              <section id="goal-operation-recovery" data-ui="run-recovery" aria-label="Goal recovery" hidden>
+                <p id="goal-operation-note">Retry uses the original goal change.</p>
+                ${renderButton("Retry goal save", "secondary", {
+                  type: "button", hidden: "", disabled: "",
+                  "data-action": "retry-goal-operation", "data-testid": "retry-goal-operation",
+                  "aria-describedby": "goal-operation-note",
+                })}
+              </section>
               ${livePanel}
-              ${timerPanel}
               ${latestGoalsPanel}
+            </div>
+            <div data-ui="mode-actions">
+              ${renderButton("Finish game", "primary", {
+                type: "button", "data-action": "finish-game", "data-testid": "finish-game",
+                "data-game-capability": "score", hidden: "", disabled: "",
+              })}
             </div>
           </section>
           <section data-ui="game-mode-panel" id="game-mode-final" aria-label="Match summary" data-game-mode="final" data-testid="game-mode-final" hidden>

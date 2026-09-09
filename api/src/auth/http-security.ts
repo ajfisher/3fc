@@ -17,8 +17,9 @@ export function parseAllowedOrigins(raw: string | undefined): string[] {
 }
 
 export function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  const cookies: Record<string, string> = Object.create(null);
   if (!cookieHeader) {
-    return {};
+    return cookies;
   }
 
   return cookieHeader
@@ -33,9 +34,22 @@ export function parseCookies(cookieHeader: string | undefined): Record<string, s
 
       const name = segment.slice(0, separator).trim();
       const value = segment.slice(separator + 1).trim();
-      acc[name] = decodeURIComponent(value);
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name) || value.length > 4096) {
+        return acc;
+      }
+
+      // One malformed, unrelated cookie must not prevent session revocation.
+      // A null-prototype dictionary also keeps cookie names out of prototypes.
+      try {
+        const decodedValue = decodeURIComponent(value);
+        if (!/[\u0000-\u001f\u007f]/u.test(decodedValue)) {
+          acc[name] = decodedValue;
+        }
+      } catch {
+        // Ignore invalid percent encoding instead of failing the request.
+      }
       return acc;
-    }, {});
+    }, cookies);
 }
 
 export function getCookieValue(cookieHeader: string | undefined, cookieName: string): string | null {

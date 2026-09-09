@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-18",
+  "version": "2026-09-08",
   "labels": [
     {
       "name": "area:infra",
@@ -100,6 +100,11 @@
       "name": "priority:P2",
       "color": "FBCA04",
       "description": "Later-wave and optimization work"
+    },
+    {
+      "name": "milestone:UX",
+      "color": "147D64",
+      "description": "UX Mobile-First Frontend Redesign"
     }
   ],
   "milestones": [
@@ -126,6 +131,10 @@
     {
       "name": "Review System Rollout",
       "description": "Introduce and tune a deterministic, risk-based pull request review process without weakening existing delivery controls."
+    },
+    {
+      "name": "UX Mobile-First Frontend Redesign",
+      "description": "Deliver the approved existing-frontend redesign with human copy, phone-first layouts, isolated sign-out and independently reviewed stacked PRs."
     }
   ],
   "epics": [
@@ -178,7 +187,12 @@
         "M1-05",
         "M1-06",
         "M1-07",
-        "M1-08"
+        "M1-08",
+        "M1-09",
+        "M1-10",
+        "M1-11",
+        "M1-12",
+        "M1-13"
       ]
     },
     {
@@ -231,7 +245,10 @@
         "M3-03",
         "M3-04",
         "M3-05",
-        "M3-06"
+        "M3-06",
+        "M3-07",
+        "M3-08",
+        "M3-09"
       ]
     },
     {
@@ -281,6 +298,34 @@
         "REV-04",
         "REV-05",
         "REV-06"
+      ]
+    },
+    {
+      "id": "EPIC-UX",
+      "title": "Mobile-First Frontend Redesign",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:feature",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "summary": "Deliver the approved frontend-first design and language refinements as a bottom-up reviewed PR stack. Sign-out M1-13 is a linked dependency; new player/public/performance work remains deferred.",
+      "outcomes": [
+        "Existing organiser, game, roster, scoring, result and entry journeys are readable, human and phone-first.",
+        "Distinct overlapping actors retain correct access, working mutations and truthful recovery.",
+        "Each PR reaches current-head Codex/CI/QA/review-gate readiness with evidence for AJ, without merge/release."
+      ],
+      "childIssues": [
+        "UX-00",
+        "UX-01",
+        "UX-02",
+        "UX-03",
+        "UX-07",
+        "UX-04",
+        "UX-05",
+        "UX-06"
       ]
     }
   ],
@@ -755,8 +800,15 @@
       "storyPoints": 8,
       "parentEpic": "EPIC-M2",
       "milestone": "M2 Live Match Operations",
-      "labels": ["area:app", "type:feature", "milestone:M2", "priority:P0"],
-      "dependsOn": ["M2-02"],
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M2",
+        "priority:P0"
+      ],
+      "dependsOn": [
+        "M2-02"
+      ],
       "summary": "Enable rapid assignment/reassignment of players to teams before and during games.",
       "scope": [
         "Implement roster assignment APIs for team/player tuples.",
@@ -776,7 +828,17 @@
         "Assign full roster then reassign a player mid-setup.",
         "Search and select from recent player list.",
         "API rejects invalid team/player combinations cleanly."
-      ]
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "partial-existing",
+        "status": "partial",
+        "githubIssue": 25,
+        "notes": [
+          "Implemented: assign/reassign, late quick-create, current-game search and transfer failure/reconciliation; api/src/lambda-core.ts listGamePlayers is current-game only.",
+          "Remaining: earlier-game recent-player selection and acceptance for overlapping local search/assignment interactions. UX-03 improves the existing UI; do not close #25 solely for that redesign."
+        ]
+      }
     },
     {
       "id": "M2-04",
@@ -842,8 +904,15 @@
       "storyPoints": 5,
       "parentEpic": "EPIC-M2",
       "milestone": "M2 Live Match Operations",
-      "labels": ["area:api", "type:feature", "milestone:M2", "priority:P0"],
-      "dependsOn": ["M2-05"],
+      "labels": [
+        "area:api",
+        "type:feature",
+        "milestone:M2",
+        "priority:P0"
+      ],
+      "dependsOn": [
+        "M2-05"
+      ],
       "summary": "Allow correction workflows for timeline events while preserving minimal audit trace.",
       "scope": [
         "Implement goal update and delete endpoints.",
@@ -863,7 +932,17 @@
         "Undo after sequence of multiple goals.",
         "Edit own-goal event into standard goal and verify recalculation.",
         "Unauthorized user cannot edit/delete events."
-      ]
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "partial-existing",
+        "status": "partial",
+        "githubIssue": 28,
+        "notes": [
+          "Implemented: goal edit/delete/expected-latest undo, recomputation, replay safety and transactional audit persistence (api/src/tests/repository.test.ts).",
+          "Remaining: administrator-visible persisted audit-history read/view and complete current-head acceptance. UX-04 preserves correction/undo behaviour; no new audit API is implied."
+        ]
+      }
     },
     {
       "id": "M2-07",
@@ -958,13 +1037,22 @@
       "storyPoints": 5,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
-      "labels": ["area:app", "type:feature", "milestone:M3", "priority:P1"],
-      "dependsOn": ["M2-08"],
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M2-08",
+        "M3-07"
+      ],
       "summary": "Support canonical public route resolution for game pages using human-friendly or ID-based segments.",
       "scope": [
         "Implement route parser/resolver for league, season, and game segments.",
         "Support lookup by slug or id for league/season and by gameId for games.",
-        "Emit canonical URL behavior to avoid duplicate content paths."
+        "Emit canonical URL behavior to avoid duplicate content paths.",
+        "Implement allow-listed safe game/result reads; resolve global gameId then validate its league-scoped season and supplied slug/ID segments. Do not reuse raw authenticated responses with email or bearer join codes."
       ],
       "outOfScope": [
         "Public standings and leaderboards rendering.",
@@ -979,6 +1067,20 @@
         "Slug-based route lookup.",
         "ID-based route lookup.",
         "Mixed valid/invalid segment combinations."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 32,
+        "notes": [
+          "Not implemented by the frontend redesign stack. Preserve the complete existing M3 scope and acceptance."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ]
     },
     {
@@ -987,8 +1089,15 @@
       "storyPoints": 5,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
-      "labels": ["area:app", "type:feature", "milestone:M3", "priority:P1"],
-      "dependsOn": ["M3-01"],
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M3-01"
+      ],
       "summary": "Render complete public game outcomes with team and player-visible context while preserving privacy.",
       "scope": [
         "Build public results UI including winner banner, totals, third-by-third stats, and timeline.",
@@ -1008,6 +1117,20 @@
         "Render normal win scenario.",
         "Render draw scenario.",
         "Privacy regression test ensures email fields absent."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 33,
+        "notes": [
+          "Not implemented by the frontend redesign stack. Preserve the complete existing M3 scope and acceptance."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ]
     },
     {
@@ -1016,13 +1139,22 @@
       "storyPoints": 8,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
-      "labels": ["area:data", "type:feature", "milestone:M3", "priority:P1"],
-      "dependsOn": ["M2-08"],
+      "labels": [
+        "area:data",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M2-08",
+        "M3-07"
+      ],
       "summary": "Compute and expose season standings using locked ranking rules and deterministic ordering.",
       "scope": [
         "Implement aggregation of played, wins, draws, losses, conceded, scored from completed games.",
         "Implement `GET /v1/public/seasons/{seasonId}/standings` endpoint.",
-        "Apply comparator: wins DESC, draws DESC, conceded ASC, scored DESC."
+        "Apply comparator: wins DESC, draws DESC, conceded ASC, scored DESC.",
+        "Preserve league-scoped season ownership when adding public season reads; reject ambiguous legacy identifiers rather than cross leagues."
       ],
       "outOfScope": [
         "Points-based ladders.",
@@ -1037,6 +1169,20 @@
         "Multi-team comparator ordering edge cases.",
         "Season with no completed games returns empty/zero-safe output.",
         "Recompute standings after corrected finished game."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 34,
+        "notes": [
+          "Not implemented by the frontend redesign stack. Preserve the complete existing M3 scope and acceptance."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ]
     },
     {
@@ -1045,8 +1191,15 @@
       "storyPoints": 5,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
-      "labels": ["area:api", "type:feature", "milestone:M3", "priority:P1"],
-      "dependsOn": ["M3-03"],
+      "labels": [
+        "area:api",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M3-03"
+      ],
       "summary": "Provide player leaderboard endpoints with own-goals tracked separately from goals-scored metrics.",
       "scope": [
         "Implement player scoring aggregation for total goals and goals-per-match.",
@@ -1060,12 +1213,27 @@
       "acceptanceCriteria": [
         "Leaderboard excludes own goals from goals-scored totals.",
         "Goals-per-match calculation handles low sample sizes safely.",
-        "Endpoint returns sortable data for at least total and per-match metrics."
+        "Endpoint returns sortable data for at least total and per-match metrics.",
+        "Games played uses distinct finished games with team membership, including zero-contribution/unclaimed participants; no join/claim/ACL-only counts."
       ],
       "testScenarios": [
         "Player with only own goals appears with zero goals-scored and own-goal count.",
         "Players tied on goals with differing match counts.",
         "Season reset behavior for new season id."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 35,
+        "notes": [
+          "Not implemented by the frontend redesign stack. Preserve the complete existing M3 scope and acceptance."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ]
     },
     {
@@ -1074,8 +1242,17 @@
       "storyPoints": 8,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
-      "labels": ["area:auth", "type:feature", "milestone:M3", "priority:P1"],
-      "dependsOn": ["M2-02", "M1-04"],
+      "labels": [
+        "area:auth",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M2-02",
+        "M1-04",
+        "M3-07"
+      ],
       "summary": "Allow authenticated users to claim quick-created player records with safe conflict handling.",
       "scope": [
         "Implement claim endpoint and claim record persistence.",
@@ -1095,6 +1272,21 @@
         "Claim happy-path from quick-created nickname profile.",
         "Attempt double-claim from different user.",
         "Unauthorized claim request denied."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "partial",
+        "githubIssue": 36,
+        "notes": [
+          "Implemented: authenticated claim, atomic profile/claim writes, repeat-owner success, competing-owner conflict and join/return-from-sign-in UI.",
+          "Remaining: ownership eligibility (M3-07), private owner retrieval and historical-record recovery. Authenticated plus unclaimed is not proof of ownership; frontend stack preserves current workflow."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ]
     },
     {
@@ -1103,8 +1295,17 @@
       "storyPoints": 3,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
-      "labels": ["area:app", "type:feature", "milestone:M3", "priority:P2"],
-      "dependsOn": ["M3-05", "M3-04"],
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M3",
+        "priority:P2"
+      ],
+      "dependsOn": [
+        "M3-05",
+        "M3-04",
+        "M3-08"
+      ],
       "summary": "Provide authenticated users a private view of their own performance metrics.",
       "scope": [
         "Build private profile page with claim-aware identity context.",
@@ -1124,6 +1325,20 @@
         "Authenticated owner profile load.",
         "Anonymous/private page access redirect or deny.",
         "Profile reflects updated stats after completed game."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 37,
+        "notes": [
+          "Not implemented by the frontend redesign stack. Preserve the complete existing M3 scope and acceptance."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ]
     },
     {
@@ -1190,8 +1405,16 @@
       "storyPoints": 5,
       "parentEpic": "EPIC-M4",
       "milestone": "M4 Notifications and Product Polish",
-      "labels": ["area:app", "type:feature", "milestone:M4", "priority:P2"],
-      "dependsOn": ["M2-02"],
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M4",
+        "priority:P2"
+      ],
+      "dependsOn": [
+        "M2-02",
+        "M3-09"
+      ],
       "summary": "Refine QR join flow UX to hit target onboarding duration for most players.",
       "scope": [
         "Improve join screen interaction model for mobile speed.",
@@ -1211,7 +1434,17 @@
         "Time-boxed usability run for new player onboarding.",
         "Join link opened on different mobile browsers.",
         "Invalid/expired join code handling."
-      ]
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "partial-existing",
+        "status": "partial",
+        "githubIssue": 40,
+        "notes": [
+          "Implemented: QR/link, nickname join, authenticated/return-from-sign-in claim, idempotent retry and recoverable errors.",
+          "Remaining: measured 20–30-second onboarding evidence, physical-device acceptance, safe context/onward destination (M3-09), and verified existing-identity reuse. UX-05 entry polish alone does not complete this issue."
+        ]
+      }
     },
     {
       "id": "M4-04",
@@ -1447,6 +1680,918 @@
         "Verify dashboard failure does not affect review-gate.",
         "Revert the policy safely if defect rates worsen."
       ]
+    },
+    {
+      "id": "M1-09",
+      "title": "Migrate app frontend runtime to Astro/Vite",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": [
+        "area:app",
+        "type:feature",
+        "milestone:M1",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M1-07"
+      ],
+      "summary": "Migrate the frontend runtime to Astro/Vite while preserving existing setup/auth/component behaviour; separate from the frontend redesign.",
+      "scope": [
+        "Scaffold Astro within the app package.",
+        "Port /setup, /auth/callback, /games/:gameId and /ui/components with existing behaviour.",
+        "Move auth/setup/modal client logic into appropriate modules/islands.",
+        "Preserve CSS tokens/themes, CSP/security headers and API integration."
+      ],
+      "outOfScope": [
+        "New product features beyond parity with current setup/auth/component pages.",
+        "Reworking backend API contracts."
+      ],
+      "acceptanceCriteria": [
+        "App routes above are served from Astro and work with feature parity.",
+        "Existing setup + auth happy path works locally and in QA.",
+        "Existing app tests are updated/replaced with equivalent coverage for the new runtime.",
+        "Build and deploy scripts/workflows continue to work without manual steps."
+      ],
+      "testScenarios": [
+        "Route and setup/auth parity locally and in QA.",
+        "Equivalent modal/component tests and CSP/security-header checks.",
+        "Build, static export and deployed route smoke."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "separate",
+        "status": "planned",
+        "githubIssue": 68,
+        "notes": [
+          "Restore the existing GitHub issue, preserving its state and ID; PR0 does not close implementation work."
+        ]
+      }
+    },
+    {
+      "id": "M1-10",
+      "title": "Deploy web app site artifacts to QA and prod",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": [
+        "area:ops",
+        "type:feature",
+        "milestone:M1",
+        "priority:P0"
+      ],
+      "dependsOn": [
+        "M0-06",
+        "M1-08"
+      ],
+      "summary": "Publish app artifacts alongside the APIs in QA and production. Restored historical completed requirement; not a new deployment change.",
+      "scope": [
+        "Add a real site deploy path for qa and prod.",
+        "Build the app artifacts as part of deployment.",
+        "Upload built frontend artifacts to the environment site bucket.",
+        "Invalidate the corresponding CloudFront distribution after upload.",
+        "Update both GitHub Actions deploy workflows so site deploy runs alongside api-health and api-core.",
+        "Extend smoke checks to validate the app host as well as the API."
+      ],
+      "outOfScope": [
+        "Frontend feature changes unrelated to deployment.",
+        "New infrastructure resources beyond what is needed to publish existing site artifacts."
+      ],
+      "acceptanceCriteria": [
+        "QA deploy publishes frontend assets to the QA site bucket and invalidates QA CloudFront.",
+        "Prod deploy publishes frontend assets to the prod site bucket and invalidates prod CloudFront.",
+        "QA workflow summary explicitly reports site, api-health, and api-core deployment.",
+        "Prod workflow summary explicitly reports site, api-health, and api-core deployment.",
+        "QA smoke checks verify app host routes such as /, /sign-in, and /setup.",
+        "Prod smoke checks verify app host routes such as /, /sign-in, and /setup.",
+        "API smoke checks remain in place."
+      ],
+      "testScenarios": [
+        "Frontend build/export and upload/invalidation paths.",
+        "QA/prod route, API and deployment-summary smoke."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "historical",
+        "status": "merged",
+        "githubIssue": 76,
+        "notes": [
+          "Restore the existing GitHub issue, preserving its state and ID; PR0 does not close implementation work."
+        ]
+      }
+    },
+    {
+      "id": "M1-11",
+      "title": "Add HEAD support for /v1/health",
+      "storyPoints": 1,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": [
+        "area:api",
+        "type:feature",
+        "milestone:M1",
+        "priority:P2"
+      ],
+      "dependsOn": [
+        "M0-05"
+      ],
+      "summary": "Support HEAD health requests without changing GET; retained as unrelated open work.",
+      "scope": [
+        "Add `HEAD /v1/health` support to the health Lambda.",
+        "Ensure the custom API domains and direct API Gateway host both respond successfully for `HEAD`.",
+        "Keep existing `GET /v1/health` behavior unchanged."
+      ],
+      "outOfScope": [
+        "Broader API route method normalization.",
+        "Changes to non-health endpoints."
+      ],
+      "acceptanceCriteria": [
+        "`HEAD /v1/health` returns `200` on QA and prod custom API domains.",
+        "`HEAD /v1/health` returns `200` on the execute-api host.",
+        "`GET /v1/health` behavior remains unchanged.",
+        "Automated tests cover both `GET` and `HEAD` health checks.",
+        "Deploy smoke guidance can safely use `curl -I` for the health route."
+      ],
+      "testScenarios": [
+        "GET and HEAD health Lambda tests.",
+        "Custom and execute-api hostname HEAD checks and GET compatibility."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "separate",
+        "status": "planned",
+        "githubIssue": 78,
+        "notes": [
+          "Restore the existing GitHub issue, preserving its state and ID; PR0 does not close implementation work."
+        ]
+      }
+    },
+    {
+      "id": "M1-12",
+      "title": "Manage SES sender domain in Terraform",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": [
+        "area:infra",
+        "type:feature",
+        "milestone:M1",
+        "priority:P0"
+      ],
+      "dependsOn": [
+        "M0-04",
+        "M1-03"
+      ],
+      "summary": "Manage the SES sender identity, DKIM and DNS through Terraform. Restored historical scope; preserve the implemented account/region-shared ownership.",
+      "scope": [
+        "Add Terraform-managed SES domain identity for `3fc.football` in `ap-southeast-2`.",
+        "Add Terraform-managed SES DKIM configuration for that domain.",
+        "Add Route53 records needed for SES verification and DKIM.",
+        "Align Lambda SES send permissions with the domain-based sender setup.",
+        "Keep `noreply@3fc.football` as the configured from-address for the app."
+      ],
+      "outOfScope": [
+        "Requesting SES production access / sandbox exit.",
+        "Managing temporary tester recipient identities in Terraform.",
+        "Reworking the magic-link application flow itself."
+      ],
+      "acceptanceCriteria": [
+        "Terraform creates an SES domain identity for `3fc.football`.",
+        "Terraform creates the Route53 verification records needed for SES domain verification.",
+        "Terraform creates DKIM records for the SES domain identity.",
+        "QA and prod environment plans include the SES domain identity resources.",
+        "Lambda SES send permissions are compatible with the domain-based sender configuration.",
+        "The configured sender remains `noreply@3fc.football`.",
+        "Remaining manual step is clearly documented as SES sandbox exit and/or verified test recipients."
+      ],
+      "testScenarios": [
+        "Terraform validation and ownership-aware QA/prod plans.",
+        "SES/DKIM/DNS and IAM/sender configuration evidence.",
+        "Local and deployed magic-link delivery compatibility."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "historical",
+        "status": "merged",
+        "githubIssue": 79,
+        "notes": [
+          "GitHub #79 is closed; preserve its historical acceptance wording. QA owns the shared account/region SES identity and prod reuses it; do not create a second identity.",
+          "Historical sandbox/empty-state problem statements are not present-day assertions. See README deployment/SES ownership guidance."
+        ]
+      }
+    },
+    {
+      "id": "M1-13",
+      "title": "Add sign-out flow and invalidate the active session",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M1",
+      "milestone": "M1 Auth, ACL, Core Entities",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:auth",
+        "area:qa",
+        "type:feature",
+        "milestone:M1",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M1-04",
+        "UX-01"
+      ],
+      "summary": "End the active device session and allow signing in as another account; implement POST /v1/auth/logout and a real Sign out action.",
+      "scope": [
+        "Add POST /v1/auth/logout with local and deployed routes.",
+        "Invalidate/delete the active server-side session.",
+        "Expire the `threefc_session` cookie with attributes consistent with session creation, including the environment-appropriate `Secure` flag.",
+        "Make logout idempotent when the cookie is missing, invalid, or already expired.",
+        "Add a clearly discoverable **Sign out** action on authenticated app surfaces.",
+        "After logout, return the user to the sign-in flow without an authenticated redirect loop.",
+        "Implement and document the local-development and AWS deployment paths."
+      ],
+      "outOfScope": [
+        "Listing or remotely revoking sessions on other devices.",
+        "Full device/session management UI."
+      ],
+      "acceptanceCriteria": [
+        "An authenticated user can sign out from the UI on phone and desktop.",
+        "The active server-side session is no longer accepted after sign-out.",
+        "The browser session cookie is expired by the API despite being HttpOnly.",
+        "The user can immediately request and complete a magic-link sign-in as a different account.",
+        "Repeated sign-out requests and sign-out without a valid session complete safely.",
+        "The flow works locally and in QA, including Android Firefox.",
+        "Public pages continue to expose no private email data and existing CSP/CORS/session-cookie protections remain intact.",
+        "Logout success is not claimed on failed requests, and a consumed magic-link recovery cannot recreate a revoked session."
+      ],
+      "testScenarios": [
+        "API invalidation; missing, invalid, expired and repeated sessions; cookie flags/path/domain.",
+        "Magic-link replay cannot resurrect the revoked session.",
+        "App success/failure and different-account sign-in without redirect loop.",
+        "Local/Lambda/deployed parity and Android Firefox account switching.",
+        "Independently issued sessions remain valid; browsers sharing one replayed magic-link session are all invalidated when that session is revoked."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 114,
+        "branch": "codex/auth-sign-out",
+        "notes": [
+          "Implementation and current-head automated/isolated-QA evidence are in open PR #143. Physical Android Firefox acceptance remains #137; review readiness does not claim that check or authorise merging."
+        ]
+      },
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ]
+    },
+    {
+      "id": "UX-00",
+      "title": "Reconcile redesign specification, GitHub backlog and acceptance map",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:chore",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [],
+      "summary": "Publish the approved frontend-first scope and reconcile canonical/GitHub tracking before implementation.",
+      "scope": [
+        "Restore missing M1 IDs and adopt #114 without duplicates or reopening closed work.",
+        "Create redesign epic/milestone/issues and a cross-stack acceptance task.",
+        "Reconcile partial M2/M3/M4 work and fully specify deferred dependencies."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "All scoped IDs map to one existing/new GitHub issue with matching taxonomy and milestone.",
+        "Parent/child links and dependencies are reciprocal, valid and acyclic; generated Markdown is current.",
+        "Deferred/current/partial work and reviewer/evidence ownership are explicit; no premature issue closure."
+      ],
+      "testScenarios": [
+        "Backlog validate/export reproducibility and graph checks.",
+        "Compare all-state GitHub mappings, states, labels, milestones and dependency links.",
+        "Current-head unchanged-runtime QA deployment smoke without data mutation."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 131,
+        "branch": "codex/design-delivery-backlog",
+        "notes": [
+          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+        ]
+      }
+    },
+    {
+      "id": "UX-01",
+      "title": "Establish mobile design, content and visibility foundation",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:feature",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "UX-00"
+      ],
+      "summary": "Establish shared mobile-first tokens, controls and truthful UI states.",
+      "scope": [
+        "System light/dark palette, system typography, spacing, plain surfaces and accessible controls.",
+        "Shared hidden-state contract and computed visibility regression fixtures.",
+        "Copy/state examples, meaningful operation feedback and local icon reuse."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "No decorative card accents, gradients or filler subtitles; body/input baseline 16px and effective targets >=44px.",
+        "All native-hidden surfaces remain actually hidden despite component layout rules.",
+        "Visible focus, meaningful selected/error states and SVG-child activation work in both themes."
+      ],
+      "testScenarios": [
+        "Rendered computed hidden cases for join result/claim and invitation form/acceptance.",
+        "320/390/430/768/desktop fixtures, zoom, long names, contrast and keyboard.",
+        "Offline icons/CSP; exact copy omissions and one accurate feedback announcement."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 132,
+        "branch": "codex/design-foundation",
+        "notes": [
+          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+        ]
+      }
+    },
+    {
+      "id": "UX-02",
+      "title": "Redesign organiser shell, lists and creation forms",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:feature",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "UX-01",
+        "M1-13"
+      ],
+      "summary": "Make existing league/season management clear and efficient on phones.",
+      "scope": [
+        "Shared home/account and real breadcrumb navigation using existing authorised data.",
+        "Leagues first, create league below; desktop aligned lists and phone rows with low-emphasis deletion.",
+        "Human dates, optional reference IDs, more-options friendly URLs and focused draft-preserving forms.",
+        "Update QA/prod smoke assertions for any changed home/setup headings in this same PR, preserving route/assets/security checks and declaring high risk for workflow changes."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "Home does not fan out across leagues or expose future Games/Performance destinations.",
+        "Existing scoped/legacy routes and create-game hash work; visible roles come from actual authority.",
+        "Disclosures/focus/cancel preserve drafts and confirmations; sign-out is discoverable."
+      ],
+      "testScenarios": [
+        "Zero/populated/long-name lists and missing dates without machine placeholders.",
+        "Disclosures, Escape, restoration, child SVG clicks and keyboard forms.",
+        "Actor/cross-league variants, local time boundaries, delete errors and account switching."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 133,
+        "branch": "codex/design-organiser-shell",
+        "notes": [
+          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+        ]
+      }
+    },
+    {
+      "id": "UX-03",
+      "title": "Redesign game overview, navigation and teams-first roster",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:feature",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "UX-02"
+      ],
+      "summary": "Make games readable and roster changes fast while retaining current permissions.",
+      "scope": [
+        "Stable Overview/Teams/finished Results and explicit scoring/correction entry, history/focus/hash aliases.",
+        "Use existing viewer-permitted reads without admin-only player-search dependency.",
+        "Unassigned and teams, one current-game search, no duplicate assigned cards; keyboard Add player and transfers."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "Scheduled/live default to Overview; finished opens Results; back/forward and legacy hashes preserve usable context.",
+        "17-player roster and 768px layout keep names/actions readable; each assigned player appears once.",
+        "Late player additions/transfers and authorised finished corrections remain; failed drafts survive.",
+        "Local assignment/search interactions cannot apply stale responses or duplicate in-flight user actions."
+      ],
+      "testScenarios": [
+        "Viewer/player-only/scorer/admin/combined and cross-league cases.",
+        "Large/long-name rosters, empty/unassigned groups and no duplicated DOM entries.",
+        "Enter-to-add, transfer alternatives/Escape/failure, reordered search responses and rapid repeated controls.",
+        "Navigation/scroll/focus under sticky content, phone keyboard and 200% zoom."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 134,
+        "branch": "codex/design-match-roster",
+        "notes": [
+          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+        ]
+      }
+    },
+    {
+      "id": "UX-07",
+      "title": "Replace management accordions with consistent kebab action menus",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-03"],
+      "summary": "Apply AJ's QA feedback across league, season, game and player-management actions using compact kebab-triggered surfaces, not expanding rows.",
+      "scope": [
+        "Shared locally generated Lucide vertical-ellipsis trigger and labelled action surface in all management headers, season/game list rows and player-management actions.",
+        "Only one surface open, predictable focus, Escape, outside interaction and normal keyboard traversal; clamp or flip inside the available viewport without row reflow.",
+        "Preserve deletion confirmations, pending request ownership, finished/permission locks, surviving-row focus and promotion semantics."
+      ],
+      "outOfScope": [
+        "Informational Reference IDs, Join game, Additional options, assists and history disclosures remain unchanged.",
+        "No API, permission, scoring, identity, dependency or deployment changes; no merge or production release."
+      ],
+      "acceptanceCriteria": [
+        "No More or Manage action accordion remains; each applicable surface uses an entity-labelled kebab button and text-labelled actions.",
+        "Opening actions does not expand a row or displace its name/date; surfaces remain usable at 320/390/430/768/desktop widths, both themes and enlarged text.",
+        "Keyboard and icon-child activation work once; Escape returns focus, outside interaction keeps destination focus, and only one surface opens.",
+        "Cancel, failed/uncertain and committed deletion preserve existing behaviour and focus ownership; disabled-only surfaces expose their reason accessibly.",
+        "Unknown or restricted actors see no actionable flash; current game locks and league-wide player promotion checks remain intact."
+      ],
+      "testScenarios": [
+        "Server/static/dynamic rendering parity and manifest icon validation; computed hidden state and no removed accordion markup.",
+        "Pointer, Enter/Space, nested icon clicks, Tab/Shift+Tab, Escape, outside focus, viewport-edge flipping and one-open behaviour.",
+        "Cancelled/successful/failed deletion, surviving-row redraw, external focus movement and pending request latches.",
+        "Finished-only menus, actor variants, player promotion, long labels and unchanged informational disclosures.",
+        "Built-asset fictional browser matrix and exact-head isolated signed-in QA without mutating AJ's games."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review of preserved action ownership, permissions, deletion and promotion boundaries.",
+        "Current-head local evidence, accepted exact-head GitHub Codex review, serialized CI/QA and review:ready before live-scoring child implementation; no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 147,
+        "branch": "codex/design-action-menus",
+        "notes": ["Inserted after match/roster and before live scoring following AJ's QA feedback; existing issue IDs and partial-work boundaries remain unchanged."]
+      }
+    },
+    {
+      "id": "UX-04",
+      "title": "Redesign focused live scoring and goal feedback",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:feature",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "UX-07"
+      ],
+      "summary": "Keep timing, scores and reliable goal entry usable on a phone.",
+      "scope": [
+        "One coordinated clock/score region with stable team order and Conceded/Scored labels.",
+        "Direct team choices, roster scorer dropdown, optional compact multiselect assists and own-goal transitions.",
+        "Compact latest goals/thirds indicators; existing correction/undo guards and truthful write feedback."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "Normal/own-goal/assist/third/timer and winner computations are unchanged.",
+        "Confirmed create/edit clears complete draft even if later refresh fails; failure/uncertainty retains draft/key.",
+        "Undo checks expected latest event; no accidental newer-event removal or duplicate action.",
+        "Clock/score UI never obscures fields/focus; direct team choices retain text/selected cues."
+      ],
+      "testScenarios": [
+        "Normal/own/three-assist/self/duplicate/cross-team cases and all thirds/stoppage boundaries.",
+        "Validation/network failure, lost response, committed-result-refresh failure and retry identity.",
+        "Edit/delete/undo targeting, stale expected event, finished locks/admin corrections.",
+        "Phone, keyboard, landscape, safe areas, themes and compact log names."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "review-ready",
+        "githubIssue": 135,
+        "branch": "codex/design-live-scoring",
+        "notes": [
+          "Approved specification: docs/design/frontend-redesign.md. Existing behaviour and actor boundaries remain; prototype data/no-op controls are not production requirements."
+        ]
+      }
+    },
+    {
+      "id": "UX-05",
+      "title": "Redesign authenticated results and existing entry journeys",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:feature",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "UX-04"
+      ],
+      "summary": "Present clear match reports and useful join/invite/authentication states without new portal promises.",
+      "scope": [
+        "Outcome/comparable totals, contributions/full log and explicit authorised corrections.",
+        "Polish existing join/invite/sign-in/callback copy, visibility and recovery with only safely available context.",
+        "Update literal deployment smoke assertions with changed headings while retaining routes/assets/security checks."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "Authenticated result totals, own goals, assists and tiebreak/draw outcomes are unchanged; no public share action.",
+        "Join/claim and invite flows retain working mechanics; no unsupported View game/history/identity promises.",
+        "Each entry state shows one meaningful step/error and truthful recovery; magic-link mechanics remain intact."
+      ],
+      "testScenarios": [
+        "Result win/draw/tiebreak/zero/own-goal/assists/log cases.",
+        "Join missing/invalid code, successful registration then claim failure, return-from-sign-in and invite failure states.",
+        "Callback automatic/manual/recovery regressions, no duplicated alerts or misleading redirect copy.",
+        "Local/static/deployed route-copy/assets/CSP checks and dedicated QA fixtures."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "implemented",
+        "githubIssue": 136,
+        "branch": "codex/design-results-entry",
+        "notes": [
+          "Implementation and local acceptance complete: 352 interactions, 400 app/311 API tests, 161 cross-stack browser cases and 4 isolated local M2 cases. Current-head external readiness belongs to PR150's packet; this is not merge or release authority."
+        ]
+      }
+    },
+    {
+      "id": "UX-08",
+      "title": "Polish match navigation, correction exit and match-day presentation",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-05", "UX-07"],
+      "summary": "Address AJ's post-stack QA items 1-3 and 5-9 as a frontend-only follow-up above PR150.",
+      "scope": [
+        "Integrate scoring with match navigation, remove duplicate back/score actions and provide explicit zero-write finished-correction exit.",
+        "Move Create season and Invite organiser into the league kebab with visible focus restoration.",
+        "Hide the Add player disclosure trigger while its form is open; preserve draft, retry and rapid-entry behaviour.",
+        "Scope settled success feedback to its originating view, preserving failures and unresolved requests.",
+        "Equalize newest/older goal padding and center scoreboard headings, labels and numbers."
+      ],
+      "outOfScope": ["Join read-contract changes and cross-client refresh are separate UX-09 and UX-10 children.", "No scoring rules, API, permissions, dependencies, deployment changes, merge or production release."],
+      "acceptanceCriteria": [
+        "Scheduled/live scoring has one native navigation destination and active state; finished correction remains explicit and bookmarks do not arm it.",
+        "Exit correction returns to Results without writes, clears only unsaved correction draft and restores finished locks; unresolved writes remain retryable and cannot be discarded.",
+        "League action disclosure opens from kebab; Cancel/Escape returns visible focus, drafts survive and lazy invite loading remains idempotent.",
+        "Only the actual Add player submit is visible while entry is open; Cancel/Escape restores the trigger and focus, including after redraws.",
+        "Settled success does not persist or arrive late after navigation; errors, uncertain writes and newer operation feedback remain available.",
+        "Goal rows align consistently and team scoreboard columns are centered at phone widths, both themes and enlarged text."
+      ],
+      "testScenarios": ["Rendered semantics and exact control inventory.", "Keyboard, hash/history, role variants, correction cancel, pending/lost-response retries and late feedback.", "Computed visibility/focus for nested menu disclosures and player entry.", "Built-asset mobile/theme/zoom fixtures, serialized local suites and exact-head signed-in QA."],
+      "reviewRequirements": ["Independent design, frontend, engineering and QA reviews; no competing test workers.", "Architecture/security review of correction and retry ownership and preserved capabilities.", "Current-head Codex review, CI, QA and review:ready before child implementation; no merge."],
+      "delivery": {"asOf": "2026-09-08", "wave": "frontend-stack", "status": "implemented", "githubIssue": 151, "branch": "codex/design-match-flow-polish", "notes": ["AJ's follow-up QA; new PR above the eight reviewed, unmerged parents. Local417 app tests and167 browser scenarios pass; current-head CI/Codex/QA readiness is recorded in the PR packet."]}
+    },
+    {
+      "id": "UX-09",
+      "title": "Identify joining players and show them directly in Unassigned",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:api", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-08"],
+      "summary": "Address post-stack QA item 4 through narrow safe reads for existing join and assignment journeys.",
+      "scope": ["Identify the player being claimed after sign-in using an authenticated join-code/game-player-bound public identity read.", "Extend the authorized roster read with public-safe unassigned player identities; avoid the top-20 candidate-search cap.", "Implement local/Lambda, OpenAPI, session route and Serverless parity; preserve explicit claiming and assignment semantics."],
+      "outOfScope": ["No nickname-based identity merging, new automatic claim, ownership-proof redesign or new scoring permission. Preserve the existing confirmed fresh-join claim behaviour; never claim automatically from return/context reads.", "No private identity exposure, join analytics, public results, new IAM privilege or production release."],
+      "acceptanceCriteria": ["Claim screen names the exact player, including sign-in return; invalid/mismatched context uses a safe error and does not claim automatically.", "New public joins appear in Unassigned without search, including beyond 20 players; assignment moves them once.", "Public DTOs never become admin-verified claim/access metadata; existing viewer and cross-league rules remain authoritative.", "Read contract, deployment routes and local/Lambda behaviour match; existing claim failures/finished-game locks remain unchanged."],
+      "testScenarios": ["Valid, missing, tampered, duplicate-nickname and cross-game join context with safe response shapes.", "More-than-20 registered/assigned players, join-to-Unassigned and one-row assignment.", "API/repository/session routes, local/Lambda contracts, privacy and deployed fixture acceptance."],
+      "reviewRequirements": ["Architecture, security and QA review before backend implementation and again on the completed diff.", "Independent design/frontend and engineering reviews, serialized validation, exact-head Codex/CI/QA and review gate."],
+      "delivery": {"asOf": "2026-09-08", "wave": "frontend-stack", "status": "implemented", "githubIssue": 152, "branch": "codex/design-join-unassigned", "notes": ["Parent #154 is review:ready on a1cccc18a13e92843e1c8740cec374993afd1953. Architecture/security/QA approved the narrow read changes before implementation. Local398 interaction tests,324 API tests,107 affected browser scenarios and complete repository validation pass; exact-head CI/Codex/deployed QA and final gate evidence are tracked in the child PR packet, not claimed by this implementation status."]}
+    },
+    {
+      "id": "UX-10",
+      "title": "Refresh other clients after match updates without disrupting local work",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-09"],
+      "summary": "Address post-stack QA item 10 with bounded cross-client read freshness using existing authenticated reads.",
+      "scope": ["One chained visible-page coordinator: 5-second live score/clock refresh, 15-second scheduled/finished refresh, full authority/roster every 15 seconds and on foreground return, 12-second batch deadline and failure backoff capped at 60 seconds.", "Staged existing authenticated reads, read/lifecycle generations and a synchronous pre-write epoch; changed read-only scores, log, clock, result and roster update without navigation/focus/draft churn.", "No polled match-state apply while writes are pending or unconfirmed; retain exact operation kind/path/method/body/key and expected-event undo targeting. Authority loss can disable controls without deleting recovery state.", "Separate read presentation from dirty metadata/goal form state, selected player identities, open assists and private administrator enrichment; preserve hidden drafts and truthful quiet freshness feedback."],
+      "outOfScope": ["No coordinated concurrent editing, atomic cross-endpoint snapshot promise, WebSocket service, backend or API change, automatic write retry or permission change.", "No offline-first persistence, new production dependency, deferred player/performance feature, merge or production release."],
+      "acceptanceCriteria": ["Two clients observe goal create/edit/delete, clock transitions and finished results without manual reload; remote finish does not force navigation or arm correction mode.", "Delayed pre-write reads cannot roll back a local commit; background reads cannot settle unresolved writes or replace their keys/body/event IDs, even when a read appears to show their outcome.", "Dirty visible or hidden metadata and goal forms, open assists, focus and navigation survive refresh; roster changes retain selected scorer/assist identities for explicit review rather than silently clearing or substituting them.", "Failed or malformed reads retain honest unavailable/stale state rather than zero totals, empty collections, invented draws or mutation-success claims; eventual read freshness is not an atomic snapshot.", "Refresh batches do not overlap, honor a 12-second deadline, stop while hidden/unmounted and back off to at most 60 seconds; foreground events coalesce. Expired sessions, account changes and role loss cannot restore stale private data or mutation capabilities."],
+      "testScenarios": ["Two-client snapshots, held pre-write and out-of-order reads, lost responses, unchanged retry identity and newer-goal expected-event undo targeting.", "Dirty visible/closed metadata, remote clock start/finish, scorer plus three assists across roster transfer/removal, externally deleted edited event, open native controls and focus preservation.", "Hidden/foreground lifecycle, duplicate focus/visibility events, persisted-page account revalidation, removed root, request/body timeout, backoff and no overlapping batches or surviving timers.", "Expired session, changed account, role downgrade, viewer/cross-league denial, private-enrichment separation and unchanged own-goal/result/assist invariants.", "Serialized focused/file/full validation and two-client built-asset browser evidence; deployed exact-head evidence separately recorded, with physical devices explicitly unclaimed until exercised."],
+      "reviewRequirements": ["Architecture/security/engineering review of snapshot and mutation ownership before implementation.", "Independent design/frontend and QA review, serialized validation and two-client browser evidence.", "Current-head Codex, CI, QA and review:ready; complete issue-to-evidence handoff without merging."],
+      "delivery": {"asOf":"2026-09-08","wave":"frontend-stack","status":"implemented","githubIssue":153,"branch":"codex/design-match-refresh","notes":["PR156 is the frontend-only refresh child above reviewed PR155 (dd8982e134fd055bb4f7e13ad5cb4053853a9de8). The versioned PR156 packet supplies current-head validation, review and deployment evidence. No merge or release is authorized.","Historical first head 190cbf4 passed full API/app validation (488 app tests), 57 review-gate tests, contracts, build, 197 browser plus 15 offline cases, and local M2 4/4. CI34208810305 and QA34209247864 passed; 17 deployed acceptance/safety cases included two isolated accounts and real match changes, with all 32 graph records and both auth fixtures removed and absence verified. Owned QA group98395 exited0, peak1194144KiB, cleanup[]. These passes do not substitute for corrected-head acceptance.","Two ordinary M2 failures were isolated: the new-player busy assignment UI was fixed and its held-read focused regression plus full 439 passed in group 92384; the external-join stale 10-second condition wait became 25 seconds for the scheduled 15-second cadence, with exact 14999/15000ms coverage. That focused test and full 440 interactions passed in group 93549, exit 0, peak 1822800 KiB, cleanup []. Final local M2 passed 4/4 in group 94003, exit 0, host peak 1323040 KiB plus hard 512 MiB Docker, remaining [], all three service SIGTERM exits observed and ephemeral container removed. No resource anomaly occurred.","GitHub Codex review5139831979 identified two P1s: method/path-only uncertainty settlement and a mid-batch session-switch window. Legacy ambiguity now creates an absorbing reload-required write lock, never cleared by a different successful save. Every refresh verifies session identity immediately before applying staged match/authority data. Independent cookie requests remain non-atomic; no API or concurrent-edit scope is added. Ten new interaction cases cover these boundaries and usable reload/correction recovery; renewed full validation and exact-head CI/Codex/QA are required.","The ten original QA items map to #154 (1-3 and5-9), #155 (4), and #156 (10) in docs/design/stack-acceptance.md. Independent architecture/security, engineering/QA and design reviews cover the corrected source. Findings and current local evidence are in docs/design/match-refresh-review.md; the PR156 packet contains post-publication exact-head gates. Keep #137 physical-device checks and deferred player/public-performance work explicitly incomplete."]}
+    },
+    {
+      "id": "UX-06",
+      "title": "Complete cross-stack mobile, role and release-readiness acceptance",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-UX",
+      "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": [
+        "area:app",
+        "area:qa",
+        "type:test",
+        "milestone:UX",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "UX-01",
+        "M1-13",
+        "UX-02",
+        "UX-03",
+        "UX-07",
+        "UX-04",
+        "UX-05"
+      ],
+      "summary": "Provide the issue-to-PR-to-current-head evidence checklist for AJ's final review.",
+      "scope": [
+        "Independent design/content, frontend/accessibility, engineering and QA reviews; architecture/security as triggered.",
+        "Resource-controlled full local validation and local M2 browser smoke; separate deployed QA scenarios.",
+        "Physical-device checks and current-head Codex/CI/QA/review-gate evidence with all findings dispositioned."
+      ],
+      "outOfScope": [
+        "Deferred player portal, public results, private history/season-performance screens and claim-proof changes.",
+        "Framework migration, new component-library dependency, attendance workflow, match-only scoring grants and production release."
+      ],
+      "acceptanceCriteria": [
+        "All scoped issue criteria map to passing tests/checks or honest device evidence; no fabricated completion.",
+        "320/390/430/768/desktop, themes, zoom and all supported role combinations are checked.",
+        "Real iOS/Android checks and Android Firefox account switching are recorded or explicitly await AJ; do not mark done with missing required evidence.",
+        "Each PR is review:ready with current-head Codex evidence; no merge/release triggered."
+      ],
+      "testScenarios": [
+        "Serialized lint/typecheck, full app/API/contracts/review-gate tests/build and local M2 Playwright smoke.",
+        "Dedicated QA fixture journeys, deployment SHA verification and shared-QA serialization.",
+        "Actual process exit/RSS/cleanup evidence under 4 GiB; no overlapping reviewer tests."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence; GitHub Codex formal review or a verified exact-current-head completion comment with no findings, as accepted by AJ; serialized QA deploy and review:ready before child implementation; all findings dispositioned and no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-08",
+        "wave": "frontend-stack",
+        "status": "partial",
+        "githubIssue": 137,
+        "branch": "codex/design-results-entry",
+        "notes": [
+          "Automated and emulated local cross-stack acceptance is complete in the final frontend PR: 161 browser and 4 local M2 cases. Current-head external evidence map: docs/design/stack-acceptance.md and PR150's packet.",
+          "Still required from AJ: physical iOS Safari/Android keyboard, safe-area, date-control and email-return checks, plus Android Firefox account switching. Do not close this issue while required evidence is missing.",
+          "Review-ready records describe open PR readiness, not merged work, a release or completion of partial M2/M3 issues."
+        ]
+      }
+    },
+    {
+      "id": "M3-07",
+      "title": "Harden player ownership eligibility before portal expansion",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:auth",
+        "area:qa",
+        "type:security",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M2-02",
+        "M1-04"
+      ],
+      "summary": "Extend, rather than replace, existing collision-safe claiming with ownership proof before new public discovery/private-history reliance.",
+      "scope": [
+        "Registration-bound proof for newly created join records and an organiser-assisted linking path for pre-existing records.",
+        "Preserve repeat-owner success and competing-owner conflicts; define proof expiry/recovery and compatibility in security-reviewed contract.",
+        "Record public/private release dependency; no automatic nickname identity matches."
+      ],
+      "outOfScope": [
+        "Implementation in the current frontend redesign stack.",
+        "Nickname-based identity merging, attendance workflow and unsupported permission changes."
+      ],
+      "acceptanceCriteria": [
+        "Knowing an unclaimed player ID and being authenticated is not sufficient to claim it.",
+        "Existing already-claimed records and join/sign-in continuity remain compatible.",
+        "Local/Lambda contracts, trust-boundary/rollback design and explicit recovery are reviewed before public/player release."
+      ],
+      "testScenarios": [
+        "Authenticated wrong claimant, stolen ID, valid registration proof, replay/race/expired proof.",
+        "Historical-record organiser verification, wrong-league authority and return-from-email recovery.",
+        "No bearer proof/private identity leakage in URLs/logs/public DTOs."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 138,
+        "notes": [
+          "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack."
+        ]
+      }
+    },
+    {
+      "id": "M3-08",
+      "title": "Add bounded linked-player history and participant home",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M3-05",
+        "M3-01"
+      ],
+      "summary": "Build real personal game history/home from verified claims and participation, separate from league ACL.",
+      "scope": [
+        "Bounded identity-to-player-to-game lookup with documented index/backfill ownership if required.",
+        "Home selection from actual linked games and authorised leagues, without unbounded client fan-out.",
+        "Preserve organiser-only/scorer-only usefulness; scheduled/live viewing remains authorised."
+      ],
+      "outOfScope": [
+        "Implementation in the current frontend redesign stack.",
+        "Nickname-based identity merging, attendance workflow and unsupported permission changes."
+      ],
+      "acceptanceCriteria": [
+        "Next/history games are real and access-controlled; duplicate owned records cannot double-count one played game.",
+        "Played means team membership in a finished game, including late assigned additions; joins/claims/duties alone do not count.",
+        "Existing histories/backfill, correction freshness and pagination have local/deployed evidence."
+      ],
+      "testScenarios": [
+        "Claimed/unclaimed, multiple records, player+organiser+scorer and cross-league cases.",
+        "Joined after finish but unassigned, zero goals, late assigned player and corrected final roster.",
+        "Missing/partial data, bounded query pagination and rollback/backfill safety."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 139,
+        "notes": [
+          "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack."
+        ]
+      }
+    },
+    {
+      "id": "M3-09",
+      "title": "Add safe join and organiser-invite context reads",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:auth",
+        "area:qa",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M3-07",
+        "M3-01"
+      ],
+      "summary": "Supply only the context necessary to understand and complete existing entry journeys safely.",
+      "scope": [
+        "Explicit safe preview contracts for valid join/invite entries; minimal game/league/state information.",
+        "Supported onward destination and first-time/existing-player paths using verified ownership.",
+        "Preserve reusable/direct invite distinction, registration idempotency and existing finished-game join compatibility."
+      ],
+      "outOfScope": [
+        "Implementation in the current frontend redesign stack.",
+        "Nickname-based identity merging, attendance workflow and unsupported permission changes."
+      ],
+      "acceptanceCriteria": [
+        "Anonymous preview does not disclose email, account/ACL identifiers or unrelated records.",
+        "Successful entry offers only an existing destination authorised for that actor.",
+        "Missing/invalid/accepted/conflicting entry states are truthful; no invented join-code expiry mechanism."
+      ],
+      "testScenarios": [
+        "Valid/malformed/unknown code, wrong user/league, consumed direct invite and bearer-redaction cases.",
+        "Successful join followed by claim failure, existing identity and safe recovery.",
+        "Local/Lambda schema/deploy parity and real-device QR/email-return acceptance."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
+        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
+        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+      ],
+      "delivery": {
+        "asOf": "2026-09-07",
+        "wave": "deferred-player-portal",
+        "status": "planned",
+        "githubIssue": 140,
+        "notes": [
+          "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack."
+        ]
+      }
     }
   ],
   "globalTestScenarios": [
@@ -1467,6 +2612,9 @@
     "Single scorekeeper editing model in v0 (no multi-editor conflict support).",
     "Offline support remains out of scope for v0.",
     "Terraform state continues in existing S3+Dynamo locking backend.",
-    "E2E tests are implemented during MVP but not required merge-gate checks initially."
+    "E2E tests are implemented during MVP but not required merge-gate checks initially.",
+    "2026-09-07 approved delivery: frontend redesign UX-00..UX-06 plus M1-13 sign-out; new public/player portal and performance work is explicitly deferred.",
+    "Players are added and assigned on the day, including during play; retain this workflow and add no attendance/no-show feature. Future played counts use team membership in distinct finished games.",
+    "Delivery metadata is an as-of planning/evidence inventory, not proof that tests were rerun or a GitHub issue can be closed. Existing merged issue states remain unchanged."
   ]
 }

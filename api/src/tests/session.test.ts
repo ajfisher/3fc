@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildExpiredSessionCookie,
   buildSessionCookie,
   DEFAULT_SESSION_TTL_SECONDS,
   isAuthenticatedApiRoute,
@@ -56,7 +57,22 @@ test("buildSessionCookie rejects invalid absolute expiries", () => {
   );
 });
 
+test("expired session cookies match the host-only session scope and expire immediately", () => {
+  const cookie = buildExpiredSessionCookie("threefc_session", true);
+  assert.equal(
+    cookie,
+    "threefc_session=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; Max-Age=0",
+  );
+  assert.equal(cookie.includes("Domain="), false);
+  assert.equal(buildExpiredSessionCookie("local_session", false).includes("Secure"), false);
+  assert.match(buildExpiredSessionCookie("local_session", false), /^local_session=;/);
+});
+
 test("isAuthenticatedApiRoute marks protected routes only", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/join/ABCD2345/player-context"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/join/ABCD2345/players/player%2F1"), false);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/join/ABCD2345"), false);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/join/ABCD2345/players/player-1/claim"), false);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1"), true);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/leagues/league-1/seasons"), true);
@@ -99,6 +115,7 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/health"), false);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/auth/magic/start"), false);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/auth/magic/complete"), false);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/auth/logout"), false);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/unknown"), false);
   assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/unknown"), false);
 });

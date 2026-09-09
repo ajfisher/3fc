@@ -129,6 +129,10 @@
     return normalizeReturnTo(hiddenValue) ?? fallback;
   }
 
+  // Entry pages reuse the same allow-list and validation before preserving
+  // their deliberately reconstructed destination during account switching.
+  window.__THREEFC_NORMALIZE_RETURN_TO__ = normalizeReturnTo;
+
   async function requestJson(path, init) {
     const response = await fetch(buildApiUrl(path), init);
     const text = await response.text();
@@ -278,6 +282,8 @@
     const submitButton = form.querySelector('[data-action="send-magic-link"]');
 
     const returnTo = resolveReturnTo("/setup");
+    let submissionRevision = 0;
+    let sending = false;
 
     function showError(message) {
       if (!errorElement) {
@@ -298,15 +304,24 @@
     }
 
     async function checkSession() {
+      const revision = submissionRevision;
       const result = await requestJson("/v1/auth/session", {
         method: "GET",
         credentials: "include",
+        cache: "no-store",
       });
+
+      if (revision !== submissionRevision) {
+        return;
+      }
 
       if (result.ok && result.body?.session?.email) {
         clearError();
         setStatus(statusElement, "Sign-in complete. Redirecting…", "success");
         setTimeout(() => {
+          if (revision !== submissionRevision) {
+            return;
+          }
           clearStoredReturnTo();
           navigateTo(returnTo, "replace");
         }, 500);
@@ -318,7 +333,12 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (sending) {
+        return;
+      }
+      submissionRevision += 1;
       clearError();
+      setStatus(statusElement, "");
 
       if (!(emailInput instanceof HTMLInputElement)) {
         showError("Email input is unavailable.");
@@ -335,12 +355,13 @@
       setFieldMessage("auth-email");
 
       persistReturnTo(returnTo);
+      sending = true;
 
       if (submitButton instanceof HTMLButtonElement) {
         submitButton.disabled = true;
       }
 
-      setStatus(statusElement, "Sending magic link…", "default");
+      setStatus(statusElement, "Sending sign-in link…", "default");
 
       try {
         const requestBody = { email };
@@ -359,17 +380,21 @@
         });
 
         if (!result.ok) {
-          const message = result.body?.message || result.body?.error || "Could not send magic link.";
-          showError(message);
+          showError(result.status === 429
+            ? "Too many requests. Please wait before trying again."
+            : result.status === 408 || result.status >= 500
+            ? "We couldn't confirm the email was sent. Check your inbox before trying again."
+            : "The sign-in link could not be sent. Please try again.");
           setStatus(statusElement, "", "default");
           return;
         }
 
-        setStatus(statusElement, "Magic link sent. Open the email link to continue.", "success");
+        setStatus(statusElement, `Sign-in link sent to ${email}. Open it to continue.`, "success");
       } catch {
-        showError("Network error while requesting magic link.");
+        showError("We couldn't confirm the email was sent. Check your inbox before trying again.");
         setStatus(statusElement, "", "default");
       } finally {
+        sending = false;
         if (submitButton instanceof HTMLButtonElement) {
           submitButton.disabled = false;
         }
@@ -385,7 +410,9 @@
     try {
       await checkSession();
     } catch {
-      setStatus(statusElement, "", "default");
+      if (submissionRevision === 0) {
+        setStatus(statusElement, "", "default");
+      }
     }
   }
 
@@ -400,6 +427,7 @@
     const statusElement = document.getElementById("auth-callback-status");
     const errorElement = document.getElementById("auth-callback-error");
     const recoveryLink = document.getElementById("auth-callback-recovery");
+    const copyElement = document.getElementById("auth-callback-copy");
     const completeButton = document.querySelector('[data-action="complete-magic-link"]');
     let completionTimer = null;
     let completionStarted = false;
@@ -460,6 +488,9 @@
     }
 
     function showCallbackError(message, fatal = false, moveFocus = false) {
+      if (copyElement instanceof HTMLElement) {
+        copyElement.hidden = true;
+      }
       if (errorElement) {
         errorElement.textContent = message;
         errorElement.hidden = false;
@@ -522,8 +553,11 @@
           completionTimer = null;
         }
         clearCallbackError();
+        if (copyElement instanceof HTMLElement) {
+          copyElement.hidden = true;
+        }
         completeButton.disabled = true;
-        setStatus(statusElement, "Completing magic-link sign-in…", "default");
+        setStatus(statusElement, "Completing sign-in…", "default");
         const abortController = new AbortController();
         const requestTimeout = window.setTimeout(() => {
           abortController.abort();
