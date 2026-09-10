@@ -298,6 +298,34 @@ None.
 
 ## Review focus
 
+### Issuer replay and persisted proof validation
+
+Codex3977892733 accepted: exact invitation replay now matches its persisted issuer
+against all server-resolved caller identities, not only the currently preferred
+ACL. Both normal and conditional-write recovery still transactionally verify the
+original issuer's admin grant, context, pointer, player and proof. A new subject
+grant cannot substitute for a revoked legacy-email issuer or another organiser.
+
+An additional architecture sweep identified malformed stored proof eligibility:
+NaN expiry or unknown kind could bypass checks. Every proof reader now validates
+key identity, finite expiry, kind/state/context and state-specific ownership data.
+Valid expired consumed receipts remain readable; corrupt embedded player/owner
+identities fail closed without rewriting records. No normal writer emits these
+malformed states. Independent architecture/security and QA reviews cleared both
+fixes; the broader frontend/state sweep found no additional blocker.
+
+Focused regressions group37897/session63671 exit0, peak445056KiB, remaining[].
+The first real-HTTP fixture incorrectly attempted demotion through the additive
+grant helper. Source inspection confirmed grants preserve the higher role; no
+resource anomaly occurred (group34762 exit1, cleanup verified). The fixture now
+removes only its disposable legacy ACL. That HTTP test passed on its own:
+group37792/session14253 exit0, peak209616KiB, API/container cleanup verified.
+
+Final affected suite (133 tests), lint/typecheck, full360 API/554 app/57 gate,
+contracts, build and actual local HTTP/DynamoDB all passed serially:
+group38040/session81405 exit0, peak2230288KiB host plus bounded512MiB container,
+remaining[], tripNone. Exact-head external evidence is refreshed in the PR body.
+
 ### Shared deployment isolation
 
 Codex finding3977627564 accepted: per-PR QA locks allowed API and site releases

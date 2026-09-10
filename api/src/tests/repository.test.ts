@@ -485,6 +485,45 @@ test("player proof: arbitrary IDs and organiser-created participants cannot clai
   assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
 });
 
+test("player proof: malformed persisted eligibility and receipt identities fail closed", async () => {
+  for (const mutation of [
+    { expiresAt: "not-a-date" }, { expiresAt: null }, { kind: "unknown" }, { state: "unknown" },
+    { proofId: "different-proof-identifier" }, { gameId: null }, { playerRevision: "" },
+    { issuerAclUserId: null }, { replacesProofId: "invalid" }, { consumedByUserId: "owner" },
+  ]) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const credential = newClaimProof();
+    await repository.createPlayerInvitation({ gameId: "proof-game", playerId: "participant", userIds: ["organiser"], ...credential });
+    const input = { ...credential, userId: "owner", sessionId: "owner-session" };
+    const preview = await repository.previewPlayerProof(input);
+    const stored = client.readItem(`PLAYER_PROOF#${credential.proofId}`, "METADATA")!;
+    const malformed = { ...stored, data: { S: JSON.stringify({ ...JSON.parse(stored.data.S!), ...mutation }) } };
+    client.seedItem(malformed);
+    await assert.rejects(repository.previewPlayerProof(input), PlayerProofError);
+    await assert.rejects(repository.claimPlayer({ ...input, playerId: "participant", proof: { ...credential, confirmation: preview.confirmation } }), PlayerProofError);
+    assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
+    assert.equal(client.readItem("USER#owner", "PLAYER#participant"), undefined);
+    assert.deepEqual(client.readItem(`PLAYER_PROOF#${credential.proofId}`, "METADATA"), malformed);
+  }
+  for (const field of ["playerId", "claimedByUserId", "nickname", "createdAt"]) {
+    const { repository, client, clock, game } = await proofHarness();
+    const credential = newClaimProof();
+    await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: credential });
+    const input = { ...credential, userId: "owner", sessionId: "owner-session" };
+    const preview = await repository.previewPlayerProof(input);
+    const claimed = await repository.claimPlayer({ ...input, playerId: "self", proof: { ...credential, confirmation: preview.confirmation } });
+    clock.set("2026-10-10T00:00:00.000Z");
+    assert.equal((await repository.previewPlayerProof(input)).alreadyLinked, true, "valid expired receipt remains recoverable");
+    const stored = client.readItem(`PLAYER_PROOF#${credential.proofId}`, "METADATA")!;
+    const record = JSON.parse(stored.data.S!);
+    record.committedPlayer[field] = field === "nickname" ? "" : "wrong";
+    client.seedItem({ ...stored, data: { S: JSON.stringify(record) } });
+    await assert.rejects(repository.previewPlayerProof(input), PlayerProofError);
+    assert.deepEqual(await repository.getPlayer("self"), claimed);
+  }
+});
+
 test("player proof: private invitation requires admin and revocation or issuer demotion blocks acquisition", async () => {
   for (const revoke of [true, false]) {
     const { repository, client } = await proofHarness();
@@ -608,6 +647,37 @@ test("player proof: competing accounts converge on exactly one ownership receipt
   const receipt = JSON.parse(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")!.data.S!);
   assert.equal(receipt.consumedByUserId, owner);
   assert.equal(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")!.ttlEpoch, undefined);
+});
+
+test("player proof: invitation replay retains its valid legacy issuer after a subject ACL is added", async () => {
+  for (const state of ["replay", "concurrent", "demoted", "demotion-race", "different-caller"]) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const legacy = "organiser@example.invalid";
+    const subject = "cognito-organiser";
+    await repository.grantLeagueAccess({ leagueId: "proof-league", userId: legacy, role: "admin", grantedByUserId: "organiser" });
+    const input = { gameId: "proof-game", playerId: "participant", userIds: [subject, legacy], ...newClaimProof() };
+    const invitation = await repository.createPlayerInvitation(input);
+    const stored = client.readItem(`PLAYER_PROOF#${input.proofId}`, "METADATA")!;
+    const pointer = client.readItem("PLAYER#participant", "CLAIM_INVITATION")!;
+    assert.equal(JSON.parse(stored.data.S!).issuerAclUserId, legacy);
+    await repository.grantLeagueAccess({ leagueId: "proof-league", userId: subject, role: "admin", grantedByUserId: "organiser" });
+    if (state === "concurrent") {
+      // A competing email-authorised request commits after this subject-first
+      // request read no receipt: exercise the conditional-write recovery branch.
+      client.deleteItem(`PLAYER_PROOF#${input.proofId}`, "METADATA");
+      client.deleteItem("PLAYER#participant", "CLAIM_INVITATION");
+      client.runBeforeNextPut(() => { client.seedItem(stored); client.seedItem(pointer); });
+    }
+    if (state === "demoted") client.deleteItem("LEAGUE#proof-league", `ACL#USER#${legacy}`);
+    if (state === "demotion-race") client.runBeforeNextPut(() => client.deleteItem("LEAGUE#proof-league", `ACL#USER#${legacy}`));
+    if (state === "different-caller") input.userIds = ["organiser"];
+    if (state === "replay" || state === "concurrent") assert.deepEqual(await repository.createPlayerInvitation(input), invitation);
+    else await assert.rejects(repository.createPlayerInvitation(input), PlayerProofError);
+    assert.deepEqual(client.readItem(`PLAYER_PROOF#${input.proofId}`, "METADATA"), stored);
+    assert.deepEqual(client.readItem("PLAYER#participant", "CLAIM_INVITATION"), pointer);
+    assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
+  }
 });
 
 test("player proof: transaction fences invitation authority, pointer and player revision", async () => {

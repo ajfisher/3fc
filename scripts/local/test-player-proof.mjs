@@ -7,7 +7,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { DynamoDBClient, GetItemCommand, PutItemCommand, ListTablesCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand, DeleteItemCommand, ListTablesCommand } from "@aws-sdk/client-dynamodb";
 import { ThreeFcRepository } from "../../api/dist/data/repository.js";
 import { hashPlayerProofSecret } from "../../api/dist/auth/player-proof.js";
 
@@ -94,7 +94,7 @@ try {
       expiresAtEpoch: { N: String(Math.floor(Date.now() / 1000) + 3600) },
     } }));
   }
-  await repository.createLeague({ leagueId: "proof-league", name: "Disposable league", createdByUserId: "organiser" });
+  await repository.createLeague({ leagueId: "proof-league", name: "Disposable league", createdByUserId: "organiser@example.invalid" });
   await repository.createSeason({ leagueId: "proof-league", seasonId: "season", name: "Disposable season" });
   const game = await repository.createGame({ gameId: "proof-game", leagueId: "proof-league", seasonId: "season", sessionId: "session", gameStartTs: new Date().toISOString() });
   const credentials = proof();
@@ -145,7 +145,15 @@ try {
   const first = proof(); const second = proof();
   const create = { account: "organiser", body: { proofId: first.proofId, verifier: first.verifier } };
   const issued = await request(invitationPath, create); assert.equal(issued.status, 201, JSON.stringify(issued.body));
+  await repository.grantLeagueAccess({ leagueId: "proof-league", userId: "organiser", role: "admin", grantedByUserId: "organiser@example.invalid" });
   assert.deepEqual((await request(invitationPath, create)).body, issued.body);
+  // Grants deliberately retain the higher role; remove this disposable legacy
+  // ACL directly to model revocation, rather than pretending a grant demotes it.
+  await client.send(new DeleteItemCommand({ TableName: tableName, Key: {
+    pk: { S: "LEAGUE#proof-league" }, sk: { S: "ACL#USER#organiser@example.invalid" },
+  } }));
+  assert.equal((await request(invitationPath, create)).status, 409);
+  console.log("PASS actual HTTP invitation recovery after subject ACL addition; revoked legacy issuer cannot be substituted");
   assert.equal((await request(invitationPath, { account: "organiser", body: { proofId: second.proofId, verifier: second.verifier } })).status, 409);
   assert.equal((await request(invitationPath, { account: "organiser", body: { proofId: second.proofId, verifier: second.verifier, replacesProofId: first.proofId } })).status, 201);
   assert.equal((await request("/v1/player-proofs/preview", { body: { proofId: first.proofId, secret: first.secret } })).status, 409);

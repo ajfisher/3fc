@@ -2234,7 +2234,7 @@ export class ThreeFcRepository {
     if (input.claimProof) {
       const item = await this.getEntity(this.playerProofKey(input.claimProof.proofId), metadataSk(), { consistentRead: true });
       if (!item || item.entityType !== ENTITY_TYPE.playerProof) return null;
-      proof = item.data as PlayerProofRecord;
+      proof = this.storedPlayerProof(item);
       if (proof.kind !== "registration" || proof.playerId !== input.playerId || proof.gameId !== input.game.gameId ||
           !secureEqual(proof.verifier, input.claimProof.verifier)) return null;
     }
@@ -3183,6 +3183,33 @@ export class ThreeFcRepository {
     return { proofId: proof.proofId, expiresAt: proof.expiresAt };
   }
 
+  private storedPlayerProof(stored: StoredEntity<unknown>): PlayerProofRecord {
+    const proof = stored.data as Partial<PlayerProofRecord> | null;
+    const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+    const date = (value: unknown): boolean => text(value) && Number.isFinite(Date.parse(value));
+    const invalid = (): never => { throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available."); };
+    if (stored.entityType !== ENTITY_TYPE.playerProof || !proof || typeof proof !== "object" ||
+        !text(proof.proofId) || !PROOF_ID_PATTERN.test(proof.proofId) ||
+        stored.pk !== `PLAYER_PROOF#${proof.proofId}` || stored.sk !== metadataSk() ||
+        !text(proof.verifier) || !PROOF_VERIFIER_PATTERN.test(proof.verifier) ||
+        !text(proof.playerRevision) || !PROOF_VERIFIER_PATTERN.test(proof.playerRevision) ||
+        !text(proof.playerId) || !text(proof.gameId) || !text(proof.leagueId) || !text(proof.leagueName) ||
+        !date(proof.expiresAt) || !["registration", "invitation"].includes(proof.kind ?? "") ||
+        !["pending", "revoked", "consumed"].includes(proof.state ?? "")) return invalid();
+    if (proof.kind === "registration") {
+      if (proof.issuerAclUserId !== null || proof.replacesProofId !== null) return invalid();
+    } else if (!text(proof.issuerAclUserId) ||
+        (proof.replacesProofId !== null && (!text(proof.replacesProofId) || !PROOF_ID_PATTERN.test(proof.replacesProofId)))) return invalid();
+    if (proof.state === "consumed") {
+      const player = proof.committedPlayer;
+      // Receipt recovery ignores elapsed expiry, not malformed identity data.
+      if (!text(proof.consumedByUserId) || !player || typeof player !== "object" ||
+          player.playerId !== proof.playerId || player.claimedByUserId !== proof.consumedByUserId ||
+          !text(player.nickname) || !date(player.createdAt) || !date(player.updatedAt)) return invalid();
+    } else if (proof.consumedByUserId !== null || proof.committedPlayer !== null) return invalid();
+    return proof as PlayerProofRecord;
+  }
+
   private proofWrite(proof: PlayerProofRecord, now: string, existing?: StoredEntity<unknown>): TransactWriteItem {
     const item = buildItemWithTimestamps(this.playerProofKey(proof.proofId), metadataSk(), ENTITY_TYPE.playerProof,
       proof, existing?.createdAt ?? now, now);
@@ -3199,11 +3226,12 @@ export class ThreeFcRepository {
   private async readProof(credential: PlayerProofCredential): Promise<{ stored: StoredEntity<unknown>; proof: PlayerProofRecord }> {
     const verifier = hashPlayerProofSecret(credential.secret);
     const stored = await this.getEntity(this.playerProofKey(credential.proofId), metadataSk(), { consistentRead: true });
-    if (!stored || stored.entityType !== ENTITY_TYPE.playerProof ||
-        !secureEqual((stored.data as PlayerProofRecord).verifier, verifier)) {
+    if (!stored) {
       throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available.");
     }
-    return { stored, proof: stored.data as PlayerProofRecord };
+    const proof = this.storedPlayerProof(stored);
+    if (!secureEqual(proof.verifier, verifier)) throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available.");
+    return { stored, proof };
   }
 
   private async readProofContext(proof: PlayerProofRecord): Promise<{
@@ -3271,7 +3299,7 @@ export class ThreeFcRepository {
   }
 
   private async replayPlayerInvitation(stored: StoredEntity<unknown>): Promise<PlayerProofMetadata> {
-    const proof = stored.data as PlayerProofRecord;
+    const proof = this.storedPlayerProof(stored);
     try {
       const context = await this.readProofContext(proof);
       await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
@@ -3300,9 +3328,10 @@ export class ThreeFcRepository {
     const issuerAclUserId = (context.acl.data as LeagueAclRecord).userId;
     const existing = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
     if (existing) {
-      const proof = existing.data as PlayerProofRecord;
+      const proof = this.storedPlayerProof(existing);
       if (existing.entityType === ENTITY_TYPE.playerProof && proof.kind === "invitation" &&
-          proof.playerId === input.playerId && proof.gameId === input.gameId && proof.issuerAclUserId === issuerAclUserId &&
+          proof.playerId === input.playerId && proof.gameId === input.gameId && proof.leagueId === league.leagueId &&
+          proof.issuerAclUserId !== null && input.userIds.includes(proof.issuerAclUserId) &&
           proof.replacesProofId === (input.replacesProofId ?? null) &&
           secureEqual(proof.verifier, input.verifier)) return this.replayPlayerInvitation(existing);
       throw new PlayerProofError("claim_request_changed", 409, "This profile-link request changed. Start a new request.");
@@ -3337,8 +3366,12 @@ export class ThreeFcRepository {
     } catch (error) {
       if (!isConditionalWriteFailure(error)) throw error;
       const replay = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
-      const data = replay?.data as PlayerProofRecord | undefined;
-      if (replay?.entityType === ENTITY_TYPE.playerProof && data?.kind === "invitation" && data.playerId === input.playerId && data.gameId === input.gameId && data.issuerAclUserId === issuerAclUserId &&
+      const data = replay ? this.storedPlayerProof(replay) : undefined;
+      // ACL preference can change between attempts (legacy email -> subject).
+      // The persisted issuer must still belong to this caller; replay then
+      // transactionally rechecks that exact issuer's current admin grant.
+      if (replay?.entityType === ENTITY_TYPE.playerProof && data?.kind === "invitation" && data.playerId === input.playerId && data.gameId === input.gameId && data.leagueId === league.leagueId &&
+          data.issuerAclUserId !== null && input.userIds.includes(data.issuerAclUserId) &&
           data.replacesProofId === (input.replacesProofId ?? null) &&
           secureEqual(data.verifier, input.verifier)) return this.replayPlayerInvitation(replay);
       throw new PlayerProofError("claim_invite_changed", 409, "The player or organiser access changed. Check the player before trying again.");
@@ -3358,7 +3391,7 @@ export class ThreeFcRepository {
       // predecessor the organiser cannot acknowledge.
       return { proofId, expiresAt: (pointer!.data as { expiresAt: string }).expiresAt, state: "expired" };
     }
-    const proof = item.data as PlayerProofRecord;
+    const proof = this.storedPlayerProof(item);
     return { ...this.proofMetadata(proof), state: proof.state === "pending" && Date.parse(proof.expiresAt) <= Date.parse(this.clock.now()) ? "expired" : proof.state };
   }
 
@@ -3369,7 +3402,7 @@ export class ThreeFcRepository {
       throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
     }
     const item = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
-    const proof = item?.entityType === ENTITY_TYPE.playerProof ? item.data as PlayerProofRecord : undefined;
+    const proof = item ? this.storedPlayerProof(item) : undefined;
     if (proof && (proof.kind !== "invitation" || proof.playerId !== input.playerId || proof.leagueId !== (context.league.data as LeagueRecord).leagueId)) {
       throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available.");
     }

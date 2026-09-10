@@ -84,6 +84,13 @@ Only the nonsecret proof ID may travel in authentication return destinations.
 
 ## Privacy and acceptance evidence
 
+Malformed proof records fail closed rather than being repaired during reads.
+Inspect their provenance through an authorised, privacy-safe operator process;
+do not delete a receipt or pointer blindly to make a claim succeed. Legitimate
+consumed receipts retain recovery after expiry, but their stored player and owner
+must be internally consistent. Routine membership backfill must not rewrite proof
+records or their original issuer binding.
+
 QA deployments use a single non-cancelling job-level concurrency group across
 PRs; production preserves its global group without cancelling an active release.
 Before rolling out this workflow change, verify older per-PR jobs and their
