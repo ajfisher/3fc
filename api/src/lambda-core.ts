@@ -2935,7 +2935,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
             });
           } catch (error) {
             if (error instanceof PlayerProofError) return createJsonResponse(error.statusCode,
-              { error: "conflict", code: error.code, message: error.message }, buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
+              { error: error.statusCode === 400 ? "bad_request" : "conflict", code: error.code, message: error.message }, buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
             if (error instanceof GameJoinRegistrationError) {
               if (error.code === "game_finished") {
                 return finishedGameJoinConflictResponse(

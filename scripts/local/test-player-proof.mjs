@@ -112,6 +112,11 @@ try {
   for (const account of [null, "invalid-cookie"]) assert.equal((await request("/v1/player-proofs/preview", { account, body: previewBody })).status, 401);
   assert.equal((await request("/v1/player-proofs/preview", { body: previewBody, requestOrigin: "https://other.invalid" })).status, 403);
   const previews = await Promise.all(["A", "B"].map(account => request("/v1/player-proofs/preview", { body: previewBody, account })));
+  assert.equal(previews[0].body.account.id, "A");
+  const invalidSecret = await request("/v1/player-proofs/preview", { body: { ...previewBody, secret: "B".repeat(43) } });
+  assert.equal(invalidSecret.status, 400); assert.equal(invalidSecret.body.error, "bad_request");
+  const wrongPlayer = await request("/v1/players/another-player/claim", { body: { proof: { ...previewBody, confirmation: previews[0].body.preview.confirmation } } });
+  assert.equal(wrongPlayer.status, 400); assert.equal(wrongPlayer.body.error, "bad_request");
   for (const preview of previews) { assert.equal(preview.status, 200); assert.equal(preview.headers.get("cache-control"), "no-store"); assert.equal(preview.headers.get("referrer-policy"), "no-referrer"); }
   assert.equal(previews[0].body.account.email, "A@example.invalid");
   assert.equal((await request(claimPath, { account: "B", body: { proof: { ...previewBody, confirmation: previews[0].body.preview.confirmation } } })).status, 409);

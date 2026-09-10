@@ -1529,8 +1529,13 @@ components:
       properties:
         account:
           type: object
-          required: [email]
+          required: [id, email]
           properties:
+            id:
+              type: string
+              minLength: 1
+              maxLength: 1024
+              description: Current authenticated account identity, used only to detect a changed account in retained browser proof state. Not an ownership proof or permission grant; never render it in the player card.
             email: { type: string }
         preview:
           allOf:

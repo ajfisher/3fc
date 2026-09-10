@@ -91,8 +91,9 @@ No Terraform apply or production migration is needed for this PR.
 ### Rollback evidence
 
 scripts/local/test-player-proof.mjs passed with a real isolated DynamoDB 2.5.2
-container: actual local API was stopped and restarted in disabled mode; fresh
-proof rejected, ordinary join and prior receipt replay passed. The harness checks
+container: actual local API was stopped and restarted in disabled mode; a join
+with claimProof returned201 linkingUnavailable without issuing proof, and that
+registration retry plus prior consumed-claim replay passed. The harness checks
 replay of a committed request, not injected transport loss; separate UI tests
 inject rejected/lost responses and preserve identical retries. API exit and
 container removal were observed. Production rollback was not executed.
@@ -133,6 +134,24 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 None
 
 ### Resolved findings and validation history
+
+Codex3977394972/3977394981 accepted. Recipient proof retention now binds to the
+server-resolved stable account ID (private preview only, never rendered), retaining
+it through reload, recapture, attachment and handoff. It cannot be downgraded or
+rebound to another account; mismatches and bound401 purge locally and broadcast.
+Same-account session renewal and changed display email do not change ownership.
+Binding metadata reaches existing holders and pending handoffs, including an
+out-of-order older unbound response. Storage must succeed before confirmation.
+Local401 exposes tokenless sign-in and preserves owned/outside focus. Architecture,
+security and design reviewed these races/recovery paths and cleared the fixes.
+HTTP400 proof errors now use bad_request consistently in shared and join adapters;
+noncanonical secrets and wrong-player claim paths retain their machine codes.
+Focused34 recipient tests passed group25779/session21382 exit0 peak393616KiB,
+remaining[], tripNone; API adapter focused checks also passed group25483.
+Full API/app/review-gate tests, lint, contracts, build and actual local HTTP/DynamoDB
+acceptance passed group25952/session48992 exit0, peak1728608KiB host plus512MiB
+container, remaining[], tripNone. Actual HTTP also asserted stable private account
+identity and consistent400 categories; disposable API/container cleanup verified.
 
 New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.

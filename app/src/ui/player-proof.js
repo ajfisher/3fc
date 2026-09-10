@@ -4,6 +4,7 @@
   const WEEK = 7 * 24 * 60 * 60 * 1000;
   const ID = /^[A-Za-z0-9_-]{20,64}$/;
   const SECRET = /^[A-Za-z0-9_-]{43}$/;
+  const validAccount = (value) => typeof value === "string" && value.length > 0 && value.length <= 1024;
   let generation = 0;
   let channel = null;
   let stopped = false;
@@ -13,7 +14,8 @@
   function valid(value) {
     return value && ID.test(value.proofId) && SECRET.test(value.secret) &&
       Number.isFinite(value.createdAt) && Number.isFinite(value.expiresAt) &&
-      value.expiresAt > Date.now() && value.createdAt <= Date.now() && value.expiresAt <= value.createdAt + WEEK;
+      value.expiresAt > Date.now() && value.createdAt <= Date.now() && value.expiresAt <= value.createdAt + WEEK &&
+      (!Object.hasOwn(value, "accountId") || validAccount(value.accountId));
   }
   try {
     const raw = sessionStorage.getItem(KEY);
@@ -23,7 +25,14 @@
 
   function save(record) {
     if (!valid(record)) throw new Error("proof_unavailable");
+    const prior = lookup(record.proofId);
+    if (prior && (prior.secret !== record.secret ||
+        (prior.accountId && record.accountId && prior.accountId !== record.accountId))) {
+      clear();
+      throw new Error("proof_account_changed");
+    }
     const clean = { proofId: record.proofId, secret: record.secret, createdAt: record.createdAt, expiresAt: record.expiresAt,
+      ...(prior?.accountId || record.accountId ? { accountId: prior?.accountId || record.accountId } : {}),
       ...(typeof record.operation === "string" && record.operation.length <= 400 ? { operation: record.operation } : {}),
       ...(typeof record.playerId === "string" && record.playerId.length <= 1024 ? { playerId: record.playerId } : {}),
     };
@@ -44,7 +53,7 @@
   function clear(broadcast = true) {
     records = [];
     try { sessionStorage.removeItem(KEY); } catch { /* No retained copy is available. */ }
-    if (broadcast) channel?.postMessage({ version: 1, type: "purge" });
+    if (broadcast) try { channel?.postMessage({ version: 1, type: "purge" }); } catch { /* Local purge must still finish. */ }
     cancelHandoffs();
     window.dispatchEvent(new Event("threefc:player-proof-cleared"));
   }
@@ -56,6 +65,18 @@
       const message = event.data;
       if (!message || message.version !== 1) return;
       if (message.type === "purge") { clear(false); return; }
+      if (message.type === "bound" && ID.test(message.proofId) && validAccount(message.accountId)) {
+        const record = lookup(message.proofId);
+        // Metadata only; never create a secret from an unsolicited message.
+        // Existing holders must not later hand off an unbound copy.
+        if (record) try { save({ ...record, accountId: message.accountId }); } catch { clear(); }
+        for (const pending of waiting.values()) {
+          if (pending.proofId !== message.proofId) continue;
+          if (pending.accountId && pending.accountId !== message.accountId) { clear(); return; }
+          pending.accountId = message.accountId;
+        }
+        return;
+      }
       if (!ID.test(message.proofId) || !ID.test(message.nonce)) return;
       if (message.type === "request") {
         const record = lookup(message.proofId);
@@ -63,8 +84,10 @@
       } else if (message.type === "response") {
         const pending = waiting.get(message.nonce);
         if (!pending || pending.proofId !== message.proofId || !valid(message.record) || message.record.proofId !== message.proofId) return;
+        if (pending.accountId && message.record.accountId && pending.accountId !== message.record.accountId) { clear(); return; }
         waiting.delete(message.nonce); clearTimeout(pending.timer);
-        try { pending.resolve(save(message.record)); } catch { pending.resolve(null); }
+        try { pending.resolve(save({ ...message.record, ...(pending.accountId ? { accountId: pending.accountId } : {}) })); }
+        catch { pending.resolve(null); }
       }
     };
   }
@@ -183,6 +206,14 @@
     };
   }
   function nextFocus() { return !confirm.hidden ? confirm : !retry.hidden ? retry : !signIn.hidden ? signIn : status; }
+  function signedOutRecovery(finishFocus) {
+    clear();
+    accountActions.hidden = true;
+    signIn.href = `/sign-in?returnTo=${encodeURIComponent(destination(proofId))}`;
+    signIn.hidden = false;
+    message("Sign in again, then reopen the private link.", true);
+    finishFocus(signIn);
+  }
   async function request(path, body) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -221,7 +252,19 @@
       if (result.preview?.proofId !== proofId || typeof result.preview?.player?.nickname !== "string" ||
           typeof result.preview?.player?.playerId !== "string" || typeof result.preview?.confirmation !== "string" ||
           typeof result.preview?.alreadyLinked !== "boolean" || !Number.isFinite(Date.parse(result.preview?.expiresAt)) ||
-          typeof result.preview?.league?.name !== "string" || typeof result.account?.email !== "string") throw new Error("preview_unconfirmed");
+          typeof result.preview?.league?.name !== "string" || typeof result.account?.email !== "string" ||
+          !validAccount(result.account?.id)) throw new Error("preview_unconfirmed");
+      // Persist before enabling confirmation. save compares the latest retained
+      // binding too, including one received while this preview was in flight.
+      try { record = save({ ...record, accountId: result.account.id }); }
+      catch (error) {
+        if (error.message === "proof_account_changed") {
+          message("Your signed-in account changed. Reopen the private link to continue.", true);
+          finishFocus(status); return;
+        }
+        throw error;
+      }
+      channel?.postMessage({ version: 1, type: "bound", proofId, accountId: record.accountId });
       preview = result.preview;
       accountEmail = result.account.email;
       document.getElementById("player-link-name").textContent = preview.player.nickname;
@@ -236,6 +279,7 @@
     } catch (error) {
       if (current !== generation || stopped) return;
       if (error.status === 401) {
+        if (record?.accountId || lookup(proofId)?.accountId) { signedOutRecovery(finishFocus); return; }
         message(""); signIn.href = `/sign-in?returnTo=${encodeURIComponent(destination(proofId))}`; signIn.hidden = false;
       } else {
         message([403, 404, 409].includes(error.status)
@@ -264,6 +308,7 @@
       message(`Player linked to ${accountEmail}.`);
     } catch (error) {
       if (current !== generation || stopped) return;
+      if (error.status === 401 && (record?.accountId || lookup(proofId)?.accountId)) { signedOutRecovery(finishFocus); return; }
       if ([401, 403, 404, 409].includes(error.status)) {
         confirm.hidden = true; retry.hidden = false;
         message("Please check the player link and your signed-in account again before continuing.", true);

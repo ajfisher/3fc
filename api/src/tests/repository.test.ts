@@ -735,9 +735,17 @@ test("player proof: local and Lambda routes pair account display with confirmati
     assert.equal((await request("/v1/player-proofs/preview", { ...credentials, secret: unknown.secret })).status, 404);
     const preview = await request("/v1/player-proofs/preview", credentials);
     assert.equal(preview.status, 200);
-    assert.deepEqual(preview.body.account, { email: "A@private.example" });
+    assert.deepEqual(preview.body.account, { id: "account-A", email: "A@private.example" });
     assert.equal(preview.headers?.["cache-control"] ?? preview.headers?.["Cache-Control"], "no-store");
     const body = { proof: { ...credentials, confirmation: preview.body.preview.confirmation } };
+    const malformedSecret = await request("/v1/player-proofs/preview", { ...credentials, secret: "B".repeat(43) });
+    assert.equal(malformedSecret.status, 400);
+    assert.equal(malformedSecret.body.error, "bad_request");
+    assert.equal(malformedSecret.body.code, "invalid_claim_proof");
+    const wrongPlayer = await request("/v1/players/another-player/claim", body);
+    assert.equal(wrongPlayer.status, 400);
+    assert.equal(wrongPlayer.body.error, "bad_request");
+    assert.equal(wrongPlayer.body.code, "invalid_claim_proof");
     activeRepository = new ThreeFcRepository(client, "proof-test", clock, "disabled");
     const unavailable = await request("/v1/players/self/claim", body);
     assert.equal(unavailable.status, 503);

@@ -29,7 +29,7 @@ export async function handlePlayerProofRoute(input: {
         preview: await repository.previewPlayerProof({ ...parsed.data, userId, sessionId: session.sessionId }),
         // Display and binding must originate from the same resolved session.
         // A separate session probe can race an account switch in another tab.
-        account: { email: session.email },
+        account: { id: userId, email: session.email },
       } };
     }
     const claim = /^\/v1\/players\/([^/]+)\/claim$/.exec(route);
@@ -72,7 +72,7 @@ export async function handlePlayerProofRoute(input: {
   } catch (error) {
     if (error instanceof URIError) return invalid();
     if (error instanceof PlayerProofError) return { statusCode: error.statusCode, payload: {
-      error: error.statusCode === 403 ? "forbidden" : error.statusCode === 404 ? "not_found" : error.statusCode === 503 ? "unavailable" : "conflict",
+      error: error.statusCode === 400 ? "bad_request" : error.statusCode === 403 ? "forbidden" : error.statusCode === 404 ? "not_found" : error.statusCode === 503 ? "unavailable" : "conflict",
       code: error.code, message: error.message,
     } };
     throw error;

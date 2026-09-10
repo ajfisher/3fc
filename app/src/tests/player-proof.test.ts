@@ -15,7 +15,11 @@ const calls: Array<{ path: string; body: any }> = [];
 const response = (status: number, body: unknown) => ({ ok: status >= 200 && status < 300, status, async json() { return body; } });
 const previewResponse = (playerId = "xavier") => response(200, { preview: { proofId, expiresAt,
   player: { playerId, nickname: "Xavier" }, league: { name: "League" }, confirmation: "bound-confirmation", alreadyLinked: false },
-  account: { email: "A@example.com" } });
+  account: { id: "account-A", email: "A@example.com" } });
+const accountPreview = (id: string, email = "same@example.com") => response(200, {
+  preview: { proofId, expiresAt, player: { playerId: "xavier", nickname: "Xavier" },
+    league: { name: "League" }, confirmation: `confirmation-${id}`, alreadyLinked: false }, account: { id, email },
+});
 async function settle() { for (let i = 0; i < 15; i += 1) await new Promise<void>((resolve) => setImmediate(resolve)); }
 
 function page(input: { url: string; html?: string; storage?: Map<string, string>; channel?: unknown;
@@ -38,7 +42,7 @@ function page(input: { url: string; html?: string; storage?: Map<string, string>
     if (input.fetch) return input.fetch(path, body);
     return response(200, { preview: { proofId, expiresAt, player: { playerId: "xavier", nickname: "Xavier" },
       league: { leagueId: "league", name: "Melbourne 3FC" }, confirmation: "opaque-account-B-binding", alreadyLinked: false },
-      account: { email: "account-B@example.com" } });
+      account: { id: "account-B", email: "account-B@example.com" } });
   } });
   dom.window.eval(script);
   return { dom, storage, document: dom.window.document, proof: (dom.window as any).ThreeFcPlayerProof };
@@ -50,7 +54,7 @@ for (const path of ["/link-player", "/link-player/"]) {
     const view = page({ url: `${origin}${path}#proofId=${proofId}&secret=${secret}`, fetch: (path) =>
       path.endsWith("/claim") ? response(200, { player: { playerId: "xavier" }, claim: { claimedByCurrentUser: true } })
         : response(200, { preview: { proofId, expiresAt, player: { playerId: "xavier", nickname: "Xavier" }, league: { name: "Melbourne 3FC" },
-          confirmation: "paired-binding", alreadyLinked: false }, account: { email: "B@example.com" } }),
+          confirmation: "paired-binding", alreadyLinked: false }, account: { id: "account-B", email: "B@example.com" } }),
     });
     t.after(() => view.dom.window.close());
     await settle();
@@ -102,7 +106,7 @@ test("private player link preserves the exact request after an uncertain accepta
   const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, fetch: (path, body) => {
     if (path.endsWith("/claim")) { attempts.push(body); throw new Error("response lost"); }
     return response(200, { preview: { proofId, expiresAt, player: { playerId: "xavier", nickname: "Xavier" }, league: { name: "League" },
-      confirmation: "same-binding", alreadyLinked: false }, account: { email: "A@example.com" } });
+      confirmation: "same-binding", alreadyLinked: false }, account: { id: "account-A", email: "A@example.com" } });
   } });
   t.after(() => view.dom.window.close());
   await settle();
@@ -114,6 +118,49 @@ test("private player link preserves the exact request after an uncertain accepta
   assert.deepEqual(attempts[0], attempts[1]);
   assert.match(view.document.getElementById("player-link-status")?.textContent ?? "", /could not be confirmed/);
 });
+
+for (const scenario of ["retry", "reload", "recapture", "same-account", "preview-401", "claim-401"] as const) {
+  test(`private player retained account boundary ${scenario}`, async (t) => {
+    calls.length = 0;
+    let account = "A";
+    let signedIn = true;
+    let email = "same@example.com";
+    const fetch = (path: string) => path.endsWith("/claim")
+      ? response(signedIn ? 409 : 401, { code: "claim_confirmation_changed" })
+      : signedIn ? accountPreview(account, email) : response(401, {});
+    let view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, fetch });
+    t.after(() => view.dom.window.close());
+    await settle();
+    assert.equal(JSON.parse(view.storage.get("threefc.player-proof.v1")!)[0].accountId, "A");
+    const click = (id: string) => { const button = view.document.getElementById(id) as HTMLButtonElement; button.focus(); button.click(); };
+    if (scenario === "claim-401") signedIn = false;
+    click("player-link-confirm"); await settle();
+    if (scenario !== "same-account") account = "B";
+    if (scenario === "preview-401") signedIn = false;
+    if (scenario === "reload" || scenario === "recapture") {
+      const storage = view.storage;
+      view.dom.window.close();
+      view = page({ url: `${origin}/link-player?proofId=${proofId}${scenario === "recapture" ? `#secret=${secret}` : ""}`, storage, fetch });
+    } else if (scenario !== "claim-401") {
+      if (scenario === "same-account") {
+        // A changed email label or renewed confirmation is not another account.
+        email = "renamed@example.com";
+      }
+      click("player-link-retry");
+    }
+    await settle();
+    if (scenario === "same-account") {
+      assert.equal((view.document.getElementById("player-link-confirm") as HTMLButtonElement).hidden, false);
+      assert.equal(JSON.parse(view.storage.get("threefc.player-proof.v1")!)[0].accountId, "A");
+    } else {
+      assert.equal(view.storage.has("threefc.player-proof.v1"), false);
+      assert.equal(await view.proof.read(proofId), null);
+      assert.equal((view.document.getElementById("player-link-confirm") as HTMLButtonElement).hidden, true);
+      assert.match(view.document.getElementById("player-link-status")?.textContent ?? "", /reopen the private link/i);
+      assert.equal(calls.filter(call => call.path.endsWith("/claim")).length, 1);
+    }
+  });
+}
 
 test("private player proof can hand off from the sign-in tab without any secret in its return URL", async (t) => {
   const channels = new Set<Channel>();
@@ -136,6 +183,105 @@ test("private player proof can hand off from the sign-in tab without any secret 
   assert.ok(!signIn.href.includes(record.secret));
   assert.ok(signIn.href.includes(record.proofId));
 });
+
+test("private player binding reaches original holders and cannot be downgraded by handoff", async (t) => {
+  const channels = new Set<Channel>();
+  class Channel {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor(_name: string) { channels.add(this); }
+    postMessage(data: unknown) { for (const channel of channels) if (channel !== this) queueMicrotask(() => channel.onmessage?.({ data })); }
+    close() { channels.delete(this); this.onmessage = null; }
+  }
+  const stamp = Date.now();
+  const storage = new Map([["threefc.player-proof.v1", JSON.stringify([{ proofId, secret, createdAt: stamp, expiresAt: stamp + 7 * 86400_000 }])]]);
+  const source = page({ url: `${origin}/sign-in`, html: renderSignInPage(origin, "/setup"), storage, channel: Channel });
+  const recipient = page({ url: `${origin}/link-player?proofId=${proofId}`, channel: Channel, fetch: () => accountPreview("A") });
+  t.after(() => { source.proof.clear(); source.dom.window.close(); recipient.dom.window.close(); });
+  await settle();
+  assert.equal((await source.proof.read(proofId)).accountId, "A", "original unbound holder receives binding");
+  // attach receives an older unbound object but must retain its stored binding.
+  source.proof.attach({ proofId, secret, createdAt: stamp, expiresAt: stamp + 7 * 86400_000 }, { proofId, expiresAt }, "xavier");
+  assert.equal((await source.proof.read(proofId)).accountId, "A");
+  recipient.dom.window.dispatchEvent(new recipient.dom.window.Event("pagehide"));
+  recipient.dom.window.close();
+  const other = page({ url: `${origin}/link-player?proofId=${proofId}`, channel: Channel, fetch: () => accountPreview("B") });
+  t.after(() => other.dom.window.close());
+  await settle();
+  assert.equal(other.storage.has("threefc.player-proof.v1"), false, "B cannot adopt A's handed-off capability");
+  assert.equal(source.storage.has("threefc.player-proof.v1"), false, "mismatch purges the original holder too");
+  assert.equal((other.document.getElementById("player-link-confirm") as HTMLButtonElement).hidden, true);
+});
+
+test("private player preview cannot overwrite a binding received while it was pending", async (t) => {
+  let channel: any;
+  class Channel {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor(_name: string) { channel = this; }
+    postMessage(_data: unknown) {}
+    close() {}
+  }
+  let release: ((value: unknown) => void) | undefined;
+  const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, channel: Channel,
+    fetch: () => new Promise(resolve => { release = resolve; }) });
+  t.after(() => view.dom.window.close());
+  await settle(); assert(release);
+  channel.onmessage({ data: { version: 1, type: "bound", proofId, accountId: "A" } });
+  release(accountPreview("B")); await settle();
+  assert.equal(view.storage.has("threefc.player-proof.v1"), false);
+  assert.equal((view.document.getElementById("player-link-confirm") as HTMLButtonElement).hidden, true);
+});
+
+test("private player handoff retains binding received before an older unbound response", async (t) => {
+  let channel: any;
+  let handoff: any;
+  class Channel {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor(_name: string) { channel = this; }
+    postMessage(data: any) { if (data.type === "request") handoff = data; }
+    close() {}
+  }
+  const view = page({ url: `${origin}/link-player?proofId=${proofId}`, channel: Channel, fetch: () => accountPreview("B") });
+  t.after(() => view.dom.window.close());
+  await settle(); assert(handoff);
+  channel.onmessage({ data: { version: 1, type: "bound", proofId, accountId: "A" } });
+  const stamp = Date.now();
+  channel.onmessage({ data: { ...handoff, type: "response", record: { proofId, secret, createdAt: stamp, expiresAt: stamp + 7 * 86400_000 } } });
+  await settle();
+  assert.equal(view.storage.has("threefc.player-proof.v1"), false);
+  assert.equal((view.document.getElementById("player-link-confirm") as HTMLButtonElement).hidden, true);
+  assert.match(view.document.getElementById("player-link-status")?.textContent ?? "", /account changed/);
+});
+
+for (const stage of ["preview", "claim"] as const) for (const focus of ["owned", "outside"] as const) {
+  test(`private player bound ${stage}401 offers sign-in and preserves ${focus} focus`, async (t) => {
+    let release: ((value: unknown) => void) | undefined;
+    let rechecking = false;
+    const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, fetch: (path) => {
+      if (path.endsWith("/claim")) return stage === "claim" ? new Promise(resolve => { release = resolve; }) : response(409, {});
+      if (rechecking) return new Promise(resolve => { release = resolve; });
+      return accountPreview("A");
+    } });
+    t.after(() => view.dom.window.close());
+    await settle();
+    const confirm = view.document.getElementById("player-link-confirm") as HTMLButtonElement;
+    confirm.focus(); confirm.click(); await settle();
+    if (stage === "preview") {
+      rechecking = true;
+      const retry = view.document.getElementById("player-link-retry") as HTMLButtonElement;
+      retry.focus(); retry.click(); await settle();
+    }
+    assert(release);
+    const outside = view.document.createElement("button"); view.document.body.append(outside);
+    if (focus === "outside") outside.focus();
+    release(response(401, {})); await settle();
+    const signIn = view.document.getElementById("player-link-signin") as HTMLAnchorElement;
+    assert.equal(signIn.hidden, false);
+    assert.equal(view.document.activeElement, focus === "outside" ? outside : signIn);
+    assert.equal(view.storage.has("threefc.player-proof.v1"), false);
+    assert.ok(!signIn.href.includes(secret));
+    assert.equal((view.document.getElementById("account-actions") as HTMLElement).hidden, true);
+  });
+}
 
 for (const outcome of ["success", "rejected", "wrong-player", "not-claimed"] as const) {
   for (const focus of ["retained", "outside"] as const) {

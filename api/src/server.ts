@@ -3316,7 +3316,7 @@ async function start(): Promise<void> {
               });
             } catch (error) {
               if (error instanceof PlayerProofError) return { statusCode: error.statusCode,
-                payload: { error: "conflict", code: error.code, message: error.message } };
+                payload: { error: error.statusCode === 400 ? "bad_request" : "conflict", code: error.code, message: error.message } };
               if (error instanceof GameJoinRegistrationError) {
                 if (error.code === "game_finished") {
                   return {
