@@ -94,7 +94,9 @@ upload_html_alias() {
   fi
 
   echo "[deploy] Uploading HTML alias /${object_key}"
-  aws s3 cp "$source_path" "s3://${SITE_BUCKET_NAME}/${object_key}" \
+  # s3 cp treats a trailing slash as a prefix and appends the source filename.
+  # put-object preserves the exact route key, including /link-player/.
+  aws s3api put-object --bucket "$SITE_BUCKET_NAME" --key "$object_key" --body "$source_path" \
     --cache-control "no-cache, no-store, must-revalidate" \
     --content-type "text/html; charset=utf-8"
 }

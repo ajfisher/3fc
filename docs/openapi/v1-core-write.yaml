@@ -2245,6 +2245,10 @@ components:
         - joinCode
         - player
       properties:
+        linkingUnavailable:
+          type: boolean
+          enum: [true]
+          description: Registration succeeded while profile linking was disabled. Retry preserves this outcome and does not issue proof retrospectively.
         gameId:
           type: string
         joinCode:

@@ -138,7 +138,12 @@ try {
   console.log("PASS local HTTP organiser invitation lifecycle and stale predecessor checks");
   await stopServer(); await startServer("disabled");
   const fresh = proof();
-  assert.equal((await request(joinPath, { account: null, key: randomUUID(), body: { nickname: "Disabled", claimProof: { proofId: fresh.proofId, verifier: fresh.verifier } } })).status, 503);
+  const disabledJoin = { account: null, key: randomUUID(), body: { nickname: "Disabled", claimProof: { proofId: fresh.proofId, verifier: fresh.verifier } } };
+  const disabledOutcome = await request(joinPath, disabledJoin);
+  assert.equal(disabledOutcome.status, 201);
+  assert.equal(disabledOutcome.body.linkingUnavailable, true);
+  assert.equal(disabledOutcome.body.claimProof, undefined);
+  assert.deepEqual((await request(joinPath, disabledJoin)).body, disabledOutcome.body);
   assert.equal((await request(joinPath, { account: null, key: randomUUID(), body: { nickname: "Still playing" } })).status, 201);
   assert.deepEqual((await request(claimPath, claimOptions[winner])).body, claims[winner].body);
   for (const secret of secrets) assert.equal(serverLogs.includes(secret), false, "bearer secret must never enter local logs");

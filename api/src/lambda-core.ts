@@ -370,6 +370,7 @@ interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "
   }): Promise<{
     game: RepositoryGameRecord;
     claimProof?: { proofId: string; expiresAt: string };
+    linkingUnavailable?: true;
     player: {
       playerId: string;
       nickname: string;
@@ -2961,6 +2962,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               joinCode: joinResult.game.joinCode,
               player: toPublicPlayer(joinResult.player),
               ...(joinResult.claimProof ? { claimProof: joinResult.claimProof } : {}),
+              ...(joinResult.linkingUnavailable ? { linkingUnavailable: true } : {}),
             },
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );

@@ -12,6 +12,12 @@ This document defines the baseline key structure and access patterns for the
 
 ## Core Key Patterns
 
+Disabled-mode proof-bearing joins also write an immutable
+`GAME#<gameId> / JOIN_RECEIPT#<playerId>` (`gameJoinReceipt`). It records the
+request hash and the original no-proof decision atomically with registration.
+It contains no bearer secret, has no TTL, and is separate from mutable roster
+membership. Re-enabling linking cannot retroactively mint proof on replay.
+
 - League metadata:
   - `pk=LEAGUE#{leagueId}`
   - `sk=METADATA`

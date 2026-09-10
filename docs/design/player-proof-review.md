@@ -135,7 +135,22 @@ implementation begins before this parent reaches its required review gate.
 
 ### Rejected findings and evidence
 
-None.
+None. Codex comments3976053681/3976053687 accepted: revocation now checks and
+transactionally fences the active invitation pointer, and disabled-mode web joins
+preserve one registration without issuing proof. A separate immutable hashed
+join receipt preserves that outcome across retries, assignment and mode changes.
+The recipient conflict UI reloads the current link rather than claiming success.
+
+QA run34443498659 exposed a trailing-slash S3 alias403: s3 cp appended the source
+filename. Exact s3api put-object keys replace it, with executable stub-argv and
+failure-propagation coverage. Both URL variants require deployed revalidation.
+
+Refreshed full lint, API/app tests, contracts, review-gate tests and build passed,
+followed by actual local HTTP/DynamoDB acceptance (including disabled-mode web
+payload replay): group97268/session65005 exit0 peak2234000KiB remaining[] tripNone.
+The separately bounded512MiB database was removed and API exit observed.
+Architecture/security cleared the separate immutable receipt design; independent
+design/QA follow-up and new exact-head external evidence are tracked separately.
 
 ## Human judgement
 

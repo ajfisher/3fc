@@ -59,6 +59,10 @@ Only the nonsecret proof ID may travel in authentication return destinations.
   hardened API to suspend new proofs/invitations and first claims. It remains
   possible to join as an unclaimed player and recover confirmed same-owner
   receipts. This switch does not revoke existing sessions or player ownership.
+  Proof-bearing web joins keep the same request and succeed without claim proof;
+  an immutable `GAME#gameId / JOIN_RECEIPT#playerId` hash records that decision.
+  Retries after re-enabling linking return the original unclaimed registration,
+  never a newly minted proof. Roster assignment does not overwrite this receipt.
 - Local Docker configuration accepts the same environment setting. Local and
   Lambda adapters share proof validation and repository behaviour.
 - UI rollback can keep the hardened API, but an older UI cannot perform a new

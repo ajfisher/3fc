@@ -6957,7 +6957,7 @@ for (const disposition of ["confirmed", "lost-response", "purged"] as const) {
   });
 }
 
-for (const ownership of ["retained", "outside"] as const) {
+for (const ownership of ["retained", "outside", "changed"] as const) {
   test(`private profile invitation revoke preserves ${ownership} focus`, async () => {
     const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "invite-revoke", role: "admin" });
     const base = createMockFetch(apiState); let release: (() => void) | undefined;
@@ -6967,7 +6967,9 @@ for (const ownership of ["retained", "outside"] as const) {
         if (String(input).endsWith("/profile-invitation")) return createJsonResponse(200, { invitation: {
           proofId: "existing-profile-proof-123", expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending",
         } });
-        if (String(input).endsWith("/profile-invitation/revoke")) return new Promise<Response>(resolve => { release = () => resolve(createJsonResponse(200, { revoked: true })); });
+        if (String(input).endsWith("/profile-invitation/revoke")) return new Promise<Response>(resolve => { release = () => resolve(ownership === "changed"
+          ? createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" })
+          : createJsonResponse(200, { revoked: true })); });
         return base(input, init);
       },
     });
@@ -6984,7 +6986,13 @@ for (const ownership of ["retained", "outside"] as const) {
       release(); await flushAsync();
       assert.equal(button.hidden, true);
       assert.equal(page.document.activeElement, ownership === "outside" ? outside : page.document.getElementById("player-invitation-status"));
-      assert.equal(page.document.getElementById("player-invitation-status")?.textContent, "Private link revoked.");
+      if (ownership === "changed") {
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /private link changed/);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(button.hidden, false, "reopening refreshes the active link instead of retrying a stale revocation forever");
+        assert.equal(button.disabled, false);
+      } else assert.equal(page.document.getElementById("player-invitation-status")?.textContent, "Private link revoked.");
     } finally { page.dom.window.close(); }
   });
 }
@@ -12176,6 +12184,45 @@ for (const lost of ["503", "network", "malformed"] as const) {
     } finally { page.dom.window.close(); }
   });
 }
+
+test("disabled linking joins once and retains the exact request after a lost reply", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "disabled-join" });
+  apiState.games.get("disabled-join")!.joinCode = "ABCD2345";
+  const base = createMockFetch(apiState);
+  const requests: string[] = [];
+  let committed: Record<string, unknown> | null = null;
+  const page = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      if (String(input).includes("/v1/join/") && init.method === "POST") {
+        requests.push(JSON.stringify([init.headers, init.body]));
+        if (!committed) {
+          committed = await (await base(input, init)).json() as Record<string, unknown>;
+          delete committed.claimProof;
+          committed.linkingUnavailable = true;
+          throw new Error("lost committed reply");
+        }
+        return new Response(JSON.stringify(committed), { status: 201 });
+      }
+      return base(input, init);
+    },
+  });
+  try {
+    const controls = joinEntryControls(page);
+    controls.nickname.value = "Still playing";
+    dispatchSubmit(controls.form); await flushAsync();
+    dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0], requests[1]);
+    assert.equal(page.document.getElementById("join-result-player")?.textContent, "Still playing");
+    assert.equal(controls.claim.hidden, true);
+    assert.match(page.document.getElementById("join-claim-status")?.textContent ?? "", /temporarily unavailable/);
+    dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(requests.length, 2);
+  } finally { page.dom.window.close(); }
+});
 
 test("results entry linking navigation never repeats a confirmed registration or auto-claims", async () => {
   const apiState = createMockApiState();

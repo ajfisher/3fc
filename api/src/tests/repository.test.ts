@@ -510,12 +510,51 @@ test("player proof: disabled mode retains confirmed receipts but blocks fresh pr
   await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: proof });
   const disabled = new ThreeFcRepository(client, "proof-test", clock, "disabled");
   await assert.rejects(disabled.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" }), PlayerProofError);
-  await assert.rejects(disabled.joinGameByCode({ joinCode: game.joinCode, playerId: "new", nickname: "New", claimProof: newClaimProof() }), PlayerProofError);
+  const disabledProof = newClaimProof();
+  const disabledInput = { joinCode: game.joinCode, playerId: "new", nickname: "New", claimProof: disabledProof };
+  const unclaimed = await disabled.joinGameByCode(disabledInput);
+  assert.equal(unclaimed?.linkingUnavailable, true);
+  assert.equal(unclaimed?.claimProof, undefined);
+  assert.equal(client.readItem(`PLAYER_PROOF#${disabledProof.proofId}`, "METADATA"), undefined);
+  assert.deepEqual(await disabled.joinGameByCode(disabledInput), unclaimed);
+  assert.deepEqual(await repository.joinGameByCode(disabledInput), unclaimed);
+  await assert.rejects(repository.joinGameByCode({ ...disabledInput, claimProof: newClaimProof() }));
+  await repository.linkGamePlayer({ gameId: game.gameId, playerId: "new" });
+  assert.equal((await repository.joinGameByCode(disabledInput))?.linkingUnavailable, true);
+  assert.equal(client.readItem(`PLAYER_PROOF#${disabledProof.proofId}`, "METADATA"), undefined);
+  assert.equal((await disabled.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: proof }))?.claimProof?.proofId, proof.proofId);
   assert(await disabled.joinGameByCode({ joinCode: game.joinCode, playerId: "unclaimed", nickname: "New" }));
   const preview = await repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" });
   const input = { playerId: "self", userId: "owner", sessionId: "session", proof: { ...proof, confirmation: preview.confirmation } };
   const committed = await repository.claimPlayer(input);
   assert.deepEqual(await disabled.claimPlayer(input), committed);
+});
+
+test("player proof: revocation fences replacement before read and at transaction", async () => {
+  for (const phase of ["before", "transaction", "missing", "old-revoked", "old-deleted"]) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const context = { gameId: "proof-game", playerId: "participant", userIds: ["organiser"] };
+    const first = newClaimProof(); const second = newClaimProof();
+    await repository.createPlayerInvitation({ ...context, ...first });
+    if (phase === "old-revoked") {
+      await repository.revokePlayerInvitation({ ...context, proofId: first.proofId });
+      await repository.revokePlayerInvitation({ ...context, proofId: first.proofId });
+    }
+    if (phase === "transaction") {
+      client.runBeforeNextPut(() => client.deleteItem("PLAYER#participant", "CLAIM_INVITATION"));
+    } else if (phase === "missing") client.deleteItem("PLAYER#participant", "CLAIM_INVITATION");
+    else {
+      await repository.createPlayerInvitation({ ...context, ...second, replacesProofId: first.proofId });
+      if (phase === "old-deleted") client.deleteItem(`PLAYER_PROOF#${first.proofId}`, "METADATA");
+    }
+    await assert.rejects(repository.revokePlayerInvitation({ ...context, proofId: first.proofId }),
+      (error: unknown) => error instanceof PlayerProofError && error.code === "claim_invite_changed");
+    if (phase !== "transaction" && phase !== "missing") {
+      assert.equal((await repository.previewPlayerProof({ ...second, userId: "xavier", sessionId: "session" })).player.nickname, "Xavier");
+    }
+    assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
+  }
 });
 
 test("player proof: competing accounts converge on exactly one ownership receipt", async () => {

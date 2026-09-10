@@ -5310,7 +5310,18 @@
         invitationMetadata.state = "revoked"; invitationLink.value = "";
         invitationRevokeUnconfirmed = false;
         invitationMessage("Private link revoked.");
-      } catch { if (generation === invitationGeneration) { invitationRevokeUnconfirmed = true; invitationMessage("Revocation could not be confirmed. Try again to revoke the same link.", true); } }
+      } catch (error) {
+        if (generation === invitationGeneration) {
+          if (error.statusCode === 409) {
+            invitationRevokeUnconfirmed = false; invitationLoaded = false;
+            invitationMetadata = null; invitationLink.value = "";
+            invitationMessage("The private link changed. Close this panel and check the current link before revoking it.", true);
+          } else {
+            invitationRevokeUnconfirmed = true;
+            invitationMessage("Revocation could not be confirmed. Try again to revoke the same link.", true);
+          }
+        }
+      }
       finally {
         const owned = finishFocus();
         if (generation === invitationGeneration) {
@@ -6443,6 +6454,7 @@
     let claimPlayerId = usableEntityId(queryPlayerId) ? queryPlayerId : "";
     entryClaimPlayerId = claimPlayerId || null;
     let joinAttempt = null;
+    let linkingUnavailable = false;
     let joinPending = false;
     let joined = false;
     let claimPending = false;
@@ -6531,6 +6543,13 @@
     }
 
     async function refreshClaimActions(playerId) {
+      if (linkingUnavailable) {
+        claimButton.hidden = true;
+        if (signInLink instanceof HTMLElement) signInLink.hidden = true;
+        if (claimActions instanceof HTMLElement) claimActions.hidden = false;
+        claimMessage("You’ve joined the game. Linking your player profile is temporarily unavailable.");
+        return;
+      }
       if (contextLookupPending) return;
       contextLookupPending = true;
       const lookupRevision = ++contextLookupRevision;
@@ -6647,6 +6666,7 @@
       entryClaimPlayerId = null;
       joined = false;
       claimComplete = false;
+      linkingUnavailable = false;
       claimMessage("");
       if (resultElement) resultElement.hidden = true;
       if (claimActions instanceof HTMLElement) claimActions.hidden = true;
@@ -6700,6 +6720,7 @@
           (result.joinCode !== undefined && result.joinCode !== joinCode) ||
           (result.link !== undefined && (result.link?.gameId !== result.gameId || result.link?.playerId !== result.player.playerId))) throw new Error("join_unconfirmed");
         joined = true;
+        linkingUnavailable = result.linkingUnavailable === true;
         joinAttempt = null;
         clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
         claimPlayerId = result.player.playerId;

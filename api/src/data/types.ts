@@ -314,6 +314,7 @@ export interface JoinGameByCodeInput {
 }
 
 export interface JoinGameByCodeResult {
+  linkingUnavailable?: true;
   game: GameRecord;
   player: PlayerRecord;
   link: GamePlayerRecord;

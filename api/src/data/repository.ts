@@ -138,6 +138,7 @@ const ENTITY_TYPE = {
   playerClaim: "playerClaim",
   playerProof: "playerProof",
   playerProofPointer: "playerProofPointer",
+  gameJoinReceipt: "gameJoinReceipt",
   acl: "acl",
   leagueInvite: "leagueInvite",
   leagueInvitePointer: "leagueInvitePointer",
@@ -2010,7 +2011,6 @@ export class ThreeFcRepository {
     requireNonEmpty("playerId", input.playerId);
     requireNonEmpty("nickname", input.nickname);
     if (input.claimProof) {
-      requirePlayerClaimEnabled(this.playerClaimMode);
       this.validateProofCreation(input.claimProof);
     }
 
@@ -2062,13 +2062,15 @@ export class ThreeFcRepository {
       gameId: game.gameId,
       playerId: input.playerId,
     };
-    const leagueItem = input.claimProof
+    const linkingUnavailable = Boolean(input.claimProof && this.playerClaimMode === "disabled");
+    const issueProof = input.claimProof && !linkingUnavailable;
+    const leagueItem = issueProof
       ? await this.getEntity(leaguePk(game.leagueId), metadataSk(), { consistentRead: true }) : null;
-    if (input.claimProof && (!leagueItem || leagueItem.entityType !== ENTITY_TYPE.league)) {
+    if (issueProof && (!leagueItem || leagueItem.entityType !== ENTITY_TYPE.league)) {
       throw new PlayerProofError("claim_context_unavailable", 409, "This game is no longer available to join.");
     }
-    const claimProof: PlayerProofRecord | undefined = input.claimProof ? {
-      proofId: input.claimProof.proofId, verifier: input.claimProof.verifier,
+    const claimProof: PlayerProofRecord | undefined = issueProof ? {
+      proofId: input.claimProof!.proofId, verifier: input.claimProof!.verifier,
       kind: "registration", playerId: input.playerId, gameId: game.gameId,
       leagueId: game.leagueId, leagueName: (leagueItem!.data as LeagueRecord).name,
       playerRevision: createHash("sha256").update(JSON.stringify([JSON.stringify(playerPayload), now, now])).digest("hex"),
@@ -2081,6 +2083,14 @@ export class ThreeFcRepository {
         new TransactWriteItemsCommand({
           TransactItems: [
             ...(claimProof ? [this.proofWrite(claimProof, now), this.buildConditionalCheckFromStoredEntity(leagueItem!)] : []),
+            ...(linkingUnavailable ? [{ Put: {
+              TableName: this.tableName,
+              Item: buildItem(gamePk(game.gameId), `JOIN_RECEIPT#${input.playerId}`, "gameJoinReceipt", {
+                requestHash: createHash("sha256").update(JSON.stringify([input.nickname, input.claimProof!.proofId, input.claimProof!.verifier])).digest("hex"),
+                linkingUnavailable: true,
+              }, now),
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            } }] : []),
             {
               ConditionCheck: {
                 TableName: this.tableName,
@@ -2167,6 +2177,7 @@ export class ThreeFcRepository {
       player: withTimestamps(playerPayload, now, now),
       link: withTimestamps(linkPayload, now, now),
       ...(claimProof ? { claimProof: this.proofMetadata(claimProof) } : {}),
+      ...(linkingUnavailable ? { linkingUnavailable: true as const } : {}),
     };
   }
 
@@ -2208,6 +2219,18 @@ export class ThreeFcRepository {
     }
 
     let proof: PlayerProofRecord | undefined;
+    const disabledReceipt = await this.getEntity(gamePk(input.game.gameId), `JOIN_RECEIPT#${input.playerId}`, { consistentRead: true });
+    const disabledHash = disabledReceipt?.entityType === "gameJoinReceipt"
+      ? (disabledReceipt.data as { requestHash: string }).requestHash : undefined;
+    if (disabledHash) {
+      if (!input.claimProof || !secureEqual(disabledHash, createHash("sha256").update(JSON.stringify([
+        input.nickname, input.claimProof.proofId, input.claimProof.verifier,
+      ])).digest("hex"))) return null;
+      // The original no-proof outcome survives mode changes and lost replies.
+      // Never mint a capability retroactively onto this registration.
+      return { game: input.game, player, link: { gameId: link.gameId, playerId: link.playerId,
+        createdAt: link.createdAt, updatedAt: link.updatedAt }, linkingUnavailable: true };
+    }
     if (input.claimProof) {
       const item = await this.getEntity(this.playerProofKey(input.claimProof.proofId), metadataSk(), { consistentRead: true });
       if (!item || item.entityType !== ENTITY_TYPE.playerProof) return null;
@@ -3321,6 +3344,10 @@ export class ThreeFcRepository {
 
   async revokePlayerInvitation(input: { gameId: string; playerId: string; userIds: readonly string[]; proofId: string }): Promise<void> {
     const context = await this.invitationAuthority(input);
+    const pointer = await this.getEntity(playerPk(input.playerId), "CLAIM_INVITATION", { consistentRead: true });
+    if ((pointer?.data as { proofId?: string } | undefined)?.proofId !== input.proofId) {
+      throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
+    }
     const item = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
     if (!item || item.entityType !== ENTITY_TYPE.playerProof) return;
     const proof = item.data as PlayerProofRecord;
@@ -3332,6 +3359,7 @@ export class ThreeFcRepository {
     try {
       await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
         ...Object.values(context).map((value) => this.buildConditionalCheckFromStoredEntity(value)),
+        this.buildConditionalCheckFromStoredEntity(pointer!),
         this.proofWrite({ ...proof, state: "revoked" }, now, item),
       ] }));
     } catch (error) {

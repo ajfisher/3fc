@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 const serverlessCoreConfig = readFileSync(resolve(process.cwd(), "../serverless.api-core.yml"), "utf8");
 const applicationTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/application/main.tf"), "utf8");
@@ -9,6 +10,25 @@ const productionTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/
 const siteDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
 const apiDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-app.sh"), "utf8");
 const qaWorkflow = readFileSync(resolve(process.cwd(), "../.github/workflows/deploy-qa.yml"), "utf8");
+
+test("HTML alias upload preserves exact S3 keys and propagates failure", () => {
+  const helper = siteDeployScript.slice(siteDeployScript.indexOf("upload_html_alias() {"),
+    siteDeployScript.indexOf('\necho "[deploy] Uploading extensionless route aliases"'));
+  for (const key of ["link-player", "link-player/"]) {
+    // Stub the file predicate so this isolates argument semantics without files or AWS.
+    const body = helper.replace('if [[ ! -f "$source_path" ]]; then', 'if false; then');
+    const args = ["-c", `set -euo pipefail\n${body}\naws() { printf '%s\\0' "$@"; }\nSITE_BUCKET_NAME=test-bucket\nupload_html_alias '/tmp/profile shell/index.html' '${key}'`];
+    const result = spawnSync("bash", args, { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const argv = result.stdout.slice(result.stdout.indexOf("\n") + 1).split("\0").slice(0, -1);
+    assert.deepEqual(argv, ["s3api", "put-object", "--bucket", "test-bucket", "--key", key,
+      "--body", "/tmp/profile shell/index.html", "--cache-control", "no-cache, no-store, must-revalidate",
+      "--content-type", "text/html; charset=utf-8"]);
+    const failure = spawnSync("bash", ["-c", `set -euo pipefail\n${body}\naws() { return 27; }\nSITE_BUCKET_NAME=test-bucket\nupload_html_alias '/tmp/profile shell/index.html' '${key}'\necho should-not-run`], { encoding: "utf8" });
+    assert.equal(failure.status, 27);
+    assert.ok(!failure.stdout.includes("should-not-run"));
+  }
+});
 
 test("QA and production harden the API before publishing the proof-aware site", () => {
   for (const environment of ["qa", "prod"]) {

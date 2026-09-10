@@ -3360,6 +3360,7 @@ async function start(): Promise<void> {
                 joinCode: joinResult.game.joinCode,
                 player: toPublicPlayer(joinResult.player),
                 ...(joinResult.claimProof ? { claimProof: joinResult.claimProof } : {}),
+                ...(joinResult.linkingUnavailable ? { linkingUnavailable: true } : {}),
               },
             };
           },
