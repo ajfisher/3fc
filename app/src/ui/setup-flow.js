@@ -5217,7 +5217,7 @@
       const canIssue = invitationLoaded && currentLeagueRole === "admin" && !refreshAccountLocked;
       invitationCreate.disabled = invitationPending || !canIssue || invitationRevokeUnconfirmed;
       invitationClose.disabled = invitationPending;
-      invitationCopy.disabled = invitationPending;
+      invitationCopy.disabled = invitationPending || Boolean(invitationAttempt) || !invitationLoaded;
       invitationRevoke.disabled = invitationPending || !canIssue || Boolean(invitationAttempt);
       invitationCreate.textContent = invitationAttempt ? "Retry link creation" : invitationMetadata ? "Replace private link" : "Create private link";
       invitationRevoke.hidden = !invitationMetadata || invitationMetadata.state !== "pending";
@@ -5270,6 +5270,7 @@
       if (invitationPending || !invitationLoaded || invitationRevokeUnconfirmed || currentLeagueRole !== "admin" || refreshAccountLocked) return;
       if (!invitationAttempt && invitationMetadata && !window.confirm("Replace this private link? The previous link will stop working. Share the new link privately.")) return;
       const generation = invitationGeneration;
+      invitationLink.value = "";
       invitationPending = true; renderInvitation(); invitationMessage("Creating private link…");
       try {
         if (!invitationAttempt) {
@@ -5287,8 +5288,9 @@
         invitationMessage(`Private link created. It expires on ${new Date(result.invitation.expiresAt).toLocaleString()}.`);
       } catch (error) {
         if (generation !== invitationGeneration) return;
-        if (invitationAttempt && !invitationAttempt.uncertain && [400, 401, 403, 404, 409].includes(error.statusCode)) {
-          invitationAttempt = null; invitationLoaded = false;
+        if (invitationAttempt && ((!invitationAttempt.uncertain && [400, 401, 403, 404, 409].includes(error.statusCode)) ||
+            (error.statusCode === 409 && error.responseCode === "claim_invite_changed"))) {
+          invitationAttempt = null; invitationLoaded = false; invitationLink.value = "";
           invitationMessage("This player or its private link changed. Close this panel and check it again.", true);
         } else {
           if (invitationAttempt) invitationAttempt.uncertain = true;
@@ -6168,6 +6170,7 @@
     }
 
     function lockRefreshAccount(message) {
+      window.ThreeFcPlayerProof?.clear();
       refreshAccountLocked = true;
       authorityRevision += 1;
       currentLeagueRole = null;

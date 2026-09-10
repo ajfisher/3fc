@@ -573,6 +573,25 @@ test("player proof: revoked and missing receipt retries still fence the active p
   }
 });
 
+test("player proof: creation replay rejects revoked, replaced, consumed and raced invitations", async () => {
+  for (const state of ["revoked", "replaced", "consumed", "race"]) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const credential = newClaimProof();
+    const input = { gameId: "proof-game", playerId: "participant", userIds: ["organiser"], ...credential };
+    await repository.createPlayerInvitation(input);
+    if (state === "revoked") await repository.revokePlayerInvitation(input);
+    if (state === "replaced") await repository.createPlayerInvitation({ ...input, ...newClaimProof(), replacesProofId: input.proofId });
+    if (state === "consumed") {
+      const preview = await repository.previewPlayerProof({ ...credential, userId: "owner", sessionId: "owner-session" });
+      await repository.claimPlayer({ playerId: "participant", userId: "owner", sessionId: "owner-session", proof: { ...credential, confirmation: preview.confirmation } });
+    }
+    if (state === "race") client.runBeforeNextPut(() => client.deleteItem("PLAYER#participant", "CLAIM_INVITATION"));
+    await assert.rejects(repository.createPlayerInvitation(input),
+      (error: unknown) => error instanceof PlayerProofError && error.code === "claim_invite_changed");
+  }
+});
+
 test("player proof: competing accounts converge on exactly one ownership receipt", async () => {
   const { repository, client, game } = await proofHarness();
   const proof = newClaimProof();

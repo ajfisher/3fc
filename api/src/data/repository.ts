@@ -3270,6 +3270,26 @@ export class ThreeFcRepository {
     throw new PlayerProofError("claim_invite_forbidden", 403, "Only a league organiser can manage profile links.");
   }
 
+  private async replayPlayerInvitation(stored: StoredEntity<unknown>): Promise<PlayerProofMetadata> {
+    const proof = stored.data as PlayerProofRecord;
+    try {
+      const context = await this.readProofContext(proof);
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...context.checks, this.buildConditionalCheckFromStoredEntity(context.player),
+        this.buildConditionalCheckFromStoredEntity(stored),
+      ] }));
+      if (Date.parse(proof.expiresAt) <= Date.parse(this.clock.now())) {
+        throw new PlayerProofError("claim_invite_changed", 409, "This profile link has expired. Check it before trying again.");
+      }
+      return this.proofMetadata(proof);
+    } catch (error) {
+      if (error instanceof PlayerProofError || isConditionalWriteFailure(error)) {
+        throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
+      }
+      throw error;
+    }
+  }
+
   async createPlayerInvitation(input: PlayerProofCreation & {
     gameId: string; playerId: string; userIds: readonly string[]; replacesProofId?: string | null;
   }): Promise<PlayerProofMetadata> {
@@ -3284,7 +3304,7 @@ export class ThreeFcRepository {
       if (existing.entityType === ENTITY_TYPE.playerProof && proof.kind === "invitation" &&
           proof.playerId === input.playerId && proof.gameId === input.gameId && proof.issuerAclUserId === issuerAclUserId &&
           proof.replacesProofId === (input.replacesProofId ?? null) &&
-          secureEqual(proof.verifier, input.verifier)) return this.proofMetadata(proof);
+          secureEqual(proof.verifier, input.verifier)) return this.replayPlayerInvitation(existing);
       throw new PlayerProofError("claim_request_changed", 409, "This profile-link request changed. Start a new request.");
     }
     if ((context.player.data as PlayerRecord).claimedByUserId !== null) {
@@ -3318,9 +3338,9 @@ export class ThreeFcRepository {
       if (!isConditionalWriteFailure(error)) throw error;
       const replay = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
       const data = replay?.data as PlayerProofRecord | undefined;
-      if (data && data.playerId === input.playerId && data.gameId === input.gameId && data.issuerAclUserId === issuerAclUserId &&
+      if (replay?.entityType === ENTITY_TYPE.playerProof && data?.kind === "invitation" && data.playerId === input.playerId && data.gameId === input.gameId && data.issuerAclUserId === issuerAclUserId &&
           data.replacesProofId === (input.replacesProofId ?? null) &&
-          secureEqual(data.verifier, input.verifier)) return this.proofMetadata(data);
+          secureEqual(data.verifier, input.verifier)) return this.replayPlayerInvitation(replay);
       throw new PlayerProofError("claim_invite_changed", 409, "The player or organiser access changed. Check the player before trying again.");
     }
     return this.proofMetadata(proof);

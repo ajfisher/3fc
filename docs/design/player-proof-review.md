@@ -19,9 +19,9 @@ returning-player joining #161 remain separate children, not claimed complete her
 | Hash-only seven-day proofs and durable atomic same-owner outcome | 9 focused repository proof cases; real disposable DynamoDB concurrent acquisition returns exactly one owner; consumed receipt loses TTL | PASS locally |
 | Organiser-only invitation, predecessor checks, revocation and authority/revision races | Repository transaction-boundary tests; actual local HTTP invitation lifecycle; organiser panel tests | PASS locally |
 | Secret-safe sign-in continuation and logout/account-switch purge | Early fragment scrub, session storage + bounded same-origin handoff, no secret in return URL; native WebCrypto recipient tests; pending-response purge tests | PASS locally |
-| Truthful retries, keyboard continuation and preserved existing gameplay | 462 complete setup interactions, 532 full app tests, 21 native-WebCrypto recipient tests, complete API suite and repository tests passed | PASS locally |
+| Truthful retries, keyboard continuation and preserved existing gameplay | Complete setup interactions, full app/API suites, native-WebCrypto recipient tests and repository race tests; invitation replacement clears obsolete copyable links before dispatch | PASS locally |
 | Local/Lambda/deployment compatibility and containment | OpenAPI, Serverless routes, shared repository/handler, static object aliases; actual local HTTP disabled-mode restart; docs/runbooks/player-claim-proof.md | PASS locally |
-| Exact-head CI, independent GitHub review and deployed acceptance | Pending publication; dedicated AWS profile refresh required for disposable QA account fixtures | PENDING |
+| Exact-head CI, independent GitHub review and deployed acceptance | Previous head 3640595 passed CI34448514974, QA34448514988 and isolated browser/API acceptance; refreshed evidence required for the account-switch/replay fixes | PENDING new head |
 
 ## Scope boundaries
 
@@ -132,6 +132,27 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 
 New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.
+
+Codex comments3976509993/3976510001 accepted: detected cookie-account changes
+now purge retained bearer proofs and stop handoffs. Invitation-creation replay
+checks eligibility and transactionally fences the current proof, pointer, profile
+and authority; revoked/replaced/consumed/raced requests return claim_invite_changed.
+An authoritative changed response retires even a previously uncertain request.
+QA additionally found an obsolete displayed link surviving a lost replacement
+response: replacement now clears it before dispatch and disables Copy throughout
+uncertainty. Tests start with an actually displayed link and verify exact-request
+retry without resurfacing it. Architecture/security and QA cleared these fixes.
+
+Focused invitation regressions passed group5439/session30546: eight tests,
+exit0, peak399312KiB, remaining[], tripNone. A subsequent affected-file command
+used the repository root instead of the required app working directory, failed
+with ENOENT, and exited with no remaining workers; the corrected run is tracked
+separately. This was a command-path error, not a resource anomaly.
+
+Corrected affected-file and full serial lint/API/app/contracts/review-gate/build
+validation passed group5542/session69375: exit0, peak2187616KiB, remaining[],
+tripNone. Real local HTTP/DynamoDB acceptance for the account/replay changes also
+passed group3219/session47161, peak2026608KiB, with API/container cleanup verified.
 
 Codex follow-up3976413105 accepted: even revoked/consumed/TTL-missing invitation
 retries now transact pointer/context checks and an unchanged-proof or absence

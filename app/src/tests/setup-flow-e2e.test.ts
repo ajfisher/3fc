@@ -6893,7 +6893,7 @@ test("game roster reconciles a committed transfer when refresh fails", async () 
   );
 });
 
-for (const disposition of ["confirmed", "lost-response", "purged"] as const) {
+for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "purged"] as const) {
   test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
     const apiState = createMockApiState();
     seedGoalScoringGame(apiState, { gameId: "profile-invitation", role: "admin" });
@@ -6910,9 +6910,12 @@ for (const disposition of ["confirmed", "lost-response", "purged"] as const) {
         if (init.method === "GET") { reads += 1; return createJsonResponse(200, { invitation: metadata }); }
         writes.push(String(init.body));
         const body = JSON.parse(String(init.body));
-        metadata ??= { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+        if (metadata?.proofId !== body.proofId) metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
         if (disposition === "purged") return new Promise<Response>(resolve => { release = resolve; });
-        if (disposition === "lost-response" && writes.length === 1) throw new Error("response lost");
+        if (["lost-response", "changed-after-loss"].includes(disposition) && writes.length === 1) throw new Error("response lost");
+        if (disposition === "changed-after-loss") return createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" });
+        if (disposition === "replacement-loss" && writes.length === 2) throw new Error("replacement committed; response lost");
+        if (disposition === "replacement-loss" && writes.length > 2) return createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" });
         return createJsonResponse(201, { invitation: metadata });
       },
     });
@@ -6930,11 +6933,33 @@ for (const disposition of ["confirmed", "lost-response", "purged"] as const) {
       dispatchClick(create); dispatchClick(create);
       for (let tick = 0; tick < 100 && writes.length === 0; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
       await flushAsync(); assert.equal(writes.length, 1);
-      if (disposition === "lost-response") {
+      if (disposition === "replacement-loss") {
+        assert.notEqual(link.value, "");
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 2);
+        assert.equal(link.value, "", "old link is hidden once replacement dispatches");
+        assert.equal((page.document.getElementById("player-invitation-copy") as HTMLButtonElement).hidden, true);
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 3); assert.equal(writes[1], writes[2]);
+        assert.equal(link.value, "");
+        assert.equal((page.document.getElementById("player-invitation-copy") as HTMLButtonElement).hidden, true);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /private link changed/);
+        return;
+      }
+      if (disposition === "lost-response" || disposition === "changed-after-loss") {
         assert.equal(create.textContent, "Retry link creation");
         assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /same request/);
         dispatchClick(create); await flushAsync();
         assert.equal(writes.length, 2); assert.equal(writes[0], writes[1]);
+      }
+      if (disposition === "changed-after-loss") {
+        assert.equal(link.value, "");
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /private link changed/);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(reads, 2); assert.equal(create.disabled, false);
+        return;
       }
       if (disposition === "purged") {
         assert(release);
@@ -14869,6 +14894,9 @@ for (const heldAt of ["full-game", "full-roster", "short-goals"] as const) {
       const controls = liveGoalControls(page); controls.draft(); controls.scorer.focus();
       const beforeTitle = page.document.getElementById("game-title")?.textContent;
       const beforeScores = ux10Scores(page);
+      const proofStore = (page.window as unknown as { ThreeFcPlayerProof: { create(operation: string): Promise<{ proofId: string; secret: string }> } }).ThreeFcPlayerProof;
+      const retainedProof = await proofStore.create(`account-switch-${heldAt}`);
+      assert(page.window.sessionStorage.getItem("threefc.player-proof.v1")?.includes(retainedProof.secret));
       assert(page.document.querySelector('[data-action="grant-player-access"]'));
       const appliedIds: string[] = []; const appliedTitles: Array<string | null> = [];
       observer = new page.window.MutationObserver(() => {
@@ -14889,6 +14917,7 @@ for (const heldAt of ["full-game", "full-roster", "short-goals"] as const) {
       apiState.cookieJar = "threefc_session=new-admin-session";
       grantMockLeagueAccess(apiState, "three-sided-football-club", "new-admin@example.com", "admin");
       release(); await flushAsync();
+      assert.equal(page.window.sessionStorage.getItem("threefc.player-proof.v1"), null, "detected cookie switch purges retained bearer proofs");
       assert.equal(reads.filter(path => path === "/v1/auth/session").length, heldAt === "short-goals" ? 1 : 2);
       assert.equal(reads.at(-1), "/v1/auth/session", "the final session response fences all already-staged match and authority reads");
       assert.equal(appliedIds.includes("must-not-apply-after-account-switch"), false, "the invalid batch must not render even transiently");
