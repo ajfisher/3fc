@@ -43,6 +43,13 @@ sign-in completion or fresh registration auto-claims. Existing ownership is
 preserved; same-owner retries are safe. Another owner produces neutral organiser
 recovery, not a promise that changing accounts fixes it.
 
+Fresh-registration proof is issued only by the public self-join route
+POST /v1/join/{joinCode}, whether the visitor is signed in or anonymous.
+Protected organiser/scorer quick-create, league-player creation, assignment and
+existing-player attachment must reject proof-minting fields and issue no ownership
+proof. Creating another participant is not evidence of self-registration. Those
+records require a deliberate organiser-issued private invitation.
+
 Use a browser-generated cryptographic 256-bit secret and random proof identifier.
 Persist the pending secret in tab sessionStorage before dispatch; send only its
 SHA-256 verifier when creating registration proof or an organiser invitation.
@@ -77,9 +84,16 @@ Acceptance atomically checks persisted expiry, unused/replay state and profile
 revision. Organiser invitations additionally check the issuer's still-current ACL;
 fresh-registration proofs instead check their exact original player/registration
 binding (they have no issuing organiser). Consumption and ownership/user-index
-recording are one transaction. Same-account lost-response replay returns committed success
-without transferring ownership. Expired/revoked/replaced proofs cannot create a
-new claim. Preview supplies an opaque account/session confirmation binding;
+recording are one transaction. Authenticate the request, validate its secret and
+confirmed account binding, then check for a consumed receipt first. An exact
+same-account consumed-proof replay returns its immutable committed result before
+expiry, issuer ACL, replacement/revocation or later profile-revision gates. Another
+account cannot replay it. Keep the hash-only consumed receipt durably, without an
+unused-proof TTL; replay never writes ownership or revives a session. Only an
+unconsumed proof must pass all current eligibility checks. Expired/revoked/replaced
+proofs cannot create a new claim. Preview follows the same consumed-receipt rule
+so an authenticated owner can obtain a fresh session binding for recovery.
+Preview supplies an opaque account/session confirmation binding;
 acceptance must carry it and the server compares it against the authenticated
 account/session, rejecting a cookie switch even after a successful client probe.
 A changed account requires renewed confirmation, never attribution to the new
@@ -88,8 +102,19 @@ cookie's owner. Issuing/accepting invitations never changes league ACL.
 Replace every proofless first-claim path in both local and Lambda adapters. An old
 client may register without proof but cannot claim without it; show actionable
 recovery. New clients against an older API detect missing proof support and leave
-the joined record unclaimed rather than retrying the unsafe endpoint. Rollback
-can disable new invitations, never re-enable proofless claiming.
+the joined record unclaimed rather than retrying the unsafe endpoint.
+
+PR1 must implement a deployed PLAYER_CLAIM_MODE=proof|disabled switch, defaulting
+to proof and rejecting unknown values at startup. disabled rejects first-claim
+acquisition and new proof/invitation issuance through every path, while retaining
+safe same-owner receipt reads, existing ownership, sign-in and ordinary unclaimed
+registration. It is an emergency containment mode, not a legacy compatibility
+bypass. Preserve the proof-enforcing API artifact and its configuration in the
+release evidence. UI rollback may use the previous UI against that API; API
+recovery is forward-only from the hardened baseline (optionally disabled), never
+deployment of the pre-PR1 proofless API. Test the disabled local/Lambda routes,
+old-UI/hardened-API combination and deployment configuration. If the hardened API
+cannot run, fail claims closed rather than restoring an unsafe binary.
 
 ## Canonical identity and membership
 
@@ -209,6 +234,15 @@ account/session binding; deletion-inclusive membership fencing; paginated databa
 evidence; existing finished-game joining. These are requirements for later feature
 tests, not claims that the implementation exists. Both blocking review ambiguities
 (proof expiry/type and cookie-switch binding) were corrected and re-reviewed.
+
+GitHub Codex review 5162701963 at 37149e5 identified four further contract gaps:
+protected creation must not mint self-join proof; the canonical backlog must
+require server account binding; consumed receipts need precedence over mutable
+eligibility checks; and rollback needs a deployable fail-closed mechanism.
+All four are incorporated above and in M3-07 acceptance/tests. Independent
+architecture/security and engineering/QA re-review cleared the corrections.
+PR1 must validate session/binding before any generic idempotency replay and remove
+unused-proof TTL atomically when recording a durable consumed receipt.
 
 No design or production dependency was added. PR0 changes only this specification
 and canonical/generated backlog files. Reverting its documents cannot revert GHI

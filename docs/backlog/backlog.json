@@ -2492,10 +2492,12 @@
       "summary": "Activate ownership-proof hardening and usable private shareable profile invitations for existing and newly registered players.",
       "scope": [
         "Proof-enforced first claims in every local/Lambda path; preserve existing ownership and same-owner replay.",
-        "Browser-generated256-bit proof secret with stored SHA-256 verifier; atomic fresh registration/proof metadata; no secret in idempotency responses.",
+        "Browser-generated256-bit proof secret with stored SHA-256 verifier; only public self-join POST /v1/join/{joinCode} may atomically mint fresh registration proof; protected quick-create, league creation and attachment reject proof fields and issue none. No secret in idempotency responses.",
         "Organiser-only exact-profile private invitations, seven-day expiry, explicit creation/replacement/revocation and recipient confirmation; transactional issuer ACL checks.",
         "Fragment scrubbing, bounded tab-local secret storage and best-effort same-origin tab handoff through sign-in; explicit safe recovery if original proof is lost.",
-        "Usable game-player menu/panel and recipient flow before the league directory exists; all claims require explicit confirmation."
+        "Usable game-player menu/panel and recipient flow before the league directory exists; all claims require explicit confirmation.",
+        "Seven-day persisted eligibility expiry for both proof kinds; durable hash-only consumed receipt with same-owner replay precedence over later expiry/ACL/revocation/revision changes.",
+        "Deploy PLAYER_CLAIM_MODE=proof|disabled with proof default and invalid-value startup rejection. Emergency disabled mode blocks new proofs/invites/first claims while preserving existing owners and safe receipt recovery; UI rollback retains hardened API, API recovery is forward-only from that baseline. Never deploy legacy proofless API."
       ],
       "outOfScope": [
         "Nickname identity inference, email-bound invitations, account discovery, organiser permission changes.",
@@ -2505,16 +2507,22 @@
       "acceptanceCriteria": [
         "Knowing player ID and being authenticated cannot acquire an unclaimed profile through any route.",
         "Only hashes are persisted; committed join response loss preserves original proof and idempotency.",
-        "No preview, page load or sign-in consumes proof; account shown before explicit confirmation.",
+        "No preview, page load or sign-in consumes proof; account shown before explicit confirmation. Server compares an opaque confirmation account/session binding to the request's resolved session and rejects intervening cookie switches, not just a frontend probe.",
         "Expiry/revoke/replace/issuer-demotion and changed revision block acquisition; same-owner confirmed replay safe.",
-        "Local/Lambda, contracts, browser auth return and deployed routes have equivalent security and recovery."
+        "Local/Lambda, contracts, browser auth return and deployed routes have equivalent security and recovery.",
+        "Protected participant creation cannot mint self-registration proof; knowing its new player ID never permits first claim.",
+        "After authentication, secret and account-binding verification, a consumed same-owner receipt returns its immutable committed outcome before mutable eligibility gates. Another owner cannot replay; unconsumed expired/revoked proofs cannot claim.",
+        "Deployable disabled mode and retained hardened baseline keep proofless claiming closed during UI rollback or forward API recovery; no runtime path restores the old proofless handler."
       ],
       "testScenarios": [
         "Wrong claimant/arbitrary ID, local/Lambda proofless rejection, same-owner replay and competing-owner transactions.",
         "No bearer in idempotency/logs, same-key changed verifier, lost join/accept response, persisted expiry boundary.",
-        "Invite replacement/revoke/ACL race; current-account confirmation and logout/late handoff/BFCache.",
+        "Invite replacement/revoke/ACL race; account A preview/confirmation followed by cookie B before dispatch or server resolution must reject; logout/late handoff/BFCache.",
         "Original/new/closed browser tab and storage/channel unavailable; no proofless fallback.",
-        "Old-client/new-API and new-client/old-API safe recovery; finished join compatibility; mobile focus/copy."
+        "Old-client/new-API and new-client/old-API safe recovery; finished join compatibility; mobile focus/copy.",
+        "Protected organiser/scorer quick-create and league-player creation reject proof fields and never return proof; public self-join alone issues registration proof.",
+        "Committed response loss then issuer demotion, expiry, replacement/revocation or revision change: same-owner receipt recovers, different owner fails, no extra ownership writes.",
+        "Disabled mode local/Lambda first-claim and proof-issuance rejection; existing owners/receipt reads preserved; unknown mode fails startup; old UI with hardened disabled API cannot claim without proof."
       ],
       "reviewRequirements": [
         "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
