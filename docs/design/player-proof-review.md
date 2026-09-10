@@ -426,6 +426,41 @@ Complete affected files, lint, full API/app/review-gate tests, contract checks a
 build then passed serially: group19933/session77423 exit0, peak2233808KiB,
 remaining[], tripNone. No runtime or deployment implementation changed.
 
+### Recipient retirement and durable purge recovery
+
+Codex findings3984286588 and3984286589 accepted. Authoritative terminal preview
+codes retire only the attempted ID/secret, including noncanonical-secret400.
+Unknown errors, containment, transient failures and another-account consumed
+receipts retain the credential for recovery. Failed retirement preserves it and
+offers retry; unrelated links are never removed.
+
+Purge now verifies removal or an empty overwrite. If both fail, proof operations,
+handoffs, sign-out dispatch and automatic authentication/navigation stop. The
+account refresh permission lock still completes. A focused, labelled recovery
+surface makes existing content inert, truthfully explains retained private links,
+and permits an explicit cleanup retry. Only verified cleanup permits reload.
+If storage remains unavailable, the user must close the tab; reload safety is
+not promised. No server/API, permissions or scoring behavior changed.
+
+Focused13 regressions passed, group78989/session77898, exit0, peak442576KiB,
+remaining[], tripNone. They cover25 stale links for each definitive code/status,
+unrelated proof retention, storage failure/recovery, successful overwrite,
+failed recipient/organiser sign-out, and callback timer/in-flight response.
+Independent architecture/security, QA and UX reviews cleared the actual diff.
+One legacy fixture expected logout despite blocked proof storage; it now tests
+optional auth-storage failure separately from mandatory proof cleanup. Its
+focused test passed (group79471/session63165, exit0, peak393328KiB, remaining[]).
+Complete affected files534 tests, full API360/app583/review-gate57 tests,
+lint/typecheck, contracts and build passed serially (group79489/session1721,
+exit0, peak3020432KiB, remaining[], tripNone). Exact-head external evidence follows
+in the PR packet.
+
+Parent163's QA-ready label was restored with AJ's explicit authority while
+Deploy QA was briefly disabled, then immediately re-enabled and verified active.
+No deployment ran; existing unchanged-head evidence restored review:ready.
+Remove its QA-ready label before any synchronize/reopen event: the old parent
+workflow must not redeploy its proofless API over the current QA head.
+
 Try to falsify account/session binding, proof issuance scope, transaction/race
 conditions, immutable receipt precedence, secret persistence/logging, cross-tab
 purge, static route delivery and retry ownership. Verify claims against exact

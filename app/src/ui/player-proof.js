@@ -10,6 +10,9 @@
   let stopped = false;
   const waiting = new Map();
   let records = [];
+  let purgeBlocked = false;
+  let purgeRecovery = null;
+  const inertBeforePurge = new Map();
 
   function valid(value) {
     return value && ID.test(value.proofId) && SECRET.test(value.secret) &&
@@ -24,6 +27,7 @@
   } catch { /* A missing storage API produces an explicit recovery below. */ }
 
   function save(record, retiredProofId = null) {
+    if (purgeBlocked) throw new Error("proof_purge_failed");
     if (!valid(record)) throw new Error("proof_unavailable");
     const prior = lookup(record.proofId);
     if (prior && (prior.secret !== record.secret ||
@@ -70,6 +74,40 @@
     sessionStorage.setItem(KEY, JSON.stringify(next));
     records = next;
   }
+  function discardRejected(record) {
+    const current = lookup(record?.proofId);
+    if (!current) return;
+    if (current.secret !== record.secret) throw new Error("proof_identity_mismatch");
+    const next = records.filter((item) => item.proofId !== record.proofId);
+    sessionStorage.setItem(KEY, JSON.stringify(next));
+    records = next;
+  }
+  function showPurgeRecovery() {
+    if (purgeRecovery) return;
+    purgeRecovery = document.createElement("section");
+    purgeRecovery.setAttribute("data-ui", "panel");
+    purgeRecovery.id = "player-proof-purge-recovery";
+    purgeRecovery.setAttribute("role", "alertdialog");
+    purgeRecovery.setAttribute("aria-modal", "true");
+    purgeRecovery.setAttribute("aria-labelledby", "player-proof-purge-title");
+    purgeRecovery.setAttribute("aria-describedby", "player-proof-purge-copy");
+    purgeRecovery.innerHTML = '<h2 id="player-proof-purge-title">Saved links could not be cleared</h2><p id="player-proof-purge-copy">Your browser blocked removal of private player links. Allow site storage and try again, or close this tab. Do not reload or switch accounts in this tab until the links are cleared.</p><button type="button">Try clearing saved links</button>';
+    for (const child of document.body.children) {
+      inertBeforePurge.set(child, child.hasAttribute("inert"));
+      child.setAttribute("inert", "");
+    }
+    document.body.prepend(purgeRecovery);
+    const button = purgeRecovery.querySelector("button");
+    button.setAttribute("data-ui", "button");
+    button.addEventListener("keydown", (event) => { if (event.key === "Tab") { event.preventDefault(); button.focus(); } });
+    button.addEventListener("click", () => {
+      if (clear()) {
+        if (typeof window.__THREEFC_NAVIGATE__ === "function") window.__THREEFC_NAVIGATE__(location.href, "reload");
+        else location.reload();
+      }
+    });
+    button.focus();
+  }
   function cancelHandoffs() {
     generation += 1;
     for (const pending of waiting.values()) { clearTimeout(pending.timer); pending.resolve(null); }
@@ -78,12 +116,22 @@
   }
   function clear(broadcast = true) {
     records = [];
-    try { sessionStorage.removeItem(KEY); } catch { /* No retained copy is available. */ }
+    let persisted = false;
+    try { sessionStorage.removeItem(KEY); persisted = sessionStorage.getItem(KEY) === null; } catch { /* Try an overwrite below. */ }
+    if (!persisted) try { sessionStorage.setItem(KEY, "[]"); persisted = sessionStorage.getItem(KEY) === "[]"; } catch { /* Block use until cleanup succeeds. */ }
+    purgeBlocked = !persisted;
     if (broadcast) try { channel?.postMessage({ version: 1, type: "purge" }); } catch { /* Local purge must still finish. */ }
     cancelHandoffs();
-    window.dispatchEvent(new Event("threefc:player-proof-cleared"));
+    window.dispatchEvent(new Event(persisted ? "threefc:player-proof-cleared" : "threefc:player-proof-invalidated"));
+    if (!persisted) showPurgeRecovery();
+    else if (purgeRecovery) {
+      for (const [child, wasInert] of inertBeforePurge) if (!wasInert) child.removeAttribute("inert");
+      inertBeforePurge.clear(); purgeRecovery.remove(); purgeRecovery = null;
+    }
+    return persisted;
   }
   function connect() {
+    if (purgeBlocked) return;
     stopped = false;
     if (channel || typeof BroadcastChannel !== "function") return;
     try { channel = new BroadcastChannel(CHANNEL); } catch { return; }
@@ -126,6 +174,7 @@
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   }
   async function create(operation) {
+    if (purgeBlocked) throw new Error("proof_purge_failed");
     if (stopped || typeof operation !== "string" || !operation || operation.length > 400) throw new Error("proof_unavailable");
     const current = generation;
     const prior = records.find((record) => record.operation === operation && valid(record));
@@ -136,7 +185,7 @@
     return { ...record, verifier: digest };
   }
   async function read(id) {
-    if (!ID.test(id) || stopped) return null;
+    if (!ID.test(id) || stopped || purgeBlocked) return null;
     const own = lookup(id);
     if (own) return own;
     if (!channel) return null;
@@ -180,10 +229,12 @@
   connect();
   window.addEventListener("pagehide", () => { stopped = true; cancelHandoffs(); });
   window.addEventListener("pageshow", (event) => {
+    if (purgeBlocked) return;
     connect();
     if (event.persisted && /^\/link-player\/?$/.test(location.pathname)) location.reload();
   });
   window.ThreeFcPlayerProof = Object.freeze({ create, read, attach, shareLink, destination, clear, discardDraft, retireInvitation,
+    isBlocked: () => purgeBlocked,
     forPlayer: (id) => records.findLast((record) => record.playerId === id && valid(record)) || null,
   });
 
@@ -201,11 +252,13 @@
   let preview = null;
   let pending = false;
   let accountEmail = "";
-  window.addEventListener("threefc:player-proof-cleared", () => {
+  function invalidateRecipient() {
     record = null; preview = null;
     details.hidden = true; confirm.hidden = true; retry.hidden = true;
     message("Reopen the private link after signing in.", true);
-  });
+  }
+  window.addEventListener("threefc:player-proof-cleared", invalidateRecipient);
+  window.addEventListener("threefc:player-proof-invalidated", invalidateRecipient);
 
   function message(text, error = false) {
     status.textContent = text;
@@ -214,6 +267,7 @@
     status.dataset.state = error ? "error" : "success";
   }
   function navigate(url) {
+    if (purgeBlocked) return;
     if (typeof window.__THREEFC_NAVIGATE__ === "function") window.__THREEFC_NAVIGATE__(url, "replace");
     else location.replace(url);
   }
@@ -233,7 +287,7 @@
   }
   function nextFocus() { return !confirm.hidden ? confirm : !retry.hidden ? retry : !signIn.hidden ? signIn : status; }
   function signedOutRecovery(finishFocus) {
-    clear();
+    if (!clear()) return;
     accountActions.hidden = true;
     signIn.href = `/sign-in?returnTo=${encodeURIComponent(destination(proofId))}`;
     signIn.hidden = false;
@@ -257,7 +311,7 @@
     } finally { clearTimeout(timer); }
   }
   async function load() {
-    if (pending || stopped) return;
+    if (pending || stopped || purgeBlocked) return;
     const finishFocus = ownFocus(retry);
     pending = true;
     const current = generation;
@@ -307,6 +361,15 @@
       if (error.status === 401) {
         if (record?.accountId || lookup(proofId)?.accountId) { signedOutRecovery(finishFocus); return; }
         message(""); signIn.href = `/sign-in?returnTo=${encodeURIComponent(destination(proofId))}`; signIn.hidden = false;
+      } else if ((error.status === 400 && error.code === "invalid_claim_proof") ||
+          ([404, 409].includes(error.status) && ["invalid_claim_proof", "claim_proof_unavailable", "claim_profile_changed"].includes(error.code))) {
+        try {
+          discardRejected(record); record = null;
+          message("This player link is no longer available. Ask the organiser for a new link.", true);
+        } catch {
+          message("This player link is no longer available. Your browser couldn’t clear its saved copy. Allow site storage and try again.", true);
+          retry.hidden = false;
+        }
       } else {
         message([403, 404, 409].includes(error.status)
           ? "This player link is no longer available. Ask the organiser for help."
@@ -316,7 +379,7 @@
     } finally { pending = false; finishFocus(current === generation ? nextFocus() : null); }
   }
   confirm.addEventListener("click", async () => {
-    if (pending || !preview || !record || stopped) return;
+    if (pending || !preview || !record || stopped || purgeBlocked) return;
     const finishFocus = ownFocus(confirm);
     pending = true; confirm.disabled = true; signOut.disabled = true;
     const current = generation;
@@ -348,7 +411,7 @@
   signOut.addEventListener("click", async () => {
     if (pending || signOut.disabled) return;
     pending = true; signOut.disabled = true; confirm.disabled = true;
-    clear();
+    if (!clear()) { pending = false; signOut.disabled = false; return; }
     record = null; preview = null;
     details.hidden = true; confirm.hidden = true; retry.hidden = true;
     try {

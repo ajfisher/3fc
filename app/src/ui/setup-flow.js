@@ -61,6 +61,7 @@
   }
 
   function navigateTo(url, mode = "assign") {
+    if (window.ThreeFcPlayerProof?.isBlocked?.()) return;
     closeActionMenu();
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
       window.__THREEFC_NAVIGATE__(url, mode);
@@ -175,7 +176,7 @@
       const restoreFocusOnFailure = document.activeElement === button;
       closeActionMenu();
       signOutPending = true;
-      window.ThreeFcPlayerProof?.clear();
+      if (window.ThreeFcPlayerProof?.clear() === false) { signOutPending = false; return; }
       signOutUnconfirmed = false;
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
@@ -5211,6 +5212,7 @@
       invitationMessage("");
     }
     window.addEventListener("threefc:player-proof-cleared", discardPlayerInvitation);
+    window.addEventListener("threefc:player-proof-invalidated", discardPlayerInvitation);
     function invitationMessage(text, error = false) {
       invitationStatus.textContent = text;
       invitationStatus.hidden = !text;

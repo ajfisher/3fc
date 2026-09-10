@@ -23,7 +23,7 @@ const accountPreview = (id: string, email = "same@example.com") => response(200,
 async function settle() { for (let i = 0; i < 15; i += 1) await new Promise<void>((resolve) => setImmediate(resolve)); }
 
 function page(input: { url: string; html?: string; storage?: Map<string, string>; channel?: unknown;
-  fetch?: (path: string, body: any, target: string) => unknown; blockedStorage?: boolean }) {
+  fetch?: (path: string, body: any, target: string) => unknown; blockedStorage?: boolean; blockedRemoval?: boolean }) {
   const dom = new JSDOM(input.html ?? renderPlayerLinkPage(origin), { url: input.url, runScripts: "outside-only", pretendToBeVisual: true });
   const storage = input.storage ?? new Map<string, string>();
   Object.defineProperty(dom.window, "crypto", { value: webcrypto });
@@ -31,7 +31,7 @@ function page(input: { url: string; html?: string; storage?: Map<string, string>
   Object.defineProperty(dom.window, "sessionStorage", { value: {
     getItem(key: string) { return storage.get(key) ?? null; },
     setItem(key: string, value: string) { if (input.blockedStorage) throw new Error("blocked"); storage.set(key, value); },
-    removeItem(key: string) { storage.delete(key); },
+    removeItem(key: string) { if (input.blockedRemoval) throw new Error("blocked"); storage.delete(key); },
   } });
   if (input.channel) Object.defineProperty(dom.window, "BroadcastChannel", { value: input.channel });
   Object.defineProperty(dom.window, "fetch", { value: async (url: URL, options: { body?: string }) => {
@@ -99,6 +99,83 @@ test("private player link with missing or blocked storage offers real recovery w
     assert.match(view.document.getElementById("player-link-status")?.textContent ?? "", /Reopen the private link/);
     assert.equal(view.document.querySelectorAll('[role="alert"]:not([hidden])').length, 1);
   }
+});
+
+for (const [code, status] of [["invalid_claim_proof", 400], ["invalid_claim_proof", 404], ["claim_proof_unavailable", 409], ["claim_profile_changed", 409]] as const) {
+  test(`terminal recipient preview retires exact stale proofs without filling storage: ${code}/${status}`, async () => {
+    const storage = new Map<string, string>();
+    const holder = page({ url: `${origin}/sign-in`, storage, html: renderSignInPage(origin, "/setup") });
+    const unrelated = await holder.proof.create("unrelated"); holder.dom.window.close();
+    for (let i = 0; i < 25; i += 1) {
+      const id = `stale-recipient-proof-${String(i).padStart(3, "0")}`;
+      const view = page({ url: `${origin}/link-player#proofId=${id}&secret=${secret}`, storage,
+        fetch: () => response(status, { code }) });
+      try {
+        await settle();
+        assert.deepEqual(JSON.parse(storage.get("threefc.player-proof.v1")!).map((record: any) => record.proofId), [unrelated.proofId]);
+        assert.equal((view.document.getElementById("player-link-retry") as HTMLButtonElement).hidden, true);
+        assert.match(view.document.getElementById("player-link-status")!.textContent!, /Ask the organiser for a new link/);
+      } finally { view.dom.window.close(); }
+    }
+  });
+}
+
+for (const failure of [{ status: 503, code: "player_claim_disabled" }, { status: 409, code: "player_already_claimed" }, { status: 404, code: "not_found" }]) {
+  test(`recipient preview retains recoverable credentials: ${failure.code}`, async (t) => {
+    const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, fetch: () => response(failure.status, { code: failure.code }) });
+    t.after(() => view.dom.window.close()); await settle();
+    assert.equal((await view.proof.read(proofId)).secret, secret);
+    assert.equal((view.document.getElementById("player-link-retry") as HTMLButtonElement).hidden, false);
+  });
+}
+
+test("recipient stale-proof cleanup failure retains exact record until storage recovers", async (t) => {
+  const input = { url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, blockedStorage: false,
+    fetch: () => { input.blockedStorage = true; return response(409, { code: "claim_proof_unavailable" }); } };
+  const view = page(input); t.after(() => view.dom.window.close()); await settle();
+  assert.equal((await view.proof.read(proofId)).secret, secret);
+  assert.match(view.document.getElementById("player-link-status")!.textContent!, /couldn’t clear/);
+  input.blockedStorage = false; input.fetch = () => response(409, { code: "claim_proof_unavailable" });
+  (view.document.getElementById("player-link-retry") as HTMLButtonElement).click(); await settle();
+  assert.equal(await view.proof.read(proofId), null);
+});
+
+test("purge uses verified overwrite if removal fails", async (t) => {
+  const view = page({ url: `${origin}/sign-in`, html: renderSignInPage(origin, "/setup"), blockedRemoval: true });
+  t.after(() => view.dom.window.close()); await view.proof.create("retained");
+  assert.equal(view.proof.clear(), true);
+  assert.equal(view.storage.get("threefc.player-proof.v1"), "[]");
+  assert.equal(view.proof.isBlocked(), false);
+});
+
+test("failed purge blocks use and navigation until explicit verified cleanup", async (t) => {
+  const input = { url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, blockedStorage: false, blockedRemoval: false };
+  const view = page(input); t.after(() => view.dom.window.close()); await settle();
+  let cleared = 0; let invalidated = 0; let navigation = 0;
+  view.dom.window.addEventListener("threefc:player-proof-cleared", () => cleared++);
+  view.dom.window.addEventListener("threefc:player-proof-invalidated", () => invalidated++);
+  (view.dom.window as any).__THREEFC_NAVIGATE__ = () => navigation++;
+  input.blockedStorage = true; input.blockedRemoval = true;
+  calls.length = 0;
+  (view.document.getElementById("sign-out") as HTMLButtonElement).click(); await settle();
+  assert.equal(calls.length, 0, "no logout or navigation claims cleanup succeeded");
+  assert.equal(cleared, 0); assert.equal(invalidated, 1);
+  assert.equal(view.proof.isBlocked(), true);
+  assert.ok(view.storage.get("threefc.player-proof.v1")!.includes(secret));
+  assert.equal(await view.proof.read(proofId), null);
+  await assert.rejects(view.proof.create("new"), /proof_purge_failed/);
+  const recovery = view.document.getElementById("player-proof-purge-recovery")!;
+  assert.equal(recovery.getAttribute("role"), "alertdialog");
+  assert.equal(view.document.activeElement, recovery.querySelector("button"));
+  assert.ok([...view.document.body.children].filter(child => child !== recovery).every(child => child.hasAttribute("inert")));
+  const event = new view.dom.window.Event("pageshow"); Object.defineProperty(event, "persisted", { value: true });
+  view.dom.window.dispatchEvent(event); assert.equal(navigation, 0);
+  input.blockedStorage = false;
+  (recovery.querySelector("button") as HTMLButtonElement).click();
+  assert.equal(cleared, 1); assert.equal(navigation, 1);
+  assert.equal(view.storage.get("threefc.player-proof.v1"), "[]");
+  assert.equal(view.proof.isBlocked(), false);
+  assert.equal(view.document.getElementById("player-proof-purge-recovery"), null);
 });
 
 test("private proof draft retirement is exact and capacity never evicts live records", async (t) => {

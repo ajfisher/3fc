@@ -2538,7 +2538,7 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
   }
 }
 
-test("sign out continues to sign in even when optional browser storage is unavailable", async () => {
+test("sign out continues when optional auth storage fails but proof cleanup is verified", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
   const page = await bootPage({
@@ -2548,9 +2548,12 @@ test("sign out continues to sign in even when optional browser storage is unavai
     apiState,
   });
   try {
-    for (const property of ["localStorage", "sessionStorage"]) {
-      Object.defineProperty(page.window, property, { get: () => { throw new Error("storage blocked"); }, configurable: true });
-    }
+    Object.defineProperty(page.window, "localStorage", { get: () => { throw new Error("storage blocked"); }, configurable: true });
+    const storage = page.window.sessionStorage;
+    Object.defineProperty(page.window, "sessionStorage", { value: {
+      getItem: storage.getItem.bind(storage), setItem: storage.setItem.bind(storage),
+      removeItem(key: string) { if (key === "threefc.auth.callback") throw new Error("auth storage blocked"); storage.removeItem(key); },
+    }, configurable: true });
     const button = page.document.getElementById("sign-out");
     assert(button instanceof page.window.HTMLButtonElement);
     dispatchClick(button);
@@ -2958,6 +2961,46 @@ for (const validEmail of [true, false]) {
         assert.equal(email.getAttribute("aria-invalid"), "true");
         assert.equal(page.document.getElementById("auth-email-notice")?.textContent, "Enter a valid email address.");
       }
+    } finally { page.window.close(); }
+  });
+}
+
+for (const stage of ["organiser-signout", "callback-timer", "callback-response"] as const) {
+  test(`failed proof purge blocks authentication navigation: ${stage}`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "purge-fixture", role: "admin" });
+    apiState.pendingEmail = "organizer@3fc.football"; apiState.pendingToken = "token-1";
+    const timers = createManualTimers();
+    const storage = new Map<string, string>();
+    const baseFetch = createMockFetch(apiState);
+    let requests = 0; let release: (() => void) | undefined;
+    const organiser = stage === "organiser-signout";
+    const page = await bootPage({
+      html: organiser ? renderSetupHomePage("http://localhost:3001") : renderMagicLinkCallbackPage("http://localhost:3001"),
+      url: organiser ? "http://localhost:3000/setup" : "http://localhost:3000/auth/callback?token=token-1",
+      scriptFile: organiser ? "setup-flow.js" : "auth-flow.js", apiState, timers, sessionStorage: storage,
+      fetch: async (input, init) => {
+        if (["/v1/auth/logout", "/v1/auth/magic/complete"].includes(new URL(String(input)).pathname)) {
+          requests++;
+          if (stage === "callback-response") await new Promise<void>(resolve => { release = resolve; });
+        }
+        return baseFetch(input, init);
+      },
+    });
+    try {
+      const proofs = (page.window as any).ThreeFcPlayerProof;
+      const retained = await proofs.create("purge-test");
+      if (stage === "callback-response") { timers.advanceBy(3000); await flushAsync(); assert(release); }
+      page.window.sessionStorage.removeItem = () => { throw new Error("blocked"); };
+      page.window.sessionStorage.setItem = () => { throw new Error("blocked"); };
+      if (organiser) (page.document.getElementById("sign-out") as HTMLButtonElement).click();
+      else { assert.equal(proofs.clear(), false); if (release) release(); else timers.advanceBy(3000); }
+      await flushAsync();
+      assert.equal(requests, stage === "callback-response" ? 1 : 0);
+      assert.deepEqual(page.navigations, []);
+      assert.equal(proofs.isBlocked(), true);
+      assert.ok(storage.get("threefc.player-proof.v1")!.includes(retained.secret));
+      assert.ok(page.document.getElementById("player-proof-purge-recovery"));
     } finally { page.window.close(); }
   });
 }

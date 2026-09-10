@@ -45,6 +45,7 @@
   const RETURN_TARGET_PATHS = resolveReturnTargetPatterns();
 
   function navigateTo(url, mode = "assign") {
+    if (window.ThreeFcPlayerProof?.isBlocked?.()) return;
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
       window.__THREEFC_NAVIGATE__(url, mode);
       return;
@@ -548,7 +549,7 @@
       completeButton.hidden = false;
       completeButton.disabled = false;
       const completeMagicLink = async () => {
-        if (completionStarted) {
+        if (completionStarted || window.ThreeFcPlayerProof?.isBlocked?.()) {
           return;
         }
 
