@@ -7,10 +7,6 @@ on:
       - synchronize
       - reopened
 
-concurrency:
-  group: deploy-qa-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   id-token: write
   contents: read
@@ -23,6 +19,10 @@ jobs:
     name: deploy-qa
     runs-on: ubuntu-latest
     environment: qa
+    # One shared API/site pair; never interrupt an active deployment.
+    concurrency:
+      group: deploy-qa
+      cancel-in-progress: false
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -304,6 +304,11 @@ jobs:
             echo "SITE_JOIN_HTTP_CODE=${JOIN_HTTP_CODE}"
             echo "SITE_JOIN_LINK_HTTP_CODE=${JOIN_LINK_HTTP_CODE}"
           } >> "$GITHUB_ENV"
+
+      - name: Verify API fingerprint after site acceptance
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/deploy/verify-api-core.sh qa "$EXPECTED_HEAD"
 
       - name: Preserve exact-head API deployment evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

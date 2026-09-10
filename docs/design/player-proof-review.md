@@ -298,6 +298,27 @@ None.
 
 ## Review focus
 
+### Shared deployment isolation
+
+Codex finding3977627564 accepted: per-PR QA locks allowed API and site releases
+to interleave. QA now uses one non-cancelling deployment-job lock; production
+preserves its global group without cancelling active releases. A final read-only
+API fingerprint check follows site acceptance and precedes evidence publication.
+Missing or changed code/revision/mode, updating status, wrong head and AWS errors
+fail closed. No automatic repair, new permissions or Terraform changes.
+
+Architecture/security and QA independently reviewed the diff with no remaining
+blocker. Before rollout, no QA jobs were running/queued, both core and health
+CloudFormation stacks were UPDATE_COMPLETE, and Lambda reported Successful.
+The accepted parent no longer carries QA-ready; only the active child is eligible.
+Older/manual writers remain outside this lock, as documented in the runbook.
+
+Focused deployment tests: group29832/session16075 exit0, 11 passed,
+peak421904KiB, remaining[]. Full serialized lint/typecheck, 358 API, 554 app,
+57 review-gate tests, contracts and build: group30696/session41547 exit0,
+peak2534720KiB, remaining[], tripNone. Exact-head external evidence follows in
+the PR packet; previous-head acceptance is not substituted for it.
+
 ### Contract completeness review
 
 Codex findings3977134314 and3977134321 accepted. The contract now documents

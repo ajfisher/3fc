@@ -17,7 +17,7 @@ on:
 
 concurrency:
   group: deploy-prod-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   id-token: write
@@ -303,6 +303,11 @@ jobs:
             echo "SITE_JOIN_HTTP_CODE=${JOIN_HTTP_CODE}"
             echo "SITE_JOIN_LINK_HTTP_CODE=${JOIN_LINK_HTTP_CODE}"
           } >> "$GITHUB_ENV"
+
+      - name: Verify API fingerprint after site acceptance
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: bash scripts/deploy/verify-api-core.sh prod "$EXPECTED_HEAD"
 
       - name: Write deployment summary
         run: |

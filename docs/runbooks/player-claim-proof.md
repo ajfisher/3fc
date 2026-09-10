@@ -84,6 +84,22 @@ Only the nonsecret proof ID may travel in authentication return destinations.
 
 ## Privacy and acceptance evidence
 
+QA deployments use a single non-cancelling job-level concurrency group across
+PRs; production preserves its global group without cancelling an active release.
+Before rolling out this workflow change, verify older per-PR jobs and their
+CloudFormation/Serverless operations have finished. Manual deployments and old
+workflow versions do not honor the new lock. Do not run them concurrently.
+GitHub may replace pending requests; the lock preserves the running deployment,
+not every queued request. Deploy and accept one stack head at a time.
+
+After site smoke checks, `scripts/deploy/verify-api-core.sh` rechecks the full
+commit-bound manifest against live API code, revision, completion status and
+claim mode. A mismatch fails acceptance; investigate competing deployments and
+do not automatically overwrite them. This detects legacy/manual interference,
+but cannot prevent it or guarantee that QA remains unchanged after acceptance.
+The guard reads only provenance and the nonsecret claim-mode enum. No Terraform
+apply or new permissions are required.
+
 Treat invitation fragments, proof request bodies, session cookies and preview
 confirmations as credentials. Do not capture them in logs, GitHub comments,
 screenshots, traces, HAR files, analytics or test evidence. Browser traces record

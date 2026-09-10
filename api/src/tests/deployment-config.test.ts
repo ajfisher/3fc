@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
@@ -10,6 +11,71 @@ const productionTerraformConfig = readFileSync(resolve(process.cwd(), "../infra/
 const siteDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
 const apiDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-app.sh"), "utf8");
 const qaWorkflow = readFileSync(resolve(process.cwd(), "../.github/workflows/deploy-qa.yml"), "utf8");
+
+test("shared deployments cannot interleave or cancel the running API/site pair", () => {
+  assert.doesNotMatch(qaWorkflow, /^concurrency:/m);
+  const job = qaWorkflow.split("  deploy:\n")[1];
+  assert.ok(job);
+  assert.match(job, /^    concurrency:\n      group: deploy-qa\n      cancel-in-progress: false$/m);
+  assert.match(job, /^    if: >-\n/m);
+  assert.equal((qaWorkflow.match(/concurrency:/g) ?? []).length, 1);
+  for (const environment of ["qa", "prod"]) {
+    const workflow = readFileSync(resolve(process.cwd(), `../.github/workflows/deploy-${environment}.yml`), "utf8");
+    if (environment === "prod") assert.match(workflow, /^concurrency:\n  group: deploy-prod-main\n  cancel-in-progress: false$/m);
+    assert.doesNotMatch(workflow, /cancel-in-progress: true/);
+    const verify = workflow.indexOf(`run: bash scripts/deploy/verify-api-core.sh ${environment} "$EXPECTED_HEAD"`);
+    const routeSmoke = workflow.indexOf(`- name: Smoke test deployed ${environment === "qa" ? "QA" : "production"} site routes`);
+    assert.ok(routeSmoke >= 0 && verify > routeSmoke);
+    assert.ok(verify > workflow.indexOf(`smoke-player-proof.sh ${environment} site`));
+    assert.ok(verify < workflow.indexOf("- name: Write deployment summary"));
+    if (environment === "qa") assert.ok(verify < workflow.indexOf("- name: Preserve exact-head API deployment evidence"));
+    assert.doesNotMatch(workflow.slice(workflow.lastIndexOf("      - name:", verify), verify), /continue-on-error:|if:/);
+  }
+});
+
+test("final deployment guard fails closed for missing, changed or updating API provenance", () => {
+  const script = resolve(process.cwd(), "../scripts/deploy/verify-api-core.sh");
+  const source = readFileSync(script, "utf8");
+  assert.deepEqual(source.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE"]);
+  const directory = mkdtempSync(resolve(tmpdir(), "3fc-deploy-guard-"));
+  const head = "a".repeat(40);
+  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof" };
+  const manifest = { gitCommit: head, env: "qa", service: "api-core", region: "ap-southeast-2", packageCodeSha256: "package", functionFingerprint: fingerprint };
+  const manifestPath = resolve(directory, "out/deploy/qa/api-core-deploy-manifest.json");
+  mkdirSync(resolve(directory, "out/deploy/qa"), { recursive: true });
+  const run = (live: unknown, record: unknown = manifest, awsStatus = 0, expected = head) => {
+    writeFileSync(manifestPath, JSON.stringify(record));
+    return spawnSync("bash", ["-c", 'aws() { test "$1 $2" = "lambda get-function-configuration" || return 99; printf %s "$TEST_LIVE"; return "$TEST_AWS_STATUS"; }; export -f aws; bash "$TEST_SCRIPT" qa "$TEST_HEAD"'], {
+      cwd: directory, encoding: "utf8", env: { ...process.env, TEST_LIVE: JSON.stringify(live), TEST_AWS_STATUS: String(awsStatus), TEST_SCRIPT: script, TEST_HEAD: expected },
+    });
+  };
+  try {
+    assert.equal(run(fingerprint).status, 0);
+    for (const key of Object.keys(fingerprint)) {
+      const missing = { ...fingerprint } as Record<string, unknown>;
+      delete missing[key];
+      for (const live of [missing, { ...fingerprint, [key]: "changed" }]) {
+        const result = run(live);
+        assert.notEqual(result.status, 0, key);
+        assert.doesNotMatch(result.stdout, /matches the accepted deployment/);
+      }
+      assert.notEqual(run(missing, { ...manifest, functionFingerprint: missing }).status, 0, `both missing ${key}`);
+    }
+    for (const key of Object.keys(manifest)) {
+      const missing = { ...manifest } as Record<string, unknown>;
+      delete missing[key];
+      assert.notEqual(run(fingerprint, missing).status, 0, key);
+    }
+    assert.notEqual(run(fingerprint, manifest, 7).status, 0);
+    assert.notEqual(run(fingerprint, manifest, 0, "b".repeat(40)).status, 0);
+    assert.notEqual(run(fingerprint, manifest, 0, "short").status, 0);
+    assert.notEqual(run(null).status, 0);
+    const disabled = { ...fingerprint, playerClaimMode: "disabled" };
+    assert.equal(run(disabled, { ...manifest, functionFingerprint: disabled }).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("HTML alias upload preserves exact S3 keys and propagates failure", () => {
   const helper = siteDeployScript.slice(siteDeployScript.indexOf("upload_html_alias() {"),
