@@ -154,6 +154,22 @@ validation passed group5542/session69375: exit0, peak2187616KiB, remaining[],
 tripNone. Real local HTTP/DynamoDB acceptance for the account/replay changes also
 passed group3219/session47161, peak2026608KiB, with API/container cleanup verified.
 
+Codex3976654185 accepted: preserve a displayed active link when local replacement
+proof storage fails before any POST. Clearing now occurs after proof/request
+freezing, immediately before dispatch, preserving both local-failure recovery and
+lost-response safety. Actual Storage.setItem rejection regression verifies no
+replacement POST and retained link/Copy through close/reopen. Independent QA
+cleared; nine focused invitation tests passed group8021/session7546, exit0,
+peak404304KiB, remaining[], tripNone.
+Full serial affected-file, lint, API353/app537/review-gate57 tests, contracts and
+build passed group8145/session78582: exit0, peak2243456KiB, remaining[], tripNone.
+
+Previous head f570f3e passed CI34450351527 and QA34450351484; deployed disposable
+acceptance group7734/session99872 exited0 peak724144KiB remaining[] tripNone.
+It verified actual account-switch purge as well as linking, replay and revocation;
+all fixture keys were removed. This evidence is refreshed after the local-only
+replacement recovery fix, not represented as current-head acceptance.
+
 Codex follow-up3976413105 accepted: even revoked/consumed/TTL-missing invitation
 retries now transact pointer/context checks and an unchanged-proof or absence
 condition; no successful revoke path returns before its transaction. New

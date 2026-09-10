@@ -6893,7 +6893,7 @@ test("game roster reconciles a committed transfer when refresh fails", async () 
   );
 });
 
-for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "purged"] as const) {
+for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-storage-failure", "purged"] as const) {
   test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
     const apiState = createMockApiState();
     seedGoalScoringGame(apiState, { gameId: "profile-invitation", role: "admin" });
@@ -6933,6 +6933,22 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
       dispatchClick(create); dispatchClick(create);
       for (let tick = 0; tick < 100 && writes.length === 0; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
       await flushAsync(); assert.equal(writes.length, 1);
+      if (disposition === "replacement-storage-failure") {
+        const originalLink = link.value;
+        assert.notEqual(originalLink, "");
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        Object.defineProperty(page.window.Storage.prototype, "setItem", { value: () => { throw new Error("storage unavailable"); }, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 1, "failed local proof retention never dispatches replacement");
+        assert.equal(link.value, originalLink, "undispatched replacement preserves the still-active link");
+        const copy = page.document.getElementById("player-invitation-copy") as HTMLButtonElement;
+        assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        assert.equal(writes.length, 1);
+        return;
+      }
       if (disposition === "replacement-loss") {
         assert.notEqual(link.value, "");
         Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });

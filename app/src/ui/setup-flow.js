@@ -5270,7 +5270,6 @@
       if (invitationPending || !invitationLoaded || invitationRevokeUnconfirmed || currentLeagueRole !== "admin" || refreshAccountLocked) return;
       if (!invitationAttempt && invitationMetadata && !window.confirm("Replace this private link? The previous link will stop working. Share the new link privately.")) return;
       const generation = invitationGeneration;
-      invitationLink.value = "";
       invitationPending = true; renderInvitation(); invitationMessage("Creating private link…");
       try {
         if (!invitationAttempt) {
@@ -5279,6 +5278,8 @@
           invitationAttempt = { proof, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
             replacesProofId: invitationMetadata?.proofId ?? null }) };
         }
+        invitationLink.value = "";
+        renderInvitation();
         const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body });
         if (generation !== invitationGeneration) return;
         const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationPlayerId);
