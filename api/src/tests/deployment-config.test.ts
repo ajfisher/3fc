@@ -131,6 +131,10 @@ test("profile-link contracts cover recovery errors and expose only public player
     ["/v1/join/{joinCode}", "post", [400, 403, 404, 409, 500]],
     ["/v1/players/{playerId}/claim", "post", [400, 401, 403, 404, 409, 500, 503]],
     ["/v1/player-proofs/preview", "post", [400, 401, 403, 404, 409, 500, 503]],
+    ["/v1/player-proofs/claim", "post", [400, 401, 403, 404, 409, 500, 503]],
+    ["/v1/player-proofs/invitation", "get", [400, 401, 403, 404, 500]],
+    ["/v1/player-proofs/invitation", "post", [400, 401, 403, 404, 409, 500, 503]],
+    ["/v1/player-proofs/invitation/revoke", "post", [400, 401, 403, 404, 409, 500]],
     ["/v1/games/{gameId}/players/{playerId}/profile-invitation", "get", [400, 401, 403, 404, 500]],
     ["/v1/games/{gameId}/players/{playerId}/profile-invitation", "post", [400, 401, 403, 404, 409, 500, 503]],
     ["/v1/games/{gameId}/players/{playerId}/profile-invitation/revoke", "post", [400, 401, 403, 404, 409, 500]],
@@ -162,6 +166,10 @@ test("api core deployment config registers claim and access routes", () => {
   assert.match(previewContract, /"404":\s+\$ref: "#\/components\/responses\/NotFound"/);
   assertServerlessRoute("POST", "/v1/player-proofs/preview");
   assertServerlessRoute("OPTIONS", "/v1/player-proofs/preview");
+  for (const method of ["GET", "POST", "OPTIONS"]) assertServerlessRoute(method, "/v1/player-proofs/invitation");
+  for (const route of ["/v1/player-proofs/claim", "/v1/player-proofs/invitation/revoke"]) {
+    for (const method of ["POST", "OPTIONS"]) assertServerlessRoute(method, route);
+  }
   for (const method of ["GET", "POST", "OPTIONS"]) {
     assertServerlessRoute(method, "/v1/games/{gameId}/players/{playerId}/profile-invitation");
   }

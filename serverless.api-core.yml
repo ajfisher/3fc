@@ -317,6 +317,27 @@ functions:
           method: POST
           path: /v1/player-proofs/preview
       - httpApi:
+          method: POST
+          path: /v1/player-proofs/claim
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-proofs/claim
+      - httpApi:
+          method: GET
+          path: /v1/player-proofs/invitation
+      - httpApi:
+          method: POST
+          path: /v1/player-proofs/invitation
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-proofs/invitation
+      - httpApi:
+          method: POST
+          path: /v1/player-proofs/invitation/revoke
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-proofs/invitation/revoke
+      - httpApi:
           method: OPTIONS
           path: /v1/player-proofs/preview
       - httpApi:

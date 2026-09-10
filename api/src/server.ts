@@ -2982,7 +2982,7 @@ export async function handleLocalJoinPlayerContextRoute(input: {
 
 export async function handleLocalPlayerProofRoute(input: {
   request: IncomingMessage; response: ServerResponse; method: string; route: string;
-  session: AuthSessionRecord | null; playerRepository?: PlayerProofRepository;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerProofRepository;
 }): Promise<number> {
   const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
   let body: unknown = {};
@@ -5001,7 +5001,7 @@ async function start(): Promise<void> {
       }
 
       if (isPlayerProofRoute(method, route)) {
-        status = await handleLocalPlayerProofRoute({ request, response, method, route, session: authGate.session });
+        status = await handleLocalPlayerProofRoute({ request, response, method, route, rawQueryString: requestUrl.search.slice(1), session: authGate.session });
         return;
       }
 

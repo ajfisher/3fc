@@ -6932,8 +6932,8 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
         if (disposition === "replacement-write-barrier" && init.method === "PATCH" && String(input).endsWith("/v1/games/profile-invitation")) {
           return createJsonResponse(503, { error: "unavailable" });
         }
-        if (String(input).endsWith("/profile-invitation/revoke")) revokeRequests += 1;
-        if (!String(input).includes("/players/") || !String(input).endsWith("/profile-invitation")) return base(input, init);
+        if (new URL(String(input)).pathname === "/v1/player-proofs/invitation/revoke") revokeRequests += 1;
+        if (new URL(String(input)).pathname !== "/v1/player-proofs/invitation") return base(input, init);
         if (init.method === "GET") { reads += 1; return createJsonResponse(200, { invitation: metadata }); }
         writes.push(String(init.body));
         const body = JSON.parse(String(init.body));
@@ -7088,10 +7088,10 @@ for (const ownership of ["retained", "outside", "changed", "lost-then-barrier"] 
       url: "http://localhost:3000/games/invite-revoke#teams", scriptFile: "setup-flow.js", apiState,
       fetch: async (input, init) => {
         if (ownership === "lost-then-barrier" && init?.method === "PATCH" && String(input).endsWith("/v1/games/invite-revoke")) return createJsonResponse(503, { error: "unavailable" });
-        if (String(input).endsWith("/profile-invitation")) return createJsonResponse(200, { invitation: {
+        if (new URL(String(input)).pathname === "/v1/player-proofs/invitation") return createJsonResponse(200, { invitation: {
           proofId: "existing-profile-proof-123", expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending",
         } });
-        if (String(input).endsWith("/profile-invitation/revoke")) { revokeWrites += 1; return new Promise<Response>(resolve => { release = () => resolve(ownership === "lost-then-barrier"
+        if (new URL(String(input)).pathname === "/v1/player-proofs/invitation/revoke") { revokeWrites += 1; return new Promise<Response>(resolve => { release = () => resolve(ownership === "lost-then-barrier"
           ? createJsonResponse(503, { error: "unavailable" }) : ownership === "changed"
           ? createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" })
           : createJsonResponse(200, { revoked: true })); }); }
@@ -12361,6 +12361,53 @@ test("disabled linking joins once and retains the exact request after a lost rep
   } finally { page.dom.window.close(); }
 });
 
+for (const cleanupFailure of [false, true]) {
+  test(`disabled linking retires unissued join proofs without repeating committed registration: ${cleanupFailure}`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "containment-many" });
+    apiState.games.get("containment-many")!.joinCode = "ABCD2345";
+    const base = createMockFetch(apiState); let joins = 0; let blockCleanup = cleanupFailure;
+    const page = await bootPage({
+      html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (String(input).includes("/v1/join/") && init.method === "POST") {
+          joins += 1;
+          const result = await (await base(input, init)).json() as Record<string, unknown>;
+          delete result.claimProof; result.linkingUnavailable = true;
+          return createJsonResponse(201, result);
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const originalSet = page.window.Storage.prototype.setItem;
+      Object.defineProperty(page.window.Storage.prototype, "setItem", { configurable: true,
+        value: function(this: Storage, key: string, value: string) {
+          if (blockCleanup && key === "threefc.player-proof.v1" && value === "[]") throw new Error("cleanup blocked");
+          return originalSet.call(this, key, value);
+        },
+      });
+      const controls = joinEntryControls(page);
+      controls.nickname.value = "Player 0"; dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(joins, 1); assert.equal(controls.form.hidden, true);
+      if (cleanupFailure) {
+        dispatchClick(controls.another); controls.nickname.value = "Player 1";
+        dispatchSubmit(controls.form); await flushAsync();
+        assert.equal(joins, 1, "failed local cleanup must never repeat or start a registration");
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /couldn’t clear/);
+        blockCleanup = false;
+      } else dispatchClick(controls.another);
+      for (let index = 1; index < 25; index++) {
+        controls.nickname.value = `Player ${index}`; dispatchSubmit(controls.form); await flushAsync();
+        assert.equal(joins, index + 1);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, `Player ${index}`);
+        assert.deepEqual(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]"), []);
+        dispatchClick(controls.another);
+      }
+    } finally { page.dom.window.close(); }
+  });
+}
+
 test("results entry linking navigation never repeats a confirmed registration or auto-claims", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "claim-recovery" });
@@ -12659,7 +12706,7 @@ test("results entry first definitive join rejection preserves editable name with
     fetch: async (input, init = {}) => {
       if (String(input).includes("/v1/join/")) {
         keys.push(readInitHeader(init, "idempotency-key"));
-        if (keys.length === 1) return createJsonResponse(400, { error: "bad_request" });
+        if (keys.length <= 24) return createJsonResponse(404, { error: "not_found" });
       }
       return base(input, init);
     },
@@ -12669,11 +12716,67 @@ test("results entry first definitive join rejection preserves editable name with
     controls.nickname.value = "Retained name"; dispatchSubmit(controls.form); await flushAsync();
     assert.equal(controls.nickname.value, "Retained name");
     assert.equal(controls.nickname.disabled, false); assert.equal(controls.button.textContent, "Join game");
+    assert.deepEqual(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]"), []);
+    for (let repeat = 1; repeat < 24; repeat++) {
+      dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(controls.nickname.disabled, false);
+      assert.deepEqual(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]"), []);
+    }
     dispatchSubmit(controls.form); await flushAsync();
-    assert.equal(keys.length, 2); assert(keys[0] && keys[1]); assert.notEqual(keys[1], keys[0]);
+    assert.equal(keys.length, 25); assert(keys.every(Boolean)); assert.equal(new Set(keys).size, 25);
     assert.equal(page.document.getElementById("join-result-player")?.textContent, "Retained name");
   } finally { page.dom.window.close(); }
 });
+
+for (const condition of ["cleanup-failure", "capacity"] as const) {
+  test(`public join draft recovery preserves private records: ${condition}`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "draft-join" });
+    apiState.games.get("draft-join")!.joinCode = "ABCD2345";
+    apiState.session = null; apiState.cookieJar = "";
+    const base = createMockFetch(apiState);
+    const requests: Array<{ key: string | null; body: string }> = [];
+    let blockCleanup = condition === "cleanup-failure";
+    const page = await bootPage({
+      html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join?code=ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (String(input).includes("/v1/join/")) {
+          requests.push({ key: readInitHeader(init, "idempotency-key"), body: String(init.body) });
+          if (requests.length === 1) return createJsonResponse(404, { error: "not_found" });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const originalSet = page.window.Storage.prototype.setItem;
+      Object.defineProperty(page.window.Storage.prototype, "setItem", { configurable: true,
+        value: function(this: Storage, key: string, value: string) {
+          if (blockCleanup && key === "threefc.player-proof.v1" && value === "[]") throw new Error("cleanup blocked");
+          return originalSet.call(this, key, value);
+        },
+      });
+      if (condition === "capacity") await page.window.eval('(async()=>{for(let i=0;i<20;i++) await ThreeFcPlayerProof.create("capacity-"+i);})()');
+      const before = page.window.sessionStorage.getItem("threefc.player-proof.v1");
+      const controls = joinEntryControls(page);
+      controls.nickname.value = "Retained player"; dispatchSubmit(controls.form); await flushAsync();
+      if (condition === "capacity") {
+        assert.equal(requests.length, 0);
+        assert.equal(page.window.sessionStorage.getItem("threefc.player-proof.v1"), before);
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /too many private links.*fresh tab.*address bar/);
+        assert.equal(controls.nickname.disabled, false);
+      } else {
+        assert.equal(requests.length, 1);
+        assert.equal(controls.nickname.disabled, true);
+        assert.equal(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]").length, 1);
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /couldn’t clear.*same player name/);
+        blockCleanup = false;
+        dispatchSubmit(controls.form); await flushAsync();
+        assert.equal(requests.length, 2); assert.deepEqual(requests[1], requests[0]);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "Retained player");
+      }
+    } finally { page.dom.window.close(); }
+  });
+}
 
 for (const outcome of ["missing", "used", "wrong-account"] as const) {
   test("results entry invite contract rejection provides actionable recovery: " + outcome, async () => {

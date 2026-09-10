@@ -168,6 +168,8 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
   }
 
   if (method === "POST" && route === "/v1/player-proofs/preview") return true;
+  if (method === "POST" && ["/v1/player-proofs/claim", "/v1/player-proofs/invitation/revoke"].includes(route)) return true;
+  if ((method === "GET" || method === "POST") && route === "/v1/player-proofs/invitation") return true;
   if ((method === "GET" || method === "POST") && /^\/v1\/games\/[^/]+\/players\/[^/]+\/profile-invitation$/.test(route)) return true;
   if (method === "POST" && /^\/v1\/games\/[^/]+\/players\/[^/]+\/profile-invitation\/revoke$/.test(route)) return true;
 

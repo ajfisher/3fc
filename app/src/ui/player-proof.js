@@ -308,10 +308,10 @@
     message("Linking player…");
     try {
       const playerId = preview.player.playerId;
-      if (!playerId || playerId === "." || playerId === "..") throw Object.assign(new Error("unaddressable_player"), { status: 409 });
+      if (typeof playerId !== "string" || !playerId.trim() || playerId.length > 1024) throw Object.assign(new Error("unaddressable_player"), { status: 409 });
       let component;
       try { component = encodeURIComponent(playerId); } catch { throw Object.assign(new Error("unaddressable_player"), { status: 409 }); }
-      const result = await request(`/v1/players/${component}/claim`,
+      const result = await request(`/v1/player-proofs/claim?playerId=${component}`,
         { proof: { proofId, secret: record.secret, confirmation: preview.confirmation } });
       if (current !== generation || stopped) return;
       if (result.player?.playerId !== preview.player.playerId || result.claim?.claimedByCurrentUser !== true) throw new Error("claim_unconfirmed");

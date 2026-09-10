@@ -4754,7 +4754,7 @@
 
       const access = verifiedAdminPlayers.get(player.playerId)?.access;
       if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
-        const invitePath = encodedRecordPath(`/v1/games/${encodeURIComponent(gameId)}/players/`, player.playerId, "/profile-invitation");
+        const invitePath = invitationPath("", player.playerId);
         return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
           <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
             "circle-user-round",
@@ -5235,8 +5235,11 @@
       invitationCopy.hidden = !invitationLink.value;
       document.getElementById("player-invitation-link-field").hidden = !invitationLink.value;
     }
-    function invitationPath() {
-      return `/v1/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(invitationPlayerId)}/profile-invitation`;
+    function invitationPath(suffix = "", playerId = invitationPlayerId) {
+      try {
+        if (!usableEntityId(playerId) || playerId.length > 1024 || !usableEntityId(gameId) || gameId.length > 1024) return null;
+        return `/v1/player-proofs/invitation${suffix}?gameId=${encodeURIComponent(gameId)}&playerId=${encodeURIComponent(playerId)}`;
+      } catch { return null; }
     }
     async function invitationRequest(path, options, onDispatch = null) {
       const controller = new AbortController();
@@ -5338,7 +5341,7 @@
       let dispatched = false;
       invitationPending = true; renderInvitation();
       try {
-        const result = await invitationRequest(`${invitationPath()}/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) }, () => { dispatched = true; });
+        const result = await invitationRequest(invitationPath("/revoke"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) }, () => { dispatched = true; });
         if (generation !== invitationGeneration) return;
         if (result.revoked !== true) throw new Error("revoke_unconfirmed");
         invitationMetadata.state = "revoked"; invitationLink.value = "";
@@ -6168,7 +6171,7 @@
       const dedicatedOwner = (goalOperation?.path === path && goalOperation.request.method === method) ||
         (clockOperation?.path === path && clockOperation.request.method === method) ||
         (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method) ||
-        (invitationPending && (path === invitationPath() || path === `${invitationPath()}/revoke`));
+        (invitationPending && (path === invitationPath() || path === invitationPath("/revoke")));
       return (result) => {
         // These writes already have an explicit recovery owner. A clock GET
         // can confirm its operation without replaying the POST; don't strand
@@ -6493,6 +6496,7 @@
     let claimPlayerId = usableEntityId(queryPlayerId) ? queryPlayerId : "";
     entryClaimPlayerId = claimPlayerId || null;
     let joinAttempt = null;
+    let unissuedJoinProof = null;
     let linkingUnavailable = false;
     let joinPending = false;
     let joined = false;
@@ -6720,6 +6724,13 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (joinPending || joined || claimPlayerId) return;
+      if (unissuedJoinProof) {
+        try { window.ThreeFcPlayerProof.discardDraft(unissuedJoinProof); unissuedJoinProof = null; }
+        catch {
+          showError("Your browser couldn’t clear the saved private link. Allow site storage, then retry.", { includesOutcome: true });
+          return;
+        }
+      }
       if (!joinAttempt) {
         const nickname = nicknameInput.value.trim();
         if (!nickname) {
@@ -6739,10 +6750,12 @@
               "Content-Type": "application/json", "Idempotency-Key": key,
             }), body: JSON.stringify({ nickname, claimProof: { proofId: proof.proofId, verifier: proof.verifier } }) }),
           };
-        } catch {
+        } catch (error) {
           joinPending = false;
           renderJoinState();
-          showError("Your browser could not keep the private profile link. Allow site storage or try another browser before joining.", { includesOutcome: true });
+          showError(error.message === "proof_storage_full"
+            ? "This tab is holding too many private links. Save any links you need. Copy this join link, open a fresh tab, and paste it into the address bar."
+            : "Your browser could not keep the private profile link. Allow site storage or try another browser before joining.", { includesOutcome: true });
           return;
         }
       }
@@ -6765,7 +6778,13 @@
         claimPlayerId = result.player.playerId;
         verifiedClaimPlayerId = claimPlayerId;
         entryClaimPlayerId = claimPlayerId;
-        try { window.ThreeFcPlayerProof.attach(attempt.proof, result.claimProof, claimPlayerId); }
+        try {
+          if (linkingUnavailable) {
+            unissuedJoinProof = attempt.proof;
+            window.ThreeFcPlayerProof.discardDraft(unissuedJoinProof);
+            unissuedJoinProof = null;
+          } else window.ThreeFcPlayerProof.attach(attempt.proof, result.claimProof, claimPlayerId);
+        }
         catch { /* Registration committed; missing proof metadata must not repeat it or trigger a proofless claim. */ }
         if (resultPlayer) resultPlayer.textContent = result.player.nickname;
         if (resultElement) resultElement.hidden = false;
@@ -6775,6 +6794,11 @@
         const definitive = !attempt.uncertain && isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
           (error.statusCode !== 409 || (error.responseError === "conflict" && ["game_finished", "join_state_changed"].includes(error.responseCode)));
         if (definitive) {
+          try { window.ThreeFcPlayerProof.discardDraft(attempt.proof); }
+          catch {
+            showError("Your browser couldn’t clear the saved private link. Allow site storage, then retry. The same player name will be used.", { includesOutcome: true });
+            return;
+          }
           joinAttempt = null;
           clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
           showError(error.statusCode === 404 ? "This join link is unavailable. Ask the organiser for a new link."

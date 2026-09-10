@@ -13,7 +13,7 @@ esac
 if [ "$SURFACE" = api ]; then
   API_ID="$(jq -er '.httpApiId' "out/deploy/${ENVIRONMENT}/api-core-deploy-manifest.json")"
   API_ORIGIN="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com"
-  for ROUTE in player-proofs/preview games/smoke-game/players/smoke-player/profile-invitation games/smoke-game/players/smoke-player/profile-invitation/revoke; do
+  for ROUTE in player-proofs/preview player-proofs/claim player-proofs/invitation player-proofs/invitation/revoke games/smoke-game/players/smoke-player/profile-invitation games/smoke-game/players/smoke-player/profile-invitation/revoke; do
     CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' -X POST \
       -H "origin: ${APP_ORIGIN}" -H 'content-type: application/json' \
       -d '{}' "${API_ORIGIN}/v1/${ROUTE}")"

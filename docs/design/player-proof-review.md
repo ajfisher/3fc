@@ -328,6 +328,30 @@ remaining[], tripNone. Exact-head external evidence is refreshed in the PR body.
 
 ### Return-target and draft-storage review
 
+Codex3978305704 accepted: API Gateway rejects slash-bearing IDs in route segments.
+New fixed invitation/claim routes carry bounded opaque IDs in exact-once decoded
+query fields. Local and Lambda share validation; duplicate/extra/malformed input
+fails400, sessions remain required, and repository authority/transaction checks
+remain definitive. Legacy path routes remain compatible. OpenAPI, Serverless,
+deployment smoke, recipient and organiser transports are updated together.
+
+Codex3978305714 and the independent UX public-join finding accepted: confirmed
+linking-disabled joins discard unissued proof drafts, and first definitive join
+rejections retire their drafts before clearing the attempt/key. Cleanup failure
+retains the exact rejected retry or gates the next new registration after a
+confirmed join. No committed or uncertain registration is repeated. Capacity
+guidance distinguishes a genuinely full tab from blocked browser storage.
+
+Architecture/security, QA and UX reviewed the actual changes read-only. Focused
+3 API/38 app tests passed group46660/session51030 exit0, peak454304KiB. Complete
+affected144 API/514 app tests passed group46862/session68565 exit0,
+peak2099952KiB. Both had remaining[] and no guard trip. New deployed acceptance
+must exercise API Gateway slash/percent/plus IDs, not substitute local HTTP.
+Full lint/typecheck,360 API/563 app/57 gate tests, contracts, build and actual
+local HTTP/DynamoDB passed group48067/session66236 exit0, peak2206064KiB host
+plus bounded512MiB container, remaining[], tripNone. API exit and container
+removal were verified. Current-head external evidence follows in the PR packet.
+
 Codex findings3978101325 and3978101329 accepted. Profile-link authentication
 destinations now allow only a bounded nonsecret proofId query, rejecting fragments,
 extra/duplicate parameters and malformed identifiers in the shared server and

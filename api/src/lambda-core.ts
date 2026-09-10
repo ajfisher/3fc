@@ -5191,7 +5191,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           let body: unknown = {};
           try { if (method !== "GET") body = parseJsonBody(event); }
           catch { status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON."); }
-          const result = await handlePlayerProofRoute({ method, route, body, session, repository: dependencies.repository });
+          const result = await handlePlayerProofRoute({ method, route, body, rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
           status = result.statusCode;
           return createJsonResponse(status, result.payload, {
             ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),

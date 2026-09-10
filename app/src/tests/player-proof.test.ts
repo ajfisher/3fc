@@ -23,7 +23,7 @@ const accountPreview = (id: string, email = "same@example.com") => response(200,
 async function settle() { for (let i = 0; i < 15; i += 1) await new Promise<void>((resolve) => setImmediate(resolve)); }
 
 function page(input: { url: string; html?: string; storage?: Map<string, string>; channel?: unknown;
-  fetch?: (path: string, body: any) => unknown; blockedStorage?: boolean }) {
+  fetch?: (path: string, body: any, target: string) => unknown; blockedStorage?: boolean }) {
   const dom = new JSDOM(input.html ?? renderPlayerLinkPage(origin), { url: input.url, runScripts: "outside-only", pretendToBeVisual: true });
   const storage = input.storage ?? new Map<string, string>();
   Object.defineProperty(dom.window, "crypto", { value: webcrypto });
@@ -39,7 +39,7 @@ function page(input: { url: string; html?: string; storage?: Map<string, string>
     const path = new URL(String(url)).pathname;
     const body = JSON.parse(options.body ?? "{}");
     calls.push({ path, body });
-    if (input.fetch) return input.fetch(path, body);
+    if (input.fetch) return input.fetch(path, body, path + new URL(String(url)).search);
     return response(200, { preview: { proofId, expiresAt, player: { playerId: "xavier", nickname: "Xavier" },
       league: { leagueId: "league", name: "Melbourne 3FC" }, confirmation: "opaque-account-B-binding", alreadyLinked: false },
       account: { id: "account-B", email: "account-B@example.com" } });
@@ -348,17 +348,17 @@ for (const stage of ["preview", "claim"] as const) {
   });
 }
 
-for (const playerId of [".", "..", "player-\ud800", "player\\legacy", "player-" + "x".repeat(600)]) {
+for (const playerId of [".", "..", "player/opaque", "player%2Fopaque", "player+ space", "player-\ud800", "player\\legacy", "player-" + "x".repeat(600)]) {
   test(`private player confirmation safely addresses ${playerId.length > 50 ? "long" : JSON.stringify(playerId)} identity`, async (t) => {
     const targets: string[] = [];
     const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`,
-      fetch: (path) => {
+      fetch: (path, _body, target) => {
         if (path.endsWith("/preview")) return previewResponse(playerId);
-        targets.push(path); return response(503, {});
+        targets.push(target); return response(503, {});
       } });
     t.after(() => view.dom.window.close());
     await settle(); (view.document.getElementById("player-link-confirm") as HTMLButtonElement).click(); await settle();
-    assert.deepEqual(targets, playerId === "." || playerId === ".." || playerId.includes("\ud800") ? []
-      : [`/v1/players/${encodeURIComponent(playerId)}/claim`]);
+    assert.deepEqual(targets, playerId.includes("\ud800") ? []
+      : [`/v1/player-proofs/claim?playerId=${encodeURIComponent(playerId)}`]);
   });
 }

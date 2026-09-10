@@ -106,7 +106,7 @@ try {
   const joined = await request(joinPath, joinOptions); assert.equal(joined.status, 201);
   assert.deepEqual((await request(joinPath, joinOptions)).body, joined.body, "lost response retry returns the original registration");
   const playerId = joined.body.player.playerId;
-  const claimPath = `/v1/players/${encodeURIComponent(playerId)}/claim`;
+  const claimPath = `/v1/player-proofs/claim?playerId=${encodeURIComponent(playerId)}`;
   const previewBody = { proofId: credentials.proofId, secret: credentials.secret };
   assert.equal((await request(claimPath)).status, 403, "an account and player ID are not ownership proof");
   for (const account of [null, "invalid-cookie"]) assert.equal((await request("/v1/player-proofs/preview", { account, body: previewBody })).status, 401);
@@ -127,8 +127,10 @@ try {
   assert.deepEqual((await request(claimPath, claimOptions[winner])).body, claims[winner].body);
   assert.equal((await repository.getPlayer(playerId)).claimedByUserId, claimOptions[winner].account);
   console.log("PASS local HTTP authentication, origin, proof issuance, concurrent claim and committed-request replay");
-  await repository.createAndLinkGamePlayer({ gameId: game.gameId, playerId: "unclaimed", nickname: "Xavier" });
-  const invitationPath = `/v1/games/${game.gameId}/players/unclaimed/profile-invitation`;
+  const invitedId = "unclaimed/opaque%2F+player";
+  await repository.createAndLinkGamePlayer({ gameId: game.gameId, playerId: invitedId, nickname: "Xavier" });
+  const invitationQuery = `gameId=${encodeURIComponent(game.gameId)}&playerId=${encodeURIComponent(invitedId)}`;
+  const invitationPath = `/v1/player-proofs/invitation?${invitationQuery}`;
   for (const invalid of ["%ZZ", "%E0%A4"]) {
     for (const [gameId, playerId] of [[invalid, "unclaimed"], [game.gameId, invalid]]) {
       const path = `/v1/games/${gameId}/players/${playerId}/profile-invitation`;
@@ -140,6 +142,14 @@ try {
     assert.equal((await request(`/v1/players/${invalid}/claim`)).status, 400);
   }
   console.log("PASS actual local HTTP malformed proof paths return400 and missing sessions remain401");
+  for (const invalid of ["playerId=%ZZ", "playerId=%E0%A4", "playerId=a&playerId=b", "playerId=a&extra=b"]) {
+    assert.equal((await request(`/v1/player-proofs/claim?${invalid}`)).status, 400);
+    for (const [method, suffix] of [["GET", ""], ["POST", ""], ["POST", "/revoke"]]) {
+      const target = `/v1/player-proofs/invitation${suffix}?gameId=${game.gameId}&${invalid}`;
+      assert.equal((await request(target, { method, account: "organiser" })).status, 400);
+      assert.equal((await request(target, { method, account: null })).status, 401);
+    }
+  }
   assert.equal((await request(invitationPath, { method: "GET" })).status, 403);
   assert.equal((await request(invitationPath, { method: "GET", account: "organiser" })).body.invitation, null);
   const first = proof(); const second = proof();
@@ -157,9 +167,9 @@ try {
   assert.equal((await request(invitationPath, { account: "organiser", body: { proofId: second.proofId, verifier: second.verifier } })).status, 409);
   assert.equal((await request(invitationPath, { account: "organiser", body: { proofId: second.proofId, verifier: second.verifier, replacesProofId: first.proofId } })).status, 201);
   assert.equal((await request("/v1/player-proofs/preview", { body: { proofId: first.proofId, secret: first.secret } })).status, 409);
-  assert.equal((await request(`${invitationPath}/revoke`, { account: "organiser", body: { proofId: second.proofId } })).status, 200);
+  assert.equal((await request(`/v1/player-proofs/invitation/revoke?${invitationQuery}`, { account: "organiser", body: { proofId: second.proofId } })).status, 200);
   assert.equal((await request("/v1/player-proofs/preview", { body: { proofId: second.proofId, secret: second.secret } })).status, 409);
-  console.log("PASS local HTTP organiser invitation lifecycle and stale predecessor checks");
+  console.log("PASS local HTTP opaque slash/percent/plus invitation lifecycle and strict query validation");
   await stopServer(); await startServer("disabled");
   const fresh = proof();
   const disabledJoin = { account: null, key: randomUUID(), body: { nickname: "Disabled", claimProof: { proofId: fresh.proofId, verifier: fresh.verifier } } };

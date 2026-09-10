@@ -8,13 +8,15 @@ export type PlayerProofRepository = Pick<ThreeFcRepository,
   "getPlayer" | "claimPlayer" | "previewPlayerProof" | "createPlayerInvitation" | "getPlayerInvitation" | "revokePlayerInvitation">;
 
 export function isPlayerProofRoute(method: string, route: string): boolean {
-  return (method === "POST" && (route === "/v1/player-proofs/preview" || /^\/v1\/players\/[^/]+\/claim$/.test(route))) ||
+  return (method === "POST" && ["/v1/player-proofs/claim", "/v1/player-proofs/invitation/revoke"].includes(route)) ||
+    ((method === "GET" || method === "POST") && route === "/v1/player-proofs/invitation") ||
+    (method === "POST" && (route === "/v1/player-proofs/preview" || /^\/v1\/players\/[^/]+\/claim$/.test(route))) ||
     ((method === "GET" || method === "POST") && /^\/v1\/games\/[^/]+\/players\/[^/]+\/profile-invitation$/.test(route)) ||
     (method === "POST" && /^\/v1\/games\/[^/]+\/players\/[^/]+\/profile-invitation\/revoke$/.test(route));
 }
 
 export async function handlePlayerProofRoute(input: {
-  method: string; route: string; body: unknown; session: AuthSessionRecord | null; repository: PlayerProofRepository;
+  method: string; route: string; body: unknown; rawQueryString?: string; session: AuthSessionRecord | null; repository: PlayerProofRepository;
 }): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
   const { method, route, body, session, repository } = input;
   if (!session) return { statusCode: 401, payload: { error: "unauthorized", message: "Sign in to continue." } };
@@ -22,6 +24,26 @@ export async function handlePlayerProofRoute(input: {
   const userIds = [...new Set([userId, session.email])];
   const invalid = () => ({ statusCode: 400, payload: { error: "bad_request", message: "Invalid profile-link request. Check the link and try again." } });
   try {
+    const fixedClaim = route === "/v1/player-proofs/claim";
+    const fixedInvitation = /^\/v1\/player-proofs\/invitation(?:\/revoke)?$/.test(route);
+    const ids: Record<string, string> = {};
+    if (fixedClaim || fixedInvitation) {
+      const expected = fixedClaim ? ["playerId"] : ["gameId", "playerId"];
+      const fields = (input.rawQueryString ?? "").split("&");
+      if (fields.length !== expected.length) return invalid();
+      // Decode opaque identifiers exactly once. URLSearchParams can silently
+      // replace malformed UTF-8 with another identity; route segments also lose
+      // encoded slashes at API Gateway. Neither is safe for ownership operations.
+      for (const field of fields) {
+        const separator = field.indexOf("=");
+        if (separator < 0) return invalid();
+        const key = decodeURIComponent(field.slice(0, separator).replaceAll("+", " "));
+        const value = decodeURIComponent(field.slice(separator + 1).replaceAll("+", " "));
+        encodeURIComponent(value);
+        if (!expected.includes(key) || Object.hasOwn(ids, key) || !value.trim() || value.length > 1024) return invalid();
+        ids[key] = value;
+      }
+    }
     if (method === "POST" && route === "/v1/player-proofs/preview") {
       const parsed = playerProofCredentialSchema.safeParse(body);
       if (!parsed.success) return invalid();
@@ -33,10 +55,10 @@ export async function handlePlayerProofRoute(input: {
       } };
     }
     const claim = /^\/v1\/players\/([^/]+)\/claim$/.exec(route);
-    if (method === "POST" && claim) {
+    if (method === "POST" && (claim || fixedClaim)) {
       const parsed = claimPlayerRequestSchema.safeParse(body);
       if (!parsed.success) return invalid();
-      const playerId = decodeURIComponent(claim[1]);
+      const playerId = fixedClaim ? ids.playerId : decodeURIComponent(claim![1]);
       if (!parsed.data.proof) {
         const existing = await repository.getPlayer(playerId, { consistentRead: true });
         if (existing?.claimedByUserId !== userId) {
@@ -53,10 +75,14 @@ export async function handlePlayerProofRoute(input: {
       } };
     }
     const invitation = /^\/v1\/games\/([^/]+)\/players\/([^/]+)\/profile-invitation(\/revoke)?$/.exec(route);
-    if (invitation) {
-      const context = { gameId: decodeURIComponent(invitation[1]), playerId: decodeURIComponent(invitation[2]), userIds };
-      if (method === "GET" && !invitation[3]) return { statusCode: 200, payload: { invitation: await repository.getPlayerInvitation(context) } };
-      if (method === "POST" && invitation[3]) {
+    if (invitation || fixedInvitation) {
+      const context = { gameId: fixedInvitation ? ids.gameId : decodeURIComponent(invitation![1]),
+        playerId: fixedInvitation ? ids.playerId : decodeURIComponent(invitation![2]), userIds };
+      const revoke = fixedInvitation ? route.endsWith("/revoke") : Boolean(invitation![3]);
+      // Repository context/transaction checks remain the authority boundary for
+      // both transports; caller-supplied IDs never supply league permissions.
+      if (method === "GET" && !revoke) return { statusCode: 200, payload: { invitation: await repository.getPlayerInvitation(context) } };
+      if (method === "POST" && revoke) {
         const parsed = revokePlayerInvitationRequestSchema.safeParse(body);
         if (!parsed.success) return invalid();
         await repository.revokePlayerInvitation({ ...context, ...parsed.data });

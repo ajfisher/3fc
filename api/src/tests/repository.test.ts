@@ -771,10 +771,13 @@ test("player proof: local and Lambda routes pair account display with confirmati
       corsAllowedOrigins: ["https://qa.3fc.football"], appBaseUrl: "https://qa.3fc.football",
     });
     async function request(path: string, body: object, account = "A", method = "POST") {
+      const separator = path.indexOf("?");
+      const rawQueryString = separator < 0 ? "" : path.slice(separator + 1);
+      const route = separator < 0 ? path : path.slice(0, separator);
       if (adapter === "lambda") {
-        const result = await handler()({ rawPath: path, body: JSON.stringify(body),
+        const result = await handler()({ rawPath: route, rawQueryString, body: JSON.stringify(body),
           headers: { cookie: `threefc_session=${account}`, origin: "https://qa.3fc.football" },
-          requestContext: { requestId: "proof-test", http: { method, path } },
+          requestContext: { requestId: "proof-test", http: { method, path: route } },
         });
         return { status: result.statusCode, body: JSON.parse(result.body), headers: result.headers };
       }
@@ -783,7 +786,7 @@ test("player proof: local and Lambda routes pair account display with confirmati
         end(value: string) { result.body = JSON.parse(value); } } as unknown as ServerResponse;
       const incoming = { headers: { origin: "https://qa.3fc.football" },
         async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } } as unknown as IncomingMessage;
-      await handleLocalPlayerProofRoute({ request: incoming, response, method, route: path,
+      await handleLocalPlayerProofRoute({ request: incoming, response, method, route, rawQueryString,
         session: sessions[account] ?? null, playerRepository: activeRepository });
       return result;
     }
@@ -834,6 +837,43 @@ test("player proof: local and Lambda routes pair account display with confirmati
     assert.ok(!JSON.stringify(accepted.body).includes("private.example"));
     assert.ok(!JSON.stringify(preview.body).includes(proof.secret));
     assert.equal((await repository.getPlayer("self"))?.claimedByUserId, "account-A");
+    for (const playerId of ["opaque/player", "opaque%2Fplayer", "opaque\\player", "opaque+ space", ".", "control\r\nplayer"]) {
+      await repository.createAndLinkGamePlayer({ gameId: game.gameId, playerId, nickname: "Opaque player" });
+      const query = `gameId=${encodeURIComponent(game.gameId)}&playerId=${encodeURIComponent(playerId)}`;
+      const path = `/v1/player-proofs/invitation?${query}`;
+      const revokePath = `/v1/player-proofs/invitation/revoke?${query}`;
+      const issued = newClaimProof(); const issueBody = { proofId: issued.proofId, verifier: issued.verifier };
+      for (const [target, method, payload] of [[path, "GET", {}], [path, "POST", issueBody], [revokePath, "POST", { proofId: issued.proofId }]] as const) {
+        assert.equal((await request(target, payload, "missing", method)).status, 401);
+        assert.equal((await request(target, payload, "A", method)).status, 403);
+      }
+      assert.equal((await request(path, {}, "organiser", "GET")).body.invitation, null);
+      assert.equal((await request(path, issueBody, "organiser")).status, 201);
+      assert.equal((await request(path, {}, "organiser", "GET")).body.invitation.proofId, issued.proofId);
+      assert.equal((await request(revokePath, { proofId: issued.proofId }, "organiser")).status, 200);
+      const replacement = newClaimProof();
+      assert.equal((await request(path, { proofId: replacement.proofId, verifier: replacement.verifier, replacesProofId: issued.proofId }, "organiser")).status, 201);
+      const credential = { proofId: replacement.proofId, secret: replacement.secret };
+      const viewed = await request("/v1/player-proofs/preview", credential);
+      assert.equal(viewed.status, 200); assert.equal(viewed.body.preview.player.playerId, playerId);
+      const claimPath = `/v1/player-proofs/claim?playerId=${encodeURIComponent(playerId)}`;
+      const claimBody = { proof: { ...credential, confirmation: viewed.body.preview.confirmation } };
+      assert.equal((await request(claimPath, claimBody, "missing")).status, 401);
+      assert.equal((await request(claimPath, claimBody, "B")).status, 409);
+      assert.equal((await repository.getPlayer(playerId))?.claimedByUserId, null);
+      assert.equal((await request(claimPath, claimBody)).body.player.playerId, playerId);
+      assert.equal((await request(claimPath, claimBody)).status, 200);
+      assert.equal((await repository.getPlayer(playerId))?.claimedByUserId, "account-A");
+    }
+    for (const query of ["", "playerId=", "playerId=%ZZ", "playerId=%E0%A4", "playerId=a&playerId=b", "playerId=a&extra=b", `playerId=${"x".repeat(1025)}`]) {
+      assert.equal((await request(`/v1/player-proofs/claim?${query}`, {})).status, 400);
+      for (const [method, suffix] of [["GET", ""], ["POST", ""], ["POST", "/revoke"]]) {
+        assert.equal((await request(`/v1/player-proofs/invitation${suffix}?gameId=${game.gameId}&${query}`, {}, "organiser", method)).status, 400);
+      }
+    }
+    for (const badGame of ["%ZZ", "%E0%A4", "", "x".repeat(1025)]) {
+      assert.equal((await request(`/v1/player-proofs/invitation?gameId=${badGame}&playerId=self`, {}, "organiser", "GET")).status, 400);
+    }
   }
 });
 

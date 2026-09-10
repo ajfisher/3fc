@@ -942,6 +942,164 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/player-proofs/claim:
+    post:
+      summary: Explicitly link a proof-authorised player to the signed-in account
+      description: Opaque playerId is decoded exactly once from the sole required query field; duplicate, extra or malformed fields are rejected. Every first claim requires a valid private proof and short-lived confirmation returned by preview for this exact server-resolved session/account. A proofless request only preserves an existing same-owner retry. Consumed proofs return their immutable same-owner receipt after binding validation, without granting access or recreating deleted records. Responses are no-store and no-referrer.
+      operationId: claimPlayerByQuery
+      parameters:
+        - name: playerId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1024
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimPlayerRequest"
+      responses:
+        "200":
+          description: Player claimed for the current signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimPlayerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/player-proofs/invitation:
+    parameters:
+      - name: gameId
+        in: query
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 1024 }
+      - name: playerId
+        in: query
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 1024 }
+    get:
+      summary: Check the current private invitation for a registered player
+      operationId: getPlayerInvitationByQuery
+      description: Opaque identifiers are decoded exactly once from the exact required query fields; duplicate, extra or malformed fields are rejected. League organisers only. Returns metadata, never a bearer secret. A TTL-deleted proof retains expired pointer metadata so the organiser can replace it safely.
+      responses:
+        "200":
+          description: Current invitation metadata or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    anyOf:
+                      - $ref: "#/components/schemas/PlayerInvitationMetadata"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      summary: Create or replace a private profile-link invitation
+      operationId: createPlayerInvitationByQuery
+      description: Opaque identifiers are decoded exactly once from the exact required query fields; duplicate, extra or malformed fields are rejected. League organisers only. The client retains the random secret and submits its SHA-256 verifier. Creation is idempotent by proofId and exact inputs. Replacement must name the current predecessor proofId; a stale predecessor conflicts. Invites expire seven days after the persisted creation instant. No email is sent. All responses are no-store and no-referrer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlayerInvitationRequest"
+      responses:
+        "201":
+          description: Persisted invitation metadata, also returned for an exact retry while the invitation remains pending, current and valid. Consumed, revoked, replaced or expired invitation retries return 409.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/PlayerProofMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/player-proofs/invitation/revoke:
+    post:
+      summary: Revoke a player's private invitation
+      operationId: revokePlayerInvitationByQuery
+      description: Opaque identifiers are decoded exactly once from the exact required query fields; duplicate, extra or malformed fields are rejected. League organisers only. Idempotent; revocation does not remove existing ownership or a consumed receipt.
+      parameters:
+        - name: gameId
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 1024 }
+        - name: playerId
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 1024 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proofId]
+              properties:
+                proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+      responses:
+        "200":
+          description: Revocation confirmed, including an already revoked or consumed invitation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean, const: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /v1/players/{playerId}/claim:
     post:
       summary: Explicitly link a proof-authorised player to the signed-in account

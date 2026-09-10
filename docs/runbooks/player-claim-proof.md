@@ -122,6 +122,20 @@ purge the private panel and fence late responses. If the source tab/storage is
 gone, reopen the original private link after sign-in or ask for a replacement.
 Do not fall back to a proofless claim.
 
+Use fixed `/v1/player-proofs/invitation` and `/invitation/revoke` routes with
+exact `gameId` and `playerId` query fields, and `/v1/player-proofs/claim` with
+the sole `playerId` query field. Percent-encode each opaque ID exactly once;
+never place an opaque player ID in a path segment (API Gateway can reject an
+encoded slash before Lambda). Malformed/duplicate/extra query fields fail400.
+Legacy path routes remain compatible for representable IDs. Deploy the API
+before the updated site, as the workflow enforces. Repository authority and
+atomic proof checks are identical on both transports; no new IAM is required.
+
+Confirmed containment joins retire their unissued browser proof drafts. Rejected
+first attempts retire only their exact draft; uncertain requests keep their
+request identity. If cleanup fails, retry storage cleanup before creating another
+registration. Capacity must refuse new storage rather than discard a live link.
+
 `scripts/local/test-player-proof.mjs` exercises actual local HTTP authentication,
 origin checks, real DynamoDB transactions, competing accounts, lost-response
 replays, invitation lifecycle and disabled-mode recovery. It creates its own
