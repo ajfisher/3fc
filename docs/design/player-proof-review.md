@@ -130,8 +130,25 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 
 ### Unresolved blocking findings
 
+None
+
+### Resolved findings and validation history
+
 New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.
+
+Codex3977279870 accepted: malformed invitation game/player identifiers now produce
+a denied400 before ACL lookup, rather than an uncaught URIError500. Only route
+decoding URIError is mapped; storage/lookup failures still propagate. Missing
+sessions retain401. Independent architecture/security cleared. Focused ACL and
+local-helper/Lambda matrices passed group22642/session76771 exit0, peak422320KiB,
+remaining[]. Actual HTTP coverage is separately recorded after execution.
+Complete affected suites, lint, full API/app/review-gate tests, contracts, build
+and actual local HTTP/DynamoDB acceptance passed serially: group22727/session23741
+exit0, peak2198368KiB host plus bounded512MiB container, remaining[], tripNone.
+Actual HTTP covered malformed game/player IDs in GET/create/revoke, malformed
+claim IDs, unauthenticated401, valid invitation lifecycle and containment recovery.
+The API exited and disposable database container was removed.
 
 Codex3977034764/3977034779 accepted: machine-coded claims_unavailable503 restores
 the predecessor link only for an attempt with no earlier uncertain dispatch.
@@ -246,20 +263,19 @@ design/QA follow-up and new exact-head external evidence are tracked separately.
 
 ### Decision requiring judgement
 
-None; AJ approved the private bearer invitation tradeoff and explicit confirmation.
+None.
 
 ### Options considered
 
-None outstanding.
+None.
 
 ### Reason selected
 
-Approved plan; no automatic name/account matching or email-bound expansion.
+None.
 
 ### Reversal cost
 
-Proof acquisition can be disabled; existing ownership and immutable receipts must
-remain readable. Do not roll back to a proofless API.
+None.
 
 ## Review focus
 

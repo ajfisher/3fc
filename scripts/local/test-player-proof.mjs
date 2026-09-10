@@ -124,6 +124,17 @@ try {
   console.log("PASS local HTTP authentication, origin, proof issuance, concurrent claim and committed-request replay");
   await repository.createAndLinkGamePlayer({ gameId: game.gameId, playerId: "unclaimed", nickname: "Xavier" });
   const invitationPath = `/v1/games/${game.gameId}/players/unclaimed/profile-invitation`;
+  for (const invalid of ["%ZZ", "%E0%A4"]) {
+    for (const [gameId, playerId] of [[invalid, "unclaimed"], [game.gameId, invalid]]) {
+      const path = `/v1/games/${gameId}/players/${playerId}/profile-invitation`;
+      for (const [method, suffix] of [["GET", ""], ["POST", ""], ["POST", "/revoke"]]) {
+        assert.equal((await request(path + suffix, { method, account: "organiser" })).status, 400);
+        assert.equal((await request(path + suffix, { method, account: null })).status, 401);
+      }
+    }
+    assert.equal((await request(`/v1/players/${invalid}/claim`)).status, 400);
+  }
+  console.log("PASS actual local HTTP malformed proof paths return400 and missing sessions remain401");
   assert.equal((await request(invitationPath, { method: "GET" })).status, 403);
   assert.equal((await request(invitationPath, { method: "GET", account: "organiser" })).body.invitation, null);
   const first = proof(); const second = proof();

@@ -58,8 +58,8 @@ export interface AclLookup {
 }
 
 export interface AclErrorResponse {
-  error: "forbidden" | "not_found";
-  code: "admin_required" | "scorekeeper_required" | "acl_scope_not_found";
+  error: "forbidden" | "not_found" | "bad_request";
+  code: "admin_required" | "scorekeeper_required" | "acl_scope_not_found" | "invalid_path";
   message: string;
 }
 
@@ -80,8 +80,14 @@ export function resolveProtectedMutationRoute(
   route: string,
 ): ProtectedMutationRoute | null {
   if (method.toUpperCase() === "POST") {
-    const invitation = /^\/v1\/games\/([^/]+)\/players\/[^/]+\/profile-invitation(?:\/revoke)?$/.exec(route);
-    if (invitation) return { operation: "managePlayerInvitation", gameId: decodeRouteParam(invitation[1]) };
+    const invitation = /^\/v1\/games\/([^/]+)\/players\/([^/]+)\/profile-invitation(?:\/revoke)?$/.exec(route);
+    if (invitation) {
+      // Validate both identifiers before a lookup, even though only the game
+      // determines league authority. Malformed input must not skip the ACL gate.
+      const gameId = decodeRouteParam(invitation[1]);
+      decodeRouteParam(invitation[2]);
+      return { operation: "managePlayerInvitation", gameId };
+    }
   }
   const upperMethod = method.toUpperCase();
   if (upperMethod === "POST" && ROUTES.createLeague.test(route)) {
@@ -335,7 +341,16 @@ export async function authorizeProtectedMutation(
   userId: string | readonly string[],
   aclLookup: AclLookup,
 ): Promise<AclAuthorizationResult> {
-  const resolvedRoute = resolveProtectedMutationRoute(method, route);
+  let resolvedRoute: ProtectedMutationRoute | null;
+  try {
+    resolvedRoute = resolveProtectedMutationRoute(method, route);
+  } catch (error) {
+    if (!(error instanceof URIError)) throw error;
+    return {
+      allowed: false, statusCode: 400, operation: null, scope: null,
+      error: { error: "bad_request", code: "invalid_path", message: "Invalid request path." },
+    };
+  }
   if (!resolvedRoute) {
     return {
       allowed: true,

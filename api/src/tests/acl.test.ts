@@ -116,6 +116,25 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
   assert.equal(resolveProtectedMutationRoute("GET", "/v1/leagues"), null);
 });
 
+test("malformed invitation identifiers are denied before ACL lookup", async () => {
+  const unexpected = async (): Promise<never> => { throw new Error("Malformed paths must not perform an ACL lookup"); };
+  const lookup: AclLookup = { getLeagueAccess: unexpected, getGame: unexpected, getSeason: unexpected, getSession: unexpected };
+  for (const invalid of ["%ZZ", "%E0%A4"]) {
+    for (const [game, player] of [[invalid, "p"], ["missing-game", invalid]]) {
+      for (const suffix of ["", "/revoke"]) {
+        const result = await authorizeProtectedMutation("POST", `/v1/games/${game}/players/${player}/profile-invitation${suffix}`, "organiser", lookup);
+        assert.equal(result.allowed, false);
+        assert.equal(result.statusCode, 400);
+        assert.equal(result.error?.code, "invalid_path");
+      }
+    }
+  }
+  assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game%20one/players/player%20one/profile-invitation"),
+    { operation: "managePlayerInvitation", gameId: "game one" });
+  await assert.rejects(authorizeProtectedMutation("POST", "/v1/games/game/players/player/profile-invitation", "organiser", lookup),
+    /must not perform an ACL lookup/, "non-URI lookup failures must propagate, not become bad requests");
+});
+
 test("createLeague mutation is allowed for authenticated users", async () => {
   const result = await authorizeProtectedMutation(
     "POST",

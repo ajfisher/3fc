@@ -700,11 +700,11 @@ test("player proof: local and Lambda routes pair account display with confirmati
       sessionCookieName: "threefc_session", sessionCookieSecure: true,
       corsAllowedOrigins: ["https://qa.3fc.football"], appBaseUrl: "https://qa.3fc.football",
     });
-    async function request(path: string, body: object, account = "A") {
+    async function request(path: string, body: object, account = "A", method = "POST") {
       if (adapter === "lambda") {
         const result = await handler()({ rawPath: path, body: JSON.stringify(body),
           headers: { cookie: `threefc_session=${account}`, origin: "https://qa.3fc.football" },
-          requestContext: { requestId: "proof-test", http: { method: "POST", path } },
+          requestContext: { requestId: "proof-test", http: { method, path } },
         });
         return { status: result.statusCode, body: JSON.parse(result.body), headers: result.headers };
       }
@@ -713,11 +713,21 @@ test("player proof: local and Lambda routes pair account display with confirmati
         end(value: string) { result.body = JSON.parse(value); } } as unknown as ServerResponse;
       const incoming = { headers: { origin: "https://qa.3fc.football" },
         async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } } as unknown as IncomingMessage;
-      await handleLocalPlayerProofRoute({ request: incoming, response, method: "POST", route: path,
+      await handleLocalPlayerProofRoute({ request: incoming, response, method, route: path,
         session: sessions[account] ?? null, playerRepository: activeRepository });
       return result;
     }
     const credentials = { proofId: proof.proofId, secret: proof.secret };
+    for (const invalid of ["%ZZ", "%E0%A4"]) {
+      for (const [gameId, playerId] of [[invalid, "self"], [game.gameId, invalid]]) {
+        const path = `/v1/games/${gameId}/players/${playerId}/profile-invitation`;
+        for (const [method, suffix] of [["GET", ""], ["POST", ""], ["POST", "/revoke"]]) {
+          assert.equal((await request(path + suffix, {}, "organiser", method)).status, 400);
+          assert.equal((await request(path + suffix, {}, "missing", method)).status, 401);
+        }
+      }
+      assert.equal((await request(`/v1/players/${invalid}/claim`, {})).status, 400);
+    }
     assert.equal((await request("/v1/players/self/claim", {})).status, 403);
     assert.equal((await request("/v1/player-proofs/preview", credentials, "missing")).status, 401);
     const unknown = newClaimProof();
