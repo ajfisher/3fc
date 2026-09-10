@@ -133,6 +133,16 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.
 
+Codex3977034764/3977034779 accepted: machine-coded claims_unavailable503 restores
+the predecessor link only for an attempt with no earlier uncertain dispatch.
+Previously lost responses remain frozen; containment does not prove their prior
+outcome. OpenAPI now declares preview404, matching missing-proof/wrong-secret
+local-helper and Lambda-adapter assertions (not actual HTTP evidence).
+Independent QA cleared. Thirteen invitation tests plus two focused API/contract
+checks passed group16794/session33575, exit0 peak431296KiB remaining[] tripNone.
+Full affected-file, lint/API/app/review-gate tests, contracts and build passed
+group16939/session40814, exit0 peak2086416KiB remaining[] tripNone.
+
 Codex3976866900 accepted: private invitation cleanup now uses an explicit dispatch
 callback after the synchronous game-write barrier. A fresh attempt blocked before
 fetch preserves the active displayed link and retires only the never-sent request;

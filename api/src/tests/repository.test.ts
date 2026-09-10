@@ -718,6 +718,9 @@ test("player proof: local and Lambda routes pair account display with confirmati
     const credentials = { proofId: proof.proofId, secret: proof.secret };
     assert.equal((await request("/v1/players/self/claim", {})).status, 403);
     assert.equal((await request("/v1/player-proofs/preview", credentials, "missing")).status, 401);
+    const unknown = newClaimProof();
+    assert.equal((await request("/v1/player-proofs/preview", { proofId: unknown.proofId, secret: unknown.secret })).status, 404);
+    assert.equal((await request("/v1/player-proofs/preview", { ...credentials, secret: unknown.secret })).status, 404);
     const preview = await request("/v1/player-proofs/preview", credentials);
     assert.equal(preview.status, 200);
     assert.deepEqual(preview.body.account, { email: "A@private.example" });

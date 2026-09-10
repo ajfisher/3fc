@@ -5277,7 +5277,7 @@
         if (!invitationAttempt) {
           const proof = await window.ThreeFcPlayerProof.create(`invite:${randomSuffix(24)}`);
           if (generation !== invitationGeneration) return;
-          invitationAttempt = { proof, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
+          invitationAttempt = { proof, previousLink: invitationLink.value, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
             replacesProofId: invitationMetadata?.proofId ?? null }) };
         }
         const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body }, () => {
@@ -5293,6 +5293,14 @@
         invitationMessage(`Private link created. It expires on ${new Date(result.invitation.expiresAt).toLocaleString()}.`);
       } catch (error) {
         if (generation !== invitationGeneration) return;
+        if (error.statusCode === 503 && error.responseCode === "claims_unavailable" && invitationAttempt && !invitationAttempt.uncertain) {
+          invitationLink.value = invitationAttempt.previousLink;
+          invitationAttempt = null;
+          invitationMessage(invitationLink.value
+            ? "Profile linking is temporarily unavailable. Your existing link was not replaced. Try again later."
+            : "Profile linking is temporarily unavailable. No link was created. Try again later.", true);
+          return;
+        }
         if (!dispatched && invitationAttempt && !invitationAttempt.uncertain) {
           invitationAttempt = null;
           invitationMessage("The link was not replaced. Reload to check the earlier game change before trying again.", true);

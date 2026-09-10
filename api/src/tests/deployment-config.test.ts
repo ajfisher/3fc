@@ -60,6 +60,10 @@ function assertServerlessRoute(method: string, path: string): void {
 }
 
 test("api core deployment config registers claim and access routes", () => {
+  const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
+  const previewContract = contract.slice(contract.indexOf("  /v1/player-proofs/preview:"),
+    contract.indexOf("  /v1/games/{gameId}/players/{playerId}/profile-invitation:"));
+  assert.match(previewContract, /"404":\s+\$ref: "#\/components\/responses\/NotFound"/);
   assertServerlessRoute("POST", "/v1/player-proofs/preview");
   assertServerlessRoute("OPTIONS", "/v1/player-proofs/preview");
   for (const method of ["GET", "POST", "OPTIONS"]) {

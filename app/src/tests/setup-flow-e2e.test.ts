@@ -6893,7 +6893,7 @@ test("game roster reconciles a committed transfer when refresh fails", async () 
   );
 });
 
-for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-storage-failure", "replacement-write-barrier", "purged"] as const) {
+for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-disabled", "replacement-loss-then-disabled", "replacement-storage-failure", "replacement-write-barrier", "purged"] as const) {
   test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
     const apiState = createMockApiState();
     seedGoalScoringGame(apiState, { gameId: "profile-invitation", role: "admin" });
@@ -6915,12 +6915,14 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
         if (init.method === "GET") { reads += 1; return createJsonResponse(200, { invitation: metadata }); }
         writes.push(String(init.body));
         const body = JSON.parse(String(init.body));
+        if ((disposition === "replacement-disabled" && writes.length >= 2) || (disposition === "replacement-loss-then-disabled" && writes.length > 2)) return createJsonResponse(503, { error: "unavailable", code: "claims_unavailable" });
         if (metadata?.proofId !== body.proofId) metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
         if (disposition === "purged") return new Promise<Response>(resolve => { release = resolve; });
         if (["lost-response", "changed-after-loss"].includes(disposition) && writes.length === 1) throw new Error("response lost");
         if (disposition === "changed-after-loss") return createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" });
         if (disposition === "replacement-loss" && writes.length === 2) throw new Error("replacement committed; response lost");
         if (disposition === "replacement-loss" && writes.length > 2) return createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" });
+        if (disposition === "replacement-loss-then-disabled" && writes.length === 2) throw new Error("replacement committed; response lost");
         return createJsonResponse(201, { invitation: metadata });
       },
     });
@@ -6938,6 +6940,29 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
       dispatchClick(create); dispatchClick(create);
       for (let tick = 0; tick < 100 && writes.length === 0; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
       await flushAsync(); assert.equal(writes.length, 1);
+      if (disposition === "replacement-disabled" || disposition === "replacement-loss-then-disabled") {
+        const originalLink = link.value;
+        assert.notEqual(originalLink, "");
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 2);
+        const copy = page.document.getElementById("player-invitation-copy") as HTMLButtonElement;
+        if (disposition === "replacement-loss-then-disabled") {
+          dispatchClick(create); await flushAsync();
+          assert.equal(writes.length, 3); assert.equal(writes[1], writes[2]);
+          assert.equal(link.value, ""); assert.equal(copy.hidden, true);
+          assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /could not be confirmed/);
+          assert.equal(create.textContent, "Retry link creation");
+        } else {
+          assert.equal(link.value, originalLink); assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
+          assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /existing link was not replaced/);
+          assert.equal(create.textContent, "Replace private link");
+          dispatchClick(page.document.getElementById("player-invitation-close")!);
+          dispatchClick(open); await flushAsync();
+          assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        }
+        return;
+      }
       if (disposition === "replacement-write-barrier") {
         const originalLink = link.value;
         assert.notEqual(originalLink, "");
