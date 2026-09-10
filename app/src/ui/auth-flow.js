@@ -95,9 +95,11 @@
 
     try {
       const target = new URL(value, window.location.origin);
+      const candidate = /^\/link-player\/?$/.test(target.pathname)
+        ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
       if (
         target.origin !== window.location.origin ||
-        !RETURN_TARGET_PATHS.some((pattern) => pattern.test(target.pathname))
+        !RETURN_TARGET_PATHS.some((pattern) => pattern.test(candidate))
       ) {
         return null;
       }
@@ -269,6 +271,9 @@
       // Ignore storage failures.
     }
   }
+
+  // Retire invalid values saved by older clients even if sign-in is abandoned.
+  readStoredReturnTo();
 
   async function initSignInPage() {
     const form = document.getElementById("auth-magic-form");

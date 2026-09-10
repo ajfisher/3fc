@@ -5214,6 +5214,16 @@
       invitationStatus.hidden = !text;
       invitationStatus.setAttribute("role", error ? "alert" : "status");
     }
+    function retireInvitationDraft() {
+      try {
+        window.ThreeFcPlayerProof.discardDraft(invitationAttempt.proof);
+        invitationAttempt = null;
+        return true;
+      } catch {
+        invitationMessage("Your browser couldn’t clear the saved private link. Allow site storage, then retry.", true);
+        return false;
+      }
+    }
     function renderInvitation() {
       const canIssue = invitationLoaded && currentLeagueRole === "admin" && !refreshAccountLocked;
       invitationCreate.disabled = invitationPending || !canIssue || invitationRevokeUnconfirmed;
@@ -5295,24 +5305,27 @@
         if (generation !== invitationGeneration) return;
         if (error.statusCode === 503 && error.responseCode === "claims_unavailable" && invitationAttempt && !invitationAttempt.uncertain) {
           invitationLink.value = invitationAttempt.previousLink;
-          invitationAttempt = null;
+          if (!retireInvitationDraft()) return;
           invitationMessage(invitationLink.value
             ? "Profile linking is temporarily unavailable. Your existing link was not replaced. Try again later."
             : "Profile linking is temporarily unavailable. No link was created. Try again later.", true);
           return;
         }
         if (!dispatched && invitationAttempt && !invitationAttempt.uncertain) {
-          invitationAttempt = null;
+          if (!retireInvitationDraft()) return;
           invitationMessage("The link was not replaced. Reload to check the earlier game change before trying again.", true);
           return;
         }
         if (invitationAttempt && ((!invitationAttempt.uncertain && [400, 401, 403, 404, 409].includes(error.statusCode)) ||
             (error.statusCode === 409 && error.responseCode === "claim_invite_changed"))) {
-          invitationAttempt = null; invitationLoaded = false; invitationLink.value = "";
+          if (!retireInvitationDraft()) return;
+          invitationLoaded = false; invitationLink.value = "";
           invitationMessage("This player or its private link changed. Close this panel and check it again.", true);
         } else {
           if (invitationAttempt) invitationAttempt.uncertain = true;
-          invitationMessage(invitationAttempt ? "Link creation could not be confirmed. Retry sends the same request."
+          invitationMessage(error.message === "proof_storage_full"
+            ? "This tab is holding too many private links. Save any links you need before signing out and back in."
+            : invitationAttempt ? "Link creation could not be confirmed. Retry sends the same request."
             : "Your browser could not keep the private link. Allow site storage and try again.", true);
         }
       } finally { if (generation === invitationGeneration) { invitationPending = false; renderInvitation(); } }

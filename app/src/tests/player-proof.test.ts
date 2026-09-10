@@ -101,6 +101,24 @@ test("private player link with missing or blocked storage offers real recovery w
   }
 });
 
+test("private proof draft retirement is exact and capacity never evicts live records", async (t) => {
+  const view = page({ url: `${origin}/sign-in`, html: renderSignInPage(origin, "/setup") });
+  t.after(() => view.dom.window.close());
+  const live = await view.proof.create("live");
+  view.proof.attach(live, { proofId: live.proofId, expiresAt }, "player");
+  const draft = await view.proof.create("draft");
+  assert.throws(() => view.proof.discardDraft({ ...draft, secret: "wrong" }));
+  assert.throws(() => view.proof.discardDraft(live));
+  view.proof.discardDraft(draft);
+  assert.equal(await view.proof.read(draft.proofId), null);
+  assert.equal((await view.proof.read(live.proofId)).secret, live.secret);
+  for (let index = 0; index < 19; index += 1) await view.proof.create(`held-${index}`);
+  const before = view.storage.get("threefc.player-proof.v1");
+  await assert.rejects(view.proof.create("overflow"), /proof_storage_full/);
+  assert.equal(view.storage.get("threefc.player-proof.v1"), before);
+  assert.equal((await view.proof.read(live.proofId)).secret, live.secret);
+});
+
 test("private player link preserves the exact request after an uncertain acceptance", async (t) => {
   const attempts: unknown[] = [];
   const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, fetch: (path, body) => {

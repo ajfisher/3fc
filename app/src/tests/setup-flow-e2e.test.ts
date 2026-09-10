@@ -3283,6 +3283,28 @@ test("auth flow canonicalizes trailing slashes on safe return targets", async ()
   });
 });
 
+test("auth flow never retains secret-bearing profile-link return targets after failed sign-in", async () => {
+  const id = "proof-id-for-test-123456";
+  for (const target of [`/link-player#proofId=${id}&secret=private-proof-secret`,
+    `/link-player/?proofId=${id}&secret=private-proof-secret`, `/link-player?proofId=${id}#secret=private-proof-secret`]) {
+    const apiState = createMockApiState();
+    apiState.storage.set("threefc.auth.return_to", target);
+    const base = createMockFetch(apiState);
+    const page = await bootPage({ html: renderSignInPage("http://localhost:3001", "/setup"),
+      url: `http://localhost:3000/sign-in?returnTo=${encodeURIComponent(target)}`, scriptFile: "auth-flow.js", apiState,
+      fetch: (input, init) => String(input).includes("/auth/magic/start") ? Promise.resolve(createJsonResponse(503, {})) : base(input, init),
+    });
+    const normalizer = (page.window as unknown as { __THREEFC_NORMALIZE_RETURN_TO__: (value: string) => string | null }).__THREEFC_NORMALIZE_RETURN_TO__;
+    assert.equal(normalizer(target), null);
+    assert.equal(normalizer(`/link-player/?proofId=${id}`), `/link-player?proofId=${id}`);
+    assert.equal(apiState.storage.has("threefc.auth.return_to"), false, "abandoned sign-in must not retain an old secret target");
+    (page.document.getElementById("auth-email") as HTMLInputElement).value = "organiser@example.invalid";
+    dispatchSubmit(page.document.querySelector("form") as HTMLFormElement); await flushAsync();
+    assert.equal(apiState.storage.get("threefc.auth.return_to"), "/setup");
+    assert.ok(![...apiState.storage.values()].some(value => value.includes("private-proof-secret")));
+  }
+});
+
 test("auth callback redacts the URL while retaining recoverable state for transport retries", async () => {
   const apiState = createMockApiState();
   apiState.storage.set("threefc.auth.return_to", "/games/game-1");
@@ -6957,6 +6979,12 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
           assert.equal(link.value, originalLink); assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
           assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /existing link was not replaced/);
           assert.equal(create.textContent, "Replace private link");
+          for (let repeat = 0; repeat < 24; repeat += 1) {
+            dispatchClick(create); await flushAsync();
+            assert.equal(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1")!).length, 1,
+              "definitively rejected drafts must not accumulate or evict the live proof");
+            assert.equal(link.value, originalLink);
+          }
           dispatchClick(page.document.getElementById("player-invitation-close")!);
           dispatchClick(open); await flushAsync();
           assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);

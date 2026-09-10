@@ -15,6 +15,7 @@ test("normalizes known application return targets", () => {
     "/join?code=100%25",
     "/join/ABCD2345",
     "/invites?code=ABCD2345",
+    "/link-player?proofId=proof-id-for-test-123456",
   ];
 
   for (const target of targets) {
@@ -39,6 +40,14 @@ test("rejects non-application and ambiguous return targets", () => {
     "/v1/auth/session",
     "/ui/auth-flow.js",
     "/unknown",
+    "/link-player",
+    "/link-player#proofId=proof-id-for-test-123456&secret=private",
+    "/link-player?proofId=proof-id-for-test-123456#secret=private",
+    "/link-player/?proofId=proof-id-for-test-123456&secret=private",
+    "/link-player?proofId=proof-id-for-test-123456&proofId=another-proof-id-123456",
+    "/link-player?proofId=proof-id-for-test-123456%23secret%3Dprivate",
+    "/link-player?proofId=short",
+    "/leagues/?id=not-a-path-segment",
   ];
 
   for (const target of targets) {
@@ -58,6 +67,7 @@ test("canonicalizes trailing slashes on known application return targets", () =>
     ["/games/game-1/?mode=run#latest", "/games/game-1?mode=run#latest"],
     ["/join/ABCD2345/", "/join/ABCD2345"],
     ["/invites/ABCD2345/", "/invites/ABCD2345"],
+    ["/link-player/?proofId=proof-id-for-test-123456", "/link-player?proofId=proof-id-for-test-123456"],
   ]);
 
   for (const [target, expected] of targets) {

@@ -326,6 +326,28 @@ contracts, build and actual local HTTP/DynamoDB all passed serially:
 group38040/session81405 exit0, peak2230288KiB host plus bounded512MiB container,
 remaining[], tripNone. Exact-head external evidence is refreshed in the PR body.
 
+### Return-target and draft-storage review
+
+Codex findings3978101325 and3978101329 accepted. Profile-link authentication
+destinations now allow only a bounded nonsecret proofId query, rejecting fragments,
+extra/duplicate parameters and malformed identifiers in the shared server and
+browser validators. Previously stored invalid destinations are removed at boot,
+including when sign-in fails or is abandoned.
+
+Definitively rejected invitation drafts are removed from session storage before
+their controller attempt is retired. Cleanup failure retains that exact attempt;
+uncertain writes retain their proof and retry identity. Storage capacity now fails
+closed instead of evicting an existing live link. Exact cleanup cannot remove an
+attached player proof or a record with a different secret.
+
+Independent architecture/security, QA and UX reviewers found no remaining blocker.
+Focused17 tests passed (group41946/session34397, peak393792KiB); complete affected
+files510 tests passed (group42059/session12067, peak2187344KiB). Both exited0 with
+remaining[] and no guard trip. Full lint/typecheck,360 API/556 app/57 gate tests,
+contracts and build passed serially (group42496/session84198, exit0,
+peak2146800KiB, remaining[], tripNone). New-head external evidence is recorded in
+the PR packet; earlier-head evidence is not substituted for it.
+
 ### Shared deployment isolation
 
 Codex finding3977627564 accepted: per-PR QA locks allowed API and site releases

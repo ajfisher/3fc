@@ -36,7 +36,8 @@
       ...(typeof record.operation === "string" && record.operation.length <= 400 ? { operation: record.operation } : {}),
       ...(typeof record.playerId === "string" && record.playerId.length <= 1024 ? { playerId: record.playerId } : {}),
     };
-    const next = [...records.filter((item) => valid(item) && item.proofId !== clean.proofId), clean].slice(-20);
+    const next = [...records.filter((item) => valid(item) && item.proofId !== clean.proofId), clean];
+    if (next.length > 20) throw new Error("proof_storage_full");
     // Persist before dispatching a registration/invitation. Never issue a proof
     // whose only copy could disappear on the subsequent sign-in navigation.
     sessionStorage.setItem(KEY, JSON.stringify(next));
@@ -44,6 +45,16 @@
     return clean;
   }
   function lookup(id) { return records.find((record) => record.proofId === id && valid(record)) || null; }
+  function discardDraft(record) {
+    const current = lookup(record?.proofId);
+    if (!current) return;
+    if (current.secret !== record.secret || current.playerId) throw new Error("proof_not_draft");
+    const next = records.filter((item) => item.proofId !== record.proofId);
+    // If storage rejects cleanup, retain the attempt so retry cannot accumulate
+    // fresh drafts or evict an unrelated live link.
+    sessionStorage.setItem(KEY, JSON.stringify(next));
+    records = next;
+  }
   function cancelHandoffs() {
     generation += 1;
     for (const pending of waiting.values()) { clearTimeout(pending.timer); pending.resolve(null); }
@@ -157,7 +168,7 @@
     connect();
     if (event.persisted && /^\/link-player\/?$/.test(location.pathname)) location.reload();
   });
-  window.ThreeFcPlayerProof = Object.freeze({ create, read, attach, shareLink, destination, clear,
+  window.ThreeFcPlayerProof = Object.freeze({ create, read, attach, shareLink, destination, clear, discardDraft,
     forPlayer: (id) => records.findLast((record) => record.playerId === id && valid(record)) || null,
   });
 
