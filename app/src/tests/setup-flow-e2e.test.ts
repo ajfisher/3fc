@@ -6893,7 +6893,7 @@ test("game roster reconciles a committed transfer when refresh fails", async () 
   );
 });
 
-for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-storage-failure", "purged"] as const) {
+for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-storage-failure", "replacement-write-barrier", "purged"] as const) {
   test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
     const apiState = createMockApiState();
     seedGoalScoringGame(apiState, { gameId: "profile-invitation", role: "admin" });
@@ -6902,10 +6902,15 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
     let release: ((response: Response) => void) | undefined;
     let metadata: { proofId: string; expiresAt: string; state: string } | null = null;
     let reads = 0;
+    let revokeRequests = 0;
     const page = await bootPage({
       html: renderGamePage("http://localhost:3001", { gameId: "profile-invitation" }),
       url: "http://localhost:3000/games/profile-invitation#teams", scriptFile: "setup-flow.js", apiState,
       fetch: async (input, init = {}) => {
+        if (disposition === "replacement-write-barrier" && init.method === "PATCH" && String(input).endsWith("/v1/games/profile-invitation")) {
+          return createJsonResponse(503, { error: "unavailable" });
+        }
+        if (String(input).endsWith("/profile-invitation/revoke")) revokeRequests += 1;
         if (!String(input).includes("/players/") || !String(input).endsWith("/profile-invitation")) return base(input, init);
         if (init.method === "GET") { reads += 1; return createJsonResponse(200, { invitation: metadata }); }
         writes.push(String(init.body));
@@ -6933,6 +6938,30 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
       dispatchClick(create); dispatchClick(create);
       for (let tick = 0; tick < 100 && writes.length === 0; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
       await flushAsync(); assert.equal(writes.length, 1);
+      if (disposition === "replacement-write-barrier") {
+        const originalLink = link.value;
+        assert.notEqual(originalLink, "");
+        const field = page.document.getElementById("game-edit-kickoff") as HTMLInputElement;
+        field.value = "2030-04-01T10:30";
+        field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+        dispatchSubmit(page.document.getElementById("game-edit-form") as HTMLFormElement); await flushAsync();
+        assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /earlier change is unconfirmed/);
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 1, "the write barrier prevents replacement fetch");
+        assert.equal(link.value, originalLink);
+        const copy = page.document.getElementById("player-invitation-copy") as HTMLButtonElement;
+        assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /not replaced.*Reload/);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        dispatchClick(page.document.getElementById("player-invitation-revoke")!); await flushAsync();
+        assert.equal(revokeRequests, 0);
+        assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /Revocation was not sent/);
+        return;
+      }
       if (disposition === "replacement-storage-failure") {
         const originalLink = link.value;
         assert.notEqual(originalLink, "");
@@ -6998,19 +7027,21 @@ for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "
   });
 }
 
-for (const ownership of ["retained", "outside", "changed"] as const) {
+for (const ownership of ["retained", "outside", "changed", "lost-then-barrier"] as const) {
   test(`private profile invitation revoke preserves ${ownership} focus`, async () => {
     const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "invite-revoke", role: "admin" });
-    const base = createMockFetch(apiState); let release: (() => void) | undefined;
+    const base = createMockFetch(apiState); let release: (() => void) | undefined; let revokeWrites = 0;
     const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "invite-revoke" }),
       url: "http://localhost:3000/games/invite-revoke#teams", scriptFile: "setup-flow.js", apiState,
       fetch: async (input, init) => {
+        if (ownership === "lost-then-barrier" && init?.method === "PATCH" && String(input).endsWith("/v1/games/invite-revoke")) return createJsonResponse(503, { error: "unavailable" });
         if (String(input).endsWith("/profile-invitation")) return createJsonResponse(200, { invitation: {
           proofId: "existing-profile-proof-123", expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending",
         } });
-        if (String(input).endsWith("/profile-invitation/revoke")) return new Promise<Response>(resolve => { release = () => resolve(ownership === "changed"
+        if (String(input).endsWith("/profile-invitation/revoke")) { revokeWrites += 1; return new Promise<Response>(resolve => { release = () => resolve(ownership === "lost-then-barrier"
+          ? createJsonResponse(503, { error: "unavailable" }) : ownership === "changed"
           ? createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" })
-          : createJsonResponse(200, { revoked: true })); });
+          : createJsonResponse(200, { revoked: true })); }); }
         return base(input, init);
       },
     });
@@ -7025,6 +7056,18 @@ for (const ownership of ["retained", "outside", "changed"] as const) {
       const outside = page.document.createElement("button"); page.document.body.append(outside);
       if (ownership === "outside") outside.focus();
       release(); await flushAsync();
+      if (ownership === "lost-then-barrier") {
+        assert.equal(revokeWrites, 1); assert.equal(button.hidden, false);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /Revocation could not be confirmed/);
+        const field = page.document.getElementById("game-edit-kickoff") as HTMLInputElement;
+        field.value = "2030-04-01T10:30"; field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+        dispatchSubmit(page.document.getElementById("game-edit-form") as HTMLFormElement); await flushAsync();
+        assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /earlier change is unconfirmed/);
+        dispatchClick(button); await flushAsync();
+        assert.equal(revokeWrites, 1);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /retry was not sent.*earlier revocation is still unconfirmed/);
+        return;
+      }
       assert.equal(button.hidden, true);
       assert.equal(page.document.activeElement, ownership === "outside" ? outside : page.document.getElementById("player-invitation-status"));
       if (ownership === "changed") {

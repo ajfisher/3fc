@@ -133,6 +133,18 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.
 
+Codex3976866900 accepted: private invitation cleanup now uses an explicit dispatch
+callback after the synchronous game-write barrier. A fresh attempt blocked before
+fetch preserves the active displayed link and retires only the never-sent request;
+a previously uncertain attempt remains frozen. Revocation likewise distinguishes
+a never-sent action from a blocked retry of an earlier uncertain action. Tests
+drive actual metadata503 write locking and verify no replacement/revoke fetch,
+retained link/Copy and truthful prior-uncertainty messages. QA reviewed and cleared.
+Eleven focused invitation tests passed group13937/session96737: exit0,
+peak425184KiB remaining[] tripNone.
+Full affected-file, lint/API/app/review-gate tests, contracts and build passed
+group14067/session87781: exit0 peak1764176KiB remaining[] tripNone.
+
 Codex3976768885 accepted: QA/production now explicitly export the GitHub
 Environment variable PLAYER_CLAIM_MODE into core deployment. The script validates
 the enum before build/deploy and verifies the live nonsecret mode with the

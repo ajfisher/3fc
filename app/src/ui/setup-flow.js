@@ -1383,9 +1383,10 @@
     );
   }
 
-  async function requestJson(path, init = {}) {
+  async function requestJson(path, init = {}, onDispatch = null) {
     const finishWrite = !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? beforeGameWrite?.(path, init.method) : null;
     try {
+      onDispatch?.();
       const response = await fetch(buildApiUrl(path), {
         credentials: "include",
         ...init,
@@ -1415,8 +1416,8 @@
     }
   }
 
-  async function requestJsonOrThrow(path, init = {}) {
-    const result = await requestJson(path, init);
+  async function requestJsonOrThrow(path, init = {}, onDispatch = null) {
+    const result = await requestJson(path, init, onDispatch);
     if (!result.ok) {
       const message = result.body?.message || result.body?.error || `Request failed with status ${result.status}.`;
       const error = new Error(message);
@@ -5227,10 +5228,10 @@
     function invitationPath() {
       return `/v1/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(invitationPlayerId)}/profile-invitation`;
     }
-    async function invitationRequest(path, options) {
+    async function invitationRequest(path, options, onDispatch = null) {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
-      try { return await requestJsonOrThrow(path, { ...options, signal: controller.signal }); }
+      try { return await requestJsonOrThrow(path, { ...options, signal: controller.signal }, onDispatch); }
       finally { window.clearTimeout(timeout); }
     }
     async function openPlayerInvitation(playerId) {
@@ -5270,6 +5271,7 @@
       if (invitationPending || !invitationLoaded || invitationRevokeUnconfirmed || currentLeagueRole !== "admin" || refreshAccountLocked) return;
       if (!invitationAttempt && invitationMetadata && !window.confirm("Replace this private link? The previous link will stop working. Share the new link privately.")) return;
       const generation = invitationGeneration;
+      let dispatched = false;
       invitationPending = true; renderInvitation(); invitationMessage("Creating private link…");
       try {
         if (!invitationAttempt) {
@@ -5278,9 +5280,11 @@
           invitationAttempt = { proof, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
             replacesProofId: invitationMetadata?.proofId ?? null }) };
         }
-        invitationLink.value = "";
-        renderInvitation();
-        const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body });
+        const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body }, () => {
+          dispatched = true;
+          invitationLink.value = "";
+          renderInvitation();
+        });
         if (generation !== invitationGeneration) return;
         const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationPlayerId);
         invitationMetadata = { ...result.invitation, state: "pending" };
@@ -5289,6 +5293,11 @@
         invitationMessage(`Private link created. It expires on ${new Date(result.invitation.expiresAt).toLocaleString()}.`);
       } catch (error) {
         if (generation !== invitationGeneration) return;
+        if (!dispatched && invitationAttempt && !invitationAttempt.uncertain) {
+          invitationAttempt = null;
+          invitationMessage("The link was not replaced. Reload to check the earlier game change before trying again.", true);
+          return;
+        }
         if (invitationAttempt && ((!invitationAttempt.uncertain && [400, 401, 403, 404, 409].includes(error.statusCode)) ||
             (error.statusCode === 409 && error.responseCode === "claim_invite_changed"))) {
           invitationAttempt = null; invitationLoaded = false; invitationLink.value = "";
@@ -5305,9 +5314,10 @@
       if (!invitationRevokeUnconfirmed && !window.confirm("Revoke this private link? Anyone who received it will no longer be able to use it.")) return;
       const generation = invitationGeneration;
       const finishFocus = trackInteractionFocus(invitationRevoke);
+      let dispatched = false;
       invitationPending = true; renderInvitation();
       try {
-        const result = await invitationRequest(`${invitationPath()}/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) });
+        const result = await invitationRequest(`${invitationPath()}/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) }, () => { dispatched = true; });
         if (generation !== invitationGeneration) return;
         if (result.revoked !== true) throw new Error("revoke_unconfirmed");
         invitationMetadata.state = "revoked"; invitationLink.value = "";
@@ -5315,7 +5325,11 @@
         invitationMessage("Private link revoked.");
       } catch (error) {
         if (generation === invitationGeneration) {
-          if (error.statusCode === 409) {
+          if (!dispatched) {
+            invitationMessage(invitationRevokeUnconfirmed
+              ? "This retry was not sent. The earlier revocation is still unconfirmed. Reload before continuing."
+              : "Revocation was not sent. Reload to check the earlier game change before trying again.", true);
+          } else if (error.statusCode === 409) {
             invitationRevokeUnconfirmed = false; invitationLoaded = false;
             invitationMetadata = null; invitationLink.value = "";
             invitationMessage("The private link changed. Close this panel and check the current link before revoking it.", true);
