@@ -62,7 +62,7 @@ paths:
     post:
       summary: Register a nickname player into a game by join code
       operationId: joinGameByCode
-      description: Anonymous nickname registration remains available. When claimProof is supplied, a valid Idempotency-Key is required and proof metadata is committed with the exact new registration. The request contains only a verifier, never the bearer secret. Protected organiser player creation cannot issue registration proof.
+      description: Anonymous nickname registration remains available. When claimProof is supplied, a valid Idempotency-Key is required and proof metadata is committed with the exact new registration. During claim containment, registration still returns 201 with linkingUnavailable true and no proof; retries preserve that outcome. The request contains only a verifier, never the bearer secret. Protected organiser player creation cannot issue registration proof.
       parameters:
         - name: joinCode
           in: path
@@ -92,6 +92,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/JoinGameConflict"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /v1/join/{joinCode}/player-context:
     get:
       summary: Identify a joined player for an authenticated claim screen
@@ -973,6 +977,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
   /v1/player-proofs/preview:
     post:
       summary: Preview a private player link without consuming it
@@ -1001,8 +1009,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
         "503":
-          description: New player linking is temporarily disabled
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
   /v1/games/{gameId}/players/{playerId}/profile-invitation:
     parameters:
       - name: gameId
@@ -1036,6 +1046,10 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
     post:
       summary: Create or replace a private profile-link invitation
       operationId: createPlayerInvitation
@@ -1048,7 +1062,7 @@ paths:
               $ref: "#/components/schemas/CreatePlayerInvitationRequest"
       responses:
         "201":
-          description: Persisted invitation metadata, also returned for an exact retry
+          description: Persisted invitation metadata, also returned for an exact retry while the invitation remains pending, current and valid. Consumed, revoked, replaced or expired invitation retries return 409.
           content:
             application/json:
               schema:
@@ -1065,8 +1079,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
         "503":
-          description: New player linking is temporarily disabled
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
   /v1/games/{gameId}/players/{playerId}/profile-invitation/revoke:
     post:
       summary: Revoke a player's private invitation
@@ -1111,6 +1129,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /v1/games/{gameId}/players:
     get:
       summary: List recent/searchable players for a game roster
@@ -1270,6 +1290,18 @@ components:
           - 2
           - 3
   responses:
+    InternalServerError:
+      description: The request could not be completed because of an internal or storage failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PlayerLinkingUnavailable:
+      description: New player linking is temporarily disabled (code claims_unavailable). This response does not commit a new claim or invitation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     BadRequest:
       description: Request body or headers failed validation
       content:
@@ -2088,7 +2120,7 @@ components:
         - claim
       properties:
         player:
-          $ref: "#/components/schemas/Player"
+          $ref: "#/components/schemas/PublicPlayer"
         claim:
           type: object
           required:
@@ -2096,6 +2128,7 @@ components:
           properties:
             claimedByCurrentUser:
               type: boolean
+              const: true
     LeagueAccessGrant:
       type: object
       required:
@@ -2256,7 +2289,7 @@ components:
         joinCode:
           type: string
         player:
-          $ref: "#/components/schemas/Player"
+          $ref: "#/components/schemas/PublicPlayer"
         claimProof:
           $ref: "#/components/schemas/PlayerProofMetadata"
     RosterAssignment:
@@ -2572,4 +2605,8 @@ components:
         error:
           type: string
         message:
+          type: string
+        code:
+          type: string
+        detail:
           type: string

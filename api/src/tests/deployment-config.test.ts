@@ -59,6 +59,36 @@ function assertServerlessRoute(method: string, path: string): void {
   );
 }
 
+test("profile-link contracts cover recovery errors and expose only public player identities", () => {
+  const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
+  const operations = [
+    ["/v1/join/{joinCode}", "post", [400, 403, 404, 409, 500]],
+    ["/v1/players/{playerId}/claim", "post", [400, 401, 403, 404, 409, 500, 503]],
+    ["/v1/player-proofs/preview", "post", [400, 401, 403, 404, 409, 500, 503]],
+    ["/v1/games/{gameId}/players/{playerId}/profile-invitation", "get", [400, 401, 403, 404, 500]],
+    ["/v1/games/{gameId}/players/{playerId}/profile-invitation", "post", [400, 401, 403, 404, 409, 500, 503]],
+    ["/v1/games/{gameId}/players/{playerId}/profile-invitation/revoke", "post", [400, 401, 403, 404, 409, 500]],
+  ] as const;
+  for (const [path, method, statuses] of operations) {
+    const section = contract.split(`  ${path}:\n`)[1]?.split(/\n  \/v1\//)[0];
+    assert.ok(section, path);
+    const operation = section.split(`    ${method}:\n`)[1]?.split(/\n    (?:get|post):\n/)[0];
+    assert.ok(operation, `${method} ${path}`);
+    for (const status of statuses) {
+      const response = operation.match(new RegExp(`"${status}":\\s+\\$ref: "#/components/responses/([^"\\n]+)"`));
+      assert.ok(response, `${method} ${path}: schema-backed ${status}`);
+      const component = contract.split(`    ${response[1]}:\n`)[1]?.split(/\n    \w+:\n/)[0];
+      assert.match(component ?? "", /\$ref: "#\/components\/schemas\/ErrorResponse"/);
+    }
+    if (method === "get" || path.endsWith("/revoke")) assert.doesNotMatch(operation, /"503":/);
+  }
+  for (const name of ["ClaimPlayerResponse", "JoinGameResponse"]) {
+    const schema = contract.split(`    ${name}:\n`)[1].split(/\n    \w+:\n/)[0];
+    assert.match(schema, /player:\s+\$ref: "#\/components\/schemas\/PublicPlayer"/);
+    assert.doesNotMatch(schema, /schemas\/Player"/);
+  }
+});
+
 test("api core deployment config registers claim and access routes", () => {
   const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
   const previewContract = contract.slice(contract.indexOf("  /v1/player-proofs/preview:"),

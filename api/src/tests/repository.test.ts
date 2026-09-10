@@ -682,14 +682,16 @@ test("player proof: deadlines are rechecked after asynchronous context reads", a
 
 test("player proof: local and Lambda routes pair account display with confirmation and reject switched cookies", async () => {
   for (const adapter of ["local", "lambda"]) {
-    const { repository, game } = await proofHarness();
+    const { repository, game, client, clock } = await proofHarness();
+    let activeRepository = repository;
     const proof = newClaimProof();
     await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: proof });
     const sessions = Object.fromEntries(["A", "B"].map((id) => [id, {
       sessionId: id, subject: `account-${id}`, email: `${id}@private.example`,
       createdAt: "2026-09-10T00:00:00Z", expiresAt: "2026-09-18T00:00:00Z",
     }]));
-    const handler = createLambdaCoreHandler({ repository,
+    sessions.organiser = { ...sessions.A, sessionId: "organiser", subject: "organiser" };
+    const handler = () => createLambdaCoreHandler({ repository: activeRepository,
       magicLinkService: {
         async getSession(id) { return sessions[id] ?? null; }, async revokeSession() {},
         async start() { throw new Error("No email in proof route tests"); },
@@ -700,7 +702,7 @@ test("player proof: local and Lambda routes pair account display with confirmati
     });
     async function request(path: string, body: object, account = "A") {
       if (adapter === "lambda") {
-        const result = await handler({ rawPath: path, body: JSON.stringify(body),
+        const result = await handler()({ rawPath: path, body: JSON.stringify(body),
           headers: { cookie: `threefc_session=${account}`, origin: "https://qa.3fc.football" },
           requestContext: { requestId: "proof-test", http: { method: "POST", path } },
         });
@@ -712,7 +714,7 @@ test("player proof: local and Lambda routes pair account display with confirmati
       const incoming = { headers: { origin: "https://qa.3fc.football" },
         async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } } as unknown as IncomingMessage;
       await handleLocalPlayerProofRoute({ request: incoming, response, method: "POST", route: path,
-        session: sessions[account] ?? null, playerRepository: repository });
+        session: sessions[account] ?? null, playerRepository: activeRepository });
       return result;
     }
     const credentials = { proofId: proof.proofId, secret: proof.secret };
@@ -726,6 +728,17 @@ test("player proof: local and Lambda routes pair account display with confirmati
     assert.deepEqual(preview.body.account, { email: "A@private.example" });
     assert.equal(preview.headers?.["cache-control"] ?? preview.headers?.["Cache-Control"], "no-store");
     const body = { proof: { ...credentials, confirmation: preview.body.preview.confirmation } };
+    activeRepository = new ThreeFcRepository(client, "proof-test", clock, "disabled");
+    const unavailable = await request("/v1/players/self/claim", body);
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailable.body.error, "unavailable");
+    assert.equal(unavailable.body.code, "claims_unavailable");
+    assert.equal((await repository.getPlayer("self"))?.claimedByUserId, null);
+    activeRepository = repository;
+    const missingContext = await request(`/v1/games/${game.gameId}/players/missing/profile-invitation`,
+      { proofId: unknown.proofId, verifier: unknown.verifier }, "organiser");
+    assert.equal(missingContext.status, 404);
+    assert.equal(missingContext.body.error, "not_found");
     assert.equal((await request("/v1/players/self/claim", body, "B")).status, 409);
     assert.equal((await repository.getPlayer("self"))?.claimedByUserId, null);
     const accepted = await request("/v1/players/self/claim", body);

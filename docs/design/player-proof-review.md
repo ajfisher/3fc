@@ -21,7 +21,7 @@ returning-player joining #161 remain separate children, not claimed complete her
 | Secret-safe sign-in continuation and logout/account-switch purge | Early fragment scrub, session storage + bounded same-origin handoff, no secret in return URL; native WebCrypto recipient tests; pending-response purge tests | PASS locally |
 | Truthful retries, keyboard continuation and preserved existing gameplay | Complete setup interactions, full app/API suites, native-WebCrypto recipient tests and repository race tests; invitation replacement clears obsolete copyable links before dispatch | PASS locally |
 | Local/Lambda/deployment compatibility and containment | OpenAPI, Serverless routes, shared repository/handler, static object aliases; actual local HTTP disabled-mode restart; docs/runbooks/player-claim-proof.md | PASS locally |
-| Exact-head CI, independent GitHub review and deployed acceptance | Previous head 3640595 passed CI34448514974, QA34448514988 and isolated browser/API acceptance; refreshed evidence required for the account-switch/replay fixes | PENDING new head |
+| Exact-head CI, independent GitHub review and deployed acceptance | Previous head a59cc50 passed CI34455135000, QA34455134462 and isolated browser/API acceptance (group19316/session87130); refreshed evidence required after the contract completeness update. Current external evidence is recorded in the PR packet and comments. | PENDING new head |
 
 ## Scope boundaries
 
@@ -262,6 +262,23 @@ Proof acquisition can be disabled; existing ownership and immutable receipts mus
 remain readable. Do not roll back to a proofless API.
 
 ## Review focus
+
+### Contract completeness review
+
+Codex findings3977134314 and3977134321 accepted. The contract now documents
+claim containment503 and missing invitation context404. Architecture/security
+also audited every response on the six touched join/proof operations: origin403,
+malformed-path400, internal500 and schema-backed503 coverage is explicit. Join
+and claim success use the strict public-player DTO; containment registration201
+and invitation creation replay restrictions are documented. No runtime behaviour
+changed in this update. The injected-session local helper and Lambda adapter
+tests prove disabled claim503 leaves ownership unchanged and missing invitation
+context returns404; these are not described as actual HTTP tests. Independent
+QA review found no blocker. Focused validation group19896/session30776 exited0,
+peak443936KiB, remaining[], with both contract/adapter cases passing.
+Complete affected files, lint, full API/app/review-gate tests, contract checks and
+build then passed serially: group19933/session77423 exit0, peak2233808KiB,
+remaining[], tripNone. No runtime or deployment implementation changed.
 
 Try to falsify account/session binding, proof issuance scope, transaction/race
 conditions, immutable receipt precedence, secret persistence/logging, cross-tab
