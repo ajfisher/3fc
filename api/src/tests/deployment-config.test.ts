@@ -10,6 +10,27 @@ const siteDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/
 const apiDeployScript = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-app.sh"), "utf8");
 const qaWorkflow = readFileSync(resolve(process.cwd(), "../.github/workflows/deploy-qa.yml"), "utf8");
 
+test("QA and production harden the API before publishing the proof-aware site", () => {
+  for (const environment of ["qa", "prod"]) {
+    const workflow = readFileSync(resolve(process.cwd(), `../.github/workflows/deploy-${environment}.yml`), "utf8");
+    const api = workflow.indexOf(`run: make deploy ENV=${environment} SERVICE=api-core`);
+    const site = workflow.indexOf(`run: make deploy ENV=${environment} SERVICE=site`);
+    const coreSmoke = workflow.indexOf(`run: bash scripts/deploy/smoke-player-proof.sh ${environment} api`);
+    const siteSmoke = workflow.indexOf(`run: bash scripts/deploy/smoke-player-proof.sh ${environment} site`);
+    assert.equal(workflow.split(`run: make deploy ENV=${environment} SERVICE=api-core`).length, 2);
+    assert.equal(workflow.split(`run: make deploy ENV=${environment} SERVICE=site`).length, 2);
+    assert.ok(api >= 0 && coreSmoke > api && site > coreSmoke && siteSmoke > site,
+      `${environment}: API and proof smoke must succeed before site publication`);
+    const deploySteps = workflow.slice(workflow.lastIndexOf("      - name:", api), site);
+    assert.doesNotMatch(deploySteps, /continue-on-error:|if:\s*always\(/);
+  }
+  const smoke = readFileSync(resolve(process.cwd(), "../scripts/deploy/smoke-player-proof.sh"), "utf8");
+  for (const route of ["player-proofs/preview", "profile-invitation/revoke", "/link-player/", "/ui/player-proof.js"]) {
+    assert.ok(smoke.includes(route));
+  }
+  assert.match(smoke, /test "\$CODE" = 401/);
+});
+
 function assertServerlessRoute(method: string, path: string): void {
   assert.match(
     serverlessCoreConfig,

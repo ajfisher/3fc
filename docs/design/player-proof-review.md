@@ -119,6 +119,15 @@ acceptance group47551/session85109 exited0, peak205824KiB host plus independentl
 capped512MiB container; API and container cleanup confirmed. No resource anomaly
 or orphaned worker occurred. No production or AJ-profile mutation was performed.
 
+Rollout follow-up: QA and production now deploy and smoke the hardened API before
+publishing the site, including credential-free probes for the new proof routes.
+Recipient aliases and local proof assets are checked after site publication.
+Architecture/security reviewed and cleared this ordering; deployment regressions
+passed (6 tests). Refreshed full lint, API/app tests, contracts, review-gate tests
+and build passed in group52711/session17744: exit0, peak2535920KiB, remaining[],
+tripNone. Site marker probes prove route availability, not exact-head provenance;
+deployment fingerprint and browser asset version remain the SHA evidence.
+
 ### Unresolved blocking findings
 
 External review, exact-head CI and deployed acceptance are pending. No child
