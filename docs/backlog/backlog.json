@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-08",
+  "version": "2026-09-10",
   "labels": [
     {
       "name": "area:infra",
@@ -105,6 +105,11 @@
       "name": "milestone:UX",
       "color": "147D64",
       "description": "UX Mobile-First Frontend Redesign"
+    },
+    {
+      "name": "milestone:PLAYER",
+      "color": "147D64",
+      "description": "Reusable Players and Profile Linking"
     }
   ],
   "milestones": [
@@ -135,6 +140,10 @@
     {
       "name": "UX Mobile-First Frontend Redesign",
       "description": "Deliver the approved existing-frontend redesign with human copy, phone-first layouts, isolated sign-out and independently reviewed stacked PRs."
+    },
+    {
+      "name": "Reusable Players and Profile Linking",
+      "description": "Reusable league players, proof-enforced account linking, safe duplicate consolidation and returning-player joins."
     }
   ],
   "epics": [
@@ -326,6 +335,33 @@
         "UX-04",
         "UX-05",
         "UX-06"
+      ]
+    },
+    {
+      "id": "EPIC-PLAYER",
+      "title": "Reusable players and profile linking",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:app",
+        "area:api",
+        "area:data",
+        "type:feature",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "summary": "Create a player once, reuse across games, and link their account later. Depends on activated M3-07 ownership proof; no automatic name matching or cross-league discovery.",
+      "outcomes": [
+        "Season/league search reuses claimed and unclaimed identities.",
+        "Directed private invitations safely connect existing accounts to exact profiles.",
+        "League-only reviewed duplicate consolidation preserves historical IDs and scoring.",
+        "Returning players reuse owned league identities; migration and rollback evidence precede enablement."
+      ],
+      "childIssues": [
+        "PLAYER-00",
+        "PLAYER-01",
+        "PLAYER-02",
+        "PLAYER-03",
+        "PLAYER-04"
       ]
     }
   ],
@@ -836,7 +872,8 @@
         "githubIssue": 25,
         "notes": [
           "Implemented: assign/reassign, late quick-create, current-game search and transfer failure/reconciliation; api/src/lambda-core.ts listGamePlayers is current-game only.",
-          "Remaining: earlier-game recent-player selection and acceptance for overlapping local search/assignment interactions. UX-03 improves the existing UI; do not close #25 solely for that redesign."
+          "Remaining: earlier-game recent-player selection and acceptance for overlapping local search/assignment interactions. UX-03 improves the existing UI; do not close #25 solely for that redesign.",
+          "2026-09-10: remaining earlier-game reuse is delivered by PLAYER-01; retain #25 until its complete original acceptance is verified."
         ]
       }
     },
@@ -1442,7 +1479,8 @@
         "githubIssue": 40,
         "notes": [
           "Implemented: QR/link, nickname join, authenticated/return-from-sign-in claim, idempotent retry and recoverable errors.",
-          "Remaining: measured 20–30-second onboarding evidence, physical-device acceptance, safe context/onward destination (M3-09), and verified existing-identity reuse. UX-05 entry polish alone does not complete this issue."
+          "Remaining: measured 20–30-second onboarding evidence, physical-device acceptance, safe context/onward destination (M3-09), and verified existing-identity reuse. UX-05 entry polish alone does not complete this issue.",
+          "2026-09-10: PLAYER-03 covers returning owned identities; retain unrelated original acceptance and do not duplicate or prematurely close."
         ]
       }
     },
@@ -2448,40 +2486,51 @@
       ],
       "dependsOn": [
         "M2-02",
-        "M1-04"
+        "M1-04",
+        "PLAYER-00"
       ],
-      "summary": "Extend, rather than replace, existing collision-safe claiming with ownership proof before new public discovery/private-history reliance.",
+      "summary": "Activate ownership-proof hardening and usable private shareable profile invitations for existing and newly registered players.",
       "scope": [
-        "Registration-bound proof for newly created join records and an organiser-assisted linking path for pre-existing records.",
-        "Preserve repeat-owner success and competing-owner conflicts; define proof expiry/recovery and compatibility in security-reviewed contract.",
-        "Record public/private release dependency; no automatic nickname identity matches."
+        "Proof-enforced first claims in every local/Lambda path; preserve existing ownership and same-owner replay.",
+        "Browser-generated256-bit proof secret with stored SHA-256 verifier; atomic fresh registration/proof metadata; no secret in idempotency responses.",
+        "Organiser-only exact-profile private invitations, seven-day expiry, explicit creation/replacement/revocation and recipient confirmation; transactional issuer ACL checks.",
+        "Fragment scrubbing, bounded tab-local secret storage and best-effort same-origin tab handoff through sign-in; explicit safe recovery if original proof is lost.",
+        "Usable game-player menu/panel and recipient flow before the league directory exists; all claims require explicit confirmation."
       ],
       "outOfScope": [
-        "Implementation in the current frontend redesign stack.",
-        "Nickname-based identity merging, attendance workflow and unsupported permission changes."
+        "Nickname identity inference, email-bound invitations, account discovery, organiser permission changes.",
+        "Profile consolidation and directory implementation belong to PLAYER-01/02; public results/performance remain deferred.",
+        "Production migration, merging and release without explicit authorisation."
       ],
       "acceptanceCriteria": [
-        "Knowing an unclaimed player ID and being authenticated is not sufficient to claim it.",
-        "Existing already-claimed records and join/sign-in continuity remain compatible.",
-        "Local/Lambda contracts, trust-boundary/rollback design and explicit recovery are reviewed before public/player release."
+        "Knowing player ID and being authenticated cannot acquire an unclaimed profile through any route.",
+        "Only hashes are persisted; committed join response loss preserves original proof and idempotency.",
+        "No preview, page load or sign-in consumes proof; account shown before explicit confirmation.",
+        "Expiry/revoke/replace/issuer-demotion and changed revision block acquisition; same-owner confirmed replay safe.",
+        "Local/Lambda, contracts, browser auth return and deployed routes have equivalent security and recovery."
       ],
       "testScenarios": [
-        "Authenticated wrong claimant, stolen ID, valid registration proof, replay/race/expired proof.",
-        "Historical-record organiser verification, wrong-league authority and return-from-email recovery.",
-        "No bearer proof/private identity leakage in URLs/logs/public DTOs."
+        "Wrong claimant/arbitrary ID, local/Lambda proofless rejection, same-owner replay and competing-owner transactions.",
+        "No bearer in idempotency/logs, same-key changed verifier, lost join/accept response, persisted expiry boundary.",
+        "Invite replacement/revoke/ACL race; current-account confirmation and logout/late handoff/BFCache.",
+        "Original/new/closed browser tab and storage/channel unavailable; no proofless fallback.",
+        "Old-client/new-API and new-client/old-API safe recovery; finished join compatibility; mobile focus/copy."
       ],
       "reviewRequirements": [
-        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers do not run tests.",
-        "Architecture/security review for any affected backend, trust, privacy, contracts, dependencies or deployment boundary.",
-        "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
+        "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
+        "Architecture/security review mandatory for backend, proof, privacy, ownership, migration, contracts or deployment changes.",
+        "Serialized guarded validation, exact-head CI/QA, Codex formal review or verified exact-head no-findings completion accepted by AJ, then review:ready before child implementation.",
+        "No merge, production migration or release without explicit AJ authorisation."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
-        "wave": "deferred-player-portal",
+        "asOf": "2026-09-10",
+        "wave": "reusable-players",
         "status": "planned",
         "githubIssue": 138,
+        "branch": "codex/player-claim-proof",
         "notes": [
-          "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack."
+          "Previously deferred from the merged frontend redesign; explicitly activated by AJ on2026-09-10.",
+          "Canonical specification: docs/design/player-identity-delivery.md; no current implementation claim."
         ]
       }
     },
@@ -2592,6 +2641,283 @@
           "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack."
         ]
       }
+    },
+    {
+      "id": "PLAYER-00",
+      "title": "Specify reusable-player delivery and reconcile backlog",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:app",
+        "area:api",
+        "area:qa",
+        "type:chore",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "dependsOn": [],
+      "summary": "Preserve approved scope, migration/claim boundaries and acceptance mapping before feature implementation.",
+      "scope": [
+        "Canonical specification and issue reconciliation; reuse M3-07 (#138), relate roster #25 and join #40 without duplicating completed scope.",
+        "Six sequential stacked PRs, versioned review evidence and honest remaining device/migration status."
+      ],
+      "outOfScope": [
+        "Automatic nickname identity merging, cross-league account/player discovery, permission grants, new public results/performance.",
+        "Production migration, merging and release without separate authorisation."
+      ],
+      "acceptanceCriteria": [
+        "Every approved capability has an issue, dependencies, tests and review requirements.",
+        "Security review settles hashed-secret replay, same-browser sign-in handoff and explicit claim confirmation.",
+        "Backlog validation/export passes; GitHub markers, actual milestones and labels match."
+      ],
+      "testScenarios": [
+        "Validate JSON/export and inspect sync delta.",
+        "Independent design, architecture/security and engineering/QA review of specification.",
+        "Documentation-only QA records unchanged application, not future feature acceptance."
+      ],
+      "reviewRequirements": [
+        "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
+        "Architecture/security review mandatory for backend, proof, privacy, ownership, migration, contracts or deployment changes.",
+        "Serialized guarded validation, exact-head CI/QA, Codex formal review or verified exact-head no-findings completion accepted by AJ, then review:ready before child implementation.",
+        "No merge, production migration or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-10",
+        "wave": "reusable-players",
+        "status": "planned",
+        "githubIssue": 158,
+        "branch": "codex/player-identity-backlog",
+        "notes": [
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+        ]
+      }
+    },
+    {
+      "id": "PLAYER-01",
+      "title": "Add league player directory and reusable game assignment",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:app",
+        "area:api",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "M3-07"
+      ],
+      "summary": "Search and reuse league identities, including unclaimed players, with canonical-compatible storage and verified membership backfill.",
+      "scope": [
+        "League Players and season-filtered entry; paginated nickname/former-name search and explicit All league players.",
+        "Create league-only player, Search this game filter and reusable Add player picker; preserve finished/scorer locks.",
+        "Canonical-aware roots and complete reverse membership; resumable audited backfill and controlled fenced cutover including deletion paths.",
+        "Completes earlier-game selection remaining in M2-03 (#25), subject to its full acceptance audit."
+      ],
+      "outOfScope": [
+        "Automatic nickname identity merging, cross-league account/player discovery, permission grants, new public results/performance.",
+        "Production migration, merging and release without separate authorisation."
+      ],
+      "acceptanceCriteria": [
+        "Existing players from previous games are found without global account search and reused without duplicate registration.",
+        "Claimed/unclaimed and duplicate nicknames remain distinct; own league scope enforced.",
+        "Backfill reports missing/inconsistent references; incomplete coverage blocks consolidation.",
+        "All membership writers including alias requests and deletion participate in revision/coverage safety.",
+        "Old game/event IDs and scoring semantics remain unchanged."
+      ],
+      "testScenarios": [
+        "Later page and empty filtered continuation; denied league; stale picker; duplicate registration; season/all-league search.",
+        "Interrupted/resumed backfill, real DynamoDB Local condition/pagination proof, missing profiles, old writer/deletion races.",
+        "Mobile picker, create alternatives, keyboard/focus, failed drafts and role/finished fixtures."
+      ],
+      "reviewRequirements": [
+        "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
+        "Architecture/security review mandatory for backend, proof, privacy, ownership, migration, contracts or deployment changes.",
+        "Serialized guarded validation, exact-head CI/QA, Codex formal review or verified exact-head no-findings completion accepted by AJ, then review:ready before child implementation.",
+        "No merge, production migration or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-10",
+        "wave": "reusable-players",
+        "status": "planned",
+        "githubIssue": 159,
+        "branch": "codex/league-player-directory",
+        "notes": [
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+        ]
+      }
+    },
+    {
+      "id": "PLAYER-02",
+      "title": "Consolidate duplicate player profiles with owner approval",
+      "storyPoints": 8,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:app",
+        "area:api",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "PLAYER-01"
+      ],
+      "summary": "Combine exclusively league-owned duplicate identity groups without rewriting historical records or silently expanding account ownership.",
+      "scope": [
+        "Organiser preview shows all alias members, games, claims, survivor/name and conflicts; resulting group max20.",
+        "Block any shared game including Unassigned, foreign-league use, competing owners, incomplete coverage or stale revisions.",
+        "Require existing owner's exact proposal approval before claimed history expands; atomic roots/aliases/claim-index/audit/idempotent result.",
+        "Historical game edits resolve canonical identity to original unique registered player; no general merge undo UI."
+      ],
+      "outOfScope": [
+        "Automatic nickname identity merging, cross-league account/player discovery, permission grants, new public results/performance.",
+        "Production migration, merging and release without separate authorisation."
+      ],
+      "acceptanceCriteria": [
+        "Unclaimed groups combine once; claimed groups require owner consent; no automatic matching.",
+        "Full alias closure is checked and races fail atomically without partial redirects or claims.",
+        "Scores, assists, own goals, correction/undo targets and historical IDs are preserved.",
+        "Rollback retains alias-aware readers; disabling consolidation does not undo durable history."
+      ],
+      "testScenarios": [
+        "Same/different owners, same-game Unassigned overlap, external alias, max20/21 and cycle attempts.",
+        "Merge versus register/claim/delete/merge through alias IDs; stale owner approval and response loss.",
+        "Historical goal/assist/correction/undo before-after and checked compensating-operation runbook."
+      ],
+      "reviewRequirements": [
+        "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
+        "Architecture/security review mandatory for backend, proof, privacy, ownership, migration, contracts or deployment changes.",
+        "Serialized guarded validation, exact-head CI/QA, Codex formal review or verified exact-head no-findings completion accepted by AJ, then review:ready before child implementation.",
+        "No merge, production migration or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-10",
+        "wave": "reusable-players",
+        "status": "planned",
+        "githubIssue": 160,
+        "branch": "codex/player-consolidation",
+        "notes": [
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+        ]
+      }
+    },
+    {
+      "id": "PLAYER-03",
+      "title": "Reuse linked identities when returning players join",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:app",
+        "area:api",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "PLAYER-02"
+      ],
+      "summary": "A returning player chooses an owned identity in the destination league instead of creating another player.",
+      "scope": [
+        "One identity: Join as name; multiple: deliberate selection; none: explicit new player or directed invitation.",
+        "Idempotent registration retains existing team; alias/account changes revalidated.",
+        "Preserve anonymous proof continuity and finished-game join exception; no public unclaimed picker or cross-league import.",
+        "Relates join #40 and M3-09 safe context; does not close unrelated public-read scope."
+      ],
+      "outOfScope": [
+        "Automatic nickname identity merging, cross-league account/player discovery, permission grants, new public results/performance.",
+        "Production migration, merging and release without separate authorisation."
+      ],
+      "acceptanceCriteria": [
+        "Repeated joins create no duplicate profile or registration and preserve assigned team.",
+        "Only current-account, target-league identities are offered; role duties do not count as player linkage.",
+        "Sign-in, missing proof and uncertain requests recover without unsafe fallback or automatic new player."
+      ],
+      "testScenarios": [
+        "Zero/one/many, account switch, alias change, finished game, lost response and retry.",
+        "Closed/source tab, unavailable storage/channel and original invitation recovery.",
+        "Role/privacy and mobile keyboard/focus acceptance."
+      ],
+      "reviewRequirements": [
+        "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
+        "Architecture/security review mandatory for backend, proof, privacy, ownership, migration, contracts or deployment changes.",
+        "Serialized guarded validation, exact-head CI/QA, Codex formal review or verified exact-head no-findings completion accepted by AJ, then review:ready before child implementation.",
+        "No merge, production migration or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-10",
+        "wave": "reusable-players",
+        "status": "planned",
+        "githubIssue": 161,
+        "branch": "codex/returning-player-join",
+        "notes": [
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+        ]
+      }
+    },
+    {
+      "id": "PLAYER-04",
+      "title": "Complete player-identity acceptance and migration handoff",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:qa",
+        "area:ops",
+        "type:test",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "PLAYER-03"
+      ],
+      "summary": "Provide full issue-to-PR-to-evidence mapping and an operationally safe reviewed stack.",
+      "scope": [
+        "Serialized full local suites and real DynamoDB migration/transaction evidence.",
+        "Isolated deployed acceptance at exact SHA, versioned packets and current-head Codex/gates.",
+        "Migration plan/provenance/write pause/verification/enablement and compatibility-preserving rollback runbook.",
+        "Physical iOS/Android evidence tracked separately; leave incomplete issue open."
+      ],
+      "outOfScope": [
+        "Automatic nickname identity merging, cross-league account/player discovery, permission grants, new public results/performance.",
+        "Production migration, merging and release without separate authorisation."
+      ],
+      "acceptanceCriteria": [
+        "Each implemented issue maps to passing falsifying tests or explicit remaining physical-device evidence.",
+        "All PRs review:ready with verified current-head CI, QA and Codex completion.",
+        "No real AJ profiles modified for QA; fixture cleanup absence verified.",
+        "No production migration, merge or release performed without approval."
+      ],
+      "testScenarios": [
+        "Full API/app/contracts/security/build/review-gate/browser and M2 with owned process cleanup under4GiB.",
+        "QA two-account claim and owner approval, returning join, consolidation with isolated historical fixtures.",
+        "Cutover interruption/old writer, no secret capture, alias-aware rollback and physical-device checklist."
+      ],
+      "reviewRequirements": [
+        "Independent design/UI/UX, frontend/accessibility, engineering and QA reviews; reviewers remain read-only and do not run tests.",
+        "Architecture/security review mandatory for backend, proof, privacy, ownership, migration, contracts or deployment changes.",
+        "Serialized guarded validation, exact-head CI/QA, Codex formal review or verified exact-head no-findings completion accepted by AJ, then review:ready before child implementation.",
+        "No merge, production migration or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-10",
+        "wave": "reusable-players",
+        "status": "planned",
+        "githubIssue": 162,
+        "branch": "codex/player-identity-acceptance",
+        "notes": [
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+        ]
+      }
     }
   ],
   "globalTestScenarios": [
@@ -2615,6 +2941,7 @@
     "E2E tests are implemented during MVP but not required merge-gate checks initially.",
     "2026-09-07 approved delivery: frontend redesign UX-00..UX-06 plus M1-13 sign-out; new public/player portal and performance work is explicitly deferred.",
     "Players are added and assigned on the day, including during play; retain this workflow and add no attendance/no-show feature. Future played counts use team membership in distinct finished games.",
-    "Delivery metadata is an as-of planning/evidence inventory, not proof that tests were rerun or a GitHub issue can be closed. Existing merged issue states remain unchanged."
+    "Delivery metadata is an as-of planning/evidence inventory, not proof that tests were rerun or a GitHub issue can be closed. Existing merged issue states remain unchanged.",
+    "2026-09-10 AJ activates reusable-player stack PLAYER-00..04 plus existing M3-07: league-only consolidation, private shareable claims, block overlap/competing-owner conflicts; public results/performance remain deferred."
   ]
 }
