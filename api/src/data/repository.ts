@@ -3349,18 +3349,21 @@ export class ThreeFcRepository {
       throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
     }
     const item = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
-    if (!item || item.entityType !== ENTITY_TYPE.playerProof) return;
-    const proof = item.data as PlayerProofRecord;
-    if (proof.kind !== "invitation" || proof.playerId !== input.playerId || proof.leagueId !== (context.league.data as LeagueRecord).leagueId) {
+    const proof = item?.entityType === ENTITY_TYPE.playerProof ? item.data as PlayerProofRecord : undefined;
+    if (proof && (proof.kind !== "invitation" || proof.playerId !== input.playerId || proof.leagueId !== (context.league.data as LeagueRecord).leagueId)) {
       throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available.");
     }
-    if (proof.state !== "pending") return;
     const now = this.clock.now();
     try {
       await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
         ...Object.values(context).map((value) => this.buildConditionalCheckFromStoredEntity(value)),
         this.buildConditionalCheckFromStoredEntity(pointer!),
-        this.proofWrite({ ...proof, state: "revoked" }, now, item),
+        proof?.state === "pending" ? this.proofWrite({ ...proof, state: "revoked" }, now, item!)
+          : item ? this.buildConditionalCheckFromStoredEntity(item)
+            : { ConditionCheck: { TableName: this.tableName,
+              Key: { pk: { S: this.playerProofKey(input.proofId) }, sk: { S: metadataSk() } },
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            } },
       ] }));
     } catch (error) {
       if (!isConditionalWriteFailure(error)) throw error;

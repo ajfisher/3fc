@@ -130,8 +130,24 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 
 ### Unresolved blocking findings
 
-External review, exact-head CI and deployed acceptance are pending. No child
+New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.
+
+Codex follow-up3976413105 accepted: even revoked/consumed/TTL-missing invitation
+retries now transact pointer/context checks and an unchanged-proof or absence
+condition; no successful revoke path returns before its transaction. New
+revoked/missing race and safe retry tests passed; architecture review cleared.
+Full serial lint/API/app/contracts/review-gate/build plus local HTTP/DynamoDB
+acceptance passed group99841/session21169 exit0 peak2941952KiB remaining[] tripNone.
+
+Previous-head c0fdf0d deployed acceptance passed under group99470/session98407:
+explicit signed-in browser linking, fragment scrub, proofless-ID rejection,
+stale-revoke409/current-link validity, same-owner claim replay and wrong account,
+320/390/430/768/1280 overflow checks and light/dark. Full API code/revision
+fingerprint matched the deployment manifest before and after. Exact fixture keys
+and sessions were deleted and strong-read absence verified; browser exited.
+This is browser emulation, not physical-device evidence, and must be rerun at
+the replacement head.
 
 ### Rejected findings and evidence
 

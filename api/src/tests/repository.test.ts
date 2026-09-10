@@ -557,6 +557,22 @@ test("player proof: revocation fences replacement before read and at transaction
   }
 });
 
+test("player proof: revoked and missing receipt retries still fence the active pointer", async () => {
+  for (const state of ["revoked", "missing"]) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const input = { gameId: "proof-game", playerId: "participant", userIds: ["organiser"], ...newClaimProof() };
+    await repository.createPlayerInvitation(input);
+    await repository.revokePlayerInvitation(input);
+    if (state === "missing") client.deleteItem(`PLAYER_PROOF#${input.proofId}`, "METADATA");
+    await repository.revokePlayerInvitation(input);
+    client.runBeforeNextPut(() => client.deleteItem("PLAYER#participant", "CLAIM_INVITATION"));
+    await assert.rejects(repository.revokePlayerInvitation(input),
+      (error: unknown) => error instanceof PlayerProofError && error.code === "claim_invite_changed");
+    assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
+  }
+});
+
 test("player proof: competing accounts converge on exactly one ownership receipt", async () => {
   const { repository, client, game } = await proofHarness();
   const proof = newClaimProof();
