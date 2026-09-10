@@ -18,6 +18,17 @@ function assertServerlessRoute(method: string, path: string): void {
 }
 
 test("api core deployment config registers claim and access routes", () => {
+  assertServerlessRoute("POST", "/v1/player-proofs/preview");
+  assertServerlessRoute("OPTIONS", "/v1/player-proofs/preview");
+  for (const method of ["GET", "POST", "OPTIONS"]) {
+    assertServerlessRoute(method, "/v1/games/{gameId}/players/{playerId}/profile-invitation");
+  }
+  for (const method of ["POST", "OPTIONS"]) {
+    assertServerlessRoute(method, "/v1/games/{gameId}/players/{playerId}/profile-invitation/revoke");
+  }
+  assert.match(serverlessCoreConfig, /PLAYER_CLAIM_MODE:.*env:PLAYER_CLAIM_MODE, 'proof'/);
+  const localCompose = readFileSync(resolve(process.cwd(), "../compose.yaml"), "utf8");
+  assert.match(localCompose, /PLAYER_CLAIM_MODE: "\$\{PLAYER_CLAIM_MODE:-proof\}"/);
   assertServerlessRoute("GET", "/v1/join/{joinCode}/player-context");
   assertServerlessRoute("OPTIONS", "/v1/join/{joinCode}/player-context");
   assert.doesNotMatch(serverlessCoreConfig, /\/v1\/join\/\{joinCode\}\/players\//);

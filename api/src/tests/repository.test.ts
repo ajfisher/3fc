@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomBytes } from "node:crypto";
+import { hashPlayerProofSecret, PlayerProofError } from "../auth/player-proof.js";
+import { createLambdaCoreHandler } from "../lambda-core.js";
+import { handleLocalPlayerProofRoute } from "../server.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   DeleteItemCommand,
@@ -424,6 +429,235 @@ function createRepositoryHarness(): { repository: ThreeFcRepository; client: InM
     repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock()),
   };
 }
+
+function newClaimProof() {
+  const secret = randomBytes(32).toString("base64url");
+  return { proofId: randomBytes(18).toString("base64url"), secret, verifier: hashPlayerProofSecret(secret) };
+}
+
+async function proofHarness() {
+  const client = new InMemoryDynamoClient();
+  const clock = new MutableClock("2026-09-10T00:00:00.000Z");
+  const repository = new ThreeFcRepository(client, "proof-test", clock);
+  await repository.createLeague({ leagueId: "proof-league", name: "Test league", createdByUserId: "organiser" });
+  const game = await repository.createGame({ gameId: "proof-game", leagueId: "proof-league", seasonId: "season",
+    sessionId: "session", gameStartTs: "2026-09-10T10:00:00Z" });
+  return { repository, client, clock, game };
+}
+
+test("player proof: atomic self-join, explicit confirmation and durable same-owner recovery", async () => {
+  const { repository, client, clock, game } = await proofHarness();
+  const proof = newClaimProof();
+  const input = { joinCode: game.joinCode, playerId: "self", nickname: "Ari",
+    claimProof: { proofId: proof.proofId, verifier: proof.verifier } };
+  const joined = await repository.joinGameByCode(input);
+  assert.equal(joined?.claimProof?.expiresAt, "2026-09-17T00:00:00.000Z");
+  assert.equal((await repository.getPlayer("self"))?.claimedByUserId, null);
+  const pending = client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA");
+  assert(pending?.ttlEpoch);
+  assert.ok(!JSON.stringify(pending).includes(proof.secret));
+  assert.deepEqual(await repository.joinGameByCode(input), joined);
+  await assert.rejects(repository.joinGameByCode({ ...input, claimProof: { ...input.claimProof, verifier: "0".repeat(64) } }));
+  const credential = { proofId: proof.proofId, secret: proof.secret, userId: "owner", sessionId: "session-owner" };
+  const preview = await repository.previewPlayerProof(credential);
+  assert.equal((await repository.getPlayer("self"))?.claimedByUserId, null);
+  await assert.rejects(repository.claimPlayer({ playerId: "self", userId: "other", sessionId: "session-other",
+    proof: { ...proof, confirmation: preview.confirmation } }), PlayerProofError);
+  const claim = { playerId: "self", userId: "owner", sessionId: "session-owner", proof: { ...proof, confirmation: preview.confirmation } };
+  const committed = await repository.claimPlayer(claim);
+  assert.equal(committed?.claimedByUserId, "owner");
+  assert.equal(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")?.ttlEpoch, undefined);
+  assert.equal(client.readItem("USER#owner", "PLAYER#self")?.entityType?.S, "playerClaim");
+  assert.deepEqual(await repository.claimPlayer(claim), committed);
+  clock.set("2026-10-10T00:00:00.000Z");
+  client.deleteItem("GAME#proof-game", "METADATA");
+  const recovery = await repository.previewPlayerProof({ ...credential, sessionId: "new-session" });
+  assert.equal(recovery.alreadyLinked, true);
+  assert.deepEqual(await repository.claimPlayer({ ...claim, sessionId: "new-session", proof: { ...proof, confirmation: recovery.confirmation } }), committed);
+  await assert.rejects(repository.previewPlayerProof({ ...credential, userId: "other" }), PlayerProofError);
+});
+
+test("player proof: arbitrary IDs and organiser-created participants cannot claim without private proof", async () => {
+  const { repository } = await proofHarness();
+  await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+  await assert.rejects(repository.claimPlayer({ playerId: "participant", userId: "organiser" }),
+    (e: unknown) => e instanceof PlayerProofError && e.code === "claim_proof_required");
+  assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
+});
+
+test("player proof: private invitation requires admin and revocation or issuer demotion blocks acquisition", async () => {
+  for (const revoke of [true, false]) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const proof = newClaimProof();
+    const input = { gameId: "proof-game", playerId: "participant", userIds: ["organiser"], proofId: proof.proofId, verifier: proof.verifier };
+    await assert.rejects(repository.createPlayerInvitation({ ...input, userIds: ["outsider"] }), PlayerProofError);
+    const invitation = await repository.createPlayerInvitation(input);
+    assert.deepEqual(await repository.createPlayerInvitation(input), invitation);
+    const preview = await repository.previewPlayerProof({ ...proof, userId: "xavier", sessionId: "session-xavier" });
+    if (revoke) await repository.revokePlayerInvitation(input);
+    else client.deleteItem("LEAGUE#proof-league", "ACL#USER#organiser");
+    await assert.rejects(repository.claimPlayer({ playerId: "participant", userId: "xavier", sessionId: "session-xavier",
+      proof: { ...proof, confirmation: preview.confirmation } }), PlayerProofError);
+    assert.equal((await repository.getPlayer("participant"))?.claimedByUserId, null);
+    assert.equal(client.readItem("USER#xavier", "PLAYER#participant"), undefined);
+  }
+});
+
+test("player proof: disabled mode retains confirmed receipts but blocks fresh proof and first claim", async () => {
+  const { repository, client, clock, game } = await proofHarness();
+  const proof = newClaimProof();
+  await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: proof });
+  const disabled = new ThreeFcRepository(client, "proof-test", clock, "disabled");
+  await assert.rejects(disabled.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" }), PlayerProofError);
+  await assert.rejects(disabled.joinGameByCode({ joinCode: game.joinCode, playerId: "new", nickname: "New", claimProof: newClaimProof() }), PlayerProofError);
+  assert(await disabled.joinGameByCode({ joinCode: game.joinCode, playerId: "unclaimed", nickname: "New" }));
+  const preview = await repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" });
+  const input = { playerId: "self", userId: "owner", sessionId: "session", proof: { ...proof, confirmation: preview.confirmation } };
+  const committed = await repository.claimPlayer(input);
+  assert.deepEqual(await disabled.claimPlayer(input), committed);
+});
+
+test("player proof: competing accounts converge on exactly one ownership receipt", async () => {
+  const { repository, client, game } = await proofHarness();
+  const proof = newClaimProof();
+  await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "competing", nickname: "Ari", claimProof: proof });
+  const inputs = await Promise.all(["A", "B"].map(async userId => ({ playerId: "competing", userId, sessionId: `session-${userId}`,
+    proof: { ...proof, confirmation: (await repository.previewPlayerProof({ ...proof, userId, sessionId: `session-${userId}` })).confirmation } })));
+  const results = await Promise.allSettled(inputs.map(input => repository.claimPlayer(input)));
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter(result => result.status === "rejected").length, 1);
+  const owner = (await repository.getPlayer("competing"))!.claimedByUserId;
+  assert(owner === "A" || owner === "B");
+  assert(client.readItem(`USER#${owner}`, "PLAYER#competing"));
+  assert.equal(client.readItem(`USER#${owner === "A" ? "B" : "A"}`, "PLAYER#competing"), undefined);
+  const receipt = JSON.parse(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")!.data.S!);
+  assert.equal(receipt.consumedByUserId, owner);
+  assert.equal(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")!.ttlEpoch, undefined);
+});
+
+test("player proof: transaction fences invitation authority, pointer and player revision", async () => {
+  for (const changed of ["authority", "pointer", "player"] as const) {
+    const { repository, client } = await proofHarness();
+    await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+    const proof = newClaimProof();
+    await repository.createPlayerInvitation({ gameId: "proof-game", playerId: "participant", userIds: ["organiser"], ...proof });
+    const preview = await repository.previewPlayerProof({ ...proof, userId: "xavier", sessionId: "session-xavier" });
+    client.runBeforeNextPut(() => {
+      if (changed === "authority") client.deleteItem("LEAGUE#proof-league", "ACL#USER#organiser");
+      if (changed === "pointer") client.deleteItem("PLAYER#participant", "CLAIM_INVITATION");
+      if (changed === "player") {
+        const item = client.readItem("PLAYER#participant", "PROFILE")!;
+        client.seedItem({ ...item, updatedAt: { S: "changed-after-read" } });
+      }
+    });
+    await assert.rejects(repository.claimPlayer({ playerId: "participant", userId: "xavier", sessionId: "session-xavier",
+      proof: { ...proof, confirmation: preview.confirmation } }), PlayerProofError);
+    assert.equal((await repository.getPlayer("participant"))!.claimedByUserId, null);
+    assert.equal(client.readItem("USER#xavier", "PLAYER#participant"), undefined);
+    assert.equal(JSON.parse(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")!.data.S!).state, "pending");
+  }
+});
+
+test("player proof: replacement fences predecessors and consumed invitation receipts survive later eligibility changes", async () => {
+  const { repository, client, clock } = await proofHarness();
+  await repository.createAndLinkGamePlayer({ gameId: "proof-game", playerId: "participant", nickname: "Xavier" });
+  const context = { gameId: "proof-game", playerId: "participant", userIds: ["organiser"] };
+  const first = newClaimProof(); const second = newClaimProof();
+  const original = await repository.createPlayerInvitation({ ...context, ...first });
+  await assert.rejects(repository.createPlayerInvitation({ ...context, ...first, verifier: second.verifier }), PlayerProofError);
+  await assert.rejects(repository.createPlayerInvitation({ ...context, ...second }), PlayerProofError);
+  const replacement = await repository.createPlayerInvitation({ ...context, ...second, replacesProofId: first.proofId });
+  assert.deepEqual(await repository.createPlayerInvitation({ ...context, ...second, replacesProofId: first.proofId }), replacement);
+  await assert.rejects(repository.previewPlayerProof({ ...first, userId: "xavier", sessionId: "session-xavier" }), PlayerProofError);
+  const preview = await repository.previewPlayerProof({ ...second, userId: "xavier", sessionId: "session-xavier" });
+  const input = { playerId: "participant", userId: "xavier", sessionId: "session-xavier", proof: { ...second, confirmation: preview.confirmation } };
+  const committed = await repository.claimPlayer(input);
+  await repository.revokePlayerInvitation({ ...context, proofId: second.proofId });
+  client.deleteItem("LEAGUE#proof-league", "ACL#USER#organiser");
+  client.deleteItem("PLAYER#participant", "CLAIM_INVITATION");
+  client.deleteItem("GAME#proof-game", "METADATA");
+  clock.set("2026-10-10T00:00:00.000Z");
+  const disabled = new ThreeFcRepository(client, "proof-test", clock, "disabled");
+  const recovered = await disabled.previewPlayerProof({ ...second, userId: "xavier", sessionId: "new-session" });
+  assert.equal(recovered.alreadyLinked, true);
+  assert.deepEqual(await disabled.claimPlayer({ ...input, sessionId: "new-session", proof: { ...second, confirmation: recovered.confirmation } }), committed);
+  assert.equal(original.expiresAt, replacement.expiresAt);
+  assert.equal((await repository.getPlayer("participant"))!.claimedByUserId, "xavier");
+});
+
+test("player proof: deadlines are rechecked after asynchronous context reads", async () => {
+  for (const deadline of ["proof", "confirmation"]) {
+    const { repository, client, clock, game } = await proofHarness();
+    const proof = newClaimProof();
+    await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: proof });
+    if (deadline === "proof") clock.set("2026-09-16T23:59:59.000Z");
+    const preview = await repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" });
+    const delayed = new ThreeFcRepository({ async send(command: unknown) {
+      if (command instanceof GetItemCommand && command.input.Key?.pk.S === "GAME#proof-game") {
+        clock.set(deadline === "proof" ? "2026-09-17T00:00:00.000Z" : "2026-09-10T00:05:00.000Z");
+      }
+      return client.send(command);
+    } }, "proof-test", clock);
+    await assert.rejects(delayed.claimPlayer({ playerId: "self", userId: "owner", sessionId: "session",
+      proof: { ...proof, confirmation: preview.confirmation } }), PlayerProofError);
+    assert.equal((await repository.getPlayer("self"))?.claimedByUserId, null);
+    assert.equal(client.readItem("USER#owner", "PLAYER#self"), undefined);
+  }
+});
+
+test("player proof: local and Lambda routes pair account display with confirmation and reject switched cookies", async () => {
+  for (const adapter of ["local", "lambda"]) {
+    const { repository, game } = await proofHarness();
+    const proof = newClaimProof();
+    await repository.joinGameByCode({ joinCode: game.joinCode, playerId: "self", nickname: "Ari", claimProof: proof });
+    const sessions = Object.fromEntries(["A", "B"].map((id) => [id, {
+      sessionId: id, subject: `account-${id}`, email: `${id}@private.example`,
+      createdAt: "2026-09-10T00:00:00Z", expiresAt: "2026-09-18T00:00:00Z",
+    }]));
+    const handler = createLambdaCoreHandler({ repository,
+      magicLinkService: {
+        async getSession(id) { return sessions[id] ?? null; }, async revokeSession() {},
+        async start() { throw new Error("No email in proof route tests"); },
+        async complete() { throw new Error("No auth completion in proof route tests"); },
+      }, magicLinkRateLimiter: { async consumeMagicLinkStart() { return { allowed: true }; } },
+      sessionCookieName: "threefc_session", sessionCookieSecure: true,
+      corsAllowedOrigins: ["https://qa.3fc.football"], appBaseUrl: "https://qa.3fc.football",
+    });
+    async function request(path: string, body: object, account = "A") {
+      if (adapter === "lambda") {
+        const result = await handler({ rawPath: path, body: JSON.stringify(body),
+          headers: { cookie: `threefc_session=${account}`, origin: "https://qa.3fc.football" },
+          requestContext: { requestId: "proof-test", http: { method: "POST", path } },
+        });
+        return { status: result.statusCode, body: JSON.parse(result.body), headers: result.headers };
+      }
+      const result = { status: 0, body: {} as Record<string, any>, headers: {} as Record<string, string> };
+      const response = { writeHead(status: number, headers: Record<string, string>) { result.status = status; result.headers = headers; },
+        end(value: string) { result.body = JSON.parse(value); } } as unknown as ServerResponse;
+      const incoming = { headers: { origin: "https://qa.3fc.football" },
+        async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } } as unknown as IncomingMessage;
+      await handleLocalPlayerProofRoute({ request: incoming, response, method: "POST", route: path,
+        session: sessions[account] ?? null, playerRepository: repository });
+      return result;
+    }
+    const credentials = { proofId: proof.proofId, secret: proof.secret };
+    assert.equal((await request("/v1/players/self/claim", {})).status, 403);
+    assert.equal((await request("/v1/player-proofs/preview", credentials, "missing")).status, 401);
+    const preview = await request("/v1/player-proofs/preview", credentials);
+    assert.equal(preview.status, 200);
+    assert.deepEqual(preview.body.account, { email: "A@private.example" });
+    assert.equal(preview.headers?.["cache-control"] ?? preview.headers?.["Cache-Control"], "no-store");
+    const body = { proof: { ...credentials, confirmation: preview.body.preview.confirmation } };
+    assert.equal((await request("/v1/players/self/claim", body, "B")).status, 409);
+    assert.equal((await repository.getPlayer("self"))?.claimedByUserId, null);
+    const accepted = await request("/v1/players/self/claim", body);
+    assert.equal(accepted.status, 200);
+    assert.ok(!JSON.stringify(accepted.body).includes("private.example"));
+    assert.ok(!JSON.stringify(preview.body).includes(proof.secret));
+    assert.equal((await repository.getPlayer("self"))?.claimedByUserId, "account-A");
+  }
+});
 
 test("repository complete roster reads follow scoped continuation through empty pages without changing ordinary reads", async () => {
   const stamp = "2026-09-08T10:00:00.000Z";
@@ -881,12 +1115,13 @@ test("repository does not treat another league's legacy templates as owned after
   );
 });
 
-test("repository claims players idempotently for one user and rejects another user", async () => {
+test("repository preserves legacy same-owner retries but rejects proofless ownership acquisition", async () => {
   const { repository, client } = createRepositoryHarness();
 
   await repository.createPlayer({
     playerId: "player-claim",
     nickname: "Claim Me",
+    claimedByUserId: "delegate@example.com",
   });
 
   const claimed = await repository.claimPlayer({
@@ -894,12 +1129,7 @@ test("repository claims players idempotently for one user and rejects another us
     userId: "delegate@example.com",
   });
   assert.equal(claimed?.claimedByUserId, "delegate@example.com");
-  const claimItem = client.readItem("USER#delegate@example.com", "PLAYER#player-claim");
-  assert.equal(claimItem?.entityType?.S, "playerClaim");
-  assert.equal(claimItem?.data?.S, JSON.stringify({
-    userId: "delegate@example.com",
-    playerId: "player-claim",
-  }));
+  assert.equal(client.readItem("USER#other@example.com", "PLAYER#player-claim"), undefined);
 
   const replayed = await repository.claimPlayer({
     playerId: "player-claim",
@@ -913,9 +1143,9 @@ test("repository claims players idempotently for one user and rejects another us
       userId: "other@example.com",
     }),
     (error: unknown) =>
-      error instanceof PlayerClaimError &&
-      error.code === "player_already_claimed" &&
-      error.statusCode === 409,
+      error instanceof PlayerProofError &&
+      error.code === "claim_proof_required" &&
+      error.statusCode === 403,
   );
 });
 
@@ -2785,6 +3015,8 @@ test("repository leaves game and join-code lookup intact if delete sees a join-c
 
 test("repository allows join registration for finished games so players can claim profiles", async () => {
   const { repository, client } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "league-1", name: "League", createdByUserId: "admin" });
+  const proof = newClaimProof();
   const game = await repository.createGame({
     gameId: "game-finished-join",
     leagueId: "league-1",
@@ -2798,6 +3030,7 @@ test("repository allows join registration for finished games so players can clai
     joinCode: game.joinCode,
     playerId: "player-late",
     nickname: "Late",
+    claimProof: proof,
   });
 
   assert(joinResult);
@@ -2813,9 +3046,12 @@ test("repository allows join registration for finished games so players can clai
     },
   ]);
 
+  const preview = await repository.previewPlayerProof({ ...proof, userId: "late-subject", sessionId: "late-session" });
   const claimed = await repository.claimPlayer({
     playerId: "player-late",
     userId: "late-subject",
+    sessionId: "late-session",
+    proof: { ...proof, confirmation: preview.confirmation },
   });
   assert.equal(claimed?.claimedByUserId, "late-subject");
 });

@@ -3,6 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
+import { PlayerProofError, parsePlayerClaimMode } from "./auth/player-proof.js";
 import {
   buildGameTimerState,
   DEFAULT_TEAMS,
@@ -184,7 +186,7 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract {
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
       leagueId: string;
@@ -364,8 +366,10 @@ interface RepositoryContract {
     joinCode: string;
     playerId: string;
     nickname: string;
+    claimProof?: { proofId: string; verifier: string };
   }): Promise<{
     game: RepositoryGameRecord;
+    claimProof?: { proofId: string; expiresAt: string };
     player: {
       playerId: string;
       nickname: string;
@@ -2625,6 +2629,7 @@ function createDefaultDependencies(): CoreHandlerDependencies {
 }
 
 export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
+  parsePlayerClaimMode(process.env.PLAYER_CLAIM_MODE);
   return async (event: ApiGatewayHttpEvent): Promise<ApiGatewayHttpResponse> => {
     const details = getRequestDetails(event);
     const route = details.route;
@@ -2914,6 +2919,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
         const parsedIdempotencyKey = parseOptionalIdempotencyKey(idempotencyKey);
         const executeJoin = async () => {
+          if (parsedBody.data.claimProof && !parsedIdempotencyKey) {
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Idempotency-Key is required when requesting player claim proof.");
+          }
           let joinResult: Awaited<ReturnType<RepositoryContract["joinGameByCode"]>>;
           try {
             joinResult = await dependencies.repository.joinGameByCode({
@@ -2922,8 +2930,11 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
                 : `player-${randomUUID()}`,
               nickname: parsedBody.data.nickname,
+              claimProof: parsedBody.data.claimProof,
             });
           } catch (error) {
+            if (error instanceof PlayerProofError) return createJsonResponse(error.statusCode,
+              { error: "conflict", code: error.code, message: error.message }, buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
             if (error instanceof GameJoinRegistrationError) {
               if (error.code === "game_finished") {
                 return finishedGameJoinConflictResponse(
@@ -2949,6 +2960,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               gameId: joinResult.game.gameId,
               joinCode: joinResult.game.joinCode,
               player: toPublicPlayer(joinResult.player),
+              ...(joinResult.claimProof ? { claimProof: joinResult.claimProof } : {}),
             },
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
@@ -5173,66 +5185,16 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
-        const claimPlayerMatch = route.match(/^\/v1\/players\/([^/]+)\/claim$/);
-        if (method === "POST" && claimPlayerMatch) {
-          let rawBody: Record<string, unknown>;
-          try {
-            rawBody = parseJsonBody(event);
-          } catch {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
-          }
-
-          const parsedBody = claimPlayerRequestSchema.safeParse(rawBody);
-          if (!parsedBody.success) {
-            status = 400;
-            return badRequest(
-              origin,
-              dependencies.corsAllowedOrigins,
-              formatSchemaValidationError(parsedBody.error),
-            );
-          }
-
-          const playerId = decodeRouteParam(claimPlayerMatch[1]);
-          let player;
-          try {
-            player = await dependencies.repository.claimPlayer({
-              playerId,
-              userId: sessionSubject(session),
-            });
-          } catch (error) {
-            if (error instanceof PlayerClaimError) {
-              status = 409;
-              return createJsonResponse(
-                status,
-                {
-                  error: "conflict",
-                  code: error.code,
-                  message: error.message,
-                },
-                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-              );
-            }
-
-            throw error;
-          }
-
-          if (!player) {
-            status = 404;
-            return notFound(origin, dependencies.corsAllowedOrigins, `Player ${playerId} was not found.`);
-          }
-
-          status = 200;
-          return createJsonResponse(
-            status,
-            {
-              player: toPublicPlayer(player),
-              claim: {
-                claimedByCurrentUser: true,
-              },
-            },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-          );
+        if (isPlayerProofRoute(method, route)) {
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON."); }
+          const result = await handlePlayerProofRoute({ method, route, body, session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, {
+            ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer",
+          });
         }
 
         const listGamePlayersMatch = route.match(/^\/v1\/games\/([^/]+)\/players$/);

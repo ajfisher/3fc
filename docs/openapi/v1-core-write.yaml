@@ -62,6 +62,7 @@ paths:
     post:
       summary: Register a nickname player into a game by join code
       operationId: joinGameByCode
+      description: Anonymous nickname registration remains available. When claimProof is supplied, a valid Idempotency-Key is required and proof metadata is committed with the exact new registration. The request contains only a verifier, never the bearer secret. Protected organiser player creation cannot issue registration proof.
       parameters:
         - name: joinCode
           in: path
@@ -939,7 +940,8 @@ paths:
           $ref: "#/components/responses/NotFound"
   /v1/players/{playerId}/claim:
     post:
-      summary: Claim a joined player for the signed-in user
+      summary: Explicitly link a proof-authorised player to the signed-in account
+      description: Every first claim requires a valid private proof and short-lived confirmation returned by preview for this exact server-resolved session/account. A proofless request only preserves an existing same-owner retry. Consumed proofs return their immutable same-owner receipt after binding validation, without granting access or recreating deleted records. Responses are no-store and no-referrer.
       operationId: claimPlayer
       parameters:
         - name: playerId
@@ -965,6 +967,144 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/player-proofs/preview:
+    post:
+      summary: Preview a private player link without consuming it
+      operationId: previewPlayerProof
+      description: Requires a session. Returns the exact player, league and signed-in account together with an opaque session-bound confirmation. Never grants ownership. Responses are no-store and no-referrer; secrets and confirmations must never be logged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlayerProofCredential"
+      responses:
+        "200":
+          description: Account-bound preview, including same-owner consumed receipt recovery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerProofPreviewResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: New player linking is temporarily disabled
+  /v1/games/{gameId}/players/{playerId}/profile-invitation:
+    parameters:
+      - name: gameId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+      - name: playerId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    get:
+      summary: Check the current private invitation for a registered player
+      operationId: getPlayerInvitation
+      description: League organisers only. Returns metadata, never a bearer secret. A TTL-deleted proof retains expired pointer metadata so the organiser can replace it safely.
+      responses:
+        "200":
+          description: Current invitation metadata or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    anyOf:
+                      - $ref: "#/components/schemas/PlayerInvitationMetadata"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      summary: Create or replace a private profile-link invitation
+      operationId: createPlayerInvitation
+      description: League organisers only. The client retains the random secret and submits its SHA-256 verifier. Creation is idempotent by proofId and exact inputs. Replacement must name the current predecessor proofId; a stale predecessor conflicts. Invites expire seven days after the persisted creation instant. No email is sent. All responses are no-store and no-referrer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlayerInvitationRequest"
+      responses:
+        "201":
+          description: Persisted invitation metadata, also returned for an exact retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/PlayerProofMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: New player linking is temporarily disabled
+  /v1/games/{gameId}/players/{playerId}/profile-invitation/revoke:
+    post:
+      summary: Revoke a player's private invitation
+      operationId: revokePlayerInvitation
+      description: League organisers only. Idempotent; revocation does not remove existing ownership or a consumed receipt.
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: playerId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proofId]
+              properties:
+                proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+      responses:
+        "200":
+          description: Revocation confirmed, including an already revoked or consumed invitation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean, const: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -1298,9 +1438,86 @@ components:
           type: string
           minLength: 1
           maxLength: 80
+        claimProof:
+          $ref: "#/components/schemas/PlayerProofCreation"
     ClaimPlayerRequest:
       type: object
       additionalProperties: false
+      properties:
+        proof:
+          type: object
+          additionalProperties: false
+          required: [proofId, secret, confirmation]
+          properties:
+            proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+            secret: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+            confirmation: { type: string, maxLength: 100 }
+    PlayerProofCreation:
+      type: object
+      additionalProperties: false
+      required: [proofId, verifier]
+      properties:
+        proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+        verifier: { type: string, pattern: "^[a-f0-9]{64}$" }
+    PlayerProofCredential:
+      type: object
+      additionalProperties: false
+      required: [proofId, secret]
+      properties:
+        proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+        secret: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+    CreatePlayerInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [proofId, verifier]
+      properties:
+        proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+        verifier: { type: string, pattern: "^[a-f0-9]{64}$" }
+        replacesProofId:
+          type: [string, "null"]
+          pattern: "^[A-Za-z0-9_-]{20,64}$"
+    PlayerProofMetadata:
+      type: object
+      required: [proofId, expiresAt]
+      properties:
+        proofId: { type: string }
+        expiresAt: { type: string, format: date-time }
+    PlayerInvitationMetadata:
+      allOf:
+        - $ref: "#/components/schemas/PlayerProofMetadata"
+        - type: object
+          required: [state]
+          properties:
+            state: { type: string, enum: [pending, revoked, consumed, expired] }
+    PlayerProofPreviewResponse:
+      type: object
+      required: [preview, account]
+      properties:
+        account:
+          type: object
+          required: [email]
+          properties:
+            email: { type: string }
+        preview:
+          allOf:
+            - $ref: "#/components/schemas/PlayerProofMetadata"
+            - type: object
+              required: [player, league, alreadyLinked, confirmation]
+              properties:
+                player:
+                  type: object
+                  required: [playerId, nickname]
+                  properties:
+                    playerId: { type: string }
+                    nickname: { type: string }
+                league:
+                  type: object
+                  required: [leagueId, name]
+                  properties:
+                    leagueId: { type: string }
+                    name: { type: string }
+                alreadyLinked: { type: boolean }
+                confirmation: { type: string }
     GrantLeagueAccessRequest:
       type: object
       additionalProperties: false
@@ -2034,6 +2251,8 @@ components:
           type: string
         player:
           $ref: "#/components/schemas/Player"
+        claimProof:
+          $ref: "#/components/schemas/PlayerProofMetadata"
     RosterAssignment:
       type: object
       required:

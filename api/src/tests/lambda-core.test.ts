@@ -993,6 +993,10 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async previewPlayerProof() { throw new Error("Proof preview requires a real repository fixture."); },
+      async createPlayerInvitation() { throw new Error("Invitation writes require a real repository fixture."); },
+      async getPlayerInvitation() { throw new Error("Invitation reads require a real repository fixture."); },
+      async revokePlayerInvitation() { throw new Error("Invitation revocation requires a real repository fixture."); },
       async listLeaguesForUser(userId: string) {
         const accessibleLeagueIds = Object.values(config.leagueAccess ?? {})
           .filter((entry) => entry.userId === userId)
@@ -3233,7 +3237,7 @@ test("core lambda lets players join an active game by join code and appear in th
   });
 });
 
-test("core lambda lets joined players claim accounts and admins delegate scorer access", async () => {
+test("core lambda preserves same-owner claim retries and separate admin scorer delegation", async () => {
   const harness = createHarness({
     sessions: {
       "session-player": {
@@ -3277,9 +3281,9 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
       "player-joined": {
         playerId: "player-joined",
         nickname: "Delegate",
-        claimedByUserId: null,
+        claimedByUserId: "cognito-delegate-sub",
         createdAt: "2026-02-23T00:00:00.000Z",
-        updatedAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:01.000Z",
       },
     },
     gamePlayers: {

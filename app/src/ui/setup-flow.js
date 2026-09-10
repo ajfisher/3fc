@@ -175,6 +175,7 @@
       const restoreFocusOnFailure = document.activeElement === button;
       closeActionMenu();
       signOutPending = true;
+      window.ThreeFcPlayerProof?.clear();
       signOutUnconfirmed = false;
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
@@ -4752,10 +4753,14 @@
 
       const access = verifiedAdminPlayers.get(player.playerId)?.access;
       if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
+        const invitePath = encodedRecordPath(`/v1/games/${encodeURIComponent(gameId)}/players/`, player.playerId, "/profile-invitation");
         return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
           <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
             "circle-user-round",
           )}</span>
+          ${invitePath ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
+            `<button data-ui="row-action" type="button" data-action="invite-player-profile" ${playerIdentityAttribute(player.playerId)}>Invite to link profile</button>`,
+            { "data-player-management": "" }) : '<small>Profile linking is unavailable for this player. Ask for help.</small>'}
         </div>`;
       }
 
@@ -5180,6 +5185,158 @@
     const gameEditRegion = document.getElementById("game-edit-region");
     const playerCreateToggle = root.querySelector('[data-action="toggle-player-create"]');
     const playerCreateRegion = document.getElementById("player-create-region");
+    const invitationPanel = document.getElementById("player-invitation-panel");
+    const invitationStatus = document.getElementById("player-invitation-status");
+    const invitationCreate = document.getElementById("player-invitation-create");
+    const invitationCopy = document.getElementById("player-invitation-copy");
+    const invitationRevoke = document.getElementById("player-invitation-revoke");
+    const invitationClose = document.getElementById("player-invitation-close");
+    const invitationLink = document.getElementById("player-invitation-link");
+    let invitationPlayerId = null;
+    let invitationMetadata = null;
+    let invitationAttempt = null;
+    let invitationPending = false;
+    let invitationLoaded = false;
+    let invitationRevokeUnconfirmed = false;
+    let invitationGeneration = 0;
+    function discardPlayerInvitation() {
+      invitationGeneration += 1;
+      invitationLink.value = "";
+      invitationAttempt = null; invitationMetadata = null; invitationPlayerId = null;
+      invitationLoaded = false; invitationPending = false; invitationRevokeUnconfirmed = false;
+      invitationPanel.hidden = true;
+      invitationMessage("");
+    }
+    window.addEventListener("threefc:player-proof-cleared", discardPlayerInvitation);
+    function invitationMessage(text, error = false) {
+      invitationStatus.textContent = text;
+      invitationStatus.hidden = !text;
+      invitationStatus.setAttribute("role", error ? "alert" : "status");
+    }
+    function renderInvitation() {
+      const canIssue = invitationLoaded && currentLeagueRole === "admin" && !refreshAccountLocked;
+      invitationCreate.disabled = invitationPending || !canIssue || invitationRevokeUnconfirmed;
+      invitationClose.disabled = invitationPending;
+      invitationCopy.disabled = invitationPending;
+      invitationRevoke.disabled = invitationPending || !canIssue || Boolean(invitationAttempt);
+      invitationCreate.textContent = invitationAttempt ? "Retry link creation" : invitationMetadata ? "Replace private link" : "Create private link";
+      invitationRevoke.hidden = !invitationMetadata || invitationMetadata.state !== "pending";
+      invitationCopy.hidden = !invitationLink.value;
+      document.getElementById("player-invitation-link-field").hidden = !invitationLink.value;
+    }
+    function invitationPath() {
+      return `/v1/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(invitationPlayerId)}/profile-invitation`;
+    }
+    async function invitationRequest(path, options) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 15000);
+      try { return await requestJsonOrThrow(path, { ...options, signal: controller.signal }); }
+      finally { window.clearTimeout(timeout); }
+    }
+    async function openPlayerInvitation(playerId) {
+      if (invitationPending || currentLeagueRole !== "admin" || !verifiedAdminPlayers.has(playerId)) return;
+      closeActionMenu();
+      if (invitationPlayerId !== playerId && (invitationAttempt || invitationRevokeUnconfirmed)) {
+        invitationPanel.hidden = false;
+        invitationMessage("Finish checking the previous profile-link request before starting another one.", true);
+        return;
+      }
+      if (invitationPlayerId === playerId && invitationLoaded) {
+        invitationPanel.hidden = false;
+        document.getElementById("player-invitation-title").focus();
+        return;
+      }
+      invitationPlayerId = playerId; invitationMetadata = null; invitationAttempt = null;
+      const generation = ++invitationGeneration;
+      invitationRevokeUnconfirmed = false;
+      invitationLoaded = false; invitationPending = true; invitationLink.value = "";
+      invitationPanel.hidden = false;
+      document.getElementById("player-invitation-title").textContent = `Invite ${playerNickname(playerId)} to link their profile`;
+      document.getElementById("player-invitation-title").focus();
+      invitationMessage("Checking profile link…"); renderInvitation();
+      try {
+        const result = await invitationRequest(invitationPath(), { method: "GET", cache: "no-store" });
+        if (generation !== invitationGeneration) return;
+        if (result.invitation !== null && (typeof result.invitation?.proofId !== "string" || typeof result.invitation?.expiresAt !== "string")) throw new Error("invite_unconfirmed");
+        invitationMetadata = result.invitation;
+        invitationLoaded = true;
+        invitationMessage(invitationMetadata ? "A private link already exists. Replace it if you need a new copy." : "");
+      } catch {
+        if (generation !== invitationGeneration) return;
+        invitationMessage("Could not check this player’s link. Close this panel and try again.", true);
+      } finally { if (generation === invitationGeneration) { invitationPending = false; renderInvitation(); } }
+    }
+    invitationCreate?.addEventListener("click", async () => {
+      if (invitationPending || !invitationLoaded || invitationRevokeUnconfirmed || currentLeagueRole !== "admin" || refreshAccountLocked) return;
+      if (!invitationAttempt && invitationMetadata && !window.confirm("Replace this private link? The previous link will stop working. Share the new link privately.")) return;
+      const generation = invitationGeneration;
+      invitationPending = true; renderInvitation(); invitationMessage("Creating private link…");
+      try {
+        if (!invitationAttempt) {
+          const proof = await window.ThreeFcPlayerProof.create(`invite:${randomSuffix(24)}`);
+          if (generation !== invitationGeneration) return;
+          invitationAttempt = { proof, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
+            replacesProofId: invitationMetadata?.proofId ?? null }) };
+        }
+        const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body });
+        if (generation !== invitationGeneration) return;
+        const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationPlayerId);
+        invitationMetadata = { ...result.invitation, state: "pending" };
+        invitationLink.value = window.ThreeFcPlayerProof.shareLink(record);
+        invitationAttempt = null;
+        invitationMessage(`Private link created. It expires on ${new Date(result.invitation.expiresAt).toLocaleString()}.`);
+      } catch (error) {
+        if (generation !== invitationGeneration) return;
+        if (invitationAttempt && !invitationAttempt.uncertain && [400, 401, 403, 404, 409].includes(error.statusCode)) {
+          invitationAttempt = null; invitationLoaded = false;
+          invitationMessage("This player or its private link changed. Close this panel and check it again.", true);
+        } else {
+          if (invitationAttempt) invitationAttempt.uncertain = true;
+          invitationMessage(invitationAttempt ? "Link creation could not be confirmed. Retry sends the same request."
+            : "Your browser could not keep the private link. Allow site storage and try again.", true);
+        }
+      } finally { if (generation === invitationGeneration) { invitationPending = false; renderInvitation(); } }
+    });
+    invitationRevoke?.addEventListener("click", async () => {
+      if (invitationPending || invitationAttempt || !invitationMetadata || currentLeagueRole !== "admin" || refreshAccountLocked) return;
+      if (!invitationRevokeUnconfirmed && !window.confirm("Revoke this private link? Anyone who received it will no longer be able to use it.")) return;
+      const generation = invitationGeneration;
+      const finishFocus = trackInteractionFocus(invitationRevoke);
+      invitationPending = true; renderInvitation();
+      try {
+        const result = await invitationRequest(`${invitationPath()}/revoke`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) });
+        if (generation !== invitationGeneration) return;
+        if (result.revoked !== true) throw new Error("revoke_unconfirmed");
+        invitationMetadata.state = "revoked"; invitationLink.value = "";
+        invitationRevokeUnconfirmed = false;
+        invitationMessage("Private link revoked.");
+      } catch { if (generation === invitationGeneration) { invitationRevokeUnconfirmed = true; invitationMessage("Revocation could not be confirmed. Try again to revoke the same link.", true); } }
+      finally {
+        const owned = finishFocus();
+        if (generation === invitationGeneration) {
+          invitationPending = false; renderInvitation();
+          if (owned && invitationRevoke.hidden && !invitationPanel.hidden) { invitationStatus.tabIndex = -1; invitationStatus.focus(); }
+        }
+      }
+    });
+    invitationCopy?.addEventListener("click", async () => {
+      if (!invitationLink.value || invitationPending || refreshAccountLocked || currentLeagueRole !== "admin") return;
+      const generation = invitationGeneration;
+      try { await navigator.clipboard.writeText(invitationLink.value); if (generation === invitationGeneration) invitationMessage("Private link copied."); }
+      catch { if (generation === invitationGeneration) { invitationLink.focus(); invitationLink.select(); invitationMessage("Copy failed. Select and copy the link above.", true); } }
+    });
+    function closePlayerInvitation() {
+      if (invitationPending) return;
+      invitationPanel.hidden = true;
+      const card = [...root.querySelectorAll('[data-player-id]')].find((node) => node.getAttribute("data-player-id") === invitationPlayerId);
+      card?.querySelector('[data-action="toggle-action-menu"]')?.focus();
+    }
+    invitationClose?.addEventListener("click", closePlayerInvitation);
+    invitationPanel?.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closePlayerInvitation(); } });
+    root.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest('[data-action="invite-player-profile"]') : null;
+      if (target) void openPlayerInvitation(target.getAttribute("data-player-id"));
+    });
     attachDisclosure(gameEditToggle, gameEditRegion);
     attachDisclosure(playerCreateToggle, playerCreateRegion);
     for (const panel of [gameEditRegion, playerCreateRegion]) panel?.addEventListener("keydown", (event) => {
@@ -5961,7 +6118,8 @@
       const owner = `${method}:${path}`;
       const dedicatedOwner = (goalOperation?.path === path && goalOperation.request.method === method) ||
         (clockOperation?.path === path && clockOperation.request.method === method) ||
-        (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method);
+        (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method) ||
+        (invitationPending && (path === invitationPath() || path === `${invitationPath()}/revoke`));
       return (result) => {
         // These writes already have an explicit recovery owner. A clock GET
         // can confirm its operation without replaying the POST; don't strand
@@ -5981,10 +6139,12 @@
 
     function localWriteOwnsState() {
       return Boolean(gameMetadataPending || gameDeletionPending || goalMutationInFlight || timerMutationPending ||
-        rosterMutationPending || playerCreatePending || goalOperation || clockOperation || playerCreateAttempt || uncertainReadBarriers.size);
+        rosterMutationPending || playerCreatePending || goalOperation || clockOperation || playerCreateAttempt ||
+        invitationPending || invitationAttempt || invitationRevokeUnconfirmed || uncertainReadBarriers.size);
     }
 
     function discardPrivateEnrichment() {
+      discardPlayerInvitation();
       ++playersReadVersion;
       knownRosterPlayers.clear();
       verifiedAdminPlayers.clear();
@@ -6358,64 +6518,19 @@
     }
 
     async function claimJoinedPlayer(playerId) {
-      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId ||
-        playerId !== verifiedClaimPlayerId || claimButton.disabled) return;
-      const finishFocus = trackEntryFocus(claimButton);
-      const claimPath = encodedRecordPath("/v1/players/", playerId, "/claim");
-      if (!claimPath) {
+      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId || claimButton.disabled) return;
+      const proof = window.ThreeFcPlayerProof?.forPlayer(playerId);
+      if (!proof) {
         claimButton.hidden = true;
-        claimButton.disabled = true;
-        showError((joined ? "Joined game. " : "") + "This player can’t be claimed from this link. Ask the organiser for help.", { includesOutcome: true });
-        if (finishFocus()) focusClaimContinuation();
+        claimMessage("Ask the organiser for a private link to link this player to your account.");
         return;
       }
-      claimPending = true;
-      const revision = ++claimRevision;
-      claimButton.disabled = true;
-      renderJoinState();
-      clearError();
-      claimMessage("");
-      setStatus("Claiming player…", "default");
-      if (signInLink instanceof HTMLAnchorElement) signInLink.hidden = true;
-      try {
-        const result = await requestJsonOrThrow(claimPath, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
-        });
-        if (result?.player?.playerId !== playerId || typeof result.player.nickname !== "string" ||
-          !result.player.nickname.trim() || result?.claim?.claimedByCurrentUser !== true) throw new Error("claim_unconfirmed");
-        if (revision !== claimRevision) return;
-        claimComplete = true;
-        if (resultPlayer) resultPlayer.textContent = result.player.nickname;
-        if (resultElement) resultElement.hidden = false;
-        claimButton.hidden = true;
-        claimMessage("");
-        setStatus("Player claimed.", "success");
-      } catch (error) {
-        if (revision !== claimRevision) return;
-        const definitive = isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
-          (error.statusCode !== 409 || (error.responseError === "conflict" && error.responseCode === "player_already_claimed"));
-        const prefix = joined ? "Joined game. " : "";
-        const message = definitive
-          ? error.statusCode === 409 ? "This player is already claimed by another account. Sign out to use a different account."
-            : error.statusCode === 401 ? "Sign in to claim this player."
-              : "This player could not be claimed. Ask the organiser for help."
-          : "The player claim could not be confirmed. Retry claiming this player.";
-        showError(prefix + message, { includesOutcome: true });
-        claimButton.hidden = false;
-        if (error.statusCode === 401 && signInLink instanceof HTMLAnchorElement) {
-          signInLink.hidden = false;
-          signInLink.href = entrySignInHref(playerId);
-          claimButton.hidden = true;
-        }
-      } finally {
-        claimPending = false;
-        claimButton.disabled = claimComplete;
-        renderJoinState();
-        if (finishFocus() && revision === claimRevision) focusClaimContinuation();
-      }
+      // Navigation only: the recipient page shows the exact player and account
+      // together, then requires an explicit server-bound confirmation.
+      navigateTo(window.ThreeFcPlayerProof.destination(proof.proofId));
     }
 
-    async function refreshClaimActions(playerId, autoClaim = false) {
+    async function refreshClaimActions(playerId) {
       if (contextLookupPending) return;
       contextLookupPending = true;
       const lookupRevision = ++contextLookupRevision;
@@ -6456,15 +6571,17 @@
             if (resultPlayer) resultPlayer.textContent = context.player.nickname;
             if (resultElement) resultElement.hidden = false;
           }
-          claimMessage("");
-          claimButton.hidden = false;
-          claimButton.disabled = false;
-          // Only a confirmed fresh Join game action retains its existing automatic
-          // claim. Query/sign-in return and context retries are reads, never claims.
-          if (autoClaim) await claimJoinedPlayer(playerId);
+          const proof = window.ThreeFcPlayerProof?.forPlayer(playerId);
+          claimButton.hidden = !proof;
+          claimButton.disabled = !proof;
+          claimButton.textContent = "Link player profile";
+          claimMessage(proof ? "" : "Ask the organiser for a private link to link this player to your account.");
         } else if (signInLink instanceof HTMLAnchorElement) {
-          signInLink.hidden = false;
-          signInLink.href = entrySignInHref(playerId);
+          const proof = window.ThreeFcPlayerProof?.forPlayer(playerId);
+          signInLink.hidden = !proof;
+          signInLink.textContent = "Sign in to link your player profile";
+          if (proof) signInLink.href = `/sign-in?returnTo=${encodeURIComponent(window.ThreeFcPlayerProof.destination(proof.proofId))}`;
+          else claimMessage("Ask the organiser for a private link to link this player to your account.");
         }
       } catch (error) {
         if (revision === claimRevision && playerId === claimPlayerId) throw error;
@@ -6480,15 +6597,18 @@
       if (!claimPlayerId || claimComplete) return;
       claimMessage("");
       const identityKnown = verifiedClaimPlayerId === claimPlayerId;
+      const proof = window.ThreeFcPlayerProof?.forPlayer(claimPlayerId);
       showError((joined ? "Joined game. " : "") + (identityKnown
-        ? "Sign-in could not be checked. Retry claiming this player or sign in again."
+        ? proof ? "Sign-in could not be checked. Open your private player link or sign in again."
+          : "Ask the organiser for a private link to link this player to your account."
         : "The player details couldn’t be loaded. Retry lookup or sign in again."), { includesOutcome: true });
-      claimButton.hidden = !identityKnown;
-      claimButton.disabled = !identityKnown;
+      claimButton.hidden = !identityKnown || !proof;
+      claimButton.disabled = !identityKnown || !proof;
+      claimButton.textContent = "Link player profile";
       if (lookupButton instanceof HTMLButtonElement) lookupButton.hidden = identityKnown;
       if (signInLink instanceof HTMLAnchorElement) {
         signInLink.hidden = false;
-        signInLink.href = entrySignInHref(claimPlayerId);
+        signInLink.href = proof ? `/sign-in?returnTo=${encodeURIComponent(window.ThreeFcPlayerProof.destination(proof.proofId))}` : entrySignInHref(claimPlayerId);
       }
     }
 
@@ -6548,13 +6668,24 @@
           nicknameInput.focus();
           return;
         }
-        joinAttempt = {
-          nickname, uncertain: false,
-          path: "/v1/join/" + encodeURIComponent(joinCode),
-          request: Object.freeze({ method: "POST", headers: Object.freeze({
-            "Content-Type": "application/json", "Idempotency-Key": idempotencyKeyForPublicJoin(joinCode, nickname),
-          }), body: JSON.stringify({ nickname }) }),
-        };
+        joinPending = true;
+        renderJoinState();
+        try {
+          const key = idempotencyKeyForPublicJoin(joinCode, nickname);
+          const proof = await window.ThreeFcPlayerProof.create(`${joinCode}:${key}`);
+          joinAttempt = {
+            nickname, proof, uncertain: false,
+            path: "/v1/join/" + encodeURIComponent(joinCode),
+            request: Object.freeze({ method: "POST", headers: Object.freeze({
+              "Content-Type": "application/json", "Idempotency-Key": key,
+            }), body: JSON.stringify({ nickname, claimProof: { proofId: proof.proofId, verifier: proof.verifier } }) }),
+          };
+        } catch {
+          joinPending = false;
+          renderJoinState();
+          showError("Your browser could not keep the private profile link. Allow site storage or try another browser before joining.", { includesOutcome: true });
+          return;
+        }
       }
       const attempt = joinAttempt;
       const finishFocus = trackEntryFocus(form);
@@ -6574,6 +6705,8 @@
         claimPlayerId = result.player.playerId;
         verifiedClaimPlayerId = claimPlayerId;
         entryClaimPlayerId = claimPlayerId;
+        try { window.ThreeFcPlayerProof.attach(attempt.proof, result.claimProof, claimPlayerId); }
+        catch { /* Registration committed; missing proof metadata must not repeat it or trigger a proofless claim. */ }
         if (resultPlayer) resultPlayer.textContent = result.player.nickname;
         if (resultElement) resultElement.hidden = false;
         setFieldMessage("join-player-nickname");
@@ -6596,7 +6729,7 @@
         renderJoinState();
       }
       if (joined) {
-        try { await refreshClaimActions(claimPlayerId, true); } catch { claimProbeFailed(); }
+        try { await refreshClaimActions(claimPlayerId); } catch { claimProbeFailed(); }
       }
       if (finishFocus()) {
         if (joined) focusClaimContinuation();

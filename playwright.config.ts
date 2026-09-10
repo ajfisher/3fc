@@ -13,8 +13,12 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: appBaseUrl,
-    trace: "retain-on-failure",
-    screenshot: "only-on-failure",
+    // Authentication and profile proof requests carry credentials in JSON.
+    // A scrubbed address bar does not make Playwright's network trace safe.
+    // Capture only explicit, sanitised screenshots in dedicated QA scenarios.
+    trace: "off",
+    screenshot: "off",
+    video: "off",
   },
   webServer: skipWebServer
     ? undefined

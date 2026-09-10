@@ -100,6 +100,23 @@ This document defines the baseline key structure and access patterns for the
 - Player profile:
   - `pk=PLAYER#{playerId}`
   - `sk=PROFILE`
+- Private registration proof or directed profile invitation:
+  - `pk=PLAYER_PROOF#{proofId}`
+  - `sk=METADATA`
+  - stores a SHA-256 verifier, never the bearer secret; binds exact player,
+    registration/game, league and profile revision, plus the issuer's exact admin
+    ACL identity for an invitation
+  - pending/revoked proofs retain the persisted seven-day expiry and TTL;
+    consumed receipts atomically lose TTL and retain their original owner/result
+  - ownership acquisition updates profile, user-player index and consumed proof
+    in one transaction with current context/authority checks
+- Active directed profile invitation:
+  - `pk=PLAYER#{playerId}`
+  - `sk=CLAIM_INVITATION`
+  - retains proof ID and expiry; replacement conditionally names this predecessor
+    so stale issuance/revocation cannot acquire a different identity
+  - does not grant league permissions; no canonical aliases are introduced by
+    this proof feature (see `docs/runbooks/player-claim-proof.md`)
 
 `gameMinuteSortable` is zero-padded to preserve lexical ordering.
 

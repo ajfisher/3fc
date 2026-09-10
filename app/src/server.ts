@@ -10,6 +10,7 @@ import {
   renderGamePage,
   renderInvitePage,
   renderJoinPage,
+  renderPlayerLinkPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -49,6 +50,12 @@ const UI_ICON_STYLESHEET = loadUiIconStylesheet();
 const UI_MODAL_SCRIPT = loadUiModalScript();
 const UI_SETUP_FLOW_SCRIPT = loadUiSetupFlowScript();
 const UI_AUTH_FLOW_SCRIPT = loadUiAuthFlowScript();
+const UI_PLAYER_PROOF_SCRIPT = [
+  fileURLToPath(new URL("./ui/player-proof.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/player-proof.js"),
+  resolve(process.cwd(), "app/src/ui/player-proof.js"),
+].map((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find((value) => value !== null);
+if (!UI_PLAYER_PROOF_SCRIPT) throw new Error("Player proof script is missing.");
 
 function loadUiStylesheet(): string {
   for (const stylesheetPath of UI_STYLESHEET_PATHS) {
@@ -185,6 +192,16 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     if (method === "GET" && route === "/sign-in") {
       const returnTo = normalizeAppReturnTarget(requestUrl.searchParams.get("returnTo")) ?? "/setup";
       sendHtml(response, securityHeaders, 200, renderSignInPage(apiBaseUrl, returnTo));
+      return;
+    }
+
+    if (method === "GET" && (route === "/link-player" || route === "/link-player/")) {
+      sendHtml(response, { ...securityHeaders, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
+        200, renderPlayerLinkPage(apiBaseUrl));
+      return;
+    }
+    if (method === "GET" && route === "/ui/player-proof.js") {
+      sendJavascript(response, securityHeaders, 200, UI_PLAYER_PROOF_SCRIPT!);
       return;
     }
 

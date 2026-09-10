@@ -4,6 +4,8 @@ import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { URL, pathToFileURL } from "node:url";
 
+import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
+import { PlayerProofError } from "./auth/player-proof.js";
 import {
   CreateTableCommand,
   DynamoDBClient,
@@ -2978,6 +2980,22 @@ export async function handleLocalJoinPlayerContextRoute(input: {
   return result.statusCode;
 }
 
+export async function handleLocalPlayerProofRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  session: AuthSessionRecord | null; playerRepository?: PlayerProofRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handlePlayerProofRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
 export async function handleLocalLogoutRoute(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -3283,6 +3301,9 @@ async function start(): Promise<void> {
           requestPayload: parsedBody.data,
           shouldPersistResponse: shouldPersistPublicJoinMutation,
           execute: async () => {
+            if (parsedBody.data.claimProof && !parsedIdempotencyKey) {
+              return { statusCode: 400, payload: { error: "bad_request", message: "Idempotency-Key is required when requesting player claim proof." } };
+            }
             let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
             try {
               joinResult = await repository.joinGameByCode({
@@ -3291,8 +3312,11 @@ async function start(): Promise<void> {
                   ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
                   : `player-${randomUUID()}`,
                 nickname: parsedBody.data.nickname,
+                claimProof: parsedBody.data.claimProof,
               });
             } catch (error) {
+              if (error instanceof PlayerProofError) return { statusCode: error.statusCode,
+                payload: { error: "conflict", code: error.code, message: error.message } };
               if (error instanceof GameJoinRegistrationError) {
                 if (error.code === "game_finished") {
                   return {
@@ -3335,6 +3359,7 @@ async function start(): Promise<void> {
                 gameId: joinResult.game.gameId,
                 joinCode: joinResult.game.joinCode,
                 player: toPublicPlayer(joinResult.player),
+                ...(joinResult.claimProof ? { claimProof: joinResult.claimProof } : {}),
               },
             };
           },
@@ -4974,64 +4999,8 @@ async function start(): Promise<void> {
         return;
       }
 
-      const claimPlayerMatch = route.match(/^\/v1\/players\/([^/]+)\/claim$/);
-      if (method === "POST" && claimPlayerMatch) {
-        if (!authGate.session) {
-          status = 500;
-          sendJsonWithCors(request, response, status, {
-            error: "internal_error",
-            message: "Session should be available for authenticated route.",
-          });
-          return;
-        }
-
-        let rawBody: Record<string, unknown>;
-        try {
-          rawBody = await parseJsonBody(request);
-        } catch {
-          status = badRequest(request, response, "Request body must be valid JSON.");
-          return;
-        }
-
-        const parsedBody = claimPlayerRequestSchema.safeParse(rawBody);
-        if (!parsedBody.success) {
-          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
-          return;
-        }
-
-        const playerId = decodeURIComponent(claimPlayerMatch[1]);
-        let player;
-        try {
-          player = await repository.claimPlayer({
-            playerId,
-            userId: sessionSubject(authGate.session),
-          });
-        } catch (error) {
-          if (error instanceof PlayerClaimError) {
-            status = 409;
-            sendJsonWithCors(request, response, status, {
-              error: "conflict",
-              code: error.code,
-              message: error.message,
-            });
-            return;
-          }
-
-          throw error;
-        }
-
-        if (!player) {
-          status = notFound(request, response, `Player ${playerId} was not found.`);
-          return;
-        }
-
-        status = 200;
-        sendJsonWithCors(request, response, status, {
-          player: toPublicPlayer(player),
-          claim: {
-            claimedByCurrentUser: true,
-          },
-        });
+      if (isPlayerProofRoute(method, route)) {
+        status = await handleLocalPlayerProofRoute({ request, response, method, route, session: authGate.session });
         return;
       }
 

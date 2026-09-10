@@ -16,6 +16,7 @@ export const APP_RETURN_TARGET_PATTERN_SOURCES = [
   "^/seasons/[^/]+/?$",
   "^/games/[^/]+/?$",
   "^/join(?:/[^/]+)?/?$",
+  "^/link-player/?$",
   "^/invites(?:/[^/]+)?/?$",
 ] as const;
 

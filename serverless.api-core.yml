@@ -28,6 +28,7 @@ provider:
     CORS_ALLOWED_ORIGINS: ${self:custom.corsAllowedOrigins.${sls:stage}, self:custom.corsAllowedOrigins.default}
     MAGIC_LINK_TOKEN_TTL_SECONDS: 900
     MAGIC_LINK_SESSION_TTL_SECONDS: 691200
+    PLAYER_CLAIM_MODE: ${env:PLAYER_CLAIM_MODE, 'proof'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS, '3'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS, '900'}
     MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS, '20'}
@@ -312,6 +313,27 @@ functions:
       - httpApi:
           method: POST
           path: /v1/players/{playerId}/claim
+      - httpApi:
+          method: POST
+          path: /v1/player-proofs/preview
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-proofs/preview
+      - httpApi:
+          method: GET
+          path: /v1/games/{gameId}/players/{playerId}/profile-invitation
+      - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/players/{playerId}/profile-invitation
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/players/{playerId}/profile-invitation
+      - httpApi:
+          method: POST
+          path: /v1/games/{gameId}/players/{playerId}/profile-invitation/revoke
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/players/{playerId}/profile-invitation/revoke
       - httpApi:
           method: OPTIONS
           path: /v1/players/{playerId}/claim

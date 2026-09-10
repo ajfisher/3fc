@@ -43,6 +43,7 @@ services:
       AWS_SECRET_ACCESS_KEY: "local"
       DYNAMODB_ENDPOINT: "http://dynamodb:8000"
       DYNAMODB_TABLE: "threefc_local"
+      PLAYER_CLAIM_MODE: "${PLAYER_CLAIM_MODE:-proof}"
       FAKE_SES_URL: "http://fake-ses:4025/send-email"
       FAKE_SES_FROM: "dev@3fc.football"
       MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: "50"

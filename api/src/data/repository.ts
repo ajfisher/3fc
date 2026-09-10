@@ -15,6 +15,12 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  createPlayerConfirmation, hashPlayerProofSecret, parsePlayerClaimMode,
+  PlayerProofError, PLAYER_PROOF_TTL_MS, PROOF_ID_PATTERN, PROOF_VERIFIER_PATTERN,
+  requirePlayerClaimEnabled, secureEqual, verifyPlayerConfirmation,
+  type PlayerClaimMode,
+} from "../auth/player-proof.js";
+import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
   formatThirdDisplayTime,
@@ -99,6 +105,11 @@ import type {
   ListPlayersInput,
   LinkGamePlayerInput,
   PlayerRecord,
+  PlayerProofCreation,
+  PlayerProofCredential,
+  PlayerProofMetadata,
+  PlayerProofPreview,
+  PlayerProofRecord,
   RosterAssignmentRecord,
   SeasonRecord,
   SessionGameRecord,
@@ -125,6 +136,8 @@ const ENTITY_TYPE = {
   sessionGame: "sessionGame",
   player: "player",
   playerClaim: "playerClaim",
+  playerProof: "playerProof",
+  playerProofPointer: "playerProofPointer",
   acl: "acl",
   leagueInvite: "leagueInvite",
   leagueInvitePointer: "leagueInvitePointer",
@@ -956,6 +969,7 @@ export class ThreeFcRepository {
     private readonly client: DynamoCommandClient,
     private readonly tableName: string,
     private readonly clock: Clock = new DefaultClock(),
+    private readonly playerClaimMode: PlayerClaimMode = parsePlayerClaimMode(process.env.PLAYER_CLAIM_MODE),
   ) {}
 
   async createLeague(input: CreateLeagueInput): Promise<LeagueRecord> {
@@ -1995,6 +2009,10 @@ export class ThreeFcRepository {
     requireNonEmpty("joinCode", normalizedJoinCode);
     requireNonEmpty("playerId", input.playerId);
     requireNonEmpty("nickname", input.nickname);
+    if (input.claimProof) {
+      requirePlayerClaimEnabled(this.playerClaimMode);
+      this.validateProofCreation(input.claimProof);
+    }
 
     const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk(), {
       consistentRead: true,
@@ -2028,6 +2046,7 @@ export class ThreeFcRepository {
       game,
       playerId: input.playerId,
       nickname: input.nickname,
+      claimProof: input.claimProof,
     });
     if (existingReplay) {
       return existingReplay;
@@ -2043,11 +2062,25 @@ export class ThreeFcRepository {
       gameId: game.gameId,
       playerId: input.playerId,
     };
+    const leagueItem = input.claimProof
+      ? await this.getEntity(leaguePk(game.leagueId), metadataSk(), { consistentRead: true }) : null;
+    if (input.claimProof && (!leagueItem || leagueItem.entityType !== ENTITY_TYPE.league)) {
+      throw new PlayerProofError("claim_context_unavailable", 409, "This game is no longer available to join.");
+    }
+    const claimProof: PlayerProofRecord | undefined = input.claimProof ? {
+      proofId: input.claimProof.proofId, verifier: input.claimProof.verifier,
+      kind: "registration", playerId: input.playerId, gameId: game.gameId,
+      leagueId: game.leagueId, leagueName: (leagueItem!.data as LeagueRecord).name,
+      playerRevision: createHash("sha256").update(JSON.stringify([JSON.stringify(playerPayload), now, now])).digest("hex"),
+      expiresAt: new Date(Date.parse(now) + PLAYER_PROOF_TTL_MS).toISOString(),
+      issuerAclUserId: null, replacesProofId: null, state: "pending", consumedByUserId: null, committedPlayer: null,
+    } : undefined;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...(claimProof ? [this.proofWrite(claimProof, now), this.buildConditionalCheckFromStoredEntity(leagueItem!)] : []),
             {
               ConditionCheck: {
                 TableName: this.tableName,
@@ -2113,6 +2146,7 @@ export class ThreeFcRepository {
           game,
           playerId: input.playerId,
           nickname: input.nickname,
+          claimProof: input.claimProof,
         });
         if (replayedJoin) {
           return replayedJoin;
@@ -2132,6 +2166,7 @@ export class ThreeFcRepository {
       game,
       player: withTimestamps(playerPayload, now, now),
       link: withTimestamps(linkPayload, now, now),
+      ...(claimProof ? { claimProof: this.proofMetadata(claimProof) } : {}),
     };
   }
 
@@ -2139,6 +2174,7 @@ export class ThreeFcRepository {
     game: GameRecord;
     playerId: string;
     nickname: string;
+    claimProof?: PlayerProofCreation;
   }): Promise<JoinGameByCodeResult | null> {
     const [playerItem, linkItem] = await Promise.all([
       this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
@@ -2164,17 +2200,26 @@ export class ThreeFcRepository {
     if (
       player.playerId !== input.playerId ||
       player.nickname !== input.nickname ||
-      player.claimedByUserId !== null ||
+      (!input.claimProof && player.claimedByUserId !== null) ||
       link.gameId !== input.game.gameId ||
       link.playerId !== input.playerId
     ) {
       return null;
     }
 
+    let proof: PlayerProofRecord | undefined;
+    if (input.claimProof) {
+      const item = await this.getEntity(this.playerProofKey(input.claimProof.proofId), metadataSk(), { consistentRead: true });
+      if (!item || item.entityType !== ENTITY_TYPE.playerProof) return null;
+      proof = item.data as PlayerProofRecord;
+      if (proof.kind !== "registration" || proof.playerId !== input.playerId || proof.gameId !== input.game.gameId ||
+          !secureEqual(proof.verifier, input.claimProof.verifier)) return null;
+    }
     return {
       game: input.game,
       player,
       link,
+      ...(proof ? { claimProof: this.proofMetadata(proof) } : {}),
     };
   }
 
@@ -3097,9 +3142,269 @@ export class ThreeFcRepository {
     return withTimestamps(item.data as Omit<PlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
   }
 
+  private playerProofKey(proofId: string): string {
+    if (!PROOF_ID_PATTERN.test(proofId)) throw new PlayerProofError("invalid_claim_proof", 400, "This profile link is invalid or no longer available.");
+    return `PLAYER_PROOF#${proofId}`;
+  }
+
+  private validateProofCreation(proof: PlayerProofCreation): void {
+    this.playerProofKey(proof.proofId);
+    if (!PROOF_VERIFIER_PATTERN.test(proof.verifier)) throw new PlayerProofError("invalid_claim_proof", 400, "Invalid profile-link request.");
+  }
+
+  private playerRevision(stored: StoredEntity<unknown>): string {
+    return createHash("sha256").update(JSON.stringify([stored.rawData, stored.createdAt, stored.updatedAt])).digest("hex");
+  }
+
+  private proofMetadata(proof: PlayerProofRecord): PlayerProofMetadata {
+    return { proofId: proof.proofId, expiresAt: proof.expiresAt };
+  }
+
+  private proofWrite(proof: PlayerProofRecord, now: string, existing?: StoredEntity<unknown>): TransactWriteItem {
+    const item = buildItemWithTimestamps(this.playerProofKey(proof.proofId), metadataSk(), ENTITY_TYPE.playerProof,
+      proof, existing?.createdAt ?? now, now);
+    // Replacing the complete item on consumption removes the unused-proof TTL
+    // atomically with ownership. Durable receipts contain no bearer secret.
+    if (proof.state !== "consumed") item.ttlEpoch = { N: String(Math.ceil(Date.parse(proof.expiresAt) / 1000)) };
+    const write = existing ? this.buildConditionalPutFromStoredEntity(existing, now) : {
+      Put: { TableName: this.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" },
+    };
+    write.Put!.Item = item;
+    return write;
+  }
+
+  private async readProof(credential: PlayerProofCredential): Promise<{ stored: StoredEntity<unknown>; proof: PlayerProofRecord }> {
+    const verifier = hashPlayerProofSecret(credential.secret);
+    const stored = await this.getEntity(this.playerProofKey(credential.proofId), metadataSk(), { consistentRead: true });
+    if (!stored || stored.entityType !== ENTITY_TYPE.playerProof ||
+        !secureEqual((stored.data as PlayerProofRecord).verifier, verifier)) {
+      throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available.");
+    }
+    return { stored, proof: stored.data as PlayerProofRecord };
+  }
+
+  private async readProofContext(proof: PlayerProofRecord): Promise<{
+    player: StoredEntity<unknown>; checks: TransactWriteItem[];
+  }> {
+    requirePlayerClaimEnabled(this.playerClaimMode);
+    if (proof.state !== "pending" || Date.parse(proof.expiresAt) <= Date.parse(this.clock.now())) {
+      throw new PlayerProofError("claim_proof_unavailable", 409, "This profile link has expired or is no longer available. Ask the organiser for a new link.");
+    }
+    const [player, game, league, registration] = await Promise.all([
+      this.getEntity(playerPk(proof.playerId), profileSk(), { consistentRead: true }),
+      this.getEntity(gamePk(proof.gameId), metadataSk(), { consistentRead: true }),
+      this.getEntity(leaguePk(proof.leagueId), metadataSk(), { consistentRead: true }),
+      this.getEntity(gamePk(proof.gameId), gamePlayerSk(proof.playerId), { consistentRead: true }),
+    ]);
+    if (!player || player.entityType !== ENTITY_TYPE.player || !game || game.entityType !== ENTITY_TYPE.game ||
+        !league || league.entityType !== ENTITY_TYPE.league || !registration || registration.entityType !== ENTITY_TYPE.gamePlayer ||
+        (game.data as GameRecord).leagueId !== proof.leagueId || this.playerRevision(player) !== proof.playerRevision ||
+        (player.data as PlayerRecord).claimedByUserId !== null) {
+      throw new PlayerProofError("claim_profile_changed", 409, "This player is no longer available to link. Ask the organiser for help.");
+    }
+    const checks = [game, league, registration].map((item) => this.buildConditionalCheckFromStoredEntity(item));
+    if (proof.kind === "invitation") {
+      const [acl, pointer] = await Promise.all([
+        this.getEntity(leaguePk(proof.leagueId), aclSk(proof.issuerAclUserId!), { consistentRead: true }),
+        this.getEntity(playerPk(proof.playerId), "CLAIM_INVITATION", { consistentRead: true }),
+      ]);
+      if (!acl || acl.entityType !== ENTITY_TYPE.acl || (acl.data as LeagueAclRecord).role !== "admin" ||
+          !pointer || (pointer.data as { proofId: string | null }).proofId !== proof.proofId) {
+        throw new PlayerProofError("claim_proof_unavailable", 409, "This profile link is no longer available. Ask the organiser for a new link.");
+      }
+      checks.push(this.buildConditionalCheckFromStoredEntity(acl), this.buildConditionalCheckFromStoredEntity(pointer));
+    }
+    if (Date.parse(proof.expiresAt) <= Date.parse(this.clock.now())) {
+      throw new PlayerProofError("claim_proof_unavailable", 409, "This profile link has expired. Ask the organiser for a new link.");
+    }
+    return { player, checks };
+  }
+
+  private async invitationAuthority(input: { gameId: string; playerId: string; userIds: readonly string[] }): Promise<{
+    game: StoredEntity<unknown>; league: StoredEntity<unknown>; player: StoredEntity<unknown>;
+    registration: StoredEntity<unknown>; acl: StoredEntity<unknown>;
+  }> {
+    const [game, player, registration] = await Promise.all([
+      this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
+      this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
+      this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId), { consistentRead: true }),
+    ]);
+    if (!game || game.entityType !== ENTITY_TYPE.game || !player || player.entityType !== ENTITY_TYPE.player ||
+        !registration || registration.entityType !== ENTITY_TYPE.gamePlayer) {
+      throw new PlayerProofError("claim_context_unavailable", 404, "This player is not available in this game.");
+    }
+    const leagueId = (game.data as GameRecord).leagueId;
+    const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
+    if (!league || league.entityType !== ENTITY_TYPE.league) throw new PlayerProofError("claim_context_unavailable", 404, "This league is no longer available.");
+    // Preserve the exact legacy-email or subject ACL key that authorised this
+    // operation; redemption cannot substitute a different account's ACL.
+    for (const userId of [...new Set(input.userIds)]) {
+      const acl = await this.getEntity(leaguePk(leagueId), aclSk(userId), { consistentRead: true });
+      if (acl?.entityType === ENTITY_TYPE.acl && (acl.data as LeagueAclRecord).role === "admin") {
+        return { game, league, player, registration, acl };
+      }
+    }
+    throw new PlayerProofError("claim_invite_forbidden", 403, "Only a league organiser can manage profile links.");
+  }
+
+  async createPlayerInvitation(input: PlayerProofCreation & {
+    gameId: string; playerId: string; userIds: readonly string[]; replacesProofId?: string | null;
+  }): Promise<PlayerProofMetadata> {
+    requirePlayerClaimEnabled(this.playerClaimMode);
+    this.validateProofCreation(input);
+    const context = await this.invitationAuthority(input);
+    const league = context.league.data as LeagueRecord;
+    const issuerAclUserId = (context.acl.data as LeagueAclRecord).userId;
+    const existing = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
+    if (existing) {
+      const proof = existing.data as PlayerProofRecord;
+      if (existing.entityType === ENTITY_TYPE.playerProof && proof.kind === "invitation" &&
+          proof.playerId === input.playerId && proof.gameId === input.gameId && proof.issuerAclUserId === issuerAclUserId &&
+          proof.replacesProofId === (input.replacesProofId ?? null) &&
+          secureEqual(proof.verifier, input.verifier)) return this.proofMetadata(proof);
+      throw new PlayerProofError("claim_request_changed", 409, "This profile-link request changed. Start a new request.");
+    }
+    if ((context.player.data as PlayerRecord).claimedByUserId !== null) {
+      throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account.");
+    }
+    const pointer = await this.getEntity(playerPk(input.playerId), "CLAIM_INVITATION", { consistentRead: true });
+    if (((pointer?.data as { proofId: string | null } | undefined)?.proofId ?? null) !== (input.replacesProofId ?? null)) {
+      throw new PlayerProofError("claim_invite_changed", 409, "Another profile link exists. Check it before replacing it.");
+    }
+    const now = this.clock.now();
+    const proof: PlayerProofRecord = {
+      proofId: input.proofId, verifier: input.verifier, kind: "invitation", playerId: input.playerId,
+      gameId: input.gameId, leagueId: league.leagueId, leagueName: league.name,
+      playerRevision: this.playerRevision(context.player), issuerAclUserId,
+      replacesProofId: input.replacesProofId ?? null,
+      expiresAt: new Date(Date.parse(now) + PLAYER_PROOF_TTL_MS).toISOString(),
+      state: "pending", consumedByUserId: null, committedPlayer: null,
+    };
+    const pointerItem = buildItemWithTimestamps(playerPk(input.playerId), "CLAIM_INVITATION", ENTITY_TYPE.playerProofPointer,
+      { proofId: proof.proofId, expiresAt: proof.expiresAt }, pointer?.createdAt ?? now, now);
+    const pointerWrite: TransactWriteItem = pointer ? this.buildConditionalPutFromStoredEntity(pointer, now) : {
+      Put: { TableName: this.tableName, Item: pointerItem, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" },
+    };
+    pointerWrite.Put!.Item = pointerItem;
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...Object.values(context).map((item) => this.buildConditionalCheckFromStoredEntity(item)),
+        this.proofWrite(proof, now), pointerWrite,
+      ] }));
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) throw error;
+      const replay = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
+      const data = replay?.data as PlayerProofRecord | undefined;
+      if (data && data.playerId === input.playerId && data.gameId === input.gameId && data.issuerAclUserId === issuerAclUserId &&
+          data.replacesProofId === (input.replacesProofId ?? null) &&
+          secureEqual(data.verifier, input.verifier)) return this.proofMetadata(data);
+      throw new PlayerProofError("claim_invite_changed", 409, "The player or organiser access changed. Check the player before trying again.");
+    }
+    return this.proofMetadata(proof);
+  }
+
+  async getPlayerInvitation(input: { gameId: string; playerId: string; userIds: readonly string[] }): Promise<(PlayerProofMetadata & { state: string }) | null> {
+    await this.invitationAuthority(input);
+    const pointer = await this.getEntity(playerPk(input.playerId), "CLAIM_INVITATION", { consistentRead: true });
+    const proofId = (pointer?.data as { proofId: string | null } | undefined)?.proofId;
+    if (!proofId) return null;
+    const item = await this.getEntity(this.playerProofKey(proofId), metadataSk(), { consistentRead: true });
+    if (!item || item.entityType !== ENTITY_TYPE.playerProof) {
+      // TTL may have removed the old proof, but its pointer still fences a
+      // replacement. Return that ID rather than trapping creation on a hidden
+      // predecessor the organiser cannot acknowledge.
+      return { proofId, expiresAt: (pointer!.data as { expiresAt: string }).expiresAt, state: "expired" };
+    }
+    const proof = item.data as PlayerProofRecord;
+    return { ...this.proofMetadata(proof), state: proof.state === "pending" && Date.parse(proof.expiresAt) <= Date.parse(this.clock.now()) ? "expired" : proof.state };
+  }
+
+  async revokePlayerInvitation(input: { gameId: string; playerId: string; userIds: readonly string[]; proofId: string }): Promise<void> {
+    const context = await this.invitationAuthority(input);
+    const item = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
+    if (!item || item.entityType !== ENTITY_TYPE.playerProof) return;
+    const proof = item.data as PlayerProofRecord;
+    if (proof.kind !== "invitation" || proof.playerId !== input.playerId || proof.leagueId !== (context.league.data as LeagueRecord).leagueId) {
+      throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available.");
+    }
+    if (proof.state !== "pending") return;
+    const now = this.clock.now();
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...Object.values(context).map((value) => this.buildConditionalCheckFromStoredEntity(value)),
+        this.proofWrite({ ...proof, state: "revoked" }, now, item),
+      ] }));
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) throw error;
+      throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
+    }
+  }
+
+  async previewPlayerProof(input: PlayerProofCredential & { userId: string; sessionId: string }): Promise<PlayerProofPreview> {
+    requireNonEmpty("userId", input.userId);
+    requireNonEmpty("sessionId", input.sessionId);
+    const { proof } = await this.readProof(input);
+    let player: Pick<PlayerRecord, "playerId" | "nickname">;
+    if (proof.state === "consumed") {
+      if (proof.consumedByUserId !== input.userId || !proof.committedPlayer) {
+        throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account. Ask the organiser for help.");
+      }
+      player = proof.committedPlayer;
+    } else {
+      player = (await this.readProofContext(proof)).player.data as PlayerRecord;
+    }
+    return {
+      ...this.proofMetadata(proof),
+      player: { playerId: player.playerId, nickname: player.nickname },
+      league: { leagueId: proof.leagueId, name: proof.leagueName },
+      alreadyLinked: proof.state === "consumed",
+      confirmation: createPlayerConfirmation({ ...input, revision: proof.playerRevision }, Date.parse(this.clock.now())),
+    };
+  }
+
+  private async claimPlayerWithProof(input: ClaimPlayerInput): Promise<PlayerRecord> {
+    requireNonEmpty("sessionId", input.sessionId ?? "");
+    const credential = input.proof!;
+    const { stored, proof } = await this.readProof(credential);
+    if (proof.playerId !== input.playerId) throw new PlayerProofError("invalid_claim_proof", 400, "This link is for a different player.");
+    verifyPlayerConfirmation({ sessionId: input.sessionId!, userId: input.userId, proofId: proof.proofId,
+      revision: proof.playerRevision }, credential.confirmation, Date.parse(this.clock.now()));
+    if (proof.state === "consumed") {
+      if (proof.consumedByUserId === input.userId && proof.committedPlayer) return proof.committedPlayer;
+      throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account. Ask the organiser for help.");
+    }
+    const context = await this.readProofContext(proof);
+    const now = this.clock.now();
+    verifyPlayerConfirmation({ sessionId: input.sessionId!, userId: input.userId, proofId: proof.proofId,
+      revision: proof.playerRevision }, credential.confirmation, Date.parse(now));
+    const payload = { ...(context.player.data as Omit<PlayerRecord, "createdAt" | "updatedAt">), claimedByUserId: input.userId };
+    const committedPlayer = withTimestamps(payload, context.player.createdAt, now);
+    const playerWrite = this.buildConditionalPutFromStoredEntity(context.player, now);
+    playerWrite.Put!.Item = buildItemWithTimestamps(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player,
+      payload, context.player.createdAt, now);
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...context.checks, playerWrite,
+        this.proofWrite({ ...proof, state: "consumed", consumedByUserId: input.userId, committedPlayer }, now, stored),
+        { Put: { TableName: this.tableName, Item: buildItem(userPk(input.userId), playerClaimSk(input.playerId),
+          ENTITY_TYPE.playerClaim, { userId: input.userId, playerId: input.playerId }, now),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+      ] }));
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) throw error;
+      const latest = await this.readProof(credential);
+      if (latest.proof.state === "consumed" && latest.proof.consumedByUserId === input.userId && latest.proof.committedPlayer) {
+        return latest.proof.committedPlayer;
+      }
+      throw new PlayerProofError("claim_state_changed", 409, "This profile link changed. Please check it again before continuing.");
+    }
+    return committedPlayer;
+  }
+
   async claimPlayer(input: ClaimPlayerInput): Promise<PlayerRecord | null> {
     requireNonEmpty("playerId", input.playerId);
     requireNonEmpty("userId", input.userId);
+    if (input.proof) return this.claimPlayerWithProof(input);
 
     const playerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
       consistentRead: true,
@@ -3116,86 +3421,7 @@ export class ThreeFcRepository {
     if (player.claimedByUserId === input.userId) {
       return player;
     }
-    if (player.claimedByUserId !== null) {
-      throw new PlayerClaimError(
-        "player_already_claimed",
-        409,
-        `Player ${input.playerId} has already been claimed.`,
-      );
-    }
-
-    const now = this.clock.now();
-    const payload = {
-      playerId: player.playerId,
-      nickname: player.nickname,
-      claimedByUserId: input.userId,
-    };
-
-    try {
-      await this.client.send(
-        new TransactWriteItemsCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItemWithTimestamps(
-                  playerPk(input.playerId),
-                  profileSk(),
-                  ENTITY_TYPE.player,
-                  payload,
-                  player.createdAt,
-                  now,
-                ),
-                ConditionExpression: "#updatedAt = :expectedPlayerUpdatedAt AND #data = :expectedPlayerData",
-                ExpressionAttributeNames: {
-                  "#updatedAt": "updatedAt",
-                  "#data": "data",
-                },
-                ExpressionAttributeValues: {
-                  ":expectedPlayerUpdatedAt": { S: playerItem.updatedAt },
-                  ":expectedPlayerData": { S: playerItem.rawData },
-                },
-              },
-            },
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItem(
-                  userPk(input.userId),
-                  playerClaimSk(input.playerId),
-                  ENTITY_TYPE.playerClaim,
-                  {
-                    userId: input.userId,
-                    playerId: input.playerId,
-                  },
-                  now,
-                ),
-                ConditionExpression: "attribute_not_exists(pk)",
-              },
-            },
-          ],
-        }),
-      );
-    } catch (error) {
-      if (isConditionalWriteFailure(error)) {
-        const latest = await this.getPlayer(input.playerId);
-        if (latest?.claimedByUserId === input.userId) {
-          return latest;
-        }
-
-        throw new PlayerClaimError(
-          latest?.claimedByUserId ? "player_already_claimed" : "claim_state_changed",
-          409,
-          latest?.claimedByUserId
-            ? `Player ${input.playerId} has already been claimed.`
-            : `Player ${input.playerId} changed before it could be claimed. Reload and try again.`,
-        );
-      }
-
-      throw error;
-    }
-
-    return withTimestamps(payload, player.createdAt, now);
+    throw new PlayerProofError("claim_proof_required", 403, "Use a private profile link to link this player. Ask the organiser for help.");
   }
 
   async listPlayers(input: ListPlayersInput = {}): Promise<PlayerRecord[]> {

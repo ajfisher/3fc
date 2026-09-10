@@ -310,17 +310,60 @@ export interface JoinGameByCodeInput {
   joinCode: string;
   playerId: string;
   nickname: string;
+  claimProof?: PlayerProofCreation;
 }
 
 export interface JoinGameByCodeResult {
   game: GameRecord;
   player: PlayerRecord;
   link: GamePlayerRecord;
+  claimProof?: PlayerProofMetadata;
 }
 
 export interface ClaimPlayerInput {
   playerId: string;
   userId: string;
+  sessionId?: string;
+  proof?: PlayerProofCredential & { confirmation: string };
+}
+
+export interface PlayerProofCreation {
+  proofId: string;
+  verifier: string;
+}
+
+export interface PlayerProofCredential {
+  proofId: string;
+  secret: string;
+}
+
+export interface PlayerProofMetadata {
+  proofId: string;
+  expiresAt: string;
+}
+
+export interface PlayerProofRecord extends PlayerProofMetadata {
+  kind: "registration" | "invitation";
+  verifier: string;
+  playerId: string;
+  gameId: string;
+  leagueId: string;
+  playerRevision: string;
+  leagueName: string;
+  issuerAclUserId: string | null;
+  replacesProofId: string | null;
+  state: "pending" | "revoked" | "consumed";
+  consumedByUserId: string | null;
+  committedPlayer: PlayerRecord | null;
+}
+
+export interface PlayerProofPreview {
+  proofId: string;
+  player: Pick<PlayerRecord, "playerId" | "nickname">;
+  league: Pick<LeagueRecord, "leagueId" | "name">;
+  expiresAt: string;
+  alreadyLinked: boolean;
+  confirmation: string;
 }
 
 export interface GrantLeagueAccessInput {

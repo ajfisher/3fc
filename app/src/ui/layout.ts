@@ -36,7 +36,8 @@ function renderAssetPath(path: string): string {
 
 function renderStylesheetLink(): string {
   return `<link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/styles.css"))}" />
-  <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />`;
+  <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />
+  <script src="${escapeHtml(renderAssetPath("/ui/player-proof.js"))}" defer></script>`;
 }
 
 function renderAuthReturnTargetPatterns(): string {
@@ -884,6 +885,38 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
 </html>`;
 }
 
+export function renderPlayerLinkPage(apiBaseUrl: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>3FC Link player</title>
+    ${renderStylesheetLink()}
+  </head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell">
+      <section data-ui="hero" data-layout="auth" id="player-link-panel">
+        ${renderAccountActions()}
+        <h1>Link your player profile</h1>
+        <div id="player-link-details" hidden>
+          <h2 id="player-link-name"></h2>
+          <p id="player-link-league"></p>
+          <p>Link to <strong id="player-link-account"></strong></p>
+        </div>
+        <p id="player-link-status" role="status" aria-live="polite" hidden></p>
+        <div data-ui="button-row">
+          <button type="button" data-ui="button-primary" id="player-link-confirm" hidden>Link this player to my account</button>
+          <button type="button" data-ui="button-secondary" id="player-link-retry" hidden>Check link again</button>
+          <a data-ui="button-primary" id="player-link-signin" href="/sign-in" hidden>Sign in to continue</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
 export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
   const safeJoinCode = escapeHtml(joinCode);
 
@@ -1125,6 +1158,21 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
         </div>
       </form>
     </div>
+    <section id="player-invitation-panel" data-ui="disclosure-panel" aria-labelledby="player-invitation-title" hidden>
+      <h3 id="player-invitation-title" tabindex="-1">Invite to link profile</h3>
+      <p>Anyone with this link can link this player to their account. Share it privately.</p>
+      <p id="player-invitation-status" role="status" aria-live="polite" hidden></p>
+      <div data-ui="field" id="player-invitation-link-field" hidden>
+        <label for="player-invitation-link">Private profile link</label>
+        <input data-ui="input" id="player-invitation-link" type="text" readonly autocomplete="off" />
+      </div>
+      <div data-ui="button-row">
+        <button data-ui="button-primary" type="button" id="player-invitation-create">Create private link</button>
+        <button data-ui="button-secondary" type="button" id="player-invitation-copy" hidden>Copy link</button>
+        <button data-ui="button-secondary" type="button" id="player-invitation-revoke" hidden>Revoke link</button>
+        <button data-ui="button-ghost" type="button" id="player-invitation-close">Close</button>
+      </div>
+    </section>
     <div data-ui="field">
       <label for="player-search">Search players</label>
       <input data-ui="input" id="player-search" name="player-search" type="search" autocomplete="off" />

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_ASSISTS, TEAM_IDS, THIRD_LENGTH_MINUTES } from "@3fc/contracts";
+import { PROOF_ID_PATTERN, PROOF_SECRET_PATTERN, PROOF_VERIFIER_PATTERN } from "../auth/player-proof.js";
 
 const nonEmptyTrimmedString = z.string().trim().min(1, "must be a non-empty string");
 const optionalNullableString = z.string().nullable().optional();
@@ -84,16 +85,35 @@ export const quickCreateGamePlayerRequestSchema = z
   })
   .strict();
 
+export const playerProofCreationSchema = z.object({
+  proofId: z.string().regex(PROOF_ID_PATTERN),
+  verifier: z.string().regex(PROOF_VERIFIER_PATTERN),
+}).strict();
+
+export const playerProofCredentialSchema = z.object({
+  proofId: z.string().regex(PROOF_ID_PATTERN),
+  secret: z.string().regex(PROOF_SECRET_PATTERN),
+}).strict();
+
+export const createPlayerInvitationRequestSchema = playerProofCreationSchema.extend({
+  replacesProofId: z.string().regex(PROOF_ID_PATTERN).nullable().optional(),
+}).strict();
+
+export const revokePlayerInvitationRequestSchema = z.object({ proofId: z.string().regex(PROOF_ID_PATTERN) }).strict();
+
 export const joinGameRequestSchema = z
   .object({
     nickname: nonEmptyTrimmedString.max(
       PUBLIC_JOIN_NICKNAME_MAX_LENGTH,
       `must be ${PUBLIC_JOIN_NICKNAME_MAX_LENGTH} characters or fewer`,
     ),
+    claimProof: playerProofCreationSchema.optional(),
   })
   .strict();
 
-export const claimPlayerRequestSchema = z.object({}).strict();
+export const claimPlayerRequestSchema = z.object({
+  proof: playerProofCredentialSchema.extend({ confirmation: z.string().max(100) }).strict().optional(),
+}).strict();
 
 export const grantLeagueAccessRequestSchema = z
   .object({

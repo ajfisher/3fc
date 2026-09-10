@@ -116,6 +116,21 @@ test("stylesheet route serves external UI css", () => {
   assert.match(response.body, /&:hover/);
 });
 
+test("private profile linking serves the same no-store shell at both supported paths", () => {
+  const first = executeRoute("GET", "/link-player?proofId=nonsecret-reference");
+  const second = executeRoute("GET", "/link-player/");
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.body, first.body);
+  assert.equal(first.headers["Cache-Control"], "no-store");
+  assert.equal(first.headers["Referrer-Policy"], "no-referrer");
+  assert.match(first.body, /id="player-link-confirm"/);
+  assert.match(first.body, /Link this player to my account/);
+  const asset = executeRoute("GET", "/ui/player-proof.js");
+  assert.equal(asset.statusCode, 200);
+  assert.match(asset.body, /threefc\.player-proof\.v1/);
+  assert.doesNotMatch(asset.body, /https:\/\/api\.iconify|cdn\./);
+});
+
 test("generated icon stylesheet is local, allow-listed, and CSP compatible", () => {
   const response = executeRoute("GET", "/ui/icons.css");
 

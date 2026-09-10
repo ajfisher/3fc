@@ -29,6 +29,7 @@ export type ProtectedMutationOperation =
   | "updateSeasonTeam"
   | "updateGameTeam"
   | "createGamePlayer"
+  | "managePlayerInvitation"
   | "assignRosterPlayer"
   | "startGameThird"
   | "finishGameThird"
@@ -78,6 +79,10 @@ export function resolveProtectedMutationRoute(
   method: string,
   route: string,
 ): ProtectedMutationRoute | null {
+  if (method.toUpperCase() === "POST") {
+    const invitation = /^\/v1\/games\/([^/]+)\/players\/[^/]+\/profile-invitation(?:\/revoke)?$/.exec(route);
+    if (invitation) return { operation: "managePlayerInvitation", gameId: decodeRouteParam(invitation[1]) };
+  }
   const upperMethod = method.toUpperCase();
   if (upperMethod === "POST" && ROUTES.createLeague.test(route)) {
     return { operation: "createLeague" };
@@ -482,7 +487,7 @@ export async function authorizeProtectedMutation(
     return missingScope(gameScope.scopeType, gameScope.scopeId);
   }
 
-  if (resolvedRoute.operation === "updateGameTeam") {
+  if (resolvedRoute.operation === "updateGameTeam" || resolvedRoute.operation === "managePlayerInvitation") {
     const isAdmin = await verifyLeagueAdmin(userId, gameScope.leagueId, aclLookup);
     if (!isAdmin) {
       return forbiddenAdminRequired(gameScope.leagueId);
