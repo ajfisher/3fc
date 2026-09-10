@@ -119,6 +119,37 @@ test("private proof draft retirement is exact and capacity never evicts live rec
   assert.equal((await view.proof.read(live.proofId)).secret, live.secret);
 });
 
+test("confirmed invitation retirement is exact and replacement storage is atomic", async (t) => {
+  const view = page({ url: `${origin}/sign-in`, html: renderSignInPage(origin, "/setup") });
+  t.after(() => view.dom.window.close());
+  const old = await view.proof.create("invite:old"), other = await view.proof.create("invite:other");
+  view.proof.attach(old, { proofId: old.proofId, expiresAt }, "player");
+  view.proof.attach(other, { proofId: other.proofId, expiresAt }, "other");
+  const next = await view.proof.create("invite:next");
+  assert.throws(() => view.proof.attach(next, { proofId: next.proofId, expiresAt }, "player", other.proofId), /identity_mismatch/);
+  assert.throws(() => view.proof.retireInvitation(other.proofId, "player"), /identity_mismatch/);
+  const before = view.storage.get("threefc.player-proof.v1");
+  const originalSet = view.dom.window.sessionStorage.setItem;
+  view.dom.window.sessionStorage.setItem = () => { throw new Error("blocked"); };
+  assert.throws(() => view.proof.attach(next, { proofId: next.proofId, expiresAt }, "player", old.proofId), /blocked/);
+  assert.equal(view.storage.get("threefc.player-proof.v1"), before);
+  assert.equal((await view.proof.read(old.proofId)).secret, old.secret);
+  view.dom.window.sessionStorage.setItem = originalSet;
+  view.proof.attach(next, { proofId: next.proofId, expiresAt }, "player", old.proofId);
+  assert.equal(await view.proof.read(old.proofId), null);
+  assert.equal((await view.proof.read(next.proofId)).playerId, "player");
+  view.proof.retireInvitation(next.proofId, "player");
+  assert.equal(await view.proof.read(next.proofId), null);
+  assert.equal((await view.proof.read(other.proofId)).secret, other.secret);
+  const fragment = await view.proof.create("unattached-fragment");
+  const replacement = await view.proof.create("replacement");
+  view.proof.attach(replacement, { proofId: replacement.proofId, expiresAt }, "player", fragment.proofId);
+  assert.equal(await view.proof.read(fragment.proofId), null);
+  const unbound = await view.proof.create("unattached-revoked");
+  view.proof.retireInvitation(unbound.proofId, "player");
+  assert.equal(await view.proof.read(unbound.proofId), null);
+});
+
 test("private player link preserves the exact request after an uncertain acceptance", async (t) => {
   const attempts: unknown[] = [];
   const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`, fetch: (path, body) => {

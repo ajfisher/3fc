@@ -6915,6 +6915,84 @@ test("game roster reconciles a committed transfer when refresh fails", async () 
   );
 });
 
+for (const mode of ["replace", "revoke", "replace-storage", "revoke-storage", "replace-loss", "revoke-loss"] as const) {
+  test(`confirmed invitation rotations retire only obsolete records: ${mode}`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "rotation", role: "admin" });
+    const base = createMockFetch(apiState); let metadata: any = null; let posts = 0; let revokes = 0;
+    let fail = false; let failed = false; const bodies: string[] = [];
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "rotation" }), url: "http://localhost:3000/games/rotation#teams",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/v1/player-proofs/invitation/revoke") {
+          revokes++; metadata.state = "revoked";
+          if (fail && mode === "revoke-loss" && !failed) { failed = true; throw new Error("lost reply"); }
+          return createJsonResponse(200, { revoked: true });
+        }
+        if (path !== "/v1/player-proofs/invitation") return base(input, init);
+        if (init.method === "GET") return createJsonResponse(200, { invitation: metadata });
+        posts++; bodies.push(String(init.body));
+        const body = JSON.parse(String(init.body));
+        metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+        if (fail && mode === "replace-loss" && !failed) { failed = true; throw new Error("lost reply"); }
+        return createJsonResponse(201, { invitation: metadata });
+      },
+    });
+    try {
+      Object.defineProperty(page.window, "confirm", { value: () => true });
+      await page.window.eval('(async()=>{const p=await ThreeFcPlayerProof.create("other");ThreeFcPlayerProof.attach(p,{proofId:p.proofId,expiresAt:new Date(Date.now()+86400000).toISOString()},"other");})()');
+      const originalSet = page.window.Storage.prototype.setItem;
+      Object.defineProperty(page.window.Storage.prototype, "setItem", { configurable: true,
+        value: function(this: Storage, key: string, value: string) {
+          if (fail && mode.endsWith("storage") && key === "threefc.player-proof.v1") {
+            const rows = JSON.parse(value);
+            if (mode === "revoke-storage" ? rows.length === 1 : rows.length === 2) throw new Error("cleanup blocked");
+          }
+          return originalSet.call(this, key, value);
+        },
+      });
+      dispatchClick(page.document.querySelector('[data-action="invite-player-profile"][data-player-id="player-ari"]')!); await flushAsync();
+      const create = page.document.getElementById("player-invitation-create") as HTMLButtonElement;
+      const revoke = page.document.getElementById("player-invitation-revoke") as HTMLButtonElement;
+      dispatchClick(create); await flushAsync();
+      const first = metadata.proofId;
+      const records = () => JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]") as any[];
+      fail = true;
+      if (mode.startsWith("revoke")) {
+        dispatchClick(revoke); await flushAsync();
+        if (mode === "revoke-storage") {
+          assert.equal(revokes, 1); assert.equal(revoke.hidden, true);
+          assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /revoked.*couldn’t clear/);
+          dispatchClick(create); await flushAsync(); assert.equal(posts, 1);
+        } else if (mode === "revoke-loss") {
+          assert.equal(records().some(row => row.proofId === first), true);
+          dispatchClick(revoke); await flushAsync(); assert.equal(revokes, 2);
+        }
+      } else {
+        dispatchClick(create); await flushAsync();
+        if (mode.endsWith("storage") || mode.endsWith("loss")) {
+          assert.equal(records().some(row => row.proofId === first), true);
+          assert.equal(create.textContent, "Retry link creation");
+          fail = false; dispatchClick(create); await flushAsync();
+          assert.equal(bodies[1], bodies[2]);
+        }
+      }
+      fail = false;
+      for (let rotation = 0; rotation < 25; rotation++) {
+        dispatchClick(create); await flushAsync();
+        assert.equal(create.disabled, false);
+        assert.deepEqual(records().map(row => row.playerId).sort(), ["other", "player-ari"]);
+        if (mode.startsWith("revoke")) {
+          dispatchClick(revoke); await flushAsync();
+          assert.deepEqual(records().map(row => row.playerId), ["other"]);
+        }
+      }
+      assert.equal(records().some(row => row.proofId === first), false);
+    } finally { page.dom.window.close(); }
+  });
+}
+
 for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-disabled", "replacement-loss-then-disabled", "replacement-storage-failure", "replacement-write-barrier", "purged"] as const) {
   test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
     const apiState = createMockApiState();

@@ -23,7 +23,7 @@
     if (Array.isArray(parsed)) records = parsed.filter(valid).slice(-20);
   } catch { /* A missing storage API produces an explicit recovery below. */ }
 
-  function save(record) {
+  function save(record, retiredProofId = null) {
     if (!valid(record)) throw new Error("proof_unavailable");
     const prior = lookup(record.proofId);
     if (prior && (prior.secret !== record.secret ||
@@ -36,7 +36,11 @@
       ...(typeof record.operation === "string" && record.operation.length <= 400 ? { operation: record.operation } : {}),
       ...(typeof record.playerId === "string" && record.playerId.length <= 1024 ? { playerId: record.playerId } : {}),
     };
-    const next = [...records.filter((item) => valid(item) && item.proofId !== clean.proofId), clean];
+    if (retiredProofId) {
+      const retired = lookup(retiredProofId);
+      if (retiredProofId === clean.proofId || (retired?.playerId && retired.playerId !== clean.playerId)) throw new Error("proof_identity_mismatch");
+    }
+    const next = [...records.filter((item) => valid(item) && item.proofId !== clean.proofId && item.proofId !== retiredProofId), clean];
     if (next.length > 20) throw new Error("proof_storage_full");
     // Persist before dispatching a registration/invitation. Never issue a proof
     // whose only copy could disappear on the subsequent sign-in navigation.
@@ -52,6 +56,17 @@
     const next = records.filter((item) => item.proofId !== record.proofId);
     // If storage rejects cleanup, retain the attempt so retry cannot accumulate
     // fresh drafts or evict an unrelated live link.
+    sessionStorage.setItem(KEY, JSON.stringify(next));
+    records = next;
+  }
+  function retireInvitation(proofId, playerId) {
+    const current = lookup(proofId);
+    if (!current) return;
+    // A fragment-captured copy has no local player attachment. The confirmed
+    // server operation identifies the exact retired proof; do not block it on
+    // absent display metadata, but reject an explicitly different identity.
+    if (!playerId || (current.playerId && current.playerId !== playerId)) throw new Error("proof_identity_mismatch");
+    const next = records.filter((item) => item.proofId !== proofId);
     sessionStorage.setItem(KEY, JSON.stringify(next));
     records = next;
   }
@@ -134,11 +149,11 @@
       channel.postMessage({ version: 1, type: "request", proofId: id, nonce });
     });
   }
-  function attach(record, metadata, playerId) {
+  function attach(record, metadata, playerId, retiredProofId = null) {
     if (lookup(record.proofId)?.secret !== record.secret) throw new Error("proof_cleared");
     if (metadata?.proofId !== record.proofId || !Number.isFinite(Date.parse(metadata.expiresAt))) throw new Error("proof_unconfirmed");
     // Local retention is bounded even when a slow request was committed later.
-    return save({ ...record, playerId, expiresAt: Math.min(Date.parse(metadata.expiresAt), record.createdAt + WEEK) });
+    return save({ ...record, playerId, expiresAt: Math.min(Date.parse(metadata.expiresAt), record.createdAt + WEEK) }, retiredProofId);
   }
   function destination(id) { return `/link-player?proofId=${encodeURIComponent(id)}`; }
   function shareLink(record) {
@@ -168,7 +183,7 @@
     connect();
     if (event.persisted && /^\/link-player\/?$/.test(location.pathname)) location.reload();
   });
-  window.ThreeFcPlayerProof = Object.freeze({ create, read, attach, shareLink, destination, clear, discardDraft,
+  window.ThreeFcPlayerProof = Object.freeze({ create, read, attach, shareLink, destination, clear, discardDraft, retireInvitation,
     forPlayer: (id) => records.findLast((record) => record.playerId === id && valid(record)) || null,
   });
 

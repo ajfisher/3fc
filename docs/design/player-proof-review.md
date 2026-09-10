@@ -328,6 +328,22 @@ remaining[], tripNone. Exact-head external evidence is refreshed in the PR body.
 
 ### Return-target and draft-storage review
 
+Codex3978497867 accepted: confirmed replacement now attaches the new invitation
+and retires its exact predecessor in one browser-storage write. A failed write
+preserves both the previous copy and frozen request. Confirmed revocation retires
+the exact saved proof; failed local cleanup does not reclassify server success or
+repeat it, and is retried before a later invitation mutation. Unrelated and
+uncertain proofs remain untouched. Fragment-held copies without local player
+metadata are supported; an explicitly conflicting player identity fails closed.
+
+Independent architecture/security, QA and UX reviews cleared this change. Regression
+coverage includes25 rotations/revocations, lost responses, post-commit storage
+failure, unrelated-link preservation and exact identity checks. Focused7 tests
+passed group68381/session13850 exit0 peak374160KiB. Affected521 tests then full
+lint/typecheck,360 API/570 app/57 gate tests, contracts and build passed serially
+group68576/session46352 exit0 peak2107824KiB, remaining[], tripNone. New-head
+external review and QA evidence must be refreshed before marking this ready.
+
 Codex3978305704 accepted: API Gateway rejects slash-bearing IDs in route segments.
 New fixed invitation/claim routes carry bounded opaque IDs in exact-once decoded
 query fields. Local and Lambda share validation; duplicate/extra/malformed input

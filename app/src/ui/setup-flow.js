@@ -5199,12 +5199,14 @@
     let invitationPending = false;
     let invitationLoaded = false;
     let invitationRevokeUnconfirmed = false;
+    let invitationCleanup = null;
     let invitationGeneration = 0;
     function discardPlayerInvitation() {
       invitationGeneration += 1;
       invitationLink.value = "";
       invitationAttempt = null; invitationMetadata = null; invitationPlayerId = null;
       invitationLoaded = false; invitationPending = false; invitationRevokeUnconfirmed = false;
+      invitationCleanup = null;
       invitationPanel.hidden = true;
       invitationMessage("");
     }
@@ -5223,6 +5225,11 @@
         invitationMessage("Your browser couldn’t clear the saved private link. Allow site storage, then retry.", true);
         return false;
       }
+    }
+    function finishInvitationCleanup() {
+      if (!invitationCleanup) return;
+      window.ThreeFcPlayerProof.retireInvitation(invitationCleanup.proofId, invitationCleanup.playerId);
+      invitationCleanup = null;
     }
     function renderInvitation() {
       const canIssue = invitationLoaded && currentLeagueRole === "admin" && !refreshAccountLocked;
@@ -5287,10 +5294,11 @@
       let dispatched = false;
       invitationPending = true; renderInvitation(); invitationMessage("Creating private link…");
       try {
+        finishInvitationCleanup();
         if (!invitationAttempt) {
           const proof = await window.ThreeFcPlayerProof.create(`invite:${randomSuffix(24)}`);
           if (generation !== invitationGeneration) return;
-          invitationAttempt = { proof, previousLink: invitationLink.value, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
+          invitationAttempt = { proof, previousProofId: invitationMetadata?.proofId ?? null, previousLink: invitationLink.value, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
             replacesProofId: invitationMetadata?.proofId ?? null }) };
         }
         const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body }, () => {
@@ -5299,7 +5307,7 @@
           renderInvitation();
         });
         if (generation !== invitationGeneration) return;
-        const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationPlayerId);
+        const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationPlayerId, invitationAttempt.previousProofId);
         invitationMetadata = { ...result.invitation, state: "pending" };
         invitationLink.value = window.ThreeFcPlayerProof.shareLink(record);
         invitationAttempt = null;
@@ -5341,12 +5349,15 @@
       let dispatched = false;
       invitationPending = true; renderInvitation();
       try {
+        finishInvitationCleanup();
         const result = await invitationRequest(invitationPath("/revoke"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) }, () => { dispatched = true; });
         if (generation !== invitationGeneration) return;
         if (result.revoked !== true) throw new Error("revoke_unconfirmed");
         invitationMetadata.state = "revoked"; invitationLink.value = "";
         invitationRevokeUnconfirmed = false;
-        invitationMessage("Private link revoked.");
+        invitationCleanup = { proofId: invitationMetadata.proofId, playerId: invitationPlayerId };
+        try { finishInvitationCleanup(); invitationMessage("Private link revoked."); }
+        catch { invitationMessage("Private link revoked. Your browser couldn’t clear its saved copy. Allow site storage before creating another link.", true); }
       } catch (error) {
         if (generation === invitationGeneration) {
           if (!dispatched) {
