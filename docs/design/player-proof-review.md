@@ -133,6 +133,19 @@ deployment fingerprint and browser asset version remain the SHA evidence.
 New-head external review, CI and deployed acceptance must be refreshed. No child
 implementation begins before this parent reaches its required review gate.
 
+Codex3976768885 accepted: QA/production now explicitly export the GitHub
+Environment variable PLAYER_CLAIM_MODE into core deployment. The script validates
+the enum before build/deploy and verifies the live nonsecret mode with the
+code/revision fingerprint; mismatch prevents site publication. Runbook specifies
+the variable and authorised terminal alternative. Architecture/security cleared.
+Eight deployment regressions passed group10984/session82204, exit0
+peak420832KiB remaining[] tripNone. The first path-only invocation looked for
+tests under dist instead of dist-tests and exited1 cleanly; no test/resource
+anomaly occurred. Existing actual-HTTP disabled-mode behavior evidence is retained;
+configuration checks alone are not described as behavioral containment testing.
+Shell syntax, full lint/API/app/review-gate tests, contracts and build passed
+group11212/session55897, exit0 peak2364032KiB remaining[] tripNone.
+
 Codex comments3976509993/3976510001 accepted: detected cookie-account changes
 now purge retained bearer proofs and stop handoffs. Invitation-creation replay
 checks eligibility and transactionally fences the current proof, pointer, profile

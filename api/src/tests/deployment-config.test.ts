@@ -42,6 +42,7 @@ test("QA and production harden the API before publishing the proof-aware site", 
     assert.ok(api >= 0 && coreSmoke > api && site > coreSmoke && siteSmoke > site,
       `${environment}: API and proof smoke must succeed before site publication`);
     const deploySteps = workflow.slice(workflow.lastIndexOf("      - name:", api), site);
+    assert.match(deploySteps, /PLAYER_CLAIM_MODE: \$\{\{ vars\.PLAYER_CLAIM_MODE \|\| 'proof' \}\}/);
     assert.doesNotMatch(deploySteps, /continue-on-error:|if:\s*always\(/);
   }
   const smoke = readFileSync(resolve(process.cwd(), "../scripts/deploy/smoke-player-proof.sh"), "utf8");
@@ -102,11 +103,34 @@ test("QA deployment evidence records the full head and live API fingerprint with
   assert.match(apiDeployScript, /digest\("base64"\)/);
   assert.match(apiDeployScript, /\.codeSha256 == \$expected/);
   assert.match(apiDeployScript, /"packageCodeSha256": "\$PACKAGE_CODE_SHA256"/);
-  assert.doesNotMatch(apiDeployScript, /Environment\.Variables/);
+  assert.deepEqual(apiDeployScript.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE"]);
   assert.match(qaWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
   assert.match(qaWorkflow, /name: qa-api-core-deployment/);
   assert.match(qaWorkflow, /path: out\/deploy\/qa\/api-core-deploy-manifest\.json/);
   assert.match(qaWorkflow, /if-no-files-found: error/);
+});
+
+test("core deploy validates, exports and verifies the configured claim containment mode", () => {
+  const configure = apiDeployScript.slice(apiDeployScript.indexOf("configure_player_claim_mode() {"),
+    apiDeployScript.indexOf('\nif [[ "$SERVICE" == "api-core" ]]; then\n  configure_player_claim_mode'));
+  assert.ok(configure.includes("case"));
+  for (const [input, expected] of [["", "proof"], ["proof", "proof"], ["disabled", "disabled"], ["invalid", null]]) {
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$PLAYER_CLAIM_MODE"'`],
+      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: input! } });
+    assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
+    assert.equal(result.stdout, expected ?? "");
+  }
+  assert.ok(apiDeployScript.indexOf("  configure_player_claim_mode\n") < apiDeployScript.indexOf("make build"));
+  const verify = apiDeployScript.slice(apiDeployScript.indexOf('  jq -e --arg expected "$PACKAGE_CODE_SHA256"'),
+    apiDeployScript.indexOf('\nfi\nTIMESTAMP='));
+  assert.ok(verify.includes(".playerClaimMode == $mode"));
+  for (const deployed of ["proof", "disabled", null]) {
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
+      ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "disabled",
+      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed }),
+    } });
+    assert.equal(result.status, deployed === "disabled" ? 0 : 1, result.stderr);
+  }
 });
 
 test("api core deployment config sets canonical public invite link origins", () => {

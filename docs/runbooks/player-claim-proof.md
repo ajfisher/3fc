@@ -55,8 +55,16 @@ Only the nonsecret proof ID may travel in authentication return destinations.
 
 ## Containment and rollback
 
-- Set `PLAYER_CLAIM_MODE=disabled` in the deployment environment and redeploy the
-  hardened API to suspend new proofs/invitations and first claims. It remains
+- Set the GitHub Environment **variable** `PLAYER_CLAIM_MODE` to `disabled` in
+  `qa` or `production`, then redeploy the approved hardened head through the
+  corresponding workflow (QA: re-add QA-ready; production release remains AJ's
+  decision). Both workflows explicitly export this variable to the core deploy
+  step; an unset variable defaults to `proof`. For an authorised terminal deploy,
+  export `PLAYER_CLAIM_MODE=disabled` before invoking make. The deploy script
+  rejects unknown modes before deployment and verifies the exact deployed mode
+  alongside the code/revision fingerprint in the manifest; mismatch fails before
+  site publication. Change the variable back to `proof` and redeploy to re-enable.
+  This suspends new proofs/invitations and first claims. It remains
   possible to join as an unclaimed player and recover confirmed same-owner
   receipts. This switch does not revoke existing sessions or player ownership.
   Proof-bearing web joins keep the same request and succeed without claim proof;

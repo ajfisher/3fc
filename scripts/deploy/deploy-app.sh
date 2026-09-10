@@ -43,6 +43,17 @@ PROJECT_NAME="${PROJECT_NAME:-3fc}"
 API_NAME="${PROJECT_NAME}-${ENV}-http-api"
 LAMBDA_EXEC_ROLE_NAME="${PROJECT_NAME}-${ENV}-lambda-exec"
 
+configure_player_claim_mode() {
+  PLAYER_CLAIM_MODE="${PLAYER_CLAIM_MODE:-proof}"
+  case "$PLAYER_CLAIM_MODE" in
+    proof|disabled) export PLAYER_CLAIM_MODE ;;
+    *) echo "PLAYER_CLAIM_MODE must be proof or disabled" >&2; return 1 ;;
+  esac
+}
+if [[ "$SERVICE" == "api-core" ]]; then
+  configure_player_claim_mode
+fi
+
 echo "[deploy] Building workspaces"
 make build >/dev/null
 
@@ -92,12 +103,12 @@ if [[ "$SERVICE" == "api-core" ]]; then
   # Bind the live revision to this invocation's individually packaged core ZIP.
   # Another PR can deploy to shared QA between Serverless returning and this read.
   PACKAGE_CODE_SHA256="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(".serverless/core.zip")).digest("base64"))')"
-  # Record only code provenance, never the function's secret environment values.
+  # Record code provenance and this nonsecret enum only, never the full environment.
   FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
     --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
-    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus}' \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE}' \
     --output json)"
-  jq -e --arg expected "$PACKAGE_CODE_SHA256" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0)' \
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode' \
     <<< "$FUNCTION_FINGERPRINT" >/dev/null
 fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
