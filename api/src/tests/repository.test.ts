@@ -3,7 +3,7 @@ import test from "node:test";
 import { randomBytes } from "node:crypto";
 import { hashPlayerProofSecret, PlayerProofError } from "../auth/player-proof.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, identityItem, boundedIdentityTransaction, identityCondition,
-  validateIdentity, identityDirectorySk, identitySeasonKey, identityTombstoneSk } from "../data/player-identity.js";
+  validateIdentity, identityDirectorySk, identitySeasonKey, identityTombstoneSk, identityGameSk } from "../data/player-identity.js";
 import { PlayerIdentityMigration, type IdentityMigrationManifest } from "../data/player-identity-migration.js";
 import { playerClaimSk } from "../data/keys.js";
 import { createLambdaCoreHandler } from "../lambda-core.js";
@@ -1097,6 +1097,114 @@ test("league directory invitation adapters enforce exact scope, replacement, rev
   }
 });
 
+test("rescheduling cannot invalidate coverage without committing its guarded game update", async () => {
+  const { client, repository } = await directoryHarness();
+  const before = client.readItem("PLAYER_IDENTITY", "CONTROL");
+  const game = client.readItem("GAME#directory-game", "METADATA")!;
+  client.runBeforeNextPut(() => client.seedItem({ ...game, updatedAt: { S: "2026-09-12T00:00:00Z" } }));
+  await assert.rejects(repository.updateGame({ gameId: "directory-game", gameStartTs: "2026-09-14T00:00:00Z" }));
+  assert.deepEqual(client.readItem("PLAYER_IDENTITY", "CONTROL"), before);
+  assert.equal((await repository.getGame("directory-game"))?.gameStartTs, "2026-09-13T00:00:00Z");
+});
+
+for (const tamper of [false, true]) test(`rescheduling invalidates coverage and reconciliation ${tamper ? "rejects changed verification" : "repairs the kickoff"}`, async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createAndLinkGamePlayer({ gameId: "directory-game", playerId: "rescheduled-player", nickname: "Kesh" });
+  const planner = new PlayerIdentityPlanner(client, "threefc_test");
+  await repository.updateGame({ gameId: "directory-game", thirdLengthMinutes: 25 });
+  assert.equal((await planner.readControl()).value.coverage, "verified");
+  const before = await planner.readControl();
+  const kickoff = "2026-09-14T00:00:00Z";
+  await repository.updateGame({ gameId: "directory-game", gameStartTs: kickoff });
+  const after = await planner.readControl(); assert.equal(after.value.coverage, "unknown"); assert.notEqual(after.value.epoch, before.value.epoch);
+  const key = identityGameSk("directory-game");
+  assert.notEqual(JSON.parse(client.readItem("PLAYER#rescheduled-player", key)!.data.S!).gameStartTs, kickoff);
+  const runner = new PlayerIdentityMigration(client, migrationManifest());
+  let audit = await runner.begin();
+  for (let count = 0; audit.phase === "inventory"; count++) { assert(count < 100); audit = await runner.step(2); }
+  assert.equal(audit.phase, "verification");
+  const repaired = client.readItem("PLAYER#rescheduled-player", key)!;
+  assert.equal(JSON.parse(repaired.data.S!).gameStartTs, kickoff);
+  if (tamper) client.seedItem({ ...repaired, data: { S: JSON.stringify({ ...JSON.parse(repaired.data.S!), gameStartTs: "2026-09-12T00:00:00Z" }) } });
+  for (let count = 0; audit.phase === "verification"; count++) { assert(count < 100); audit = await runner.step(2); }
+  assert.equal(audit.phase, tamper ? "blocked" : "ready", JSON.stringify(audit.issues));
+  if (tamper) await assert.rejects(runner.activate());
+  else { await runner.activate(); assert.equal((await planner.readControl()).value.coverage, "verified"); }
+});
+
+for (const state of ["pending", "expired", "expired-unscoped", "consumed"] as const) test(`league deletion clears ${state} profile-link pointers without stranding other league players`, async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createLeague({ leagueId: "removed-profile-league", name: "Former league", createdByUserId: "organiser" });
+  await repository.createLeaguePlayer({ leagueId: "removed-profile-league", playerId: "shared-profile", nickname: "Kesh", userIds: ["organiser"] });
+  // A pre-cutover cross-league registration is reconciled, not imported through
+  // the new API (which deliberately rejects cross-league player discovery).
+  client.seedItem(identityItem("GAME#directory-game", "PLAYER#shared-profile", "gamePlayer",
+    { gameId: "directory-game", playerId: "shared-profile" }, "2026-09-11T00:00:00Z"));
+  const migration = new PlayerIdentityMigration(client, migrationManifest());
+  let audit = await migration.begin();
+  for (let count = 0; ["inventory", "verification"].includes(audit.phase); count++) { assert(count < 100); audit = await migration.step(20); }
+  assert.equal(audit.phase, "ready"); await migration.activate();
+  const proof = newClaimProof(), target = { scope: "league" as const, leagueId: "removed-profile-league", playerId: "shared-profile", userIds: ["organiser"] };
+  await repository.createPlayerInvitation({ ...target, ...proof });
+  let claimed;
+  if (state === "consumed") {
+    const preview = await repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" });
+    claimed = await repository.claimPlayer({ playerId: "shared-profile", userId: "owner", sessionId: "session", proof: { ...proof, confirmation: preview.confirmation } });
+  }
+  if (state.startsWith("expired")) client.deleteItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA");
+  if (state === "expired-unscoped") {
+    const pointer = client.readItem("PLAYER#shared-profile", "CLAIM_INVITATION")!;
+    const data = JSON.parse(pointer.data.S!); delete data.leagueId;
+    client.seedItem({ ...pointer, data: { S: JSON.stringify(data) } });
+  }
+  let removed = false;
+  for (let count = 0; count < 10 && !removed; count++) {
+    try { removed = await repository.deleteLeague("removed-profile-league", ["organiser"]); }
+    catch (error) { assert(error instanceof PlayerIdentityError && error.code === "league_cleanup_pending"); }
+  }
+  assert(removed);
+  if (state !== "expired-unscoped") assert.equal(client.readItem("PLAYER#shared-profile", "CLAIM_INVITATION"), undefined);
+  if (state === "consumed") {
+    const preview = await repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "session" });
+    assert.deepEqual(await repository.claimPlayer({ playerId: "shared-profile", userId: "owner", sessionId: "session", proof: { ...proof, confirmation: preview.confirmation } }), claimed);
+  } else {
+    assert.equal(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA"), undefined);
+    if (state === "expired-unscoped") {
+      assert.equal((await repository.getPlayerInvitation({ scope: "league", leagueId: "directory", playerId: "shared-profile", userIds: ["organiser"] }))?.state, "expired");
+    }
+    await repository.createPlayerInvitation({ scope: "league", leagueId: "directory", playerId: "shared-profile", userIds: ["organiser"],
+      ...(state === "expired-unscoped" ? { replacesProofId: proof.proofId } : {}), ...newClaimProof() });
+    assert.equal((await repository.getPlayerInvitation({ scope: "league", leagueId: "directory", playerId: "shared-profile", userIds: ["organiser"] }))?.state, "pending");
+  }
+});
+
+test("league cleanup processes legacy pointers before a proof-first paginated scan can erase their provenance", async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createLeague({ leagueId: "legacy-removal", name: "Former", createdByUserId: "organiser" });
+  await repository.createLeaguePlayer({ leagueId: "legacy-removal", playerId: "legacy-pointer", nickname: "Kesh", userIds: ["organiser"] });
+  const proof = newClaimProof();
+  await repository.createPlayerInvitation({ scope: "league", leagueId: "legacy-removal", playerId: "legacy-pointer", userIds: ["organiser"], ...proof });
+  const pointer = client.readItem("PLAYER#legacy-pointer", "CLAIM_INVITATION")!;
+  const data = JSON.parse(pointer.data.S!); delete data.leagueId;
+  client.seedItem({ ...pointer, data: { S: JSON.stringify(data) } });
+  const ordered = new ThreeFcRepository({ async send(command: unknown) {
+    if (command instanceof ScanCommand) {
+      const first = !command.input.ExclusiveStartKey;
+      const item = client.readItem(first ? `PLAYER_PROOF#${proof.proofId}` : "PLAYER#legacy-pointer", first ? "METADATA" : "CLAIM_INVITATION");
+      return { Items: item ? [item] : [], ...(first ? { LastEvaluatedKey: { pk: { S: `PLAYER_PROOF#${proof.proofId}` }, sk: { S: "METADATA" } } } : {}) };
+    }
+    return client.send(command);
+  } }, "threefc_test");
+  let complete = false;
+  for (let attempt = 0; attempt < 5 && !complete; attempt++) {
+    try { complete = await ordered.deleteLeague("legacy-removal", ["organiser"]); }
+    catch (error) { assert(error instanceof PlayerIdentityError && error.code === "league_cleanup_pending"); }
+  }
+  assert(complete);
+  assert.equal(client.readItem("PLAYER#legacy-pointer", "CLAIM_INVITATION"), undefined);
+  assert.equal(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA"), undefined);
+});
+
 test("league directory profile invitations link standalone players without changing organiser permissions", async () => {
   const { client, repository } = await directoryHarness();
   await repository.createLeaguePlayer({ leagueId: "directory", playerId: "xavier", nickname: "Xavier", userIds: ["organiser"] });
@@ -2156,6 +2264,18 @@ test("league deletion resumes partial multi-page cleanup only for its initiator 
   assert.deepEqual(client.readItem("LEAGUE_INVITE#other", "METADATA"), other);
   assert.equal(await repository.deleteLeague("cleanup", ["owner"]), true, "lost final response remains recoverable after all ACLs disappear");
   assert.equal(await repository.getLeagueAccess("cleanup", "owner"), null, "receipt never grants league access");
+  const completed = client.readItem("LEAGUE#cleanup", "DELETION")!;
+  const legacy = JSON.parse(completed.data.S!); delete legacy.cleanupVersion;
+  client.seedItem({ ...completed, data: { S: JSON.stringify(legacy) } });
+  client.seedItem(identityItem("PLAYER#legacy-pointer", "CLAIM_INVITATION", "playerProofPointer",
+    { proofId: "expired-proof-identifier-01", leagueId: "cleanup" }, now));
+  let upgraded = false;
+  for (let retry = 0; retry < 20 && !upgraded; retry++) {
+    try { upgraded = await repository.deleteLeague("cleanup", ["owner"]); }
+    catch (error) { assert(error instanceof PlayerIdentityError && error.code === "league_cleanup_pending"); }
+  }
+  assert(upgraded); assert.equal(client.readItem("PLAYER#legacy-pointer", "CLAIM_INVITATION"), undefined);
+  assert.equal(JSON.parse(client.readItem("LEAGUE#cleanup", "DELETION")!.data.S!).cleanupVersion, 2);
   await assert.rejects(repository.createLeague({ leagueId: "cleanup", name: "Replacement", createdByUserId: "owner" }), /no longer available/);
 });
 

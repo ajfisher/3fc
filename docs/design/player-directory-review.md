@@ -21,7 +21,7 @@ Consolidation #160 and returning-player joining #161 are not implemented here.
 | Historical IDs and canonical compatibility | Root/alias planner cases; getPlayerView preserves original IDs and raw proof records; long ASCII/Unicode read-envelope cases | PASS locally |
 | Migration completeness, pause, retry and cutover | Fake-client cases, CLI provenance tests, actual isolated AWS CLI audit/restart/recovery/activation on `74830fe` | PASS; current-head refresh pending |
 | HTTP parsing and privacy headers | Real loopback socket test of local directory/invitation adapters | PASS locally |
-| Full repository validation | Serial lint/typecheck, 406 API / 601 app / 3 operator / 57 gate tests, contracts, build; group 5187, peak 1,761,008 KiB, exit 0, remaining [] | PASS locally including cleanup review fixes |
+| Full repository validation | Serial lint/typecheck, 415 API / 601 app / 3 operator / 57 gate tests, contracts, build; group 12573, peak 2,859,472 KiB, exit 0, remaining []; final legacy-expiry regression and all 184 affected-file tests also pass | PASS locally including review fixes |
 | Interrupted league deletion and account-bound retry | Repository lost-response/pagination/race/corruption tests; Lambda owner/malformed/account-switch cases; reload/Home UI cases; real local HTTP group 8261 | PASS locally |
 | Exact-head CI, Codex, isolated backend and browser acceptance | To be recorded in PR evidence | PENDING |
 
@@ -68,6 +68,28 @@ repointed or marked verified for fixture acceptance. Once aliases are introduced
 by the child feature, rollback must retain alias-aware readers and writers.
 
 ## Independent findings and disposition
+
+- Codex review 5174641765 on `e255574`: accepted stale kickoff coverage and
+  residual league profile-invitation findings. Rescheduling now invalidates
+  coverage in the same transaction as metadata; reconciliation repairs the date
+  with original membership CAS and both verification paths compare it. Deletion
+  sweeps profile pointers before unconsumed proofs, preserves consumed ownership
+  receipts and upgrades older deletion receipts. Independent QA identified an
+  unordered-scan legacy-pointer trap; the two complete passes and adversarial
+  proof-first/later-pointer regression address it. All 183 affected-file tests
+  passed, including cross-league replacement after migrated historical sharing,
+  consumed replay, expired proof, failed reschedule atomicity and changed-date
+  verification rejection. Full validation passed (415 API/601 app/3 operator/57
+  gate); final expired-unscoped policy then passed alone and in all 184 affected
+  tests (group 15622, peak 602,976 KiB, exit 0, remaining []). Real local HTTP and
+  capped DynamoDB acceptance passed again (group 15695, peak 224,112 KiB plus
+  512 MiB container, exit 0; container/API removed). Deployed evidence refreshes
+  after publication.
+- QA legacy-expiry disposition: leave a pointer with neither league provenance
+  nor surviving proof untouched. It cannot authorize ownership and the existing
+  expired-proof replacement flow remains usable from a permitted league; the
+  regression proves this without inferring scope or deleting another league's
+  record. Scoped or contradictory records keep strict cleanup validation.
 
 - Codex review 5174466598 on `a34f3a1`: accepted interrupted league-cleanup
   finding. Metadata removal now atomically records its initiating account and

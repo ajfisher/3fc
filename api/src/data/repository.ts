@@ -2617,7 +2617,7 @@ export class ThreeFcRepository {
         updatedPayload, gameItem.createdAt, now);
       try {
         await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
-          this.identities.writableControl(control), update,
+          this.identities.planCoverageInvalidation(control, now), update,
         ]) }));
         gameUpdated = true;
       } catch (error) {

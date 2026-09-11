@@ -118,6 +118,11 @@ Once the directory has been activated, deleting a game retains its historical
 player associations and makes consolidation coverage unknown. Directory reuse
 continues; consolidation requires another reviewed reconciliation. The UI shows
 verified season names, not potentially stale game counts or kickoff statistics.
+Changing a game's kickoff also invalidates coverage atomically with the game
+update. Paused reconciliation repairs reverse-membership kickoff values from
+their guarded game snapshots; both verification paths compare the authoritative
+date before coverage can be certified again. Ordinary metadata-only edits do not
+invalidate coverage.
 
 After any consolidation exists, disabling further consolidations is safe;
 deploying alias-unaware readers/writers is not. A mistaken consolidation needs a
@@ -140,6 +145,17 @@ and separately authorise repair of the exact conflicting record, then retry as
 the initiating account. Never delete or fabricate a receipt/cursor to claim
 completion. The ordinary identity write pause also fences cleanup transactions.
 Retain receipt-aware deletion code during rollback while removals are pending.
+Version 2 cleanup completes its profile-invitation pointer scan before deleting
+unconsumed proofs, preserving scope provenance for older pointers lacking a
+league field. Consumed proof records remain immutable ownership/retry receipts.
+Older cleanup receipts, including completed ones, restart this expanded scan once
+when their initiating account retries; they do not grant ordinary league access.
+If a legacy pointer has no league field and its proof is already TTL-deleted,
+cleanup leaves that unscoped record untouched rather than guessing its owner.
+It cannot authorize a claim or bind replacement to the deleted league: the
+existing invitation UI returns its expired proof ID, which a permitted organiser
+can explicitly replace. Other malformed or contradictory provenance still fails
+closed and requires checked repair.
 
 ## Acceptance evidence still required before PR2 publication
 

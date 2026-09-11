@@ -62,6 +62,19 @@ function addDigest(totals: Totals, item: Item, scope: unknown): Totals {
   return { count: totals.count + 1, digest: ((BigInt(`0x${totals.digest}`) + BigInt(`0x${hash}`)) % (1n << 256n)).toString(16).padStart(64, "0") };
 }
 
+export function repairMigrationKickoff(actions: TransactWriteItem[], playerId: string, game: MembershipContext): void {
+  const matches = actions.filter(action => action.Put?.Item?.pk?.S === `PLAYER#${playerId}` &&
+    action.Put?.Item?.sk?.S === identityGameSk(game.gameId));
+  if (matches.length !== 1 || !date(game.gameStartTs)) fail("migration_invalid_reverse_membership");
+  const item = matches[0].Put?.Item;
+  if (!item) fail("migration_invalid_reverse_membership");
+  const value = decode(item, "playerGameMembership");
+  if (value.playerId !== playerId || value.gameId !== game.gameId || value.leagueId !== game.leagueId || value.seasonId !== game.seasonId) {
+    fail("migration_invalid_reverse_membership");
+  }
+  item.data = { S: JSON.stringify({ ...value, gameStartTs: game.gameStartTs }) };
+}
+
 // Operator-only repository utility; never exposed as a public or authenticated
 // application endpoint. The CLI must independently verify STS/table/deployment
 // provenance before constructing this runner, on every start and resume.
@@ -186,7 +199,7 @@ export class PlayerIdentityMigration {
     if (type === "playerGameMembership") {
       if (!text(value.gameId) || item.pk?.S !== `PLAYER#${playerId}` || item.sk?.S !== identityGameSk(value.gameId)) fail("migration_invalid_reverse_membership");
       const { game } = await this.gameContext(value.gameId);
-      if (game.leagueId !== value.leagueId || game.seasonId !== value.seasonId ||
+      if (game.leagueId !== value.leagueId || game.seasonId !== value.seasonId || game.gameStartTs !== value.gameStartTs ||
           await this.planner.registeredOriginal(identity, game.gameId) !== playerId) fail("migration_orphan_reverse_membership");
       return;
     }
@@ -255,7 +268,7 @@ export class PlayerIdentityMigration {
         const season = await this.get(`PLAYER#${playerId}`, identitySeasonKey(game.leagueId, game.seasonId));
         const member = membership ? decode(membership, "playerGameMembership") : null;
         const seasonData = season ? decode(season, "playerSeasonMembership") : null;
-        if (!member || member.playerId !== playerId || member.gameId !== game.gameId || member.leagueId !== game.leagueId || member.seasonId !== game.seasonId ||
+        if (!member || member.playerId !== playerId || member.gameId !== game.gameId || member.leagueId !== game.leagueId || member.seasonId !== game.seasonId || member.gameStartTs !== game.gameStartTs ||
             !seasonData || seasonData.playerId !== playerId || seasonData.leagueId !== game.leagueId || seasonData.seasonId !== game.seasonId) return fail("migration_missing_membership");
       }
     } else {
@@ -263,7 +276,15 @@ export class PlayerIdentityMigration {
         identityCondition(this.manifest.tableName, snapshot(item, data)), identityCondition(this.manifest.tableName, snapshot(profile, player)),
         ...this.planner.planRevision(identity, this.now())];
       if (gameItem) checks.push(identityCondition(this.manifest.tableName, snapshot(gameItem, {})));
-      if (leagueId) checks.push(...await this.planner.planDirectory(identity, leagueId, this.now(), game ? { ...game, registeredPlayerId: playerId } : undefined));
+      if (leagueId) {
+        const projections = await this.planner.planDirectory(identity, leagueId, this.now(), game ? { ...game, registeredPlayerId: playerId } : undefined);
+        // Normal membership writes preserve historical projections. Only paused
+        // reconciliation repairs their kickoff from the fenced game snapshot.
+        // Retain the planner's original condition, so a changed projection cannot
+        // be overwritten using a different read or without its CAS protection.
+        if (game) repairMigrationKickoff(projections, playerId, game);
+        checks.push(...projections);
+      }
       await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(checks) }));
     }
     return { playerId, leagueId: leagueId ?? null, game: game ?? null };
