@@ -2931,6 +2931,73 @@
           "Parent PR168 is review:ready at f6f3882 with exact-head Codex no-findings, CI, shared QA and isolated enabled acceptance. Final browser/M2 regression and operational evidence mapping are in progress; physical-device checks remain separate."
         ]
       }
+    },
+    {
+      "id": "PLAYER-05",
+      "title": "Define safe player retention after game deletion",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:app",
+        "area:data",
+        "area:ops",
+        "area:qa",
+        "type:chore",
+        "milestone:PLAYER",
+        "priority:P2"
+      ],
+      "dependsOn": [
+        "PLAYER-01",
+        "PLAYER-02",
+        "PLAYER-04"
+      ],
+      "summary": "Define an explicit retention and recovery policy for player profiles left without a current game after deletion; being unclaimed alone must never imply that a profile is disposable.",
+      "scope": [
+        "Inventory lifecycle cases and decide when a player remains reusable, can be archived, or could become eligible for a separately authorised cleanup operation.",
+        "Preserve claimed identities, profiles reused across games or seasons, deliberately league-created players, canonical identities and aliases, historical event references, live invitations and claim proofs, and idempotency or ownership receipts.",
+        "Define complete reverse-membership and reference checks across the full alias group. Missing or inconsistent coverage blocks eligibility; absence from one game or the current season is not proof of abandonment.",
+        "Specify a human-readable preview explaining each eligible or retained profile, required authority, audit provenance, retention periods, recoverability and a checked recovery process.",
+        "Specify revision and concurrency safeguards against registration, claim, invitation redemption, consolidation, deletion and receipt replay between preview and any future cleanup commit.",
+        "Keep explicit disposable-QA fixture cleanup separate: manifest-owned targets, provenance and absence verification do not establish a general production retention policy."
+      ],
+      "outOfScope": [
+        "Implementing automatic deletion, a scheduled cleanup worker, bulk profile removal or a new archive/delete user interface in the current stack.",
+        "Treating unclaimed, nickname-only, currently unassigned or zero-current-game profiles as sufficient evidence for deletion.",
+        "Deleting historical events, aliases, ownership or replay receipts, or weakening claim/consolidation safety.",
+        "Production cleanup or migration without separate AJ authorisation."
+      ],
+      "acceptanceCriteria": [
+        "A reviewed decision table distinguishes retained, potentially eligible and blocked cases, including all protected references and deliberately created reusable players.",
+        "Game deletion does not silently delete a reusable player; the policy explains the resulting directory behaviour and any future user-facing recovery action.",
+        "Any proposed destructive operation requires complete membership/reference coverage, authorised preview, unchanged identity revisions and atomic or explicitly recoverable execution.",
+        "Retention duration, invitation/proof and receipt expiry interactions, audit requirements and recovery limits are explicit decisions rather than assumptions.",
+        "A future implementation issue is specified only after policy approval; this design issue does not claim automatic cleanup is implemented.",
+        "QA fixture cleanup remains an independently authorised, exact-target operational workflow."
+      ],
+      "testScenarios": [
+        "Review fixtures for claimed and unclaimed players after their only game is deleted, reused players across games/seasons, and league-created players with no registrations.",
+        "Review canonical/alias groups, historical goals/assists/corrections, active or expired invitations, and uncertain or replayable registration/ownership receipts.",
+        "Demonstrate that incomplete coverage, cross-league references and changes after preview block destructive eligibility without exposing another league's private details.",
+        "Specify falsifying tests for concurrent join, claim, consolidation and cleanup; interrupted operation, stale preview, retention boundary and recoverability.",
+        "Validate canonical backlog/export and review the policy independently; no runtime cleanup is executed as acceptance for this issue."
+      ],
+      "reviewRequirements": [
+        "Independent design/UI/UX review of retention explanations and recovery; architecture, security, engineering and QA review of data ownership, privacy, concurrency and historical invariants.",
+        "Reviewers remain read-only and do not launch competing validation.",
+        "Any later implementation requires its own versioned review packet, exact-head tests/CI/QA/Codex evidence and review gate.",
+        "No production deletion, migration, merge or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-12",
+        "wave": "reusable-players-follow-up",
+        "status": "planned",
+        "githubIssue": 170,
+        "notes": [
+          "Requested by AJ following observation of player profiles retained after game deletion. Policy/design backlog only; current reusable-player retention is unchanged.",
+          "No automatic cleanup or production deletion is authorised or implemented by adding this issue."
+        ]
+      }
     }
   ],
   "globalTestScenarios": [

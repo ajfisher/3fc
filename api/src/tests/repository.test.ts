@@ -3066,6 +3066,73 @@ test("repository league discovery ignores non-entity auth records in table scans
   assert.equal(leagues[0].leagueId, "league-1");
 });
 
+test("repository league discovery follows empty scan pages and preserves ACL filtering, dedupe and sort", async () => {
+  const { repository, client } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "later-beta", name: "Beta", createdByUserId: "someone-else" });
+  await repository.createLeague({ leagueId: "later-alpha", name: "Alpha", createdByUserId: "someone-else" });
+  const first = { pk: { S: "PAGE#1" }, sk: { S: "END" } }, second = { pk: { S: "PAGE#2" }, sk: { S: "END" } };
+  const acl = (leagueId: string, userId = "organiser") => ({ entityType: { S: "acl" }, data: { S: JSON.stringify({ leagueId, userId }) } });
+  const pages = [
+    { Items: [], LastEvaluatedKey: first },
+    { Items: [acl("later-beta"), acl("later-beta"), { entityType: { S: "acl" } },
+      { entityType: { S: "acl" }, data: { S: "broken-json" } }], LastEvaluatedKey: second },
+    { Items: [acl("later-alpha"), acl("missing-league"), acl("private", "different-user"),
+      { entityType: { S: "session" }, data: { S: JSON.stringify({ leagueId: "private", userId: "organiser" }) } }], LastEvaluatedKey: {} },
+  ];
+  const original = client.send.bind(client); let scans = 0;
+  client.send = async command => {
+    if (!(command instanceof ScanCommand)) return original(command);
+    assert.equal(command.input.TableName, "threefc_test");
+    assert.deepEqual(command.input.ExclusiveStartKey, [undefined, first, second][scans]);
+    assert(scans < pages.length, "No scan beyond the final empty cursor");
+    return pages[scans++];
+  };
+  const leagues = await repository.listLeaguesForUser("organiser");
+  assert.equal(scans, 3);
+  assert.deepEqual(leagues.map(league => league.leagueId), ["later-alpha", "later-beta"]);
+});
+
+test("repository league discovery rejects repeating physical scan cursors instead of hanging or returning partial results", async () => {
+  for (const cycle of [false, true]) {
+    const { repository, client } = createRepositoryHarness();
+    const cursors = [
+      { pk: { S: "PAGE#1" }, sk: { S: "END" } },
+      ...(cycle ? [{ pk: { S: "PAGE#2" }, sk: { S: "END" } }] : []),
+      { sk: { S: "END" }, pk: { S: "PAGE#1" } }, // Same key, different property order.
+    ];
+    const original = client.send.bind(client); let scans = 0;
+    client.send = async command => {
+      if (!(command instanceof ScanCommand)) return original(command);
+      assert(scans < cursors.length, "Test guard prevents an unbounded scan loop");
+      return { Items: [], LastEvaluatedKey: cursors[scans++] };
+    };
+    await assert.rejects(repository.listLeaguesForUser("organiser"), /^Error: League discovery cursor did not advance\.$/);
+    assert.equal(scans, cycle ? 3 : 2);
+  }
+});
+
+test("repository league discovery rejects malformed nonempty scan cursors before another request", async () => {
+  const cursors: Item[] = [
+    { sk: { S: "END" } },
+    { pk: { S: "PAGE#1" } },
+    { pk: { N: "1" }, sk: { S: "END" } },
+    { pk: { S: "PAGE#1" }, sk: { N: "1" } },
+    { pk: { S: "" }, sk: { S: "END" } },
+    { pk: { S: "PAGE#1" }, sk: { S: "" } },
+  ];
+  for (const cursor of cursors) {
+    const { repository, client } = createRepositoryHarness();
+    let scans = 0;
+    client.send = async command => {
+      assert(command instanceof ScanCommand);
+      assert.equal(++scans, 1, "Malformed cursor must never drive a second scan");
+      return { Items: [], LastEvaluatedKey: cursor };
+    };
+    await assert.rejects(repository.listLeaguesForUser("organiser"), /^Error: League discovery returned an invalid cursor\.$/);
+    assert.equal(scans, 1);
+  }
+});
+
 test("repository supports update and delete of games", async () => {
   const repository = createRepository();
 

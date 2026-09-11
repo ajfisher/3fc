@@ -1085,40 +1085,53 @@ export class ThreeFcRepository {
   async listLeaguesForUser(userId: string): Promise<LeagueRecord[]> {
     requireNonEmpty("userId", userId);
 
-    const scanResult = (await this.client.send(
-      new ScanCommand({
-        TableName: this.tableName,
-      }),
-    )) as ScanCommandOutput;
-
     const leagueIds = new Set<string>();
-    for (const item of scanResult.Items ?? []) {
-      if (item.entityType?.S !== ENTITY_TYPE.acl) {
-        continue;
-      }
+    const seenCursors = new Set<string>();
+    let cursor: ScanCommandOutput["LastEvaluatedKey"];
+    do {
+      const scanResult = (await this.client.send(new ScanCommand({
+        TableName: this.tableName,
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }))) as ScanCommandOutput;
+      for (const item of scanResult.Items ?? []) {
+        if (item.entityType?.S !== ENTITY_TYPE.acl) {
+          continue;
+        }
 
-      if (!item.data || item.data.S === undefined) {
-        // Skip non-repository ACL-shaped items that do not store JSON payloads.
-        continue;
-      }
+        if (!item.data || item.data.S === undefined) {
+          // Skip non-repository ACL-shaped items that do not store JSON payloads.
+          continue;
+        }
 
-      let data: unknown;
-      try {
-        data = JSON.parse(item.data.S);
-      } catch {
-        continue;
-      }
+        let data: unknown;
+        try {
+          data = JSON.parse(item.data.S);
+        } catch {
+          continue;
+        }
 
-      if (
-        typeof data === "object" &&
-        data !== null &&
-        typeof (data as { leagueId?: unknown }).leagueId === "string" &&
-        typeof (data as { userId?: unknown }).userId === "string" &&
-        (data as { userId: string }).userId === userId
-      ) {
-        leagueIds.add((data as { leagueId: string }).leagueId);
+        if (
+          typeof data === "object" &&
+          data !== null &&
+          typeof (data as { leagueId?: unknown }).leagueId === "string" &&
+          typeof (data as { userId?: unknown }).userId === "string" &&
+          (data as { userId: string }).userId === userId
+        ) {
+          leagueIds.add((data as { leagueId: string }).leagueId);
+        }
       }
-    }
+      const next = scanResult.LastEvaluatedKey;
+      if (!next || Object.keys(next).length === 0) break;
+      if (typeof next.pk?.S !== "string" || !next.pk.S || typeof next.sk?.S !== "string" || !next.sk.S) {
+        throw new Error("League discovery returned an invalid cursor.");
+      }
+      // Scan order is not lexical; detect repeated physical keys without
+      // assuming ordering or depending on the SDK object's property order.
+      const cursorId = JSON.stringify([next.pk.S, next.sk.S]);
+      if (seenCursors.has(cursorId)) throw new Error("League discovery cursor did not advance.");
+      seenCursors.add(cursorId);
+      cursor = next;
+    } while (cursor);
 
     const leagues = await Promise.all([...leagueIds].map((leagueId) => this.getLeague(leagueId)));
     return leagues
