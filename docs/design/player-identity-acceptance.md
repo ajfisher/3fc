@@ -99,17 +99,21 @@ open for any outstanding criteria; #25/#40 are not closed for unrelated work.
 3. Inventory every writer and capture the exact deployed code hash/revision and
    flags. Keep consolidation and returning joins disabled until their prerequisites
    are verified. Shared QA at final #168 deliberately retained both false.
-4. Complete the resumable inventory/backfill and controlled final write pause.
+4. Before starting migration, complete the membership runbook's writer fencing
+   and real905-second old-writer drain. Capture the actual completed drain and
+   verify unchanged deployment revision/provenance; local synthetic manifests
+   are not production provenance.
+5. Complete the resumable inventory/backfill and controlled final write pause.
    Resolve missing profiles/inconsistent membership; never infer completeness from
    a partial scan. Record matched inventory/verification digests and audit phase.
-5. Observe the real905-second old-writer drain where required, verify unchanged
-   revision/provenance and enable only with explicit environment authorization.
-   Local synthetic manifests are not production provenance. A later deletion or
+6. If the returning-join writer rollout requires another drain, complete its
+   real905-second drain and provenance checks before enablement. Enable only
+   with explicit environment authorization. A later deletion or
    other coverage invalidation requires audited reconciliation before enablement.
-6. Verify enabled exact-head behavior with disposable accounts and check cleanup.
+7. Verify enabled exact-head behavior with disposable accounts and check cleanup.
    No real AJ profiles are mutation fixtures. No new Terraform resources are
    required; existing table IAM already includes BatchGetItem.
-7. Containment disables new consolidation/returning joins while retaining proof
+8. Containment disables new consolidation/returning joins while retaining proof
    enforcement, canonical/alias readers and revision-aware writers. Do not revert
    to alias-unaware code or delete a consolidation pointer as an undo operation.
    A mistaken consolidation needs a separately reviewed compensating operation.
