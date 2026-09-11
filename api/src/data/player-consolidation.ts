@@ -1,6 +1,7 @@
 import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue,
   type GetItemCommandOutput, type QueryCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
+import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identityPut, identityDirectorySk,
   identityGameSk, identityLeagueSk, boundedIdentityTransaction, validPlayerIdentityId,
   type IdentityClient, type IdentitySnapshot, type PlayerIdentity, type IdentityControl } from "./player-identity.js";
@@ -307,6 +308,8 @@ export class PlayerConsolidationService {
       identityCondition(this.tableName, context.acl)];
     const after: PlayerIdentity[] = [];
     const indexesBefore: Array<{ playerId: string; record: RecordData | null }> = [];
+    if (p.ownerId) actions.push(advancePlayerClaimsRevision(this.tableName,
+      await readPlayerClaimsRevision(this.client, this.tableName, p.ownerId), now));
     for (const m of context.members) {
       const isRoot = m.id === p.retainedPlayerId;
       const next: PlayerIdentity = { ...m.identity.value, rootId: p.retainedPlayerId, members: isRoot ? context.members.map(x => x.id) : [],

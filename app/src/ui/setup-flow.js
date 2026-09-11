@@ -7021,6 +7021,10 @@
     let joinAttempt = null;
     let unissuedJoinProof = null;
     let linkingUnavailable = false;
+    let creationAllowed = false;
+    let entryLocked = false;
+    let returningPlayer = null;
+    const createCancel = document.getElementById("join-create-cancel");
     let joinPending = false;
     let joined = false;
     let claimPending = false;
@@ -7075,11 +7079,13 @@
     }
 
     function renderJoinState() {
-      nicknameInput.disabled = joinPending || joinAttempt !== null || joined || Boolean(claimPlayerId);
+      returningPlayer?.setRegistrationPending(joinPending || Boolean(joinAttempt) || joined || entryLocked);
+      nicknameInput.disabled = entryLocked || joinPending || joinAttempt !== null || joined || Boolean(claimPlayerId);
       if (joinAttempt) nicknameInput.value = joinAttempt.nickname;
-      joinButton.disabled = joinPending || joined || Boolean(claimPlayerId);
+      joinButton.disabled = entryLocked || joinPending || joined || Boolean(claimPlayerId);
       joinButton.textContent = joinAttempt?.uncertain ? "Retry join" : "Join game";
-      form.hidden = joined || Boolean(claimPlayerId);
+      form.hidden = entryLocked || !creationAllowed || joined || Boolean(claimPlayerId);
+      if (createCancel) createCancel.disabled = joinPending || Boolean(joinAttempt);
       if (anotherButton instanceof HTMLButtonElement) {
         anotherButton.hidden = !joined && !claimPlayerId;
         anotherButton.disabled = claimPending || joinPending;
@@ -7199,13 +7205,24 @@
 
     if (claimPlayerId) void refreshClaimActions(claimPlayerId).catch(claimProbeFailed);
     else {
-      const revision = claimRevision;
-      void currentJoinSession().then((session) => {
-        if (revision === claimRevision) setAccountSession(session);
-      }).catch(() => {
-        if (revision === claimRevision) setAccountSession(null);
+      returningPlayer = window.ThreeFcReturningPlayer?.initialize({ joinCode,
+        onSession: setAccountSession,
+        onCreate: (options = {}) => {
+          if (entryLocked || joinAttempt || claimPlayerId || joined) return;
+          creationAllowed = true;
+          if (createCancel) createCancel.hidden = options.anonymous === true;
+          renderJoinState();
+          if (!options.anonymous) nicknameInput.focus();
+        },
+        onLock: () => { entryLocked = true; creationAllowed = false; ++entryFlowRevision; ++claimRevision; renderJoinState(); },
       });
+      if (returningPlayer) returningPlayer.start();
+      else showError("The join form couldn’t load. Reload this page to try again.", { includesOutcome: true });
     }
+    createCancel?.addEventListener("click", () => {
+      if (joinPending || joinAttempt || entryLocked) return;
+      creationAllowed = false; renderJoinState(); returningPlayer?.start();
+    });
     renderJoinState();
     nicknameInput.addEventListener("input", () => {
       if (joinAttempt) { nicknameInput.value = joinAttempt.nickname; return; }
@@ -7233,6 +7250,8 @@
       joined = false;
       claimComplete = false;
       linkingUnavailable = false;
+      creationAllowed = true;
+      returningPlayer?.hide();
       claimMessage("");
       if (resultElement) resultElement.hidden = true;
       if (claimActions instanceof HTMLElement) claimActions.hidden = true;
@@ -7246,7 +7265,8 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (joinPending || joined || claimPlayerId) return;
+      if (entryLocked || !creationAllowed || joinPending || joined || claimPlayerId) return;
+      const flowAtDispatch = entryFlowRevision;
       if (unissuedJoinProof) {
         try { window.ThreeFcPlayerProof.discardDraft(unissuedJoinProof); unissuedJoinProof = null; }
         catch {
@@ -7266,6 +7286,7 @@
         try {
           const key = idempotencyKeyForPublicJoin(joinCode, nickname);
           const proof = await window.ThreeFcPlayerProof.create(`${joinCode}:${key}`);
+          if (flowAtDispatch !== entryFlowRevision || entryLocked) return;
           joinAttempt = {
             nickname, proof, uncertain: false,
             path: "/v1/join/" + encodeURIComponent(joinCode),
@@ -7290,12 +7311,14 @@
       setStatus("Joining game…", "default");
       try {
         const result = await requestJsonOrThrow(attempt.path, attempt.request);
+        if (flowAtDispatch !== entryFlowRevision || entryLocked) return;
         if (!usableEntityId(result?.gameId) || !usableEntityId(result?.player?.playerId) ||
           typeof result.player.nickname !== "string" || result.player.nickname.trim() !== attempt.nickname ||
           (result.joinCode !== undefined && result.joinCode !== joinCode) ||
           (result.link !== undefined && (result.link?.gameId !== result.gameId || result.link?.playerId !== result.player.playerId))) throw new Error("join_unconfirmed");
         joined = true;
         linkingUnavailable = result.linkingUnavailable === true;
+        returningPlayer?.hide();
         joinAttempt = null;
         clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
         claimPlayerId = result.player.playerId;

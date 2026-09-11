@@ -6,6 +6,7 @@ import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
 import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
 import { handlePlayerConsolidationRoute, isPlayerConsolidationRoute, type PlayerConsolidationRepository } from "./player-consolidation-routes.js";
+import { handleOwnedPlayerJoinRoute, isOwnedPlayerJoinRoute, type OwnedPlayerJoinRepository } from "./owned-player-join-routes.js";
 import { PlayerProofError, parsePlayerClaimMode } from "./auth/player-proof.js";
 import { PlayerIdentityError } from "./data/player-identity.js";
 import {
@@ -189,7 +190,7 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository,
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository,
   Pick<ThreeFcRepository, "getPlayerView"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
@@ -5208,6 +5209,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        if (isOwnedPlayerJoinRoute(method, route)) {
+          const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" };
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return createJsonResponse(status, { error: "bad_request", message: "Request body must be valid JSON." }, headers); }
+          const result = await handleOwnedPlayerJoinRoute({ method, route, body, idempotencyKey: getHeader(event, "idempotency-key"),
+            rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, headers);
+        }
         if (isPlayerConsolidationRoute(method, route)) {
           const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
             "cache-control": "no-store", "referrer-policy": "no-referrer" };

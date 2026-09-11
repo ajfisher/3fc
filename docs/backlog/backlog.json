@@ -2867,11 +2867,12 @@
       "delivery": {
         "asOf": "2026-09-10",
         "wave": "reusable-players",
-        "status": "planned",
+        "status": "in-progress",
         "githubIssue": 161,
         "branch": "codex/returning-player-join",
         "notes": [
-          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md.",
+          "2026-09-11: implementation follows parent PR #167 review:ready. Private linked-player reads and atomic self-registration are default-disabled until revision-aware writers have drained and membership coverage is verified. No production enablement is authorised."
         ]
       }
     },

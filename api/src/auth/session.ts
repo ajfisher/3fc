@@ -43,6 +43,8 @@ export function buildExpiredSessionCookie(cookieName: string, secure: boolean): 
 }
 
 export function isAuthenticatedApiRoute(method: string, route: string): boolean {
+  if ((method === "GET" && /^\/v1\/join\/[^/]+\/linked-players$/.test(route)) ||
+      (method === "POST" && /^\/v1\/join\/[^/]+\/linked-player$/.test(route))) return true;
   if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
     return true;
   }

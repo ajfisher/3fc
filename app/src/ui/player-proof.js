@@ -124,6 +124,19 @@
     let persisted = false;
     try { sessionStorage.removeItem(KEY); persisted = sessionStorage.getItem(KEY) === null; } catch { /* Try an overwrite below. */ }
     if (!persisted) try { sessionStorage.setItem(KEY, "[]"); persisted = sessionStorage.getItem(KEY) === "[]"; } catch { /* Block use until cleanup succeeds. */ }
+    // A join receipt draft belongs to the signed-in account, even when signing
+    // out from a page that does not load the returning-player controller.
+    try {
+      const joinKeys = [];
+      for (let index = 0; index < sessionStorage.length; index += 1) {
+        const key = sessionStorage.key(index);
+        if (key?.startsWith("threefc.returning-join.v1:")) joinKeys.push(key);
+      }
+      for (const key of joinKeys) {
+        sessionStorage.removeItem(key);
+        if (sessionStorage.getItem(key) !== null) persisted = false;
+      }
+    } catch { persisted = false; }
     purgeBlocked = !persisted;
     if (broadcast) try { channel?.postMessage({ version: 1, type: "purge" }); } catch { /* Local purge must still finish. */ }
     cancelHandoffs();

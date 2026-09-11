@@ -690,6 +690,13 @@ function createMockFetch(state: MockApiState) {
       );
     }
 
+    const linkedJoin = path.match(/^\/v1\/join\/([^/]+)\/linked-players$/);
+    if (method === "GET" && linkedJoin) {
+      if (!isAuthenticated(state) || !state.session) return createJsonResponse(401, { error: "unauthorized" });
+      const game = [...state.games.values()].find(candidate => candidate.joinCode === decodeURIComponent(linkedJoin[1]));
+      if (!game) return createJsonResponse(404, { error: "not_found" });
+      return createJsonResponse(200, { accountId: state.session.email, gameId: game.gameId, leagueId: game.leagueId, players: [], cursor: null, complete: true });
+    }
     if (method === "GET" && path === "/v1/auth/session") {
       if (!isAuthenticated(state) || !state.session) {
         return createJsonResponse(401, {
@@ -1963,6 +1970,8 @@ async function bootPage(input: {
   if (input.sessionStorage) {
     Object.defineProperty(window, "sessionStorage", {
       value: {
+        get length() { return input.sessionStorage!.size; },
+        key(index: number) { return [...input.sessionStorage!.keys()][index] ?? null; },
         getItem: (key: string) => input.sessionStorage?.get(key) ?? null,
         setItem: (key: string, value: string) => {
           input.sessionStorage?.set(key, value);
@@ -2008,6 +2017,7 @@ async function bootPage(input: {
   }
 
   window.eval(readUiScript("player-proof.js"));
+  window.eval(readUiScript("returning-player.js"));
   if (input.scriptFile === "setup-flow.js" && ["join", "invite"].includes(window.document.getElementById("setup-flow-root")?.getAttribute("data-page") ?? "")) {
     window.eval(readUiScript("auth-flow.js"));
   }
@@ -2423,8 +2433,8 @@ for (const failure of ["network", "lost-response", 503, 401, 200] as const) {
 }
 
 for (const failure of ["lost-response", "upstream-503"] as const) {
-  for (const ordering of ["session-first", "logout-first", "join-last"] as const) {
-    test(`sign out recovery stays visible after a join session probe: ${failure}, ${ordering}`, async () => {
+  for (const ordering of ["before-failure", "after-failure", "after-retry"] as const) {
+    test(`sign out recovery rejects a late join response: ${failure}, ${ordering}`, async () => {
       const apiState = createMockApiState();
       seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "viewer" });
       const game = apiState.games.get("logout-fixture");
@@ -2480,6 +2490,7 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
             assert.notEqual(page.window.getComputedStyle(ancestor).display, "none", ancestor.id || ancestor.tagName);
           }
         };
+        await chooseNewJoinPlayer(page);
         nickname.value = "New player";
         dispatchSubmit(form);
         // WebCrypto runs on a worker, so microtask draining alone cannot prove
@@ -2490,18 +2501,13 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
         await flushAsync();
         assert(completeJoin);
         assert(completeLogoutFailure);
-        if (ordering !== "join-last") {
+        if (ordering === "before-failure") {
           completeJoin();
           await flushAsync();
-          assert(completeSessionProbe);
-        }
-        if (ordering === "session-first") {
-          assert(completeSessionProbe);
-          completeSessionProbe();
-          await flushAsync();
+          assert.equal(completeSessionProbe, undefined, "late registration must not start a post-logout claim session probe");
           assertVisible(feedback);
           assertVisible(button);
-          assert.equal(button.disabled, true, "a 401 cannot release the pending logout latch");
+          assert.equal(button.disabled, true, "a late registration cannot release the pending logout latch");
           assert.equal(feedback.textContent, "Signing out…");
         }
         completeLogoutFailure();
@@ -2509,29 +2515,30 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
         assertVisible(feedback);
         assertVisible(button);
         assert.equal(button.disabled, false);
-        if (ordering === "join-last") {
+        if (ordering === "after-failure") {
           completeJoin();
           await flushAsync();
-          assert(completeSessionProbe);
         }
-        if (ordering !== "session-first") {
-          assert(completeSessionProbe);
-          completeSessionProbe();
-          await flushAsync();
-        }
+        assert.equal(completeSessionProbe, undefined);
+        assert.equal(sessionRequests, 1, "only initial account discovery is permitted after the entry flow is invalidated");
         assertVisible(feedback);
         assertVisible(button);
         assert.equal(feedback.textContent, "Sign out could not be confirmed. Please try again.");
         assert.equal(button.disabled, false);
         assert.equal(page.navigations.length, 0);
-        assert.equal(page.document.getElementById("join-result-player")?.textContent, "New player");
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "");
+        assert.equal(page.document.getElementById("join-result")?.hidden, true, "late response cannot restore private player context");
         assert.doesNotMatch(page.document.getElementById("join-claim-status")?.textContent ?? "", /signed in as/i);
         dispatchClick(button);
         await flushAsync();
         assert.equal(logoutRequests, 2);
+        if (ordering === "after-retry") { completeJoin(); await flushAsync(); }
+        assert.equal(completeSessionProbe, undefined);
+        assert.equal(sessionRequests, 1);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "");
         const playerId = [...apiState.players.values()].find((player) => player.nickname === "New player")?.playerId;
-        assert(playerId);
-        assert.deepEqual(page.navigations, [{ url: "/sign-in?returnTo=" + encodeURIComponent("/join?code=ABCD2345&playerId=" + encodeURIComponent(playerId)), mode: "replace" }]);
+        assert(playerId, "the independent public registration may commit without restoring its old browser flow");
+        assert.deepEqual(page.navigations, [{ url: "/sign-in?returnTo=" + encodeURIComponent("/join?code=ABCD2345"), mode: "replace" }]);
       } finally {
         page.dom.window.close();
       }
@@ -2719,7 +2726,8 @@ test("sign out is offered before a signed-in player submits the initial join for
     assert(button instanceof page.window.HTMLButtonElement);
     assert.equal(button.disabled, false);
     assert.equal(page.document.getElementById("account-actions")?.hasAttribute("hidden"), false);
-    assert.deepEqual(requests, [{ path: "/v1/auth/session", method: "GET" }], "do not join or claim while checking the account");
+    assert.deepEqual(requests, [{ path: "/v1/auth/session", method: "GET" },
+      { path: "/v1/join/ABCD2345/linked-players", method: "GET" }], "account and owned-player discovery never join or claim");
     dispatchClick(button);
     await flushAsync();
     assert.deepEqual(page.navigations, [{ url: "/sign-in?returnTo=" + encodeURIComponent("/join?code=ABCD2345"), mode: "replace" }]);
@@ -2770,7 +2778,7 @@ test("sign out session protection hides stale account data on BFCache restoratio
   }
 });
 
-test("sign out BFCache protection leaves anonymous join forms usable", async () => {
+test("anonymous join BFCache restoration reloads before reusing the form", async () => {
   const page = await bootPage({
     html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
     scriptFile: "setup-flow.js", apiState: createMockApiState(),
@@ -2780,7 +2788,7 @@ test("sign out BFCache protection leaves anonymous join forms usable", async () 
     Object.defineProperty(restored, "persisted", { value: true });
     page.window.dispatchEvent(restored);
     assert.equal(page.document.querySelector('[data-ui="app-shell"]')?.hasAttribute("hidden"), false);
-    assert.equal(page.navigations.length, 0);
+    assert.deepEqual(page.navigations, [{ url: "http://localhost:3000/join/ABCD2345", mode: "reload" }]);
   } finally {
     page.dom.window.close();
   }
@@ -12479,6 +12487,7 @@ test("join page requires explicit profile linking after a signed-in participant 
   assert(nicknameInput instanceof joinPage.window.HTMLInputElement);
   assert(form instanceof joinPage.window.HTMLFormElement);
 
+  await chooseNewJoinPlayer(joinPage);
   nicknameInput.value = "Dee";
   nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
   dispatchSubmit(form);
@@ -12604,6 +12613,7 @@ test("join page keeps committed registration when an API response omits proof me
   assert(form instanceof joinPage.window.HTMLFormElement);
   assert(joinButton instanceof joinPage.window.HTMLButtonElement);
 
+  await chooseNewJoinPlayer(joinPage);
   nicknameInput.value = "Ez";
   nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
   dispatchSubmit(form);
@@ -12873,6 +12883,16 @@ test("results entry confirmed malformed goal response still clears draft and ret
   } finally { page.dom.window.close(); }
 });
 
+async function chooseNewJoinPlayer(page: Awaited<ReturnType<typeof bootPage>>) {
+  await flushAsync();
+  const control = [...page.document.querySelectorAll("#returning-player button")].find(button => button.textContent === "Create new player");
+  assert(control instanceof page.window.HTMLButtonElement, "completed signed-in discovery offers an explicit new-player action");
+  assert.equal(control.disabled, false);
+  assert.equal(page.document.getElementById("join-game-form")?.hidden, true, "new-player form is not the default signed-in path");
+  dispatchClick(control); await flushAsync();
+  assert.equal(page.document.getElementById("join-game-form")?.hidden, false);
+}
+
 function joinEntryControls(page: Awaited<ReturnType<typeof bootPage>>) {
   const form = page.document.getElementById("join-game-form");
   const nickname = page.document.getElementById("join-player-nickname");
@@ -12921,12 +12941,14 @@ for (const lost of ["503", "network", "malformed"] as const) {
       dispatchSubmit(controls.form); dispatchSubmit(controls.form);
       await flushAsync();
       assert.equal(requests.length, 1);
+      assert.equal(page.document.getElementById("returning-player")?.hidden, true, "do not abandon a pending anonymous registration via generic sign-in");
       assert.equal(controls.nickname.disabled, true);
       controls.nickname.value = "Different player";
       controls.nickname.dispatchEvent(new page.window.Event("input", { bubbles: true }));
       assert.equal(controls.nickname.value, "First player");
       assert(release); release(); await flushAsync();
       assert.equal(controls.button.textContent, "Retry join");
+      assert.equal(page.document.getElementById("returning-player")?.hidden, true, "uncertain registration retains only its proof-bound recovery");
       assert.equal(page.document.getElementById("join-result")?.hidden, true);
       assert.equal(apiState.players.size, before + 1);
       dispatchSubmit(controls.form); await flushAsync();
@@ -12975,6 +12997,7 @@ test("disabled linking joins once and retains the exact request after a lost rep
   });
   try {
     const controls = joinEntryControls(page);
+    await chooseNewJoinPlayer(page);
     controls.nickname.value = "Still playing";
     dispatchSubmit(controls.form); await flushAsync();
     dispatchSubmit(controls.form); await flushAsync();
@@ -13015,6 +13038,7 @@ for (const cleanupFailure of [false, true]) {
         },
       });
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Player 0"; dispatchSubmit(controls.form); await flushAsync();
       assert.equal(joins, 1); assert.equal(controls.form.hidden, true);
       if (cleanupFailure) {
@@ -13045,7 +13069,7 @@ test("results entry linking navigation never repeats a confirmed registration or
     html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
     scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
-      if (String(input).includes("/v1/join/")) joins += 1;
+      if (String(input).includes("/v1/join/") && init.method === "POST") joins += 1;
       if (String(input).endsWith("/claim")) {
         claims += 1;
         throw new Error("Joining must not make a claim request");
@@ -13055,6 +13079,7 @@ test("results entry linking navigation never repeats a confirmed registration or
   });
   try {
     const controls = joinEntryControls(page);
+    await chooseNewJoinPlayer(page);
     controls.nickname.value = "Joined player";
     dispatchSubmit(controls.form); await flushAsync();
     assert.equal(joins, 1); assert.equal(claims, 0);
@@ -13086,13 +13111,14 @@ for (const probe of ["503", "408", "malformed"] as const) {
       fetch: async (input, init = {}) => {
         const path = new URL(String(input)).pathname;
         if (path === "/v1/auth/session" && ++sessionReads > 1) return createJsonResponse(probe === "malformed" ? 200 : Number(probe), {});
-        if (path.startsWith("/v1/join/")) joins += 1;
+        if (path.startsWith("/v1/join/") && init.method === "POST") joins += 1;
         if (path.endsWith("/claim")) claims += 1;
         return base(input, init);
       },
     });
     try {
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Known registration";
       dispatchSubmit(controls.form); await flushAsync();
       for (let wait = 0; wait < 20 && !page.document.getElementById("setup-error")?.textContent?.includes("Sign-in could not be checked"); wait += 1) await flushAsync();
@@ -13479,7 +13505,7 @@ for (const operation of ["join"] as readonly string[]) {
 }
 
 for (const staleStatus of [401, 503]) {
-  test("results entry stale initial session probe cannot replace a later verified account: " + staleStatus, async () => {
+  test("results entry blocks creation until the initial session probe is known: " + staleStatus, async () => {
     const apiState = createMockApiState(); seedEntryInvite(apiState);
     apiState.games.get("invite-entry")!.joinCode = "ABCD2345";
     const base = createMockFetch(apiState);
@@ -13498,14 +13524,23 @@ for (const staleStatus of [401, 503]) {
     try {
       const controls = joinEntryControls(page);
       controls.nickname.value = "Later account"; dispatchSubmit(controls.form); await flushAsync();
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Joined game.");
-      assert.equal(page.document.getElementById("account-actions")?.hidden, false);
-      assert.equal(reads, 2);
+      assert.equal(controls.form.hidden, true);
+      assert.equal(apiState.lastPublicJoinRequest, null, "an unresolved session cannot bypass discovery by submitting the hidden form");
+      assert.equal(page.document.getElementById("account-actions")?.hidden, true);
+      assert.equal(reads, 1);
       assert(release); release(); await flushAsync();
-      assert.equal(page.document.getElementById("account-actions")?.hidden, false);
-      assert.equal(page.document.getElementById("sign-out")?.hasAttribute("disabled"), false);
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Joined game.");
-      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+      if (staleStatus === 401) {
+        assert.equal(controls.form.hidden, false, "a confirmed visitor can explicitly enter a new player");
+        assert.equal(page.document.getElementById("account-actions")?.hidden, true);
+      } else {
+        assert.equal(controls.form.hidden, true, "an unavailable session is not an anonymous result");
+        const retry = [...page.document.querySelectorAll("#returning-player button")].find(button => button.textContent === "Retry");
+        assert(retry instanceof page.window.HTMLButtonElement); dispatchClick(retry); await flushAsync();
+        assert.equal(reads, 2);
+        await chooseNewJoinPlayer(page);
+        assert.equal(page.document.getElementById("account-actions")?.hidden, false);
+      }
+      assert.equal(apiState.lastPublicJoinRequest, null, "session resolution and explicit creation disclosure never register automatically");
     } finally { page.dom.window.close(); }
   });
 }
@@ -13667,6 +13702,7 @@ for (const item of [
     });
     try {
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Joined scorer"; dispatchSubmit(controls.form); await flushAsync();
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Joined scorer");
       assert.equal(page.document.getElementById("setup-status")?.textContent, "Joined game.");
@@ -13757,6 +13793,7 @@ for (const item of [
     });
     try {
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Registered player"; controls.nickname.focus(); dispatchSubmit(controls.form); await flushAsync();
       assert.deepEqual(writes, ["/v1/join/ABCD2345"], "never send a claim POST to a different normalized endpoint");
       assert.equal(apiState.gamePlayers.has("invite-entry:" + item.id), true);

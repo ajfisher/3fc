@@ -931,7 +931,8 @@ test("entry pages load the same versioned return validator once before their con
       try {
         const document = dom.window.document;
         const scripts = [...document.querySelectorAll('script')].map(script => script.getAttribute('src'));
-        assert.deepEqual(scripts, ["/ui/player-proof.js?v=entry-fixture", "/ui/player-consolidation.js?v=entry-fixture", "/ui/auth-flow.js?v=entry-fixture", "/ui/setup-flow.js?v=entry-fixture"]);
+        assert.deepEqual(scripts, ["/ui/player-proof.js?v=entry-fixture", "/ui/player-consolidation.js?v=entry-fixture", "/ui/auth-flow.js?v=entry-fixture",
+          ...(document.getElementById("returning-player") ? ["/ui/returning-player.js?v=entry-fixture"] : []), "/ui/setup-flow.js?v=entry-fixture"]);
         assert(document.body.getAttribute('data-return-target-patterns'));
         assert.equal(document.querySelectorAll('[data-ui="hero"]').length, 1);
         assert.equal(document.querySelectorAll('h2').length, 0);

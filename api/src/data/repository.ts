@@ -16,6 +16,8 @@ import {
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerConsolidationService } from "./player-consolidation.js";
+import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
+import { OwnedPlayerJoinService } from "./owned-player-join.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
   identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
 import {
@@ -974,6 +976,12 @@ function withTimestamps<T extends object>(
 }
 
 export class ThreeFcRepository {
+  private ownedJoinService(): OwnedPlayerJoinService {
+    return new OwnedPlayerJoinService(this.client, this.tableName, () => this.clock.now(),
+      (game, id, nickname, now) => this.planPlayerMembership(game, id, nickname, now), process.env.PLAYER_RETURNING_JOIN_ENABLED === "true");
+  }
+  listOwnedJoinPlayers(input: Parameters<OwnedPlayerJoinService["list"]>[0]) { return this.ownedJoinService().list(input); }
+  joinOwnedPlayer(input: Parameters<OwnedPlayerJoinService["join"]>[0]) { return this.ownedJoinService().join(input); }
   private consolidationService(): PlayerConsolidationService {
     return new PlayerConsolidationService(this.client, this.tableName, () => this.clock.now(),
       process.env.PLAYER_CONSOLIDATION_ENABLED === "true");
@@ -3856,6 +3864,7 @@ export class ThreeFcRepository {
       throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account. Ask the organiser for help.");
     }
     const context = await this.readProofContext(proof);
+    const claimsRevision = await readPlayerClaimsRevision(this.client, this.tableName, input.userId);
     const now = this.clock.now();
     verifyPlayerConfirmation({ sessionId: input.sessionId!, userId: input.userId, proofId: proof.proofId,
       revision: proof.playerRevision }, credential.confirmation, Date.parse(now));
@@ -3867,6 +3876,7 @@ export class ThreeFcRepository {
     try {
       await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
         this.identities.writableControl(context.control), ...this.identities.planRevision(context.identity, now, true),
+        advancePlayerClaimsRevision(this.tableName, claimsRevision, now),
         ...context.checks, playerWrite,
         this.proofWrite({ ...proof, state: "consumed", consumedByUserId: input.userId, committedPlayer }, now, stored),
         { Put: { TableName: this.tableName, Item: buildItem(userPk(input.userId), playerClaimSk(input.playerId),

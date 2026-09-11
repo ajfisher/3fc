@@ -7,6 +7,7 @@ import { URL, pathToFileURL } from "node:url";
 import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
 import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
 import { handlePlayerConsolidationRoute, isPlayerConsolidationRoute, type PlayerConsolidationRepository } from "./player-consolidation-routes.js";
+import { handleOwnedPlayerJoinRoute, isOwnedPlayerJoinRoute, type OwnedPlayerJoinRepository } from "./owned-player-join-routes.js";
 import { PlayerProofError } from "./auth/player-proof.js";
 import { PlayerIdentityError } from "./data/player-identity.js";
 import {
@@ -3018,6 +3019,23 @@ export async function handleLocalPlayerDirectoryRoute(input: {
   return result.statusCode;
 }
 
+export async function handleLocalOwnedPlayerJoinRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: OwnedPlayerJoinRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handleOwnedPlayerJoinRoute({ ...input, body, idempotencyKey: readHeaderValue(input.request, "idempotency-key"),
+    repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
 export async function handleLocalPlayerConsolidationRoute(input: {
   request: IncomingMessage; response: ServerResponse; method: string; route: string;
   rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerConsolidationRepository;
@@ -5049,6 +5067,11 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isOwnedPlayerJoinRoute(method, route)) {
+        status = await handleLocalOwnedPlayerJoinRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
       if (isPlayerConsolidationRoute(method, route)) {
         status = await handleLocalPlayerConsolidationRoute({ request, response, method, route,
           rawQueryString: requestUrl.search.slice(1), session: authGate.session });

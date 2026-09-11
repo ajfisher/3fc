@@ -54,6 +54,11 @@ configure_player_claim_mode() {
     true|false) export PLAYER_CONSOLIDATION_ENABLED ;;
     *) echo "PLAYER_CONSOLIDATION_ENABLED must be true or false" >&2; return 1 ;;
   esac
+  PLAYER_RETURNING_JOIN_ENABLED="${PLAYER_RETURNING_JOIN_ENABLED:-false}"
+  case "$PLAYER_RETURNING_JOIN_ENABLED" in
+    true|false) export PLAYER_RETURNING_JOIN_ENABLED ;;
+    *) echo "PLAYER_RETURNING_JOIN_ENABLED must be true or false" >&2; return 1 ;;
+  esac
 }
 if [[ "$SERVICE" == "api-core" ]]; then
   configure_player_claim_mode
@@ -111,9 +116,9 @@ if [[ "$SERVICE" == "api-core" ]]; then
   # Record code provenance and these nonsecret switches only, never the full environment.
   FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
     --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
-    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED}' \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED}' \
     --output json)"
-  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation' \
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning' \
     <<< "$FUNCTION_FINGERPRINT" >/dev/null
 fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

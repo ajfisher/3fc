@@ -2632,6 +2632,15 @@ body {
   > button { justify-self: start; }
 }
 
+[data-ui="returning-player-content"] {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  > p { margin: 0; overflow-wrap: anywhere; }
+  > button, > a { justify-self: start; min-height: 3rem; }
+  [data-ui="input"] { font-size: 1rem; }
+}
+
 [data-ui="consolidation-selections"] {
   list-style: none;
   padding: 0;

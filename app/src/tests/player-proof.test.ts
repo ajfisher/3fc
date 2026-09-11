@@ -29,6 +29,8 @@ function page(input: { url: string; html?: string; storage?: Map<string, string>
   Object.defineProperty(dom.window, "crypto", { value: webcrypto });
   Object.defineProperty(dom.window, "TextEncoder", { value: TextEncoder });
   Object.defineProperty(dom.window, "sessionStorage", { value: {
+    get length() { return storage.size; },
+    key(index: number) { return [...storage.keys()][index] ?? null; },
     getItem(key: string) { return storage.get(key) ?? null; },
     setItem(key: string, value: string) { if (input.blockedStorage) throw new Error("blocked"); storage.set(key, value); },
     removeItem(key: string) { if (input.blockedRemoval) throw new Error("blocked"); storage.delete(key); },
@@ -86,6 +88,22 @@ test("private player proof is persisted before use, reused for a retry and purge
   view.proof.clear();
   assert.equal(view.storage.size, 0);
   assert.equal(await view.proof.read(first.proofId), null);
+});
+
+test("sign-out away from the join page removes account-owned returning drafts", (t) => {
+  const storage = new Map([["threefc.returning-join.v1:account:ABCDEFGH", "private draft"], ["unrelated", "keep"]]);
+  const view = page({ url: `${origin}/sign-in`, html: renderSignInPage(origin, "/setup"), storage });
+  t.after(() => view.dom.window.close());
+  assert.equal(view.proof.clear(), true);
+  assert.deepEqual([...storage], [["unrelated", "keep"]]);
+});
+
+test("sign-out fails closed when a returning draft cannot be removed", (t) => {
+  const storage = new Map([["threefc.returning-join.v1:account:ABCDEFGH", "private draft"]]);
+  const view = page({ url: `${origin}/sign-in`, html: renderSignInPage(origin, "/setup"), storage, blockedRemoval: true });
+  t.after(() => view.dom.window.close());
+  assert.equal(view.proof.clear(), false);
+  assert.ok(view.document.getElementById("player-proof-purge-recovery"));
 });
 
 test("private player link with missing or blocked storage offers real recovery without consuming proof", async (t) => {

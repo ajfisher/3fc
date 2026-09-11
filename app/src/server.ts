@@ -63,6 +63,12 @@ const UI_PLAYER_CONSOLIDATION_SCRIPT = [
   resolve(process.cwd(), "app/src/ui/player-consolidation.js"),
 ].map((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find((value) => value !== null);
 if (!UI_PLAYER_CONSOLIDATION_SCRIPT) throw new Error("Player consolidation script is missing.");
+const UI_RETURNING_PLAYER_SCRIPT = [
+  fileURLToPath(new URL("./ui/returning-player.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/returning-player.js"),
+  resolve(process.cwd(), "app/src/ui/returning-player.js"),
+].map((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find((value) => value !== null);
+if (!UI_RETURNING_PLAYER_SCRIPT) throw new Error("Returning player script is missing.");
 
 function loadUiStylesheet(): string {
   for (const stylesheetPath of UI_STYLESHEET_PATHS) {
@@ -218,6 +224,10 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     }
     if (method === "GET" && route === "/ui/player-consolidation.js") {
       sendJavascript(response, securityHeaders, 200, UI_PLAYER_CONSOLIDATION_SCRIPT!);
+      return;
+    }
+    if (method === "GET" && route === "/ui/returning-player.js") {
+      sendJavascript(response, securityHeaders, 200, UI_RETURNING_PLAYER_SCRIPT!);
       return;
     }
 

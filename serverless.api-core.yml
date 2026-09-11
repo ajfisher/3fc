@@ -30,6 +30,7 @@ provider:
     MAGIC_LINK_SESSION_TTL_SECONDS: 691200
     PLAYER_CLAIM_MODE: ${env:PLAYER_CLAIM_MODE, 'proof'}
     PLAYER_CONSOLIDATION_ENABLED: ${env:PLAYER_CONSOLIDATION_ENABLED, 'false'}
+    PLAYER_RETURNING_JOIN_ENABLED: ${env:PLAYER_RETURNING_JOIN_ENABLED, 'false'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS, '3'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS, '900'}
     MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS, '20'}
@@ -116,6 +117,18 @@ functions:
       - httpApi:
           method: GET
           path: /v1/join/{joinCode}/player-context
+      - httpApi:
+          method: GET
+          path: /v1/join/{joinCode}/linked-players
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join/{joinCode}/linked-players
+      - httpApi:
+          method: POST
+          path: /v1/join/{joinCode}/linked-player
+      - httpApi:
+          method: OPTIONS
+          path: /v1/join/{joinCode}/linked-player
       - httpApi:
           method: OPTIONS
           path: /v1/join/{joinCode}/player-context

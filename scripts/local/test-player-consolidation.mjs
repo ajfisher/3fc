@@ -44,12 +44,13 @@ async function stopServer() {
 }
 let endpoint;
 let base;
-async function startServer(mode) {
+async function startServer(mode, returningMode = "true") {
   const port = await freePort(); base = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, ["api/dist/server.js"], { env: { ...process.env,
     PORT: String(port), DYNAMODB_ENDPOINT: endpoint, DYNAMODB_TABLE: tableName,
     AWS_REGION: "ap-southeast-2", AWS_ACCESS_KEY_ID: "local", AWS_SECRET_ACCESS_KEY: "local",
     CORS_ALLOWED_ORIGINS: origin, APP_BASE_URL: origin, PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: mode,
+    PLAYER_RETURNING_JOIN_ENABLED: returningMode,
   }, stdio: ["ignore", "pipe", "pipe"] });
   childExit = once(child, "exit");
   for (const output of [child.stdout, child.stderr]) output.on("data", data => { serverLogs = (serverLogs + data).slice(-250_000); });
@@ -118,6 +119,7 @@ try {
   assert(ready, "disposable database readiness");
   await startServer("true");
   process.env.PLAYER_CLAIM_MODE = "proof"; process.env.PLAYER_CONSOLIDATION_ENABLED = "true";
+  process.env.PLAYER_RETURNING_JOIN_ENABLED = "true";
   repository = new ThreeFcRepository(client, tableName);
   for (const [subject, sessionId] of Object.entries(sessions)) await client.send(new PutItemCommand({ TableName: tableName, Item: {
     pk: { S: `AUTH_SESSION#${sessionId}` }, sk: { S: "METADATA" }, entityType: { S: "session" },
@@ -228,13 +230,89 @@ try {
     requestContext: { http: { method: "POST", path: consolidate + "/commit", sourceIp: "127.0.0.1" } } });
   assert.equal(switched.statusCode, 403);
   assert.equal(JSON.parse(switched.body).code, "account_changed");
+  // Returning joins use only disposable canonical/alias fixtures established
+  // above. Traverse every bounded private source stream, not just page one.
+  const ownedList = async (code, account = "A") => {
+    const found = new Map(); let cursor = null;
+    for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
+      const params = new URLSearchParams({ limit: "2", ...(cursor ? { cursor } : {}) });
+      const response = await expect(`/v1/join/${code}/linked-players?${params}`, { method: "GET", account }, 200);
+      assert.equal(response.body.accountId, account);
+      assert.equal(response.body.complete, response.body.cursor === null);
+      for (const player of response.body.players) {
+        assert.equal(Object.hasOwn(player, "claimedByUserId"), false);
+        assert.equal(Object.hasOwn(player, "email"), false);
+        assert.equal(found.has(player.playerId), false, "canonical roots must not repeat across pages");
+        found.set(player.playerId, player);
+      }
+      cursor = response.body.cursor;
+      if (response.body.complete) return found;
+    }
+    assert.fail("owned-player pagination did not terminate within fixture bound");
+  };
+  const historicalGame = await repository.getGame("game-owned-1");
+  const historicalOwned = await ownedList(historicalGame.joinCode);
+  assert.equal(historicalOwned.get("owned-0").registeredPlayerId, "owned-1");
+  assert.equal(historicalOwned.has("owned-1"), false);
+  const historicalKey = randomUUID();
+  const historicalJoin = await expect(`/v1/join/${historicalGame.joinCode}/linked-player`, { key: historicalKey,
+    body: { playerId: "owned-0", expectedAccountId: "A" } }, 200);
+  assert.equal(historicalJoin.body.player.playerId, "owned-1");
+  assert.equal(historicalJoin.body.alreadyRegistered, true);
+  assert.deepEqual((await expect(`/v1/join/${historicalGame.joinCode}/linked-player`, { key: historicalKey,
+    body: { playerId: "owned-0", expectedAccountId: "A" } }, 200)).body, historicalJoin.body);
+  const returningGame = await repository.createGame({ gameId: "returning-new", leagueId: "league", seasonId: "season",
+    sessionId: randomUUID(), gameStartTs: new Date().toISOString() });
+  const returningPath = `/v1/join/${returningGame.joinCode}/linked-player`;
+  const returningKey = randomUUID();
+  await expect(returningPath, { key: randomUUID(), body: { playerId: "owned-1", expectedAccountId: "A" } }, 409);
+  const firstReturning = await expect(returningPath, { key: returningKey, body: { playerId: "owned-0", expectedAccountId: "A" } }, 200);
+  assert.equal(firstReturning.body.player.playerId, "owned-0", "future registration uses the selected canonical identity");
+  assert.equal(firstReturning.body.alreadyRegistered, false);
+  assert.equal(firstReturning.body.team, null);
+  assert.equal((await ownedList(returningGame.joinCode)).get("owned-0").registeredPlayerId, "owned-0");
+  assert.deepEqual((await expect(returningPath, { key: returningKey, body: { playerId: "owned-0", expectedAccountId: "A" } }, 200)).body, firstReturning.body);
+  assert.equal((await expect(returningPath, { key: randomUUID(), body: { playerId: "owned-0", expectedAccountId: "A" } }, 200)).body.alreadyRegistered, true);
+  assert(await read("GAME#returning-new", "PLAYER#owned-0"));
+  assert.equal(await read("GAME#returning-new", "PLAYER#owned-1"), undefined);
+  for (const teamId of ["red", "blue", "yellow"]) assert.equal(await read("GAME#returning-new", `ROSTER#${teamId}#owned-0`), undefined);
+  await expect(returningPath, { key: returningKey, body: { playerId: "owned-1", expectedAccountId: "A" } }, 409);
+  await expect(returningPath, { account: "B", key: randomUUID(), body: { playerId: "owned-0", expectedAccountId: "A" } }, 403);
+  await expect(returningPath, { account: "B", key: randomUUID(), body: { playerId: "owned-0", expectedAccountId: "B" } }, 403);
+  assert.equal((await ownedList(returningGame.joinCode, "B")).size, 0);
+  await expect(`/v1/join/${returningGame.joinCode}/linked-players`, { method: "GET", account: null }, 401);
+  await expect(returningPath, { account: null, key: randomUUID(), body: { playerId: "owned-0", expectedAccountId: "A" } }, 401);
+  const finishedJoinGame = await repository.createGame({ gameId: "returning-finished", leagueId: "league", seasonId: "season",
+    sessionId: randomUUID(), gameStartTs: new Date().toISOString() });
+  for (const teamId of ["red", "blue", "yellow"]) await repository.createGameTeamOverride({ gameId: finishedJoinGame.gameId, teamId, name: teamId });
+  for (const third of [1, 2, 3]) {
+    await repository.startGameThird({ gameId: finishedJoinGame.gameId, third });
+    await repository.finishGameThird({ gameId: finishedJoinGame.gameId, third });
+  }
+  await repository.finishGame({ gameId: finishedJoinGame.gameId });
+  const finishedReturning = await expect(`/v1/join/${finishedJoinGame.joinCode}/linked-player`, { key: randomUUID(),
+    body: { playerId: "owned-0", expectedAccountId: "A" } }, 200);
+  assert.equal(finishedReturning.body.alreadyRegistered, false);
+  assert.equal(finishedReturning.body.team, null);
+  await repository.createLeague({ leagueId: "returning-other-league", name: "Private other fixture", createdByUserId: "organiser" });
+  await repository.createSeason({ leagueId: "returning-other-league", seasonId: "other-season", name: "Other season" });
+  const outside = await repository.createGame({ gameId: "returning-outside", leagueId: "returning-other-league", seasonId: "other-season",
+    sessionId: randomUUID(), gameStartTs: new Date().toISOString() });
+  assert.equal((await ownedList(outside.joinCode)).size, 0, "linked profiles are not imported into another league");
+  await expect(`/v1/join/${outside.joinCode}/linked-player`, { key: randomUUID(), body: { playerId: "owned-0", expectedAccountId: "A" } }, 403);
+  console.log("PASS actual returning-player paginated discovery, historical alias registration, canonical future join, immutable retries and account privacy");
+
   if (process.argv.includes("--browser")) {
     const { runConsolidationBrowser } = await import("./consolidation-browser.mjs");
     await runConsolidationBrowser({ repository, base, sessions, origin });
+    const { runReturningPlayerBrowser } = await import("./returning-player-browser.mjs");
+    await runReturningPlayerBrowser({ repository, base, sessions, origin });
   }
-  await stopServer(); await startServer("false");
+  await stopServer(); await startServer("false", "false");
   assert.equal((await commit(maximum)).status, 200);
   await expect(consolidate, { account: "organiser", body: proposal(["claim-a", "claim-b"]) }, 503);
+  await expect(`/v1/join/${returningGame.joinCode}/linked-players`, { method: "GET", account: "A" }, 503);
+  await expect(returningPath, { key: randomUUID(), body: { playerId: "owned-0", expectedAccountId: "A" } }, 503);
   for (const secret of secrets) assert.equal(serverLogs.includes(secret), false, "no bearer proof in API logs");
   console.log("PASS actual Lambda adapter, account binding and disabled new writes with committed receipt recovery");
 } finally {

@@ -1020,6 +1020,8 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async listOwnedJoinPlayers() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
+      async joinOwnedPlayer() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
       async previewPlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
       async getPlayerConsolidation() { throw new PlayerIdentityError("proposal_not_found", 404, "This profile proposal is not available."); },
@@ -2243,6 +2245,23 @@ function createHarness(config: HarnessConfig = {}) {
     leagueInvites,
   };
 }
+
+test("Lambda returning-player routes require a session and retain private disabled responses", async () => {
+  const { handler } = createHarness({ sessions: { player: { sessionId: "player", subject: "owner",
+    email: "owner@example.com", createdAt: "2026-02-23T00:00:00.000Z", expiresAt: "2026-03-03T00:00:00.000Z" } } });
+  for (const method of ["GET", "POST"]) {
+    const event = createEvent({ method, path: `/v1/join/ABCDEFGH/${method === "GET" ? "linked-players" : "linked-player"}`,
+      body: method === "POST" ? { playerId: "one", expectedAccountId: "owner" } : undefined,
+      headers: { Origin: "https://qa.3fc.football", "Idempotency-Key": "owned-join" } });
+    assert.equal((await handler(event)).statusCode, 401);
+    event.cookies = ["threefc_session=player"];
+    const response = await handler(event);
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.headers?.["cache-control"], "no-store");
+    assert.equal(response.headers?.["referrer-policy"], "no-referrer");
+    assert.doesNotMatch(response.body, /owner@example/);
+  }
+});
 
 test("Lambda consolidation routes enter authenticated dispatch and preserve private disabled responses", async () => {
   const stamp = "2026-02-23T00:00:00.000Z";

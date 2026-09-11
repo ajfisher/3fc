@@ -11,6 +11,91 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/join/{joinCode}/linked-players:
+    get:
+      operationId: listOwnedJoinPlayers
+      summary: List the signed-in player's linked identities in this game's league
+      description: >-
+        Private session-authenticated read; not a public player or account directory. The server derives the
+        account and legacy ownership aliases from the session. Follow every opaque cursor, including empty
+        filtered pages, before treating the list as complete. Canonical identities can repeat across pages;
+        deduplicate by playerId. A changed ownership, directory or game snapshot rejects continuation rather
+        than certifying a partial list. No nickname matching or cross-league import. All responses use
+        Cache-Control no-store and Referrer-Policy no-referrer. Returning-player joining is disabled by
+        default and returns 503 until its reviewed writer deployment and drain are complete.
+      parameters:
+        - $ref: '#/components/parameters/OwnedJoinCode'
+        - name: cursor
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 8000 }
+          description: Opaque cursor from this account and join scope; duplicate and unknown query fields are rejected.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 20 }
+      responses:
+        '200':
+          description: One private page; complete is true exactly when cursor is null
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            Referrer-Policy: { schema: { type: string, const: no-referrer } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnedJoinPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/OwnedJoinUnavailable' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+  /v1/join/{joinCode}/linked-player:
+    post:
+      operationId: joinOwnedPlayer
+      summary: Join a game using an identity linked to the current account
+      description: >-
+        Requires an authenticated session, exact expectedAccountId and a stable Idempotency-Key. The
+        account identifier must equal the current session subject (or email only when no subject exists);
+        a switched account returns 403 account_changed before repository access. The server rechecks
+        ownership and league scope. New registrations are Unassigned; existing registrations retain their
+        original player ID and team. Joining finished games remains supported, without changing teams,
+        goals or results. A committed receipt is replayed without duplicating registration; reuse with a
+        different selected identity is rejected. Retain the exact body and key after an uncertain response.
+        Deleted or invalid game context is never recreated by retry. All responses use Cache-Control
+        no-store and Referrer-Policy no-referrer. The default-disabled returning-player gate returns 503.
+      parameters:
+        - $ref: '#/components/parameters/OwnedJoinCode'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          description: Stable non-empty request key retained with the exact selected identity for retries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [playerId, expectedAccountId]
+              properties:
+                playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+                expectedAccountId: { type: string, minLength: 1, maxLength: 2048 }
+      responses:
+        '200':
+          description: Registration outcome or original committed receipt; no claim secrets or ownership aliases
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            Referrer-Policy: { schema: { type: string, const: no-referrer } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnedJoinResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/OwnedJoinUnavailable' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /v1/player-consolidations:
     post:
       operationId: previewPlayerConsolidation
@@ -1796,6 +1881,15 @@ paths:
           $ref: "#/components/responses/NotFound"
 components:
   parameters:
+    OwnedJoinCode:
+      name: joinCode
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 8
+        pattern: '^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$'
     DirectoryLeagueId:
       name: leagueId
       in: query
@@ -1875,6 +1969,14 @@ components:
           - 2
           - 3
   responses:
+    OwnedJoinUnavailable:
+      description: Returning-player feature is disabled, directory cutover is incomplete, or linked identities cannot be safely checked. Retry later; do not automatically create a duplicate player.
+      headers:
+        Cache-Control: { schema: { type: string, const: no-store } }
+        Referrer-Policy: { schema: { type: string, const: no-referrer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     ConsolidationProposal:
       description: Private proposal state; no account identifiers or bearer material
       headers:
@@ -1968,6 +2070,76 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    OwnedJoinTeam:
+      type: [object, 'null']
+      additionalProperties: false
+      required: [teamId, name, color]
+      properties:
+        teamId: { type: string, enum: [red, blue, yellow] }
+        name: { type: string, minLength: 1 }
+        color: { type: [string, 'null'], minLength: 1 }
+    OwnedJoinPage:
+      type: object
+      additionalProperties: false
+      required: [accountId, gameId, leagueId, players, cursor, complete]
+      description: complete is true if and only if cursor is null. Empty players with a cursor is not an empty account result.
+      properties:
+        accountId: { type: string, minLength: 1, maxLength: 2048 }
+        gameId: { type: string, minLength: 1 }
+        leagueId: { type: string, minLength: 1 }
+        cursor: { type: [string, 'null'], minLength: 1, maxLength: 8000 }
+        complete: { type: boolean }
+        players:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [playerId, nickname, registeredPlayerId, team, seasons]
+            properties:
+              playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+              nickname: { type: string, minLength: 1 }
+              registeredPlayerId:
+                anyOf:
+                  - $ref: '#/components/schemas/DirectoryIdentifier'
+                  - type: 'null'
+                description: Original identity registered in this game, or null when not registered.
+              team: { $ref: '#/components/schemas/OwnedJoinTeam' }
+              seasons:
+                type: array
+                maxItems: 3
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [seasonId, name]
+                  properties:
+                    seasonId: { type: string, minLength: 1 }
+                    name: { type: string, minLength: 1 }
+    OwnedJoinResult:
+      type: object
+      additionalProperties: false
+      required: [accountId, gameId, joinCode, player, link, alreadyRegistered, team]
+      description: link.gameId equals gameId and link.playerId equals player.playerId. Receipt replay retains the original outcome snapshot.
+      properties:
+        accountId: { type: string, minLength: 1, maxLength: 2048 }
+        gameId: { type: string, minLength: 1 }
+        joinCode: { type: string, minLength: 1 }
+        alreadyRegistered: { type: boolean }
+        team: { $ref: '#/components/schemas/OwnedJoinTeam' }
+        player:
+          type: object
+          additionalProperties: false
+          required: [playerId, nickname]
+          properties:
+            playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+            nickname: { type: string, minLength: 1 }
+        link:
+          type: object
+          additionalProperties: false
+          required: [gameId, playerId]
+          properties:
+            gameId: { type: string, minLength: 1 }
+            playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
     ConsolidationPreviewRequest:
       type: object
       additionalProperties: false

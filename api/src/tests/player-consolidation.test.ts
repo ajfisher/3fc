@@ -206,6 +206,8 @@ test("20 claimed members fit one transaction and retain exactly one owner index"
   const audit = client.data(`PLAYER_CONSOLIDATION#${input.proposalId}`, "AUDIT");
   assert.equal((audit.indexesBefore as unknown[]).length, 20);
   assert.deepEqual(audit.indexesAfter, [{ userId: "owner", playerId: ids[0] }]);
+  assert.equal(client.read("USER#owner", "PLAYER_CLAIMS_REVISION")?.entityType?.S, "playerClaimsRevision");
+  assert.equal(client.transactions.at(-1)!.filter(action => action.Put?.Item?.sk?.S === "PLAYER_CLAIMS_REVISION").length, 1);
 });
 
 test("overlapping proposals have one winner and leave no loser audit or partial aliases", async () => {

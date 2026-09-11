@@ -176,6 +176,21 @@ original ID in its `playerClaim` payload. Returning-player enumeration and
 consolidation reconciliation must read both namespaces, validate the payload and
 resolve the complete canonical group. Never reconstruct an ID from an index key.
 
+`USER#{userId} / PLAYER_CLAIMS_REVISION` is a private, opaque revision updated
+atomically with claim acquisition and consolidation index changes. Returning
+discovery checks both trusted session-subject and legacy-email partitions and
+binds their revisions to pagination cursors. A missing legacy revision is fenced
+with an absence condition; it is safe only after revision-aware writers have
+replaced and outlived every old writer (see the returning-player rollout runbook).
+
+Returning self-registration stores an immutable `ownedPlayerJoinReceipt` at
+`GAME#{gameId} / OWNED_JOIN#{sha256([accountId,idempotencyKey])}` in the same
+transaction as registration and membership revisions. Its request digest binds
+the join code and selected ID. Replay checks current account ownership and game
+scope, then preserves the original registered player ID and receipt. The team
+snapshot in a receipt is historical, not authoritative current assignment.
+No new player, proof or league permission is created by this operation.
+
 Readable profile IDs may occupy the full 2,048-byte `PLAYER#` partition-key
 budget. Game registration and roster writes separately enforce their 1,024-byte
 sort-key budgets and return controlled errors before any partial write. Reject

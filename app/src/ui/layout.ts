@@ -994,7 +994,8 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
             <dl data-ui="id-preview" data-testid="join-context-details">
               <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${safeJoinCode}</dd></div>
             </dl>
-            <form data-ui="auth-form" id="join-game-form" novalidate>
+            <section id="returning-player" aria-label="Join with your player" hidden></section>
+            <form data-ui="auth-form" id="join-game-form" novalidate hidden>
               ${renderValidatedField({
                 id: "join-player-nickname",
                 label: "Player name",
@@ -1007,6 +1008,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
                 "data-action": "join-game",
                 "data-testid": "join-game",
               })}</div>
+              ${renderButton("Cancel", "secondary", { type: "button", id: "join-create-cancel", hidden: "" })}
             </form>
             <dl data-ui="join-receipt" data-testid="join-result" id="join-result" hidden>
               <div><dt>Player</dt><dd id="join-result-player"></dd></div>
@@ -1037,6 +1039,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
       </section>
     </main>
     ${renderAuthScriptTag()}
+    <script src="${escapeHtml(renderAssetPath("/ui/returning-player.js"))}" defer></script>
     ${renderSetupScriptTag()}
   </body>
 </html>`;
