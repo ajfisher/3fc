@@ -12,6 +12,7 @@ export interface PlayerReadRepository {
   getGameByJoinCode(code: string): Promise<{ gameId: string; joinCode: string } | null>;
   getGamePlayer(gameId: string, playerId: string): Promise<GamePlayerRecord | null>;
   getPlayer(playerId: string, options?: { consistentRead?: boolean }): Promise<PlayerSource | null>;
+  getPlayerView(playerId: string): Promise<{ originalPlayerId: string; canonicalPlayerId: string; player: PlayerSource } | null>;
   listGamePlayers(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<GamePlayerRecord[]>;
   listGameRoster(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<RosterAssignmentRecord[]>;
 }
@@ -55,7 +56,7 @@ export async function readJoinPlayerContext(repository: PlayerReadRepository, ra
     if (!game || normalizeJoinCodePathParam(game.joinCode) !== joinCode) return unavailable;
     const link = await repository.getGamePlayer(game.gameId, playerId);
     if (!link || link.gameId !== game.gameId || link.playerId !== playerId) return unavailable;
-    const player = await repository.getPlayer(playerId, { consistentRead: true });
+    const player = (await repository.getPlayerView(playerId))?.player;
     if (!player || player.playerId !== playerId) return unavailable;
     return { statusCode: 200, payload: joinPlayerContextResponseSchema.parse({ gameId: game.gameId, joinCode, player: publicPlayer(player) }) };
   } catch {
@@ -85,7 +86,7 @@ export async function readRosterPlayerData(repository: PlayerReadRepository, gam
       if (index >= ids.length) return;
       const id = ids[index];
       try {
-        const player = await repository.getPlayer(id, { consistentRead: true });
+        const player = (await repository.getPlayerView(id))?.player;
         if (!player) {
           if (linkedIds.has(id)) throw new Error("Joined player details could not be loaded.");
           continue;

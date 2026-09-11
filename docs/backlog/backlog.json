@@ -2757,7 +2757,7 @@
         "branch": "codex/league-player-directory",
         "notes": [
           "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md.",
-          "PR #166 implements the directory and audited migration; external review fixes and current-head QA acceptance are in progress. This issue remains open pending its complete evidence and delivery gate."
+          "PR #166 at 9e78e8348b2a684250d961d0518c09b4d411bd65 reached review:ready on 2026-09-11. CI34558554914 and QA34558774778 passed; exact-head Codex no-findings comment5629039309; audited isolated migration, long-ID claim/replay, reschedule repair, browser acceptance and resource cleanup recorded in comment5629153452. Remains open until authorised merge."
         ]
       }
     },
@@ -2810,11 +2810,12 @@
       "delivery": {
         "asOf": "2026-09-10",
         "wave": "reusable-players",
-        "status": "planned",
+        "status": "in-progress",
         "githubIssue": 160,
         "branch": "codex/player-consolidation",
         "notes": [
-          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md.",
+          "2026-09-11: implementation started after parent PR #166 reached review:ready with exact-head CI, QA, no-findings Codex completion and isolated migration acceptance. Consolidation remains disabled by default pending environment enablement."
         ]
       }
     },

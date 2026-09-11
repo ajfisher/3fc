@@ -14,6 +14,10 @@ function fixture(overrides: Partial<PlayerReadRepository> = {}): PlayerReadRepos
     async getGameByJoinCode(code) { return code === "ABCD2345" ? { gameId: "game-one", joinCode: code } : null; },
     async getGamePlayer(gameId, playerId) { return gameId === link.gameId && playerId === link.playerId ? link : null; },
     async getPlayer(id, options) { assert.equal(options?.consistentRead, true); return id === player.playerId ? { ...player, claimedByUserId: "private@example.com", access: { userId: "private-subject" } } : null; },
+    async getPlayerView(id) {
+      const resolved = await this.getPlayer(id, { consistentRead: true });
+      return resolved ? { originalPlayerId: id, canonicalPlayerId: id, player: resolved } : null;
+    },
     async listGamePlayers(_id, options) { assert.deepEqual(options, { complete: true, consistentRead: true }); return [link]; },
     async listGameRoster(_id, options) { assert.deepEqual(options, { complete: true, consistentRead: true }); return []; },
     ...overrides,
@@ -37,6 +41,22 @@ test("join context identifies exact membership without private fields, claiming 
   assert.deepEqual(await readJoinPlayerContext(fixture(), "ABCD2345", contextQuery("same-name-but-other-id")), expected);
   assert.deepEqual(await readJoinPlayerContext(fixture(), "BCDE2345", contextQuery("player-one")), expected);
   assert.deepEqual(await readJoinPlayerContext(fixture({ async getPlayer() { return null; } }), "ABCD2345", contextQuery("player-one")), expected);
+});
+
+test("canonical display preserves the historical registration ID in join and roster responses", async () => {
+  const repository = fixture({
+    async getPlayer() { throw new Error("Raw profile must not be presented"); },
+    async getPlayerView(id) { return { originalPlayerId: id, canonicalPlayerId: "retained-player",
+      player: { ...player, playerId: id, nickname: "Retained name", claimedByUserId: "private-owner" } }; },
+  });
+  const context = await readJoinPlayerContext(repository, "ABCD2345", contextQuery(player.playerId));
+  assert.equal(context.statusCode, 200);
+  assert.equal("player" in context.payload && context.payload.player.playerId, player.playerId);
+  assert.equal("player" in context.payload && context.payload.player.nickname, "Retained name");
+  const roster = await readRosterPlayerData(repository, link.gameId);
+  assert.equal(roster.unassignedPlayers[0].playerId, player.playerId);
+  assert.equal(roster.unassignedPlayers[0].nickname, "Retained name");
+  assert.doesNotMatch(JSON.stringify([context, roster.unassignedPlayers]), /private-owner|retained-player|claimedBy/);
 });
 
 test("join context rejects ambiguous or malformed queries and preserves exact opaque player IDs", async () => {

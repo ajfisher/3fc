@@ -2623,6 +2623,25 @@ body {
   padding: 0.3rem;
 }
 
+[data-ui="consolidation-editor"] {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  > h3 { margin: 0; }
+  [data-ui="input"] { font-size: 1rem; min-height: 3rem; }
+  > button { justify-self: start; }
+}
+
+[data-ui="consolidation-selections"] {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+  > li { display: grid; gap: 0.35rem; min-width: 0; overflow-wrap: anywhere; }
+  button { justify-self: start; }
+}
+
 [data-ui="directory-list"] {
   list-style: none;
   padding: 0;

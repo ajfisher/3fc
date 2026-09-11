@@ -11,6 +11,7 @@ import {
   renderInvitePage,
   renderJoinPage,
   renderPlayerLinkPage,
+  renderPlayerConsolidationPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -56,6 +57,12 @@ const UI_PLAYER_PROOF_SCRIPT = [
   resolve(process.cwd(), "app/src/ui/player-proof.js"),
 ].map((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find((value) => value !== null);
 if (!UI_PLAYER_PROOF_SCRIPT) throw new Error("Player proof script is missing.");
+const UI_PLAYER_CONSOLIDATION_SCRIPT = [
+  fileURLToPath(new URL("./ui/player-consolidation.js", import.meta.url)),
+  resolve(process.cwd(), "src/ui/player-consolidation.js"),
+  resolve(process.cwd(), "app/src/ui/player-consolidation.js"),
+].map((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find((value) => value !== null);
+if (!UI_PLAYER_CONSOLIDATION_SCRIPT) throw new Error("Player consolidation script is missing.");
 
 function loadUiStylesheet(): string {
   for (const stylesheetPath of UI_STYLESHEET_PATHS) {
@@ -202,6 +209,15 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     }
     if (method === "GET" && route === "/ui/player-proof.js") {
       sendJavascript(response, securityHeaders, 200, UI_PLAYER_PROOF_SCRIPT!);
+      return;
+    }
+    if (method === "GET" && (route === "/combine-players" || route === "/combine-players/")) {
+      sendHtml(response, { ...securityHeaders, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
+        200, renderPlayerConsolidationPage(apiBaseUrl));
+      return;
+    }
+    if (method === "GET" && route === "/ui/player-consolidation.js") {
+      sendJavascript(response, securityHeaders, 200, UI_PLAYER_CONSOLIDATION_SCRIPT!);
       return;
     }
 

@@ -8,6 +8,7 @@ import {
   renderInvitePage,
   renderJoinPage,
   renderPlayerLinkPage,
+  renderPlayerConsolidationPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -31,6 +32,14 @@ interface StaticAsset {
 }
 
 const STATIC_ASSETS: StaticAsset[] = [
+  {
+    outputPath: "ui/player-consolidation.js",
+    candidateSources: [
+      fileURLToPath(new URL("./ui/player-consolidation.js", import.meta.url)),
+      resolve(process.cwd(), "dist/ui/player-consolidation.js"), resolve(process.cwd(), "app/dist/ui/player-consolidation.js"),
+      resolve(process.cwd(), "src/ui/player-consolidation.js"), resolve(process.cwd(), "app/src/ui/player-consolidation.js"),
+    ],
+  },
   {
     outputPath: "ui/player-proof.js",
     candidateSources: [
@@ -107,6 +116,7 @@ export function buildStaticSite(options: StaticSiteBuildOptions): string {
     { path: "/setup", html: renderSetupHomePage(options.apiBaseUrl) },
     { path: "/sign-in", html: renderSignInPage(options.apiBaseUrl, "/setup") },
     { path: "/link-player", html: renderPlayerLinkPage(options.apiBaseUrl) },
+    { path: "/combine-players", html: renderPlayerConsolidationPage(options.apiBaseUrl) },
     { path: "/auth/callback", html: renderMagicLinkCallbackPage(options.apiBaseUrl) },
     { path: "/ui/components", html: renderComponentShowcasePage(options.apiBaseUrl) },
     { path: "/leagues", html: renderLeaguePage(options.apiBaseUrl, "") },

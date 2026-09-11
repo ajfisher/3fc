@@ -152,6 +152,23 @@ Deletion tombstones retain scope needed to verify historical membership.
 Profiles, registrations, roster entries and goal events retain original IDs;
 canonical readers must resolve aliases without rewriting those historical keys.
 
+Consolidation proposals use `PLAYER_CONSOLIDATION#{proposalId} / PROPOSAL`, with
+an immutable proposal digest, exact selected roots/member snapshots, initiating
+organiser, affected owner, original coverage epoch, expiry and decision state.
+Only the affected owner can approve additions to a claimed identity. The commit
+atomically changes identity sidecars, active directory rows and ownership indexes
+and stores `AUDIT` under the same partition. The audit includes before/after
+identities and index changes; the committed proposal is the retry receipt.
+Neither record is a bearer credential; authenticated authority is checked on reads.
+No historical PROFILE, registration, roster or goal record is rewritten.
+
+Consolidated roots retain every underlying member (maximum20). Alias sidecars
+point directly to the retained root and have no member list. The retained root's
+directory entry is active; alias directory rows remain inactive. Reverse game and
+season memberships remain attached to original profiles and are read as a union.
+Future registrations use the root, while old-game actions resolve to that game's
+unique original registration. Disabling new consolidation must retain these reads.
+
 The existing account claim index stays `USER#{userId} / PLAYER#{playerId}` when
 that sort key fits 1,024 UTF-8 bytes. An oversized but valid standalone profile
 uses the disjoint `PLAYER_HASH#{sha256(playerId)}` namespace and stores the exact

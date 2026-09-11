@@ -49,6 +49,11 @@ configure_player_claim_mode() {
     proof|disabled) export PLAYER_CLAIM_MODE ;;
     *) echo "PLAYER_CLAIM_MODE must be proof or disabled" >&2; return 1 ;;
   esac
+  PLAYER_CONSOLIDATION_ENABLED="${PLAYER_CONSOLIDATION_ENABLED:-false}"
+  case "$PLAYER_CONSOLIDATION_ENABLED" in
+    true|false) export PLAYER_CONSOLIDATION_ENABLED ;;
+    *) echo "PLAYER_CONSOLIDATION_ENABLED must be true or false" >&2; return 1 ;;
+  esac
 }
 if [[ "$SERVICE" == "api-core" ]]; then
   configure_player_claim_mode
@@ -103,12 +108,12 @@ if [[ "$SERVICE" == "api-core" ]]; then
   # Bind the live revision to this invocation's individually packaged core ZIP.
   # Another PR can deploy to shared QA between Serverless returning and this read.
   PACKAGE_CODE_SHA256="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(".serverless/core.zip")).digest("base64"))')"
-  # Record code provenance and this nonsecret enum only, never the full environment.
+  # Record code provenance and these nonsecret switches only, never the full environment.
   FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
     --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
-    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE}' \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED}' \
     --output json)"
-  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode' \
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation' \
     <<< "$FUNCTION_FINGERPRINT" >/dev/null
 fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

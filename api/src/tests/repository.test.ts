@@ -5418,6 +5418,43 @@ async function completeAllThirds(repository: ThreeFcRepository, input: { firstTh
   }
 }
 
+test("canonical scoring selections map to original registrations and preserve correction and undo targets", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await setupScoringGame(repository);
+  const now = "2026-09-11T00:00:00Z";
+  for (const colour of ["red", "blue"]) {
+    const original = `player-${colour}`, retained = `retained-${colour}`;
+    await repository.createPlayer({ playerId: retained, nickname: `Retained ${colour}` });
+    const base = { identityVersion: 1, writeVersion: "combined", displayName: `Retained ${colour}`, formerNames: [] };
+    client.seedItem(identityItem(`PLAYER#${original}`, "IDENTITY", "playerIdentity",
+      { ...base, playerId: original, rootId: retained, members: [] }, now));
+    client.seedItem(identityItem(`PLAYER#${retained}`, "IDENTITY", "playerIdentity",
+      { ...base, playerId: retained, rootId: retained, members: [retained, original] }, now));
+  }
+  const rosterBefore = await repository.listGameRoster("game-1");
+  await repository.startGameThird({ gameId: "game-1", third: 1 });
+  const goal = await repository.createGoal({ gameId: "game-1", eventId: "canonical-goal", actorUserId: "organiser",
+    scoringTeamId: "red", concedingTeamId: "blue", ownGoal: false,
+    scorerPlayerId: "retained-red", assistPlayerIds: ["retained-blue"] });
+  assert.equal(goal?.goal.scorerPlayerId, "player-red");
+  assert.deepEqual(goal?.goal.assistPlayerIds, ["player-blue"]);
+  await assert.rejects(repository.createGoal({ gameId: "game-1", eventId: "duplicate-alias-assist", actorUserId: "organiser",
+    scoringTeamId: "red", concedingTeamId: "blue", ownGoal: false,
+    scorerPlayerId: "retained-red", assistPlayerIds: ["retained-blue", "player-blue"] }), /unique/);
+  const request = { gameId: "game-1", eventId: "canonical-goal", actorUserId: "organiser",
+    scoringTeamId: null, concedingTeamId: "red" as const, ownGoal: true,
+    scorerPlayerId: "retained-red", assistPlayerIds: [], operationId: "canonical-correction", operationRequestHash: "original-request" };
+  const corrected = await repository.updateGoal(request);
+  assert.equal(corrected?.goal.scorerPlayerId, "player-red");
+  assert.equal(corrected?.goal.scoringTeamId, null);
+  assert.equal(corrected?.scoreboard.teams.find(team => team.teamId === "red")?.scored, 0);
+  assert.equal(corrected?.scoreboard.teams.find(team => team.teamId === "red")?.conceded, 1);
+  assert.deepEqual(await repository.updateGoal(request), corrected);
+  await repository.undoLastGoal({ gameId: "game-1", actorUserId: "organiser", expectedEventId: "canonical-goal" });
+  assert.deepEqual(await repository.listGoalEvents("game-1"), []);
+  assert.deepEqual(await repository.listGameRoster("game-1"), rosterBefore);
+});
+
 test("repository finishes a game with deterministic clear-winner result", async () => {
   const repository = createRepository();
   await setupScoringGame(repository);

@@ -169,6 +169,8 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
 
   if (method === "POST" && route === "/v1/player-proofs/preview") return true;
   if ((method === "GET" || method === "POST") && route === "/v1/league-players") return true;
+  if ((method === "GET" || method === "POST") && route === "/v1/player-consolidations") return true;
+  if (method === "POST" && ["/v1/player-consolidations/approve", "/v1/player-consolidations/commit"].includes(route)) return true;
   if (method === "POST" && route === "/v1/game-player-registrations") return true;
   if ((method === "GET" || method === "POST") && route === "/v1/player-proofs/league-invitation") return true;
   if (method === "POST" && route === "/v1/player-proofs/league-invitation/revoke") return true;

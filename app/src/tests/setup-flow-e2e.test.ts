@@ -7473,6 +7473,75 @@ for (const mode of ["replace", "revoke", "replace-storage", "revoke-storage", "r
   });
 }
 
+for (const operation of ["replace", "revoke"] as const) test(`historical player alias invitations ${operation} the canonical stored proof without changing roster IDs`, async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "alias-invitation", role: "admin" });
+  const base = createMockFetch(apiState);
+  const invitationReads: URL[] = [];
+  const writes: Array<{ path: string; body: string }> = [];
+  let metadata: { proofId: string; expiresAt: string; state: string } | null = null;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "alias-invitation" }),
+    url: "http://localhost:3000/games/alias-invitation#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname.startsWith("/v1/player-proofs/league-invitation")) {
+        invitationReads.push(url);
+        if ((init.method ?? "GET") === "GET") return createJsonResponse(200, { invitation: metadata });
+        writes.push({ path: url.href, body: String(init.body) });
+        if (url.pathname.endsWith("/revoke")) return createJsonResponse(200, { revoked: true });
+        const body = JSON.parse(String(init.body));
+        metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+        if (writes.length === 1) throw new Error("committed replacement response lost");
+        return createJsonResponse(201, { invitation: metadata });
+      }
+      const result = await base(input, init);
+      if (url.pathname === "/v1/games/alias-invitation/players" && (init.method ?? "GET") === "GET") {
+        const body = await result.json() as { players: Array<{ playerId: string }> };
+        return createJsonResponse(result.status, { ...body, players: body.players.map(player => player.playerId === "player-ari"
+          ? { ...player, canonicalPlayerId: "retained-ari" } : player) });
+      }
+      return result;
+    },
+  });
+  try {
+    const proofApi = (page.window as unknown as { ThreeFcPlayerProof: {
+      create(key: string): Promise<{ proofId: string }>;
+      attach(record: unknown, metadata: unknown, playerId: string): unknown;
+    } }).ThreeFcPlayerProof;
+    const previous = await proofApi.create("existing-league-directory-proof");
+    metadata = { proofId: previous.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+    proofApi.attach(previous, metadata, "retained-ari");
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    const open = page.document.querySelector('[data-action="invite-player-profile"][data-player-id="player-ari"]');
+    assert(open instanceof page.window.HTMLButtonElement);
+    dispatchClick(open); await flushAsync();
+    assert.equal(invitationReads.length, 1);
+    assert.equal(invitationReads[0].searchParams.get("playerId"), "retained-ari");
+    assert.equal(invitationReads[0].searchParams.get("leagueId"), "three-sided-football-club");
+    const control = page.document.getElementById(operation === "replace" ? "player-invitation-create" : "player-invitation-revoke")!;
+    dispatchClick(control);
+    for (let tick = 0; tick < 100 && writes.length === 0; tick++) await new Promise(resolve => setTimeout(resolve, 2));
+    await flushAsync();
+    if (operation === "replace") {
+      assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /could not be confirmed/);
+      dispatchClick(control); await flushAsync();
+      assert.equal(writes.length, 2); assert.deepEqual(writes[0], writes[1], "lost response retries preserve exact canonical path and body");
+      assert.equal(JSON.parse(writes[0].body).replacesProofId, previous.proofId);
+      assert.notEqual((page.document.getElementById("player-invitation-link") as HTMLInputElement).value, "");
+    } else {
+      assert.equal(writes.length, 1); assert.equal(JSON.parse(writes[0].body).proofId, previous.proofId);
+      assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /^Private link revoked\.$/);
+    }
+    for (const call of invitationReads) assert.equal(call.searchParams.get("playerId"), "retained-ari");
+    const stored = JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]") as Array<{ proofId: string; playerId?: string }>;
+    assert.equal(stored.some(record => record.proofId === previous.proofId), false, "confirmed operation retires prior root proof");
+    if (operation === "replace") assert.equal(stored.find(record => record.proofId === metadata?.proofId)?.playerId, "retained-ari");
+    assert(page.document.querySelector('[data-player-id="player-ari"]'));
+    assert.equal(page.document.querySelector('[data-player-id="retained-ari"]'), null);
+  } finally { page.dom.window.close(); }
+});
+
 for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-disabled", "replacement-loss-then-disabled", "replacement-storage-failure", "replacement-write-barrier", "purged"] as const) {
   test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
     const apiState = createMockApiState();

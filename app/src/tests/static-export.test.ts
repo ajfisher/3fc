@@ -49,6 +49,11 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(existsSync(resolve(outputDir, "ui/auth-flow.js")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/player-proof.js")), true);
     assert.equal(existsSync(resolve(outputDir, "link-player/index.html")), true);
+    assert.equal(existsSync(resolve(outputDir, "ui/player-consolidation.js")), true);
+    const consolidationHtml = readFileSync(resolve(outputDir, "combine-players/index.html"), "utf8");
+    assert.match(consolidationHtml, /name="referrer" content="no-referrer"/);
+    assert.match(consolidationHtml, /Review profiles to combine/);
+    assert.equal((consolidationHtml.match(/src="\/ui\/player-consolidation\.js"/g) ?? []).length, 1);
     const playerLinkHtml = readFileSync(resolve(outputDir, "link-player/index.html"), "utf8");
     assert.match(playerLinkHtml, /name="referrer" content="no-referrer"/);
     assert.match(playerLinkHtml, /id="player-link-confirm"/);

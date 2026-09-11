@@ -96,7 +96,7 @@
 
     try {
       const target = new URL(value, window.location.origin);
-      const candidate = /^\/link-player\/?$/.test(target.pathname)
+      const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
         ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
       if (
         target.origin !== window.location.origin ||

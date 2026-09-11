@@ -6,6 +6,7 @@ import { URL, pathToFileURL } from "node:url";
 
 import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
 import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
+import { handlePlayerConsolidationRoute, isPlayerConsolidationRoute, type PlayerConsolidationRepository } from "./player-consolidation-routes.js";
 import { PlayerProofError } from "./auth/player-proof.js";
 import { PlayerIdentityError } from "./data/player-identity.js";
 import {
@@ -754,6 +755,7 @@ function toPublicPlayer(player: {
 }
 
 async function toGamePlayerForLeagueRole(input: {
+  canonicalPlayerId?: string;
   player: {
     playerId: string;
     nickname: string;
@@ -764,7 +766,9 @@ async function toGamePlayerForLeagueRole(input: {
   leagueId: string;
   callerRole: "admin" | "scorekeeper" | "viewer" | null;
 }) {
-  const publicPlayer = toPublicPlayer(input.player);
+  const publicPlayer = { ...toPublicPlayer(input.player),
+    ...(input.callerRole === "admin" && input.canonicalPlayerId && input.canonicalPlayerId !== input.player.playerId
+      ? { canonicalPlayerId: input.canonicalPlayerId } : {}) };
   if (input.callerRole !== "admin" || !input.player.claimedByUserId) {
     return publicPlayer;
   }
@@ -3014,6 +3018,22 @@ export async function handleLocalPlayerDirectoryRoute(input: {
   return result.statusCode;
 }
 
+export async function handleLocalPlayerConsolidationRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerConsolidationRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handlePlayerConsolidationRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
 export async function handleLocalLogoutRoute(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -5029,6 +5049,11 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isPlayerConsolidationRoute(method, route)) {
+        status = await handleLocalPlayerConsolidationRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
       if (isPlayerDirectoryRoute(method, route)) {
         status = await handleLocalPlayerDirectoryRoute({ request, response, method, route,
           rawQueryString: requestUrl.search.slice(1), session: authGate.session });
@@ -5073,13 +5098,13 @@ async function start(): Promise<void> {
         const playerLinks = await repository.listGamePlayers(gameId);
         const playerEntries = (
           await Promise.all(
-            playerLinks.map(async (link) => ({
-              link,
-              player: await repository.getPlayer(link.playerId),
-            })),
+            playerLinks.map(async (link) => {
+              const view = await repository.getPlayerView(link.playerId);
+              return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
+            }),
           )
         )
-          .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player }] : []))
+          .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player, canonicalPlayerId: entry.canonicalPlayerId }] : []))
           .filter((entry) =>
             search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
           )
@@ -5095,6 +5120,7 @@ async function start(): Promise<void> {
         const players = await Promise.all(
           playerEntries.map((entry) =>
             toGamePlayerForLeagueRole({
+              canonicalPlayerId: entry.canonicalPlayerId,
               player: entry.player,
               leagueId: game.leagueId,
               callerRole: access.role,

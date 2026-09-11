@@ -1936,7 +1936,7 @@
     };
   }
 
-  function initPlayerInvitation({ path, canManage, canOpen, isLocked, playerName }) {
+  function initPlayerInvitation({ path, canManage, canOpen, isLocked, playerName, proofPlayerId = playerId => playerId }) {
     const invitationPanel = document.getElementById("player-invitation-panel");
     const invitationStatus = document.getElementById("player-invitation-status");
     const invitationCreate = document.getElementById("player-invitation-create");
@@ -1945,6 +1945,7 @@
     const invitationClose = document.getElementById("player-invitation-close");
     const invitationLink = document.getElementById("player-invitation-link");
     let invitationPlayerId = null;
+    let invitationTarget = null;
     let invitationMetadata = null;
     let invitationAttempt = null;
     let invitationPending = false;
@@ -1956,6 +1957,7 @@
       invitationGeneration += 1;
       invitationLink.value = "";
       invitationAttempt = null; invitationMetadata = null; invitationPlayerId = null;
+      invitationTarget = null;
       invitationLoaded = false; invitationPending = false; invitationRevokeUnconfirmed = false;
       invitationCleanup = null;
       invitationPanel.hidden = true;
@@ -1994,7 +1996,7 @@
       invitationCopy.hidden = !invitationLink.value;
       document.getElementById("player-invitation-link-field").hidden = !invitationLink.value;
     }
-    function invitationPath(suffix = "", playerId = invitationPlayerId) { return path(suffix, playerId); }
+    function invitationPath(suffix = "") { return invitationTarget?.paths[suffix] ?? null; }
     async function invitationRequest(path, options, onDispatch = null) {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
@@ -2015,6 +2017,9 @@
         return;
       }
       invitationPlayerId = playerId; invitationMetadata = null; invitationAttempt = null;
+      // The card keeps its historical game ID. Proof storage and all retries
+      // must instead retain the exact canonical target selected on opening.
+      invitationTarget = { playerId: proofPlayerId(playerId), paths: { "": path("", playerId), "/revoke": path("/revoke", playerId) } };
       const generation = ++invitationGeneration;
       invitationRevokeUnconfirmed = false;
       invitationLoaded = false; invitationPending = true; invitationLink.value = "";
@@ -2054,7 +2059,7 @@
           renderInvitation();
         });
         if (generation !== invitationGeneration) return;
-        const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationPlayerId, invitationAttempt.previousProofId);
+        const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationTarget.playerId, invitationAttempt.previousProofId);
         invitationMetadata = { ...result.invitation, state: "pending" };
         invitationLink.value = window.ThreeFcPlayerProof.shareLink(record);
         invitationAttempt = null;
@@ -2102,7 +2107,7 @@
         if (result.revoked !== true) throw new Error("revoke_unconfirmed");
         invitationMetadata.state = "revoked"; invitationLink.value = "";
         invitationRevokeUnconfirmed = false;
-        invitationCleanup = { proofId: invitationMetadata.proofId, playerId: invitationPlayerId };
+        invitationCleanup = { proofId: invitationMetadata.proofId, playerId: invitationTarget.playerId };
         try { finishInvitationCleanup(); invitationMessage("Private link revoked."); }
         catch { invitationMessage("Private link revoked. Your browser couldn’t clear its saved copy. Allow site storage before creating another link.", true); }
       } catch (error) {
@@ -2215,6 +2220,8 @@
     let submittedQuery = "", submittedScope = "", filterRevision = 0;
     const seen = new Set();
     const directoryPlayers = new Map();
+    const consolidation = window.ThreeFcConsolidation?.initializeLeague({ leagueId, canManage,
+      getPlayer: playerId => directoryPlayers.get(playerId), onCommitted: () => { void load(); } });
     const say = (message, error = false) => {
       status.textContent = message; status.hidden = !message;
       status.setAttribute("data-state", error ? "error" : "default");
@@ -2277,6 +2284,7 @@
         }
         list.append(row);
       }
+      consolidation?.refreshRows();
     }
     async function load(append = false) {
       if (append && (pending || !cursor)) return;
@@ -5875,6 +5883,10 @@
     });
     const playerInvitation = initPlayerInvitation({
       path: (suffix, playerId) => invitationPath(suffix, playerId),
+      proofPlayerId: playerId => {
+        const canonicalPlayerId = verifiedAdminPlayers.get(playerId)?.canonicalPlayerId;
+        return usableEntityId(canonicalPlayerId) && usableEntityId(currentLeagueId) ? canonicalPlayerId : playerId;
+      },
       canManage: () => currentLeagueRole === "admin",
       canOpen: playerId => verifiedAdminPlayers.has(playerId),
       isLocked: () => refreshAccountLocked,
@@ -5882,6 +5894,10 @@
     });
     function invitationPath(suffix = "", playerId) {
       try {
+        const canonicalPlayerId = verifiedAdminPlayers.get(playerId)?.canonicalPlayerId;
+        if (usableEntityId(canonicalPlayerId) && canonicalPlayerId !== playerId && usableEntityId(currentLeagueId)) {
+          return `/v1/player-proofs/league-invitation${suffix}?${new URLSearchParams({ leagueId: currentLeagueId, playerId: canonicalPlayerId })}`;
+        }
         if (!usableEntityId(playerId) || new TextEncoder().encode(`PLAYER#${playerId}`).length > 2048 ||
             !usableEntityId(gameId) || new TextEncoder().encode(`GAME#${gameId}`).length > 2048) return null;
         return `/v1/player-proofs/invitation${suffix}?gameId=${encodeURIComponent(gameId)}&playerId=${encodeURIComponent(playerId)}`;

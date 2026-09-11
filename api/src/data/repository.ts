@@ -15,6 +15,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { LeagueDeletionCleanup } from "./league-deletion.js";
+import { PlayerConsolidationService } from "./player-consolidation.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
   identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
 import {
@@ -973,6 +974,23 @@ function withTimestamps<T extends object>(
 }
 
 export class ThreeFcRepository {
+  private consolidationService(): PlayerConsolidationService {
+    return new PlayerConsolidationService(this.client, this.tableName, () => this.clock.now(),
+      process.env.PLAYER_CONSOLIDATION_ENABLED === "true");
+  }
+
+  previewPlayerConsolidation(input: Parameters<PlayerConsolidationService["preview"]>[0]) {
+    return this.consolidationService().preview(input);
+  }
+  getPlayerConsolidation(input: Parameters<PlayerConsolidationService["get"]>[0]) {
+    return this.consolidationService().get(input);
+  }
+  decidePlayerConsolidation(input: Parameters<PlayerConsolidationService["decide"]>[0]) {
+    return this.consolidationService().decide(input);
+  }
+  commitPlayerConsolidation(input: Parameters<PlayerConsolidationService["commit"]>[0]) {
+    return this.consolidationService().commit(input);
+  }
   private readonly identities: PlayerIdentityPlanner;
   constructor(
     private readonly client: DynamoCommandClient,
@@ -5351,12 +5369,32 @@ export class ThreeFcRepository {
     return existingOperation.result as T;
   }
 
+  private async originalGoalPlayerIds(gameId: string, scorerPlayerId: string, assistPlayerIds: string[]): Promise<{
+    scorerPlayerId: string; assistPlayerIds: string[];
+  }> {
+    const roster = await this.listGameRoster(gameId, { complete: true, consistentRead: true });
+    const originalIds = new Set(roster.map(entry => entry.playerId));
+    const mapped = new Map<string, string>();
+    for (const id of new Set([scorerPlayerId, ...assistPlayerIds])) {
+      // Historical IDs already in this game remain exact targets. A canonical
+      // picker value may instead refer to a different underlying registration.
+      if (originalIds.has(id)) { mapped.set(id, id); continue; }
+      const profile = await this.getPlayer(id, { consistentRead: true });
+      if (!profile) { mapped.set(id, id); continue; } // Existing validation owns unknown-player errors.
+      const identity = await this.identities.resolve(id, profile.nickname);
+      const original = await this.identities.registeredOriginal(identity, gameId);
+      mapped.set(id, original ?? id);
+    }
+    return { scorerPlayerId: mapped.get(scorerPlayerId)!, assistPlayerIds: assistPlayerIds.map(id => mapped.get(id)!) };
+  }
+
   async createGoal(input: CreateGoalInput): Promise<CreateGoalResult | null> {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
     requireNonEmpty("actorUserId", input.actorUserId);
     requireNonEmpty("concedingTeamId", input.concedingTeamId);
     requireNonEmpty("scorerPlayerId", input.scorerPlayerId);
+    input = { ...input, ...await this.originalGoalPlayerIds(input.gameId, input.scorerPlayerId, input.assistPlayerIds) };
     requireTeamId(input.concedingTeamId, "concedingTeamId");
     if (input.scoringTeamId !== null) {
       requireTeamId(input.scoringTeamId, "scoringTeamId");
@@ -5778,7 +5816,7 @@ export class ThreeFcRepository {
     }
 
     const previousGoal = existing.goal;
-    const goal = {
+    const requestedGoal = {
       ...previousGoal,
       scoringTeamId:
         input.scoringTeamId === undefined ? previousGoal.scoringTeamId : input.scoringTeamId,
@@ -5787,6 +5825,10 @@ export class ThreeFcRepository {
       assistPlayerIds: input.assistPlayerIds ?? previousGoal.assistPlayerIds,
       ownGoal: input.ownGoal ?? previousGoal.ownGoal,
     };
+    // The immutable correction request fingerprint above is intentionally taken
+    // before mapping; retries retain the request the caller actually submitted.
+    const goal = { ...requestedGoal, ...await this.originalGoalPlayerIds(input.gameId,
+      requestedGoal.scorerPlayerId, requestedGoal.assistPlayerIds) };
     const { teams, teamStatesById } = await this.readGoalTeamStates(
       input.gameId,
       { consistentRead: true },

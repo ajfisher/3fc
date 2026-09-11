@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json && mkdir -p dist/ui && cp src/ui/styles.css dist/ui/styles.css && cp src/ui/modal.js dist/ui/modal.js && cp src/ui/setup-flow.js dist/ui/setup-flow.js && cp src/ui/auth-flow.js dist/ui/auth-flow.js && cp src/ui/player-proof.js dist/ui/player-proof.js && node scripts/build-icons.mjs",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/ui && cp src/ui/styles.css dist/ui/styles.css && cp src/ui/modal.js dist/ui/modal.js && cp src/ui/setup-flow.js dist/ui/setup-flow.js && cp src/ui/auth-flow.js dist/ui/auth-flow.js && cp src/ui/player-proof.js dist/ui/player-proof.js && cp src/ui/player-consolidation.js dist/ui/player-consolidation.js && node scripts/build-icons.mjs",
     "export:static": "node dist/static-export.js",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",

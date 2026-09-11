@@ -131,6 +131,17 @@ test("private profile linking serves the same no-store shell at both supported p
   assert.doesNotMatch(asset.body, /https:\/\/api\.iconify|cdn\./);
 });
 
+test("private consolidation approval serves a no-store shell and bundled local script", () => {
+  const first = executeRoute("GET", "/combine-players?proposalId=proposal-id-for-test-123456");
+  const second = executeRoute("GET", "/combine-players/");
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.body, first.body);
+  assert.equal(first.headers["Cache-Control"], "no-store");
+  assert.equal(first.headers["Referrer-Policy"], "no-referrer");
+  assert.match(first.body, /Review profiles to combine/);
+  assert.equal(executeRoute("GET", "/ui/player-consolidation.js").statusCode, 200);
+});
+
 test("generated icon stylesheet is local, allow-listed, and CSP compatible", () => {
   const response = executeRoute("GET", "/ui/icons.css");
 

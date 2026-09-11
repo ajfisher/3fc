@@ -36,10 +36,10 @@ test("shared deployments cannot interleave or cancel the running API/site pair",
 test("final deployment guard fails closed for missing, changed or updating API provenance", () => {
   const script = resolve(process.cwd(), "../scripts/deploy/verify-api-core.sh");
   const source = readFileSync(script, "utf8");
-  assert.deepEqual(source.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE"]);
+  assert.deepEqual(source.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED"]);
   const directory = mkdtempSync(resolve(tmpdir(), "3fc-deploy-guard-"));
   const head = "a".repeat(40);
-  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof" };
+  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof", consolidationEnabled: "false" };
   const manifest = { gitCommit: head, env: "qa", service: "api-core", region: "ap-southeast-2", packageCodeSha256: "package", functionFingerprint: fingerprint };
   const manifestPath = resolve(directory, "out/deploy/qa/api-core-deploy-manifest.json");
   mkdirSync(resolve(directory, "out/deploy/qa"), { recursive: true });
@@ -72,6 +72,13 @@ test("final deployment guard fails closed for missing, changed or updating API p
     assert.notEqual(run(null).status, 0);
     const disabled = { ...fingerprint, playerClaimMode: "disabled" };
     assert.equal(run(disabled, { ...manifest, functionFingerprint: disabled }).status, 0);
+    const enabled = { ...fingerprint, consolidationEnabled: "true" };
+    assert.equal(run(enabled, { ...manifest, functionFingerprint: enabled }).status, 0);
+    assert.notEqual(run(enabled).status, 0, "live consolidation switch differs from accepted manifest");
+    for (const value of [true, false, null, "invalid", ""]) {
+      const invalid = { ...fingerprint, consolidationEnabled: value };
+      assert.notEqual(run(invalid, { ...manifest, functionFingerprint: invalid }).status, 0, "matching invalid switches must not pass");
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -188,6 +195,20 @@ test("profile-link contracts cover recovery errors and expose only public player
   }
 });
 
+test("api core deployment config registers consolidation routes and opt-in switches", () => {
+  for (const method of ["GET", "POST", "OPTIONS"]) assertServerlessRoute(method, "/v1/player-consolidations");
+  for (const path of ["/v1/player-consolidations/approve", "/v1/player-consolidations/commit"]) {
+    for (const method of ["POST", "OPTIONS"]) assertServerlessRoute(method, path);
+  }
+  assert.match(serverlessCoreConfig, /PLAYER_CONSOLIDATION_ENABLED:.*env:PLAYER_CONSOLIDATION_ENABLED, 'false'/);
+  const localCompose = readFileSync(resolve(process.cwd(), "../compose.yaml"), "utf8");
+  assert.match(localCompose, /PLAYER_CONSOLIDATION_ENABLED: "\$\{PLAYER_CONSOLIDATION_ENABLED:-false\}"/);
+  for (const environment of ["qa", "prod"]) {
+    const workflow = readFileSync(resolve(process.cwd(), `../.github/workflows/deploy-${environment}.yml`), "utf8");
+    assert.match(workflow, /PLAYER_CONSOLIDATION_ENABLED: \$\{\{ vars\.PLAYER_CONSOLIDATION_ENABLED \|\| 'false' \}\}/);
+  }
+});
+
 test("api core deployment config registers claim and access routes", () => {
   const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
   const previewContract = contract.slice(contract.indexOf("  /v1/player-proofs/preview:"),
@@ -240,20 +261,26 @@ test("QA deployment evidence records the full head and live API fingerprint with
   assert.match(apiDeployScript, /digest\("base64"\)/);
   assert.match(apiDeployScript, /\.codeSha256 == \$expected/);
   assert.match(apiDeployScript, /"packageCodeSha256": "\$PACKAGE_CODE_SHA256"/);
-  assert.deepEqual(apiDeployScript.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE"]);
+  assert.deepEqual(apiDeployScript.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED"]);
   assert.match(qaWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
   assert.match(qaWorkflow, /name: qa-api-core-deployment/);
   assert.match(qaWorkflow, /path: out\/deploy\/qa\/api-core-deploy-manifest\.json/);
   assert.match(qaWorkflow, /if-no-files-found: error/);
 });
 
-test("core deploy validates, exports and verifies the configured claim containment mode", () => {
+test("core deploy validates, exports and verifies the configured claim and consolidation switches", () => {
   const configure = apiDeployScript.slice(apiDeployScript.indexOf("configure_player_claim_mode() {"),
     apiDeployScript.indexOf('\nif [[ "$SERVICE" == "api-core" ]]; then\n  configure_player_claim_mode'));
   assert.ok(configure.includes("case"));
   for (const [input, expected] of [["", "proof"], ["proof", "proof"], ["disabled", "disabled"], ["invalid", null]]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$PLAYER_CLAIM_MODE"'`],
-      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: input! } });
+      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: input!, PLAYER_CONSOLIDATION_ENABLED: "false" } });
+    assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
+    assert.equal(result.stdout, expected ?? "");
+  }
+  for (const [input, expected] of [["", "false"], ["false", "false"], ["true", "true"], ["invalid", null], ["TRUE", null], ["1", null]]) {
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$PLAYER_CONSOLIDATION_ENABLED"'`],
+      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: input! } });
     assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
     assert.equal(result.stdout, expected ?? "");
   }
@@ -261,12 +288,22 @@ test("core deploy validates, exports and verifies the configured claim containme
   const verify = apiDeployScript.slice(apiDeployScript.indexOf('  jq -e --arg expected "$PACKAGE_CODE_SHA256"'),
     apiDeployScript.indexOf('\nfi\nTIMESTAMP='));
   assert.ok(verify.includes(".playerClaimMode == $mode"));
+  assert.ok(verify.includes(".consolidationEnabled == $consolidation"));
   for (const deployed of ["proof", "disabled", null]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
-      ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "disabled",
-      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed }),
+      ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "disabled", PLAYER_CONSOLIDATION_ENABLED: "false",
+      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed, consolidationEnabled: "false" }),
     } });
     assert.equal(result.status, deployed === "disabled" ? 0 : 1, result.stderr);
+  }
+  for (const expected of ["true", "false"]) {
+    for (const deployed of ["true", "false", null, undefined, true, false, "invalid"]) {
+      const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
+        ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: expected,
+        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: deployed }),
+      } });
+      assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
+    }
   }
 });
 

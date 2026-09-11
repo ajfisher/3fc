@@ -37,7 +37,8 @@ function renderAssetPath(path: string): string {
 function renderStylesheetLink(): string {
   return `<link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/styles.css"))}" />
   <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />
-  <script src="${escapeHtml(renderAssetPath("/ui/player-proof.js"))}" defer></script>`;
+  <script src="${escapeHtml(renderAssetPath("/ui/player-proof.js"))}" defer></script>
+  <script src="${escapeHtml(renderAssetPath("/ui/player-consolidation.js"))}" defer></script>`;
 }
 
 function renderAuthReturnTargetPatterns(): string {
@@ -413,6 +414,7 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
             <div data-ui="button-row">${renderButton("Search", "secondary", { type: "submit" })}</div>
           </form>
           <p id="league-player-status" data-ui="status-note" role="status" aria-live="polite" hidden></p>
+          <div id="league-player-combine-host"></div>
           <ul id="league-player-list" data-ui="directory-list" aria-label="League players"></ul>
           ${renderPlayerInvitationPanel()}
           ${renderButton("Load more players", "secondary", { type: "button", id: "league-player-more", hidden: "" })}
@@ -927,6 +929,14 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
     ${renderAuthScriptTag()}
   </body>
 </html>`;
+}
+
+export function renderPlayerConsolidationPage(apiBaseUrl: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" /><title>3FC Review profiles</title>${renderStylesheetLink()}</head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <main data-ui="app-shell"><section data-ui="panel" id="consolidation-approval"><h1>Review profiles to combine</h1></section></main>
+  ${renderAuthScriptTag()}</body></html>`;
 }
 
 export function renderPlayerLinkPage(apiBaseUrl: string): string {

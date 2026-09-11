@@ -1021,6 +1021,10 @@ function createHarness(config: HarnessConfig = {}) {
     },
     repository: {
       async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
+      async previewPlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
+      async getPlayerConsolidation() { throw new PlayerIdentityError("proposal_not_found", 404, "This profile proposal is not available."); },
+      async decidePlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
+      async commitPlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
       async createLeaguePlayer() { throw new Error("Player directory writes require a real repository fixture."); },
       async addExistingLeaguePlayer() { throw new Error("Player registration requires a real repository fixture."); },
       async previewPlayerProof() { throw new Error("Proof preview requires a real repository fixture."); },
@@ -1692,6 +1696,10 @@ function createHarness(config: HarnessConfig = {}) {
       async getPlayer(playerId: string) {
         return players.get(playerId) ?? null;
       },
+      async getPlayerView(playerId: string) {
+        const player = players.get(playerId);
+        return player ? { originalPlayerId: playerId, canonicalPlayerId: playerId, player } : null;
+      },
       async claimPlayer(input) {
         const player = players.get(input.playerId);
         if (!player) {
@@ -2235,6 +2243,29 @@ function createHarness(config: HarnessConfig = {}) {
     leagueInvites,
   };
 }
+
+test("Lambda consolidation routes enter authenticated dispatch and preserve private disabled responses", async () => {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const { handler } = createHarness({ sessions: { organiser: { sessionId: "organiser", subject: "owner",
+    email: "owner@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" } } });
+  const proposalId = "proposal-identifier-12345";
+  for (const [method, path, body] of [
+    ["GET", "/v1/player-consolidations", undefined],
+    ["POST", "/v1/player-consolidations", { proposalId, expectedAccountId: "owner", leagueId: "league", playerIds: ["a", "b"], retainedPlayerId: "a", nickname: "Player" }],
+    ["POST", "/v1/player-consolidations/approve", { proposalId, expectedAccountId: "owner", decision: "approve" }],
+    ["POST", "/v1/player-consolidations/commit", { proposalId, expectedAccountId: "owner" }],
+  ] as const) {
+    const event = createEvent({ method, path, body, headers: { Origin: "https://qa.3fc.football" } });
+    if (method === "GET") event.rawQueryString = `proposalId=${proposalId}`;
+    assert.equal((await handler(event)).statusCode, 401);
+    event.cookies = ["threefc_session=organiser"];
+    const signedIn = await handler(event);
+    assert.equal(signedIn.statusCode, method === "GET" ? 404 : 503);
+    assert.equal(signedIn.headers?.["cache-control"], "no-store");
+    assert.equal(signedIn.headers?.["referrer-policy"], "no-referrer");
+    assert.doesNotMatch(signedIn.body, /owner@example|owner-subject/);
+  }
+});
 
 test("league deletion receipt only resumes the initiating authenticated DELETE after metadata and ACL cleanup", async () => {
   const stamp = "2026-02-23T00:00:00.000Z";

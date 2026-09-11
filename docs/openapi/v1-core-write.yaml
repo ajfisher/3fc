@@ -11,6 +11,141 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/player-consolidations:
+    post:
+      operationId: previewPlayerConsolidation
+      summary: Review an exact proposed combination of league player profiles
+      description: >-
+        League organisers only. Requires enabled consolidation and verified complete membership coverage.
+        The client retains proposalId and the exact body for uncertain retries. Preview never combines profiles.
+        Different owners, overlapping games (including Unassigned), outside-league membership, incomplete data
+        and groups larger than 20 are rejected without exposing another league. No automatic nickname matching.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsolidationPreviewRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+    get:
+      operationId: getPlayerConsolidation
+      summary: Read a private combination proposal as its organiser or affected owner
+      description: The proposal ID grants no access. Responses are no-store and no-referrer and omit account identifiers.
+      parameters:
+        - name: proposalId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{20,64}$'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+  /v1/player-consolidations/approve:
+    post:
+      operationId: decidePlayerConsolidation
+      summary: Approve or decline the exact additions to your claimed identity
+      description: >-
+        Only the existing owner can approve; organiser permissions do not confer ownership.
+        Approval binds the immutable proposal and does not commit the combination.
+        Changed ownership, membership or identity invalidates the proposal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId, decision, expectedAccountId]
+              properties:
+                expectedAccountId:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                proposalId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{20,64}$'
+                decision:
+                  type: string
+                  enum: [approve, decline]
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+  /v1/player-consolidations/commit:
+    post:
+      operationId: commitPlayerConsolidation
+      summary: Atomically combine the approved profiles without rewriting historical events
+      description: >-
+        The initiating organiser must still have authority. The exact proposal, owner approval where required,
+        complete alias closure and identity revisions are checked again. Commit stores a durable audit and
+        idempotent outcome. Historical registrations, roster entries, goals, assists and corrections keep original IDs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId, expectedAccountId]
+              properties:
+                expectedAccountId:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                proposalId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{20,64}$'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
   /v1/league-players:
     get:
       summary: Search reusable players in an authorised league
@@ -1740,6 +1875,26 @@ components:
           - 2
           - 3
   responses:
+    ConsolidationProposal:
+      description: Private proposal state; no account identifiers or bearer material
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+        Referrer-Policy:
+          schema:
+            type: string
+            const: no-referrer
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [proposal]
+            properties:
+              proposal:
+                $ref: '#/components/schemas/PlayerConsolidation'
     PlayerDirectoryUnavailable:
       description: Identity migration is paused or the reviewed directory cutover is not yet active. No new mutation is committed.
       content:
@@ -1813,6 +1968,98 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    ConsolidationPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [proposalId, leagueId, playerIds, retainedPlayerId, nickname, expectedAccountId]
+      properties:
+        expectedAccountId:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        proposalId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{20,64}$'
+        leagueId:
+          type: string
+          minLength: 1
+        playerIds:
+          type: array
+          minItems: 2
+          maxItems: 20
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        retainedPlayerId:
+          type: string
+          minLength: 1
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 80
+    PlayerConsolidation:
+      type: object
+      additionalProperties: false
+      required: [proposalId, leagueId, leagueName, retainedPlayerId, nickname, status, profiles, blockers, requiresApproval, canApprove, canCommit]
+      properties:
+        proposalId:
+          type: string
+        leagueId:
+          type: string
+        leagueName:
+          type: string
+        retainedPlayerId:
+          type: string
+        nickname:
+          type: string
+        status:
+          type: string
+          enum: [pending_approval, ready, declined, committed, stale]
+        profiles:
+          type: array
+          minItems: 2
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [playerId, nickname, claimed, games]
+            properties:
+              playerId:
+                type: string
+              nickname:
+                type: string
+              claimed:
+                type: boolean
+              games:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [gameId, kickoffAt]
+                  properties:
+                    gameId:
+                      type: string
+                    kickoffAt:
+                      type: string
+                      format: date-time
+        blockers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+        requiresApproval:
+          type: boolean
+        canApprove:
+          type: boolean
+        canCommit:
+          type: boolean
     DirectoryIdentifier:
       type: string
       minLength: 1
@@ -2643,6 +2890,9 @@ components:
         - createdAt
         - updatedAt
       properties:
+        canonicalPlayerId:
+          type: string
+          description: Present only in organiser game-player reads for a retained identity different from the historical playerId. Use only for league profile invitations; game actions keep playerId.
         playerId:
           type: string
         nickname:

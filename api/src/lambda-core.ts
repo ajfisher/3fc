@@ -5,6 +5,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
 import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
+import { handlePlayerConsolidationRoute, isPlayerConsolidationRoute, type PlayerConsolidationRepository } from "./player-consolidation-routes.js";
 import { PlayerProofError, parsePlayerClaimMode } from "./auth/player-proof.js";
 import { PlayerIdentityError } from "./data/player-identity.js";
 import {
@@ -188,7 +189,8 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository {
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository,
+  Pick<ThreeFcRepository, "getPlayerView"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
       leagueId: string;
@@ -1237,6 +1239,7 @@ function toPublicPlayer(player: {
 }
 
 async function toGamePlayerForLeagueRole(input: {
+  canonicalPlayerId?: string;
   repository: RepositoryContract;
   player: {
     playerId: string;
@@ -1248,7 +1251,9 @@ async function toGamePlayerForLeagueRole(input: {
   leagueId: string;
   callerRole: "admin" | "scorekeeper" | "viewer" | null;
 }) {
-  const publicPlayer = toPublicPlayer(input.player);
+  const publicPlayer = { ...toPublicPlayer(input.player),
+    ...(input.callerRole === "admin" && input.canonicalPlayerId && input.canonicalPlayerId !== input.player.playerId
+      ? { canonicalPlayerId: input.canonicalPlayerId } : {}) };
   if (input.callerRole !== "admin" || !input.player.claimedByUserId) {
     return publicPlayer;
   }
@@ -5203,6 +5208,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        if (isPlayerConsolidationRoute(method, route)) {
+          const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" };
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return createJsonResponse(status, { error: "bad_request", message: "Request body must be valid JSON." }, headers); }
+          const result = await handlePlayerConsolidationRoute({ method, route, body,
+            rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, headers);
+        }
         if (isPlayerDirectoryRoute(method, route)) {
           let body: unknown = {};
           try { if (method !== "GET") body = parseJsonBody(event); }
@@ -5250,13 +5266,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const playerLinks = await dependencies.repository.listGamePlayers(gameId);
           const playerEntries = (
             await Promise.all(
-              playerLinks.map(async (link) => ({
-                link,
-                player: await dependencies.repository.getPlayer(link.playerId),
-              })),
+              playerLinks.map(async (link) => {
+                const view = await dependencies.repository.getPlayerView(link.playerId);
+                return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
+              }),
             )
           )
-            .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player }] : []))
+            .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player, canonicalPlayerId: entry.canonicalPlayerId }] : []))
             .filter((entry) =>
               search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
             )
@@ -5272,6 +5288,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const players = await Promise.all(
             playerEntries.map((entry) =>
               toGamePlayerForLeagueRole({
+                canonicalPlayerId: entry.canonicalPlayerId,
                 repository: dependencies.repository,
                 player: entry.player,
                 leagueId: game.leagueId,
