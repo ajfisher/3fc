@@ -2751,11 +2751,13 @@
       "delivery": {
         "asOf": "2026-09-10",
         "wave": "reusable-players",
-        "status": "planned",
+        "status": "in-progress",
         "githubIssue": 159,
+        "githubPullRequest": 166,
         "branch": "codex/league-player-directory",
         "notes": [
-          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md.",
+          "PR #166 implements the directory and audited migration; external review fixes and current-head QA acceptance are in progress. This issue remains open pending its complete evidence and delivery gate."
         ]
       }
     },

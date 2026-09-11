@@ -5,6 +5,7 @@ import { hashPlayerProofSecret, PlayerProofError } from "../auth/player-proof.js
 import { PlayerIdentityPlanner, PlayerIdentityError, identityItem, boundedIdentityTransaction, identityCondition,
   validateIdentity, identityDirectorySk, identitySeasonKey, identityTombstoneSk } from "../data/player-identity.js";
 import { PlayerIdentityMigration, type IdentityMigrationManifest } from "../data/player-identity-migration.js";
+import { playerClaimSk } from "../data/keys.js";
 import { createLambdaCoreHandler } from "../lambda-core.js";
 import { handleLocalPlayerProofRoute, handleLocalPlayerDirectoryRoute } from "../server.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -784,7 +785,7 @@ test("identity migration rejects mistyped reserved references and archives expli
 });
 
 test("identity migration checkpoints valid long physical keys and rejects orphan reverse projections", async () => {
-  const client = new InMemoryDynamoClient(), now = "2026-09-11T00:00:00Z", playerId = "p".repeat(1024);
+  const client = new InMemoryDynamoClient(), now = "2026-09-11T00:00:00Z", playerId = "p".repeat(1025);
   client.seedItem(identityItem(`PLAYER#${playerId}`, "PROFILE", "player", { playerId, nickname: "Kesh", claimedByUserId: null }, now));
   const runner = new PlayerIdentityMigration(client, migrationManifest(), () => now);
   let audit = await runner.begin();
@@ -830,6 +831,69 @@ async function directoryHarness() {
     { mode: "fenced", epoch: "verified-fixture", coverage: "verified", writerVersion: 1 }, "2026-09-11T00:00:00Z"));
   return { client, repository };
 }
+
+test("historical standalone IDs migrate at partition-key boundaries without narrowing reads", async () => {
+  for (const playerId of ["x".repeat(1025), "x".repeat(2041), "é".repeat(1020), "😀".repeat(510)]) {
+    const client = new InMemoryDynamoClient(), now = "2026-09-11T00:00:00Z";
+    const original = identityItem(`PLAYER#${playerId}`, "PROFILE", "player", { playerId, nickname: "Legacy", claimedByUserId: null }, now);
+    client.seedItem(original);
+    const runner = new PlayerIdentityMigration(client, migrationManifest(), () => now);
+    let audit = await runner.begin();
+    for (let pages = 0; ["inventory", "verification"].includes(audit.phase); pages += 1) {
+      assert(pages < 30); audit = await runner.step(1);
+    }
+    assert.equal(audit.phase, "ready");
+    assert.deepEqual(audit.inventory, audit.verification);
+    assert.deepEqual(client.readItem(`PLAYER#${playerId}`, "PROFILE"), original);
+    const planner = new PlayerIdentityPlanner(client, "proof-test");
+    const identity = await planner.resolve(playerId);
+    assert.equal(identity.root.value.playerId, playerId);
+    assert.equal(await planner.registeredOriginal(identity, "game"), null);
+    assert(client.getItemRequests.every(request => Buffer.byteLength(request.sk) <= 1024));
+  }
+});
+
+test("historical oversized standalone IDs remain searchable and claimable but reject impossible game keys before writes", async () => {
+  const { client, repository } = await directoryHarness();
+  const playerId = "x".repeat(1025);
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId, nickname: "Legacy", userIds: ["organiser"] });
+  const rootBefore = client.readItem(`PLAYER#${playerId}`, "IDENTITY");
+  const list = await repository.listLeaguePlayers({ leagueId: "directory", gameId: "directory-game", userIds: ["organiser"] });
+  assert.equal(list.players[0].playerId, playerId); assert.equal(list.players[0].inGame, false);
+  await assert.rejects(repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"] }),
+    (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_key_too_large" && error.status === 400);
+  assert.deepEqual(client.readItem(`PLAYER#${playerId}`, "IDENTITY"), rootBefore);
+  assert.equal(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), undefined);
+  const proof = newClaimProof();
+  await assert.rejects(repository.createPlayerInvitation({ gameId: "directory-game", playerId, userIds: ["organiser"], ...proof }),
+    (error: unknown) => error instanceof PlayerProofError && error.code === "claim_context_unavailable");
+  await repository.createPlayerInvitation({ scope: "league", leagueId: "directory", playerId, userIds: ["organiser"], ...proof });
+  const preview = await repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "owner-session" });
+  const input = { playerId, userId: "owner", sessionId: "owner-session", proof: { ...proof, confirmation: preview.confirmation } };
+  const claimed = await repository.claimPlayer(input);
+  assert.equal(claimed?.claimedByUserId, "owner");
+  assert.deepEqual(await repository.claimPlayer(input), claimed);
+  assert.match(playerClaimSk(playerId), /^PLAYER_HASH#[a-f0-9]{64}$/);
+  assert.equal(JSON.parse(client.readItem("USER#owner", playerClaimSk(playerId))!.data.S!).playerId, playerId);
+  assert.equal(playerClaimSk("normal"), "PLAYER#normal");
+  assert(client.getItemRequests.every(request => Buffer.byteLength(request.sk) <= 1024));
+});
+
+test("historical registration-sized ID rejects a larger roster key atomically", async () => {
+  const { client, repository } = await directoryHarness();
+  const playerId = "x".repeat(1017);
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId, nickname: "Legacy", userIds: ["organiser"] });
+  const before = client.readItem(`PLAYER#${playerId}`, "IDENTITY");
+  await assert.rejects(repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, teamId: "yellow", userIds: ["organiser"] }),
+    (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_roster_key_too_large");
+  assert.deepEqual(client.readItem(`PLAYER#${playerId}`, "IDENTITY"), before);
+  assert.equal(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), undefined);
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"] });
+  await assert.rejects(repository.assignRosterPlayer({ gameId: "directory-game", playerId, teamId: "red" }),
+    (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_roster_key_too_large");
+  assert(client.readItem("GAME#directory-game", `PLAYER#${playerId}`));
+  assert.equal(client.readItem("GAME#directory-game", `ROSTER#red#${playerId}`), undefined);
+});
 
 test("league directory creates an unclaimed standalone player and reuses it without duplicate registration or transfer", async () => {
   const { client, repository } = await directoryHarness();
@@ -1515,13 +1579,13 @@ test("player proof: local and Lambda routes pair account display with confirmati
       assert.equal((await request(claimPath, claimBody)).status, 200);
       assert.equal((await repository.getPlayer(playerId))?.claimedByUserId, "account-A");
     }
-    for (const query of ["", "playerId=", "playerId=%ZZ", "playerId=%E0%A4", "playerId=a&playerId=b", "playerId=a&extra=b", `playerId=${"x".repeat(1025)}`]) {
+    for (const query of ["", "playerId=", "playerId=%ZZ", "playerId=%E0%A4", "playerId=a&playerId=b", "playerId=a&extra=b", `playerId=${"x".repeat(2042)}`]) {
       assert.equal((await request(`/v1/player-proofs/claim?${query}`, {})).status, 400);
       for (const [method, suffix] of [["GET", ""], ["POST", ""], ["POST", "/revoke"]]) {
         assert.equal((await request(`/v1/player-proofs/invitation${suffix}?gameId=${game.gameId}&${query}`, {}, "organiser", method)).status, 400);
       }
     }
-    for (const badGame of ["%ZZ", "%E0%A4", "", "x".repeat(1025)]) {
+    for (const badGame of ["%ZZ", "%E0%A4", "", "x".repeat(2044)]) {
       assert.equal((await request(`/v1/player-proofs/invitation?gameId=${badGame}&playerId=self`, {}, "organiser", "GET")).status, 400);
     }
   }

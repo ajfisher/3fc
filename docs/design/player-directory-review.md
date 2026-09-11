@@ -15,13 +15,13 @@ Consolidation #160 and returning-player joining #161 are not implemented here.
 | Criterion | Evidence | State |
 | --- | --- | --- |
 | Scoped directory, cursor continuity, claimed/unclaimed and duplicate names | Repository directory tests, route schemas, league/picker interaction cases | PASS locally |
-| Existing-player registration, atomic optional team, uncertainty and locks | Repository transactions, frozen-request picker tests, 492 interaction cases | PASS locally |
+| Existing-player registration, atomic optional team, uncertainty and locks | Repository transactions, frozen-request picker tests, complete interaction suite | PASS locally |
 | League-only private invitation lifecycle | Shared local/Lambda adapter and repository tests, shared invitation UI tests | PASS locally |
 | Accessible drafts, suggestions and focus | Nested disclosure regressions, possible-name suggestions, contextual accessible picker actions | PASS locally |
 | Historical IDs and canonical compatibility | Root/alias planner cases; getPlayerView preserves original IDs and raw proof records; long ASCII/Unicode read-envelope cases | PASS locally |
-| Migration completeness, pause, retry and cutover | Fake-client migration cases; CLI provenance tests; runbook | PASS locally; real backend pending |
+| Migration completeness, pause, retry and cutover | Fake-client cases, CLI provenance tests, actual isolated AWS CLI audit/restart/recovery/activation on `74830fe` | PASS; current-head refresh pending |
 | HTTP parsing and privacy headers | Real loopback socket test of local directory/invitation adapters | PASS locally |
-| Full repository validation | Serial lint, tests, contracts, build, review-policy/gate tests under 4 GiB guard | PASS locally before final HTTP test addition; focused HTTP test also PASS |
+| Full repository validation | Serial lint/typecheck, 396 API / 594 app / 3 operator / 57 gate tests, contracts, build; group 97611, peak 3,146,144 KiB, exit 0, remaining [] | PASS locally including review fixes |
 | Exact-head CI, Codex, isolated backend and browser acceptance | To be recorded in PR evidence | PENDING |
 
 ## Change classification
@@ -82,8 +82,23 @@ by the child feature, rollback must retain alias-aware readers and writers.
   automatic identity matching or prohibition on genuinely different people.
 - UX: reopening the parent disclosure closed its nested creation journey. Fixed
   without clearing drafts; complete interaction suite passes.
-- QA: real DynamoDB/operator and deployed acceptance remain required. No evidence
-  substitution or gate bypass is accepted.
+- Codex review 5174249638 on `74830fe` identified a remaining 1,024-character
+  historical-ID restriction and stale season options after deletion. Both are
+  accepted. IDs now use actual UTF-8 key budgets; migration tests cover 1,025-byte
+  IDs and exact/multibyte partition boundaries. Season options update immediately
+  on commit even when refresh fails, and stale directory responses are discarded.
+- Architecture follow-up found oversized claim-index and game-invitation lookup
+  keys. A disjoint bounded claim index preserves linking; impossible game keys
+  return controlled errors before SDK reads/writes. Existing ordinary claim keys
+  remain unchanged. Both index namespaces are mandatory PR3/PR4 reader coverage.
+- UX follow-up: possible-name search now visibly selects All league players,
+  preserving draft and keyboard focus rather than leaving a blank selection.
+- Real local HTTP/DynamoDB acceptance and isolated deployed Lambda/DynamoDB
+  acceptance passed on `74830fe`. The actual operator CLI exercised blocked
+  discrepancy, explicit archived restart, committed-response-loss recovery,
+  matching inventories and fenced activation. No shared QA data was migrated.
+  Current-head deployment/browser evidence must be refreshed after these fixes;
+  earlier evidence is not current-head evidence.
 
 ## Delivery checkpoint
 

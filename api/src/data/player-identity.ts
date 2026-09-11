@@ -56,7 +56,12 @@ function keyBudget(pk: string, sk: string): void {
   if (!pk || !sk || Buffer.byteLength(pk) > 2048 || Buffer.byteLength(sk) > 1024) invalid("Player identity key is too large.");
 }
 function text(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 1024 && Buffer.byteLength(value) <= 1800;
+  return typeof value === "string" && value.trim().length > 0;
+}
+export function validPlayerIdentityId(value: unknown): value is string {
+  if (!text(value)) return false;
+  try { encodeURIComponent(value); } catch { return false; }
+  return Buffer.byteLength(`PLAYER#${value}`) <= 2048;
 }
 function strings(value: unknown, maximum: number): value is string[] {
   return Array.isArray(value) && value.length <= maximum && value.every(text) && new Set(value).size === value.length;
@@ -66,7 +71,7 @@ function date(value: unknown): value is string {
 }
 function directoryEntry(value: unknown, playerId: string): PlayerDirectoryEntry {
   const entry = value as Partial<PlayerDirectoryEntry> | null;
-  if (!entry || !text(entry.playerId) || entry.playerId !== playerId || !text(entry.nickname) ||
+  if (!entry || !validPlayerIdentityId(entry.playerId) || entry.playerId !== playerId || !text(entry.nickname) ||
       !strings(entry.formerNames, 20) || typeof entry.active !== "boolean") return invalid();
   if ((entry.seasonIds !== undefined && !strings(entry.seasonIds, 3)) ||
       (entry.hasMoreSeasons !== undefined && typeof entry.hasMoreSeasons !== "boolean")) return invalid();
@@ -78,9 +83,10 @@ function parse(item: Item, pk: string, sk: string, entityType: string): unknown 
 }
 export function validateIdentity(value: unknown, playerId: string): PlayerIdentity {
   const v = value as Partial<PlayerIdentity> | null;
-  if (!v || v.playerId !== playerId || !text(v.rootId) || !text(v.playerId) ||
+  if (!v || v.playerId !== playerId || !validPlayerIdentityId(v.rootId) || !validPlayerIdentityId(v.playerId) ||
       !Number.isSafeInteger(v.identityVersion) || v.identityVersion! < 0 || !text(v.writeVersion) ||
-      !text(v.displayName) || !strings(v.formerNames, IDENTITY_MAX_MEMBERS) || !strings(v.members, IDENTITY_MAX_MEMBERS)) return invalid();
+      !text(v.displayName) || !strings(v.formerNames, IDENTITY_MAX_MEMBERS) || !strings(v.members, IDENTITY_MAX_MEMBERS) ||
+      !v.members.every(validPlayerIdentityId)) return invalid();
   if (v.rootId === playerId ? !v.members.includes(playerId) : v.members.length !== 0) return invalid();
   return v as PlayerIdentity;
 }
@@ -203,7 +209,9 @@ export class PlayerIdentityPlanner {
     if (!text(gameId)) return invalid();
     const matches: string[] = [];
     for (const member of identity.root.value.members) {
-      const item = await this.get(`GAME#${gameId}`, `PLAYER#${member}`);
+      // Some readable standalone legacy profiles cannot fit a game sort key.
+      // Such a physical record cannot exist; keep directory reads available.
+      const item = Buffer.byteLength(`PLAYER#${member}`) <= 1024 ? await this.get(`GAME#${gameId}`, `PLAYER#${member}`) : null;
       let present = Boolean(item);
       if (item) {
         const value = parse(item, `GAME#${gameId}`, `PLAYER#${member}`, "gamePlayer") as { gameId?: unknown; playerId?: unknown };
@@ -211,6 +219,7 @@ export class PlayerIdentityPlanner {
       }
       for (const teamId of ["red", "blue", "yellow"]) {
         const sk = `ROSTER#${teamId}#${member}`;
+        if (Buffer.byteLength(sk) > 1024) continue;
         const roster = await this.get(`GAME#${gameId}`, sk);
         if (!roster) continue;
         const value = parse(roster, `GAME#${gameId}`, sk, "roster") as Record<string, unknown>;
@@ -312,7 +321,7 @@ export class PlayerIdentityPlanner {
   }
 
   async resolve(playerId: string, fallbackName?: string): Promise<ResolvedPlayerIdentity> {
-    if (!text(playerId)) throw new PlayerIdentityError("invalid_player_id", 400, "Choose a valid player.");
+    if (!validPlayerIdentityId(playerId)) throw new PlayerIdentityError("invalid_player_id", 400, "Choose a valid player.");
     const pk = `PLAYER#${playerId}`, sk = "IDENTITY";
     const item = await this.get(pk, sk);
     if (!item) {

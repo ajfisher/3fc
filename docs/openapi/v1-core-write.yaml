@@ -1649,7 +1649,7 @@ components:
       required: false
       description: Opaque identifier, URL-encoded and decoded exactly once. Duplicate or unknown query parameters are rejected.
       schema:
-        $ref: "#/components/schemas/DirectoryIdentifier"
+        $ref: "#/components/schemas/DirectorySeasonIdentifier"
     DirectorySearch:
       name: query
       in: query
@@ -1777,8 +1777,11 @@ components:
     DirectoryIdentifier:
       type: string
       minLength: 1
-      maxLength: 1024
-      description: Non-blank opaque identifier. Writes validate the full constructed DynamoDB key byte limits without narrowing historical read identifiers.
+      description: Non-blank, well-formed Unicode opaque identifier. Its constructed PLAYER#, LEAGUE# or GAME# partition key must fit 2048 UTF-8 bytes. Game registration and team assignment additionally require their constructed sort keys to fit 1024 bytes. No character-count cap narrows historical reads.
+    DirectorySeasonIdentifier:
+      type: string
+      minLength: 1
+      description: Non-blank, well-formed Unicode opaque identifier whose constructed SEASON# sort key fits 1024 UTF-8 bytes.
     CreateLeaguePlayerRequest:
       type: object
       additionalProperties: false
@@ -1824,7 +1827,7 @@ components:
                   additionalProperties: false
                   required: [seasonId, name]
                   properties:
-                    seasonId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+                    seasonId: { $ref: "#/components/schemas/DirectorySeasonIdentifier" }
                     name: { type: string, minLength: 1 }
     AddExistingLeaguePlayerRequest:
       type: object

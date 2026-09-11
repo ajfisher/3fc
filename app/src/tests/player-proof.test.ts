@@ -456,7 +456,7 @@ for (const stage of ["preview", "claim"] as const) {
   });
 }
 
-for (const playerId of [".", "..", "player/opaque", "player%2Fopaque", "player+ space", "player-\ud800", "player\\legacy", "player-" + "x".repeat(600)]) {
+for (const playerId of [".", "..", "player/opaque", "player%2Fopaque", "player+ space", "player-\ud800", "player\\legacy", "player-" + "x".repeat(1025), "é".repeat(1020)]) {
   test(`private player confirmation safely addresses ${playerId.length > 50 ? "long" : JSON.stringify(playerId)} identity`, async (t) => {
     const targets: string[] = [];
     const view = page({ url: `${origin}/link-player#proofId=${proofId}&secret=${secret}`,

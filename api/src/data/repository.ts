@@ -989,6 +989,8 @@ export class ThreeFcRepository {
     const identity = await this.identities.resolve(requestedPlayerId, nickname);
     const original = await this.identities.registeredOriginal(identity, game.gameId);
     const playerId = original ?? identity.root.value.playerId;
+    if (Buffer.byteLength(gamePlayerSk(playerId)) > 1024) throw new PlayerIdentityError("player_registration_key_too_large", 400,
+      "This legacy player profile cannot be added to a game. Ask the organiser for help.");
     const requireExisting = control.value.mode === "fenced" && original === null &&
       await this.getPlayer(identity.root.value.playerId, { consistentRead: true }) !== null;
     return { playerId, identity, actions: [fence, ...this.identities.planRevision(identity, now),
@@ -3460,6 +3462,8 @@ export class ThreeFcRepository {
       this.buildGameConditionCheck(input.gameId, gameItem), this.buildConditionalCheckFromStoredEntity(authority.acl)!,
       this.buildConditionalCheckFromStoredEntity(authority.league)!];
     if (!alreadyInGame) {
+      if (input.teamId && Buffer.byteLength(rosterSk(input.teamId, rootId)) > 1024) throw new PlayerIdentityError("player_roster_key_too_large", 400,
+        "This legacy player profile cannot be assigned to this team. Ask the organiser for help.");
       actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), gamePlayerSk(rootId), ENTITY_TYPE.gamePlayer,
         { gameId: input.gameId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
       if (input.teamId) actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), rosterSk(input.teamId, rootId), ENTITY_TYPE.roster,
@@ -3609,6 +3613,9 @@ export class ThreeFcRepository {
         throw new PlayerProofError("claim_context_unavailable", 404, "This player is not available in this league.");
       }
       return { league: authority.league, acl: authority.acl, player, registration };
+    }
+    if (Buffer.byteLength(gamePlayerSk(input.playerId)) > 1024) {
+      throw new PlayerProofError("claim_context_unavailable", 404, "This player is not available in this game.");
     }
     const [game, player, registration] = await Promise.all([
       this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
@@ -4616,6 +4623,8 @@ export class ThreeFcRepository {
     if (!requestedPlayer) throw new PlayerIdentityError("player_not_found", 409, "This player is no longer available.");
     const membership = await this.planPlayerMembership(game, input.playerId, requestedPlayer.nickname, now);
     input = { ...input, playerId: membership.playerId };
+    if (Buffer.byteLength(rosterSk(input.teamId, input.playerId)) > 1024) throw new PlayerIdentityError("player_roster_key_too_large", 400,
+      "This legacy player profile cannot be assigned to this team. Ask the organiser for help.");
     const existingAssignments = await this.listGameRoster(input.gameId, { complete: true, consistentRead: true });
     const currentAssignmentsForPlayer = existingAssignments.filter(
       (assignment) => assignment.playerId === input.playerId,

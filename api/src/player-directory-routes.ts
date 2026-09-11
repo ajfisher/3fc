@@ -8,12 +8,17 @@ export type PlayerDirectoryRepository = Pick<ThreeFcRepository,
   "listLeaguePlayers" | "createLeaguePlayer" | "addExistingLeaguePlayer">;
 // Opaque historical IDs are not limited by an arbitrary shared byte cap.
 // The transaction planner checks the actual partition/sort keys for writes.
-const id = z.string().min(1).max(1024).refine(value => value.trim().length > 0);
+const identifier = (prefix: string, limit = 2048) => z.string().min(1).refine(value => {
+  try { encodeURIComponent(value); } catch { return false; }
+  return value.trim().length > 0 && Buffer.byteLength(`${prefix}${value}`) <= limit;
+});
+const id = identifier("PLAYER#"), leagueIdSchema = identifier("LEAGUE#"), gameIdSchema = identifier("GAME#");
+const seasonIdSchema = identifier("SEASON#", 1024); // Scoped season metadata sort key.
 export const createLeaguePlayerSchema = z.object({ playerId: id, nickname: z.string().trim().min(1).max(80) }).strict();
 export const addExistingLeaguePlayerSchema = z.object({ playerId: id, teamId: z.enum(TEAM_IDS).nullable().optional(),
   allowFinished: z.boolean().optional() }).strict();
 export const leaguePlayerPageSchema = z.object({ players: z.array(z.object({ playerId: id, nickname: z.string().min(1),
-  claimed: z.boolean(), seasons: z.array(z.object({ seasonId: id, name: z.string().min(1) }).strict()).max(3), hasMoreSeasons: z.boolean(), inGame: z.boolean().optional(),
+  claimed: z.boolean(), seasons: z.array(z.object({ seasonId: seasonIdSchema, name: z.string().min(1) }).strict()).max(3), hasMoreSeasons: z.boolean(), inGame: z.boolean().optional(),
 }).strict()), cursor: z.string().nullable() }).strict();
 
 export function isPlayerDirectoryRoute(method: string, route: string): boolean {
@@ -49,10 +54,10 @@ export async function handlePlayerDirectoryRoute(input: {
   try {
     if (route === "/v1/league-players") {
       const fields = queryFields(input.rawQueryString ?? "", method === "GET" ? ["leagueId", "seasonId", "gameId", "query", "cursor", "limit"] : ["leagueId"]);
-      if (!id.safeParse(fields.leagueId).success) return invalid();
+      if (!leagueIdSchema.safeParse(fields.leagueId).success) return invalid();
       if (method === "GET") {
-        if ((fields.seasonId !== undefined && !id.safeParse(fields.seasonId).success) ||
-            (fields.gameId !== undefined && !id.safeParse(fields.gameId).success) ||
+        if ((fields.seasonId !== undefined && !seasonIdSchema.safeParse(fields.seasonId).success) ||
+            (fields.gameId !== undefined && !gameIdSchema.safeParse(fields.gameId).success) ||
             (fields.query !== undefined && fields.query.length > 100) ||
             (fields.cursor !== undefined && (!fields.cursor || fields.cursor.length > 8000)) ||
             (fields.limit !== undefined && !/^(?:[1-9]|[1-4][0-9]|50)$/.test(fields.limit))) return invalid();
@@ -69,7 +74,7 @@ export async function handlePlayerDirectoryRoute(input: {
     if (route === "/v1/game-player-registrations" && method === "POST") {
       const fields = queryFields(input.rawQueryString ?? "", ["gameId"]);
       const body = addExistingLeaguePlayerSchema.safeParse(input.body);
-      if (!body.success || !id.safeParse(fields.gameId).success) return invalid();
+      if (!body.success || !gameIdSchema.safeParse(fields.gameId).success) return invalid();
       const registration = await repository.addExistingLeaguePlayer({ ...body.data, gameId: fields.gameId, userIds });
       return { statusCode: 200, payload: { registration } };
     }

@@ -2286,6 +2286,18 @@
     }
     window.addEventListener("hashchange", () => showDestination(true));
     showDestination();
+    return { updateSeasons(nextSeasons) {
+      const selected = scope.value;
+      const all = document.createElement("option"); all.value = ""; all.textContent = "All league players";
+      scope.replaceChildren(all);
+      for (const season of nextSeasons) {
+        const option = document.createElement("option"); option.value = season.seasonId; option.textContent = season.name; scope.append(option);
+      }
+      scope.value = nextSeasons.some(season => season.seasonId === selected) ? selected : "";
+      generation += 1; filterRevision += 1; loaded = false; pending = false; cursor = null; more.hidden = true;
+      list.replaceChildren(); seen.clear(); directoryPlayers.clear();
+      if (!panel.hidden) void load();
+    } };
   }
 
   async function initLeaguePage() {
@@ -2320,6 +2332,7 @@
     let canManage = false;
     let leagueName = "League";
     let directorySeasons = [];
+    let directoryController = null;
     const confirmedDeletedSeasonIds = new Set();
     const pendingDeletedSeasonIds = new Set();
     let seasonsRenderVersion = 0;
@@ -2488,6 +2501,7 @@
       const seasons = (Array.isArray(payload?.seasons) ? payload.seasons : [])
         .filter((season) => !confirmedDeletedSeasonIds.has(season.seasonId));
       directorySeasons = seasons;
+      directoryController?.updateSeasons(seasons);
       if (seasons.length === 0) {
         seasonsBody.innerHTML = "";
         if (seasonsTableWrap instanceof HTMLElement) {
@@ -2665,6 +2679,8 @@
         await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`);
         committed = true;
         confirmedDeletedSeasonIds.add(seasonId);
+        directorySeasons = directorySeasons.filter(season => season.seasonId !== seasonId);
+        directoryController?.updateSeasons(directorySeasons);
         for (const action of seasonsBody.querySelectorAll('[data-season-id]')) {
           if (action.getAttribute("data-season-id") === seasonId) action.closest("tr")?.remove();
         }
@@ -2714,7 +2730,7 @@
 
     await loadLeague();
     await renderSeasons();
-    initLeagueDirectory(leagueId, directorySeasons, () => canManage);
+    directoryController = initLeagueDirectory(leagueId, directorySeasons, () => canManage);
     setStatus("");
   }
 
@@ -5650,7 +5666,7 @@
       leagueId: () => currentLeagueId, canRead: () => canManageRoster() && !refreshAccountLocked && !playerCreatePending && !playerCreateAttempt && !existingPlayerAttempt && !signOutPending && !signOutUnconfirmed,
       useExisting: nickname => {
         document.getElementById("player-create-form").hidden = true; newPlayerToggle.setAttribute("aria-expanded", "false");
-        pickerScope.value = ""; pickerSearch.value = nickname; pickerSearch.focus(); void loadPicker();
+        pickerScope.value = "league"; pickerSearch.value = nickname; pickerSearch.focus(); void loadPicker();
       } });
     let pickerCursor = null, pickerVersion = 0, pickerQuery = "", pickerSeason = "", pickerLoading = false;
     const pickerPlayers = new Map();
@@ -5781,7 +5797,8 @@
     });
     function invitationPath(suffix = "", playerId) {
       try {
-        if (!usableEntityId(playerId) || playerId.length > 1024 || !usableEntityId(gameId) || gameId.length > 1024) return null;
+        if (!usableEntityId(playerId) || new TextEncoder().encode(`PLAYER#${playerId}`).length > 2048 ||
+            !usableEntityId(gameId) || new TextEncoder().encode(`GAME#${gameId}`).length > 2048) return null;
         return `/v1/player-proofs/invitation${suffix}?gameId=${encodeURIComponent(gameId)}&playerId=${encodeURIComponent(playerId)}`;
       } catch { return null; }
     }

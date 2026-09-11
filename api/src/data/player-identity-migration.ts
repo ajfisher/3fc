@@ -3,7 +3,7 @@ import { GetItemCommand, QueryCommand, ScanCommand, TransactWriteItemsCommand, t
 import { createHash, randomUUID } from "node:crypto";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction, identityCondition, identityPut,
   identityGameSk, identitySeasonKey, identityDirectorySk, identityTombstoneSk, identityLeagueSk,
-  type IdentityClient, type IdentitySnapshot, type MembershipContext, type IdentityControl } from "./player-identity.js";
+  validPlayerIdentityId, type IdentityClient, type IdentitySnapshot, type MembershipContext, type IdentityControl } from "./player-identity.js";
 
 type Item = Record<string, AttributeValue>;
 export interface IdentityMigrationManifest {
@@ -20,7 +20,7 @@ export interface IdentityMigrationAudit {
   issueCount: number; issues: Array<{ pk: string; sk: string; code: string }>;
 }
 const emptyTotals = (): Totals => ({ count: 0, digest: "0".repeat(64) });
-const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 1024;
+const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const date = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 const physicalKey = (pk: unknown, sk: unknown): boolean => typeof pk === "string" && typeof sk === "string" &&
   pk.length > 0 && sk.length > 0 && Buffer.byteLength(pk) <= 2048 && Buffer.byteLength(sk) <= 1024;
@@ -169,7 +169,7 @@ export class PlayerIdentityMigration {
     const type = item.entityType?.S;
     if (!["playerIdentity", "playerGameMembership", "playerSeasonMembership", "playerLeagueMembership", "leaguePlayer"].includes(type ?? "")) return;
     const value = decode(item, type!);
-    if (!text(value.playerId)) fail("migration_invalid_projection");
+    if (!validPlayerIdentityId(value.playerId)) fail("migration_invalid_projection");
     const playerId = value.playerId;
     const identity = await this.planner.resolve(playerId);
     for (const memberId of identity.root.value.members) {
@@ -219,7 +219,7 @@ export class PlayerIdentityMigration {
     const type = item.entityType?.S;
     if (!["player", "gamePlayer", "roster", "leaguePlayerCreation"].includes(type ?? "")) return undefined;
     const data = decode(item, type!);
-    if (!text(data.playerId)) return fail("migration_invalid_player_reference");
+    if (!validPlayerIdentityId(data.playerId)) return fail("migration_invalid_player_reference");
     const playerId = data.playerId;
     let game: MembershipContext | undefined, gameItem: Item | undefined, leagueId: string | undefined;
     if (type === "gamePlayer" || type === "roster") {

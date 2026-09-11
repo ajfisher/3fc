@@ -3989,6 +3989,45 @@ test("league player creation suggests verified possible matches without merging 
   } finally { page.dom.window.close(); }
 });
 
+for (const refreshFails of [false, true]) test(`league directory removes deleted season scope after commit, refresh failure=${refreshFails}`, async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const season = apiState.seasons.get("autumn-cup")!;
+  const baseFetch = createMockFetch(apiState), queries: URLSearchParams[] = [];
+  let reads = 0, release: ((response: Response) => void) | undefined;
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club?seasonId=autumn-cup#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/league-players") {
+        queries.push(url.searchParams);
+        if (queries.length === 1) return new Promise<Response>(resolve => { release = resolve; });
+        return createJsonResponse(200, { players: [{ playerId: "remaining", nickname: "Remaining", claimed: false, seasons: [], hasMoreSeasons: false }], cursor: null });
+      }
+      if (url.pathname === "/v1/leagues/three-sided-football-club/seasons") {
+        if (++reads > 1 && refreshFails) throw new Error("refresh failed");
+        return createJsonResponse(200, { seasons: reads === 1 ? [season] : [] });
+      }
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return baseFetch(input, init);
+    } });
+  try {
+    const scope = page.document.getElementById("league-player-scope") as HTMLSelectElement;
+    assert.equal(scope.value, "autumn-cup");
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    dispatchClick(page.document.querySelector('#league-seasons-body [data-action="delete-season"]')!);
+    await flushAsync();
+    assert.equal(scope.value, "");
+    assert.deepEqual([...scope.options].map(option => option.textContent), ["All league players"]);
+    assert.equal(queries.at(-1)?.has("seasonId"), false);
+    assert(release); release(createJsonResponse(200, { players: [{ playerId: "obsolete", nickname: "Obsolete", claimed: false, seasons: [], hasMoreSeasons: false }], cursor: "obsolete-cursor" }));
+    await flushAsync();
+    assert.doesNotMatch(page.document.getElementById("league-player-list")!.textContent ?? "", /Obsolete/);
+    assert.match(page.document.getElementById("league-player-list")!.textContent ?? "", /Remaining/);
+    assert.equal(page.document.getElementById("league-player-more")!.hidden, true);
+  } finally { page.dom.window.close(); }
+});
+
 test("league directory paginates submitted search, keeps equal names distinct and moves owned exhausted-page focus", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
@@ -6706,6 +6745,32 @@ test("match roster ignores stale search responses and filters assigned names loc
   assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 1);
   assert.equal(page.document.querySelector('[data-ui="roster-member"]')?.getAttribute("data-player-id"), "player-bea");
   assert.doesNotMatch(page.document.getElementById("player-pool")?.textContent ?? "", /Ari/);
+});
+
+test("game possible-name search visibly selects the wider league scope and preserves the draft", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "picker-game", role: "admin" });
+  const baseFetch = createMockFetch(apiState), queries: URLSearchParams[] = [];
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-game" }),
+    url: "http://localhost:3000/games/picker-game#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      queries.push(url.searchParams);
+      return createJsonResponse(200, { players: [{ playerId: "kesh", nickname: "Kesh", claimed: false, inGame: false, seasons: [], hasMoreSeasons: false }], cursor: null });
+    } });
+  try {
+    dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!); await flushAsync();
+    dispatchClick(page.document.getElementById("game-player-new-toggle")!);
+    const name = page.document.getElementById("player-nickname") as HTMLInputElement;
+    name.value = "Kesh"; name.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 220)); await flushAsync();
+    dispatchClick(page.document.querySelector("#game-player-name-matches button")!); await flushAsync();
+    const scope = page.document.getElementById("game-player-picker-scope") as HTMLSelectElement;
+    assert.equal(scope.value, "league"); assert.equal(scope.selectedOptions[0]?.textContent, "All league players");
+    assert.equal(queries.at(-1)?.has("seasonId"), false);
+    assert.equal(page.document.activeElement?.id, "game-player-picker-search");
+    assert.equal(name.value, "Kesh"); assert.equal(page.document.getElementById("player-create-form")!.hidden, true);
+  } finally { page.dom.window.close(); }
 });
 
 test("game reusable player picker starts with this season and retries the original assignment after response loss", async () => {

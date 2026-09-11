@@ -44,7 +44,8 @@ export async function handlePlayerProofRoute(input: {
         const key = decodeURIComponent(field.slice(0, separator).replaceAll("+", " "));
         const value = decodeURIComponent(field.slice(separator + 1).replaceAll("+", " "));
         encodeURIComponent(value);
-        if (!expected.includes(key) || Object.hasOwn(ids, key) || !value.trim() || value.length > 1024) return invalid();
+        const prefix = key === "gameId" ? "GAME#" : key === "leagueId" ? "LEAGUE#" : "PLAYER#";
+        if (!expected.includes(key) || Object.hasOwn(ids, key) || !value.trim() || Buffer.byteLength(`${prefix}${value}`) > 2048) return invalid();
         ids[key] = value;
       }
     }

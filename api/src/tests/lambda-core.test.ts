@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { handlePlayerDirectoryRoute, leaguePlayerPageSchema } from "../player-directory-routes.js";
+import { handlePlayerDirectoryRoute, leaguePlayerPageSchema, createLeaguePlayerSchema } from "../player-directory-routes.js";
 
 import {
   createLambdaCoreHandler,
@@ -34,15 +34,24 @@ import {
 } from "../data/repository.js";
 
 test("directory read envelopes preserve valid long ASCII and Unicode historical IDs", async () => {
-  for (const playerId of ["x".repeat(1001), "é".repeat(501)]) {
+  for (const playerId of ["x".repeat(1025), "x".repeat(2041), "é".repeat(1020), "😀".repeat(510)]) {
     const page = { players: [{ playerId, nickname: "Kesh", claimed: false,
-      seasons: [{ seasonId: playerId, name: "Winter" }], hasMoreSeasons: false }], cursor: null };
+      seasons: [{ seasonId: "winter", name: "Winter" }], hasMoreSeasons: false }], cursor: null };
     assert.deepEqual(leaguePlayerPageSchema.parse(page), page);
     const response = await handlePlayerDirectoryRoute({ method: "GET", route: "/v1/league-players",
       rawQueryString: new URLSearchParams({ leagueId: playerId }).toString(), body: undefined,
       session: { email: "owner@example.com", subject: "owner" } as never,
       repository: { listLeaguePlayers: async (input: { leagueId: string }) => { assert.equal(input.leagueId, playerId); return page; } } as never });
     assert.equal(response.statusCode, 200); assert.deepEqual(response.payload, page);
+  }
+});
+
+test("directory IDs reject invalid Unicode and constructed keys beyond the byte boundary", () => {
+  for (const playerId of ["x".repeat(2042), "é".repeat(1021), "😀".repeat(511), "bad\ud800", " "]) {
+    assert.equal(createLeaguePlayerSchema.safeParse({ playerId, nickname: "Player" }).success, false);
+  }
+  for (const playerId of ["x".repeat(2041), "é".repeat(1020), "😀".repeat(510)]) {
+    assert.equal(createLeaguePlayerSchema.safeParse({ playerId, nickname: "Player" }).success, true);
   }
 });
 

@@ -5,6 +5,11 @@
   const ID = /^[A-Za-z0-9_-]{20,64}$/;
   const SECRET = /^[A-Za-z0-9_-]{43}$/;
   const validAccount = (value) => typeof value === "string" && value.length > 0 && value.length <= 1024;
+  const validPlayerId = (value) => {
+    try { return typeof value === "string" && value.trim().length > 0 &&
+      encodeURIComponent(value) !== "" && new TextEncoder().encode(`PLAYER#${value}`).length <= 2048; }
+    catch { return false; }
+  };
   let generation = 0;
   let channel = null;
   let stopped = false;
@@ -38,7 +43,7 @@
     const clean = { proofId: record.proofId, secret: record.secret, createdAt: record.createdAt, expiresAt: record.expiresAt,
       ...(prior?.accountId || record.accountId ? { accountId: prior?.accountId || record.accountId } : {}),
       ...(typeof record.operation === "string" && record.operation.length <= 400 ? { operation: record.operation } : {}),
-      ...(typeof record.playerId === "string" && record.playerId.length <= 1024 ? { playerId: record.playerId } : {}),
+      ...(validPlayerId(record.playerId) ? { playerId: record.playerId } : {}),
     };
     if (retiredProofId) {
       const retired = lookup(retiredProofId);
@@ -386,7 +391,7 @@
     message("Linking player…");
     try {
       const playerId = preview.player.playerId;
-      if (typeof playerId !== "string" || !playerId.trim() || playerId.length > 1024) throw Object.assign(new Error("unaddressable_player"), { status: 409 });
+      if (!validPlayerId(playerId)) throw Object.assign(new Error("unaddressable_player"), { status: 409 });
       let component;
       try { component = encodeURIComponent(playerId); } catch { throw Object.assign(new Error("unaddressable_player"), { status: 409 }); }
       const result = await request(`/v1/player-proofs/claim?playerId=${component}`,

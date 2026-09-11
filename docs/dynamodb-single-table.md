@@ -131,6 +131,38 @@ an organizer supplies a validated custom code. Deterministic join-code fallback
 exists only to normalize legacy game records before repair replaces missing
 lookup ownership.
 
+## Player identity and reusable directory (additive cutover)
+
+`PLAYER_IDENTITY / CONTROL` owns compatible/paused/fenced writer mode, coverage
+and epoch. All identity and membership writers condition on it. The operator
+runbook in `docs/runbooks/player-identity-directory.md` is required before marking
+coverage verified; API traffic cannot certify its own coverage.
+
+| Partition | Sort key | Purpose |
+| --- | --- | --- |
+| `PLAYER#{originalId}` | `IDENTITY` | Canonical root, complete member IDs, display/former names and identity/write revisions |
+| `PLAYER#{originalId}` | `GAME#{digest}`, `SEASON#{digest}`, `LEAGUE#{digest}` | Reverse membership; original identifiers remain in the payload |
+| `LEAGUE#{leagueId}` | `PLAYER#{digest}` | Private reusable-player directory with verified season context |
+| `PLAYER_MIGRATION#{migrationId}` | `AUDIT`, `ATTEMPT#{epoch}` | Audited progress and archived blocked attempts |
+
+Projection digests are SHA-256 of the JSON-encoded identifier tuple, generated
+by the shared identity key helpers. Never parse a digest as an original ID.
+Deletion tombstones retain scope needed to verify historical membership.
+Profiles, registrations, roster entries and goal events retain original IDs;
+canonical readers must resolve aliases without rewriting those historical keys.
+
+The existing account claim index stays `USER#{userId} / PLAYER#{playerId}` when
+that sort key fits 1,024 UTF-8 bytes. An oversized but valid standalone profile
+uses the disjoint `PLAYER_HASH#{sha256(playerId)}` namespace and stores the exact
+original ID in its `playerClaim` payload. Returning-player enumeration and
+consolidation reconciliation must read both namespaces, validate the payload and
+resolve the complete canonical group. Never reconstruct an ID from an index key.
+
+Readable profile IDs may occupy the full 2,048-byte `PLAYER#` partition-key
+budget. Game registration and roster writes separately enforce their 1,024-byte
+sort-key budgets and return controlled errors before any partial write. Reject
+malformed Unicode rather than silently replacing it during UTF-8 encoding.
+
 ## Item Envelope
 
 Repository-managed records are written with:
