@@ -164,3 +164,43 @@ test("late response is not cached and pending siblings drain without another wav
   assert.equal(calls, 4); assert.equal(settled, true);
   await assert.rejects(get(cache, 100), /could not be checked/, "late sibling response must not be cached");
 });
+
+for (const kind of ["rejected", "malformed"] as const) test(`known ${kind} batch failure suppresses sibling retries while draining`, async () => {
+  let calls = 0, settled = false, signalStarted!: () => void, signalSleep!: () => void;
+  let releaseFailure!: () => void, releaseSleep!: () => void, releasePending!: () => void;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  const sleeping = new Promise<void>(resolve => { signalSleep = resolve; });
+  const failureGate = new Promise<void>(resolve => { releaseFailure = resolve; });
+  const sleepGate = new Promise<void>(resolve => { releaseSleep = resolve; });
+  const pendingGate = new Promise<void>(resolve => { releasePending = resolve; });
+  const delays: number[] = [];
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    const index = ++calls, keys = command.input.RequestItems!.fixture!.Keys!;
+    if (calls === 4) signalStarted();
+    if (index === 1) {
+      await failureGate;
+      if (kind === "rejected") throw new Error("controlled transport failure");
+      return { Responses: { fixture: null } };
+    }
+    if (index > 2) await pendingGate;
+    return { UnprocessedKeys: { fixture: { Keys: keys } } };
+  } }, "fixture", { now: () => 1000, deadlineMs: 10000, sleep: async delay => {
+    delays.push(delay); signalSleep(); await sleepGate;
+  } });
+  const outcome = cache.prefetch(Array.from({ length: 401 }, (_, index) => key(index))).then(
+    () => { settled = true; return null; }, error => { settled = true; return error; },
+  );
+  try {
+    await Promise.all([started, sleeping]); releaseFailure();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    releaseSleep(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(calls, 4, "sleeping sibling must not retry after known failure with ample deadline remaining");
+    assert.equal(settled, false, "already-started SDK calls must still drain");
+    assert.deepEqual(delays, [50]);
+  } finally { releaseFailure(); releaseSleep(); releasePending(); }
+  assert(await outcome instanceof Error);
+  assert.equal(calls, 4, "neither newly unprocessed siblings nor the fifth batch dispatch");
+  assert.deepEqual(delays, [50], "no new backoff after known failure");
+  await assert.rejects(get(cache, 100), /could not be checked/);
+});

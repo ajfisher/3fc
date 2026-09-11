@@ -203,6 +203,24 @@ peak2840384KiB, remaining[]. Refreshed real local HTTP/DynamoDB and Chromium
 group19054 passed, exit0, peak991568KiB plus512MiB Docker, remaining[]; API children
 and disposable database cleaned up. Captures: `3fc-returning-browser-623JbO`.
 
+Codex review5176700138/comment3987471765 found that an already-failed batch
+could leave siblings retrying unprocessed keys until the scheduling deadline.
+The follow-up adds a shared failure latch: no new retry is dispatched after a
+sibling fails, including a failure during response validation or backoff.
+Already-started calls still drain before the operation rejects. Mixed-failure
+tests use a non-expired clock so they prove cancellation of retries rather than
+incidental deadline exhaustion. Current-head validation and deployed evidence
+must be refreshed before readiness.
+
+Independent architecture/security review cleared the latch and its mixed-failure
+regressions. Focused group20288 passed24 helper and15 owned-join tests, exit0,
+peak530896KiB, remaining[]. Full group20321 passed lint/typecheck,493 API/636
+app/3 operator/57 gate tests, contracts, backlog validation/export and build;
+exit0, peak1931856KiB, remaining[].
+Real local HTTP/DynamoDB and Chromium group25583 passed, exit0,
+peak982928KiB plus512MiB Docker, remaining[]; API children and database removed.
+Fresh returning-player captures: `3fc-returning-browser-IbVboZ`.
+
 ### Rejected findings and evidence
 
 None.

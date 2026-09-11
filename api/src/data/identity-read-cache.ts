@@ -46,21 +46,26 @@ export class IdentityReadCache implements IdentityClient {
       if (!this.items.has(id)) unique.set(id, { pk: { S: key.pk }, sk: { S: key.sk } });
     }
     const entries = [...unique.values()];
+    const state = { failed: false };
     for (let start = 0; start < entries.length; start += 400) {
+      if (state.failed) return unavailable();
       const tasks: Promise<void>[] = [];
-      for (let offset = start; offset < Math.min(start + 400, entries.length); offset += 100) tasks.push(this.batch(entries.slice(offset, offset + 100)));
+      for (let offset = start; offset < Math.min(start + 400, entries.length); offset += 100) tasks.push(this.batch(entries.slice(offset, offset + 100), state));
       const settled = await Promise.allSettled(tasks);
       for (const result of settled) if (result.status === "rejected") throw result.reason;
     }
   }
-  private async batch(initial: Item[]): Promise<void> {
+  private async batch(initial: Item[], state: { failed: boolean }): Promise<void> {
+    try {
     let pending = initial;
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (state.failed) return unavailable();
       if (attempt > 0) {
         const delay = 50 * 2 ** (attempt - 1);
         this.hasTime(delay);
         await this.sleep(delay);
       }
+      if (state.failed) return unavailable();
       // All waves share one request deadline. This does not cancel an SDK call
       // already in progress, but never starts a retry after its budget expires.
       this.hasTime();
@@ -68,6 +73,7 @@ export class IdentityReadCache implements IdentityClient {
       const output = await this.client.send(new BatchGetItemCommand({ RequestItems: {
         [this.tableName]: { Keys: pending, ConsistentRead: true },
       } })) as BatchGetItemCommandOutput;
+      if (state.failed) return unavailable();
       this.hasTime();
       const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
       if (!object(output) || (Object.hasOwn(output, "Responses") && !object(output.Responses)) ||
@@ -97,5 +103,11 @@ export class IdentityReadCache implements IdentityClient {
       pending = [...unprocessed.values()];
     }
     return unavailable();
+    } catch (error) {
+      // Latch in this task before rejecting it. Started SDK calls still settle,
+      // but sibling backoff timers cannot launch retries after known failure.
+      state.failed = true;
+      throw error;
+    }
   }
 }
