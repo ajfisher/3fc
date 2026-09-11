@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
 import { PlayerIdentityMigration } from "../../api/dist/data/player-identity-migration.js";
+import { awaitLoopbackReadiness, cleanupAll } from "./player-stack-safety.mjs";
 
 process.umask(0o077);
 const container = `threefc-player-m2-${randomUUID()}`;
@@ -63,18 +64,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
   // Docker runs outside the guarded PGID; stop only the generated container.
   try { if (docker("ps", "--all", "--filter", `name=^/${container}$`, "--format", "{{.ID}}")) docker("stop", "--time", "1", container); } catch { /* final cleanup verifies absence */ }
 });
-async function healthy(url, worker) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    assert(!interrupted && worker.child.exitCode === null && worker.child.signalCode === null, "Owned service exited before readiness");
-    try {
-      if ((await fetch(url, { signal: AbortSignal.timeout(1000) })).ok) {
-        assert.equal(worker.host?.address, "127.0.0.1", "Service must confirm a loopback-only listener"); return;
-      }
-    } catch { /* bounded local startup */ }
-    await delay(100);
-  }
-  throw new Error("Owned local service readiness failed");
-}
+const healthy = (url, worker) => awaitLoopbackReadiness(url, worker, { isInterrupted: () => interrupted });
 let stage = "setup";
 try {
   privateDir = await mkdtemp(join(tmpdir(), "3fc-m2-private-"));
@@ -128,16 +118,22 @@ try {
   // Never print request bodies, URLs or email contents from an error object.
   console.error(`Player-stack M2 stopped at ${stage} (${error?.name ?? "Error"}).`); process.exitCode = 1;
 } finally {
-  for (const worker of [...workers].reverse()) await stop(worker);
-  client?.destroy();
-  // Inspect even if docker run timed out after the daemon created the container.
-  if (docker("ps", "--all", "--filter", `name=^/${container}$`, "--format", "{{.ID}}")) docker("stop", "--time", "3", container);
-  assert.equal(docker("ps", "--all", "--filter", `name=^/${container}$`, "--format", "{{.ID}}"), "");
-  if (privateDir) {
-    // Exact mkdtemp-owned tree only; automatic browser error contexts may contain
-    // auth state, so neither these nor private fake emails become evidence.
-    assert(privateDir.startsWith(join(tmpdir(), "3fc-m2-private-")));
-    await rm(privateDir, { recursive: true, force: false });
-  }
-  console.log("CLEANUP owned workers exited, disposable database absent, private email file removed");
+  const failed = await cleanupAll([
+    ...[...workers].reverse().map((worker, index) => ({ name: `worker-${index + 1}`, run: () => stop(worker) })),
+    { name: "client", run: () => client?.destroy() },
+    { name: "docker", run: () => {
+      // Inspect even if run timed out after the daemon created the container.
+      if (docker("ps", "--all", "--filter", `name=^/${container}$`, "--format", "{{.ID}}")) docker("stop", "--time", "3", container);
+      assert.equal(docker("ps", "--all", "--filter", `name=^/${container}$`, "--format", "{{.ID}}"), "");
+    } },
+    { name: "private-files", run: async () => {
+      if (!privateDir) return;
+      // Exact mkdtemp-owned tree only; do this even after a Docker failure.
+      assert(privateDir.startsWith(join(tmpdir(), "3fc-m2-private-")));
+      await rm(privateDir, { recursive: true, force: false });
+    } },
+  ]);
+  if (failed.length) {
+    console.error(`INCOMPLETE cleanup: ${failed.join(", ")}. Investigate before another run.`); process.exitCode = 1;
+  } else console.log("CLEANUP owned workers exited, disposable database absent, private email file removed");
 }

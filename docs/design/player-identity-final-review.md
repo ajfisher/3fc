@@ -101,6 +101,22 @@ that results-entry needs a running app server was checked and rejected: its
 route fixture fulfills HTML/assets itself; the71-case run passed without one.
 M2 group31360 exited0, peak1330512KiB plus512MiB Docker, remaining[].
 
+Codex review5177134464 at c1dbf0c identified Docker-cleanup failure skipping
+private artifact deletion. Cleanup now attempts every named owned-resource step,
+withholds raw errors and reports failure only after private artifacts have also
+been handled. A deterministic failure test covers this order. Its readiness
+ordering concern is made explicit through a tested wait for both healthy HTTP
+and confirmed loopback metadata; no reliance on stdout event order remains.
+Final-head validation and remote evidence are refreshed after these changes.
+Independent architecture/security re-review cleared the changes. Focused7 safety
+tests passed under group37648, exit0, peak50784KiB, remaining[]. Full group37720
+passed493 API/636 app/10 operator/57 gate tests, lint/typecheck, contracts,
+backlog validation/export and build; exit0, peak2526272KiB, remaining[].
+Corrected real M2 group42960 passed all4 tests, exit0, peak1308592KiB plus512MiB
+Docker, remaining[]; actual worker, database and private-artifact cleanup verified.
+Refreshed71 entry-browser tests passed under group43093, exit0,
+peak1384176KiB, remaining[].
+
 ### Unresolved blocking findings
 
 Current-head remote evidence remains pending.
