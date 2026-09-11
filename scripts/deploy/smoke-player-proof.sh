@@ -13,16 +13,17 @@ esac
 if [ "$SURFACE" = api ]; then
   API_ID="$(jq -er '.httpApiId' "out/deploy/${ENVIRONMENT}/api-core-deploy-manifest.json")"
   API_ORIGIN="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com"
-  for ROUTE in player-proofs/preview player-proofs/claim player-proofs/invitation player-proofs/invitation/revoke games/smoke-game/players/smoke-player/profile-invitation games/smoke-game/players/smoke-player/profile-invitation/revoke; do
+  for ROUTE in league-players game-player-registrations player-proofs/league-invitation player-proofs/league-invitation/revoke player-proofs/preview player-proofs/claim player-proofs/invitation player-proofs/invitation/revoke games/smoke-game/players/smoke-player/profile-invitation games/smoke-game/players/smoke-player/profile-invitation/revoke; do
     CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' -X POST \
       -H "origin: ${APP_ORIGIN}" -H 'content-type: application/json' \
       -d '{}' "${API_ORIGIN}/v1/${ROUTE}")"
     test "$CODE" = 401
   done
-  CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' \
-    -H "origin: ${APP_ORIGIN}" \
-    "${API_ORIGIN}/v1/games/smoke-game/players/smoke-player/profile-invitation")"
-  test "$CODE" = 401
+  for ROUTE in league-players player-proofs/league-invitation games/smoke-game/players/smoke-player/profile-invitation; do
+    CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' \
+      -H "origin: ${APP_ORIGIN}" "${API_ORIGIN}/v1/${ROUTE}")"
+    test "$CODE" = 401
+  done
 elif [ "$SURFACE" = site ]; then
   for ROUTE in /link-player /link-player/; do
     PAGE="$(curl --max-time 20 -fsS "${APP_ORIGIN}${ROUTE}")"

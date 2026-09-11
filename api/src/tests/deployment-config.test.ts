@@ -125,6 +125,35 @@ function assertServerlessRoute(method: string, path: string): void {
   );
 }
 
+test("league player directory and invitation operations have deployed routes and recovery contracts", () => {
+  const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
+  const smoke = readFileSync(resolve(process.cwd(), "../scripts/deploy/smoke-player-proof.sh"), "utf8");
+  const operations = [
+    ["/v1/league-players", ["get", "post"]],
+    ["/v1/game-player-registrations", ["post"]],
+    ["/v1/player-proofs/league-invitation", ["get", "post"]],
+    ["/v1/player-proofs/league-invitation/revoke", ["post"]],
+  ] as const;
+  for (const [path, methods] of operations) {
+    assertServerlessRoute("OPTIONS", path);
+    assert.ok(smoke.includes(path.slice(4)), `unsigned deployment smoke includes ${path}`);
+    const section = contract.split(`  ${path}:\n`)[1]?.split(/\n  \/v1\//)[0];
+    assert.ok(section, path);
+    for (const method of methods) {
+      assertServerlessRoute(method.toUpperCase(), path);
+      const operation = section.split(`    ${method}:\n`)[1]?.split(/\n    (?:get|post):\n/)[0];
+      assert.ok(operation, `${method} ${path}`);
+      assert.match(operation, /no-store and no-referrer/);
+      for (const status of [400, 401, 403, 404, 409, 500, 503]) {
+        assert.match(operation, new RegExp(`"${status}":\\s+\\$ref: "#/components/responses/`));
+      }
+    }
+  }
+  const page = contract.split("    LeaguePlayerPage:\n")[1].split(/\n    \w+:\n/)[0];
+  assert.match(page, /required: \[playerId, nickname, claimed, seasons, hasMoreSeasons\]/);
+  assert.doesNotMatch(page, /claimedByUserId|email|gameCount|lastGameAt/);
+});
+
 test("profile-link contracts cover recovery errors and expose only public player identities", () => {
   const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
   const operations = [

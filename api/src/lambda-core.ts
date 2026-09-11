@@ -4,7 +4,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
+import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
 import { PlayerProofError, parsePlayerClaimMode } from "./auth/player-proof.js";
+import { PlayerIdentityError } from "./data/player-identity.js";
 import {
   buildGameTimerState,
   DEFAULT_TEAMS,
@@ -186,7 +188,7 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer"> {
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository {
   listLeaguesForUser(userId: string): Promise<
     Array<{
       leagueId: string;
@@ -3489,7 +3491,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 startsOn: parsedBody.data.startsOn ?? null,
                 endsOn: parsedBody.data.endsOn ?? null,
               });
-              await ensureSeasonDefaultTeams(dependencies.repository, createdSeason.seasonId);
+              await ensureSeasonDefaultTeams(dependencies.repository, createdSeason.seasonId, { leagueId: createdSeason.leagueId });
 
               return createJsonResponse(
                 201,
@@ -5187,6 +5189,17 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        if (isPlayerDirectoryRoute(method, route)) {
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON."); }
+          const result = await handlePlayerDirectoryRoute({ method, route, body,
+            rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" });
+        }
+
         if (isPlayerProofRoute(method, route)) {
           let body: unknown = {};
           try { if (method !== "GET") body = parseJsonBody(event); }
@@ -5681,6 +5694,11 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         return createJsonResponse(status, result.payload, {
           ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
         });
+      }
+      if (error instanceof PlayerIdentityError) {
+        status = error.status;
+        return createJsonResponse(status, { error: error.category,
+          code: error.code, message: error.message }, { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" });
       }
       status = 500;
 

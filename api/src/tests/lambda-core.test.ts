@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { handlePlayerDirectoryRoute, leaguePlayerPageSchema } from "../player-directory-routes.js";
 
 import {
   createLambdaCoreHandler,
@@ -31,6 +32,19 @@ import {
   LeagueInviteError,
   PlayerClaimError,
 } from "../data/repository.js";
+
+test("directory read envelopes preserve valid long ASCII and Unicode historical IDs", async () => {
+  for (const playerId of ["x".repeat(1001), "é".repeat(501)]) {
+    const page = { players: [{ playerId, nickname: "Kesh", claimed: false,
+      seasons: [{ seasonId: playerId, name: "Winter" }], hasMoreSeasons: false }], cursor: null };
+    assert.deepEqual(leaguePlayerPageSchema.parse(page), page);
+    const response = await handlePlayerDirectoryRoute({ method: "GET", route: "/v1/league-players",
+      rawQueryString: new URLSearchParams({ leagueId: playerId }).toString(), body: undefined,
+      session: { email: "owner@example.com", subject: "owner" } as never,
+      repository: { listLeaguePlayers: async (input: { leagueId: string }) => { assert.equal(input.leagueId, playerId); return page; } } as never });
+    assert.equal(response.statusCode, 200); assert.deepEqual(response.payload, page);
+  }
+});
 
 interface MockSessionRecord {
   sessionId: string;
@@ -993,6 +1007,9 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
+      async createLeaguePlayer() { throw new Error("Player directory writes require a real repository fixture."); },
+      async addExistingLeaguePlayer() { throw new Error("Player registration requires a real repository fixture."); },
       async previewPlayerProof() { throw new Error("Proof preview requires a real repository fixture."); },
       async createPlayerInvitation() { throw new Error("Invitation writes require a real repository fixture."); },
       async getPlayerInvitation() { throw new Error("Invitation reads require a real repository fixture."); },

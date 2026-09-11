@@ -2623,6 +2623,24 @@ body {
   padding: 0.3rem;
 }
 
+[data-ui="directory-list"] {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+
+  > li { padding: 1rem 0; border-bottom: 1px solid var(--line); }
+  p { margin: 0.3rem 0 0; color: var(--ink-soft); overflow-wrap: anywhere; }
+  [data-ui="claim-badge"] { position: static; flex: 0 0 auto; }
+}
+
+[data-ui="directory-player-heading"] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  strong { min-width: 0; overflow-wrap: anywhere; }
+}
+
 [data-ui="game-mode-tabs"] {
   display: flex;
   flex-wrap: wrap;

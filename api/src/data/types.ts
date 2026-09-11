@@ -347,9 +347,12 @@ export interface PlayerProofRecord extends PlayerProofMetadata {
   kind: "registration" | "invitation";
   verifier: string;
   playerId: string;
-  gameId: string;
+  scope?: "game" | "league";
+  gameId: string | null;
   leagueId: string;
   playerRevision: string;
+  identityRootId?: string;
+  identityVersion?: number;
   leagueName: string;
   issuerAclUserId: string | null;
   replacesProofId: string | null;

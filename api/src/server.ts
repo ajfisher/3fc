@@ -5,7 +5,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { URL, pathToFileURL } from "node:url";
 
 import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
+import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
 import { PlayerProofError } from "./auth/player-proof.js";
+import { PlayerIdentityError } from "./data/player-identity.js";
 import {
   CreateTableCommand,
   DynamoDBClient,
@@ -2456,7 +2458,7 @@ async function handleCreateSeason(
         startsOn: parsedBody.data.startsOn ?? null,
         endsOn: parsedBody.data.endsOn ?? null,
       });
-      await ensureSeasonDefaultTeams(season.seasonId);
+      await ensureSeasonDefaultTeams(season.seasonId, repository, { leagueId: season.leagueId });
 
       return {
         statusCode: 201,
@@ -2992,6 +2994,22 @@ export async function handleLocalPlayerProofRoute(input: {
     return 400;
   }
   const result = await handlePlayerProofRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
+export async function handleLocalPlayerDirectoryRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerDirectoryRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handlePlayerDirectoryRoute({ ...input, body, repository: input.playerRepository ?? repository });
   sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
   return result.statusCode;
 }
@@ -5000,6 +5018,12 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isPlayerDirectoryRoute(method, route)) {
+        status = await handleLocalPlayerDirectoryRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
+
       if (isPlayerProofRoute(method, route)) {
         status = await handleLocalPlayerProofRoute({ request, response, method, route, rawQueryString: requestUrl.search.slice(1), session: authGate.session });
         return;
@@ -5440,6 +5464,12 @@ async function start(): Promise<void> {
         const result = unavailableJoinPlayerContext();
         status = result.statusCode;
         sendJsonWithCors(request, response, status, result.payload, { "Cache-Control": "no-store" });
+        return;
+      }
+      if (error instanceof PlayerIdentityError) {
+        status = error.status;
+        sendJsonWithCors(request, response, status, { error: error.category,
+          code: error.code, message: error.message }, { "Cache-Control": "no-store" });
         return;
       }
       status = 500;

@@ -317,6 +317,36 @@ functions:
           method: POST
           path: /v1/player-proofs/preview
       - httpApi:
+          method: GET
+          path: /v1/league-players
+      - httpApi:
+          method: POST
+          path: /v1/league-players
+      - httpApi:
+          method: OPTIONS
+          path: /v1/league-players
+      - httpApi:
+          method: POST
+          path: /v1/game-player-registrations
+      - httpApi:
+          method: OPTIONS
+          path: /v1/game-player-registrations
+      - httpApi:
+          method: GET
+          path: /v1/player-proofs/league-invitation
+      - httpApi:
+          method: POST
+          path: /v1/player-proofs/league-invitation
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-proofs/league-invitation
+      - httpApi:
+          method: POST
+          path: /v1/player-proofs/league-invitation/revoke
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-proofs/league-invitation/revoke
+      - httpApi:
           method: POST
           path: /v1/player-proofs/claim
       - httpApi:

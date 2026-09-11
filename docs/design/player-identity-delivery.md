@@ -15,6 +15,11 @@ League Players lists claimed and unclaimed identities. Season/game entry default
 to that season with an explicit All league players alternative. Search includes
 retained former nicknames; equal names remain distinct identities. Show relevant
 game/season participation, never private emails or raw account identifiers.
+Directory rows use verified season names as participation context, not game
+counts or latest kickoff dates. Season names are not ordered as “recent” unless
+that ordering is actually known. A standalone player has no invented history.
+Deleting a game retains its reusable players and historical season association;
+that association is never presented as a current game registration.
 Organisers may create a league player without a game. Existing scorer permission
 to add/assign game players remains; directory management, invitations and combining
 are organiser-only.
@@ -139,6 +144,15 @@ environment/table provenance and a reviewed plan; production execution is separa
 authority. Use a controlled identity/membership write pause for final cutover,
 drain old writers, reconcile, then enable fenced writers. Missing/unknown migration
 coverage blocks consolidation. New flags default closed.
+
+Structure creation advances the shared identity-control epoch atomically, and
+deletion captures that epoch before complete, strongly consistent emptiness
+reads. This also fences legacy sessions lacking a league field. Deleted game IDs
+cannot be reused: their tombstone preserves exact league/season/kickoff scope for
+retained historical registrations, without join secrets. Deletion invalidates
+consolidation coverage. Once the initial directory cutover is complete, historical
+league/season association remains usable for search and reuse while consolidation
+awaits reconciliation; it does not imply live-game counts or performance.
 
 ## Combining profiles
 
