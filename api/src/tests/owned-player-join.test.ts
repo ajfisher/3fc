@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue } from "@aws-sdk/client-dynamodb";
+import { BatchGetItemCommand, GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue } from "@aws-sdk/client-dynamodb";
 import { OwnedPlayerJoinService } from "../data/owned-player-join.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, identityItem, identityDirectorySk, identityLeagueSk } from "../data/player-identity.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "../data/player-claims-revision.js";
@@ -17,6 +17,9 @@ class Client {
   activeReads = 0;
   maximumReads = 0;
   readCount = 0;
+  batchCount = 0;
+  batchKeys = 0;
+  batchPhysicalKeys: string[] = [];
   lastTransactionSize = 0;
   beforeRead: ((pk: string, sk: string) => Promise<void>) | null = null;
   key(pk: string, sk: string) { return JSON.stringify([pk, sk]); }
@@ -24,6 +27,19 @@ class Client {
   seed(pk: string, sk: string, type: string, data: unknown) { this.items.set(this.key(pk, sk), identityItem(pk, sk, type, data, NOW)); }
   data(pk: string, sk: string) { return JSON.parse(this.item(pk, sk)!.data!.S!); }
   async send(command: unknown): Promise<unknown> {
+    if (command instanceof BatchGetItemCommand) {
+      this.batchCount++;
+      const tables = Object.entries(command.input.RequestItems!); assert.equal(tables.length, 1);
+      const [table, input] = tables[0]!; assert.equal(input.ConsistentRead, true);
+      const keys = input.Keys!; assert(keys.length <= 100); this.batchKeys += keys.length;
+      this.batchPhysicalKeys.push(...keys.map(key => this.key(key.pk!.S!, key.sk!.S!)));
+      this.activeReads++; this.maximumReads = Math.max(this.maximumReads, this.activeReads);
+      try {
+        await Promise.resolve();
+        const rows = keys.flatMap(key => { const row = this.item(key.pk!.S!, key.sk!.S!); return row ? [structuredClone(row)] : []; });
+        return { Responses: { [table]: rows.reverse() } }; // DynamoDB has no response-order guarantee.
+      } finally { this.activeReads--; }
+    }
     if (command instanceof GetItemCommand) {
       this.readCount++;
       await this.beforeRead?.(command.input.Key!.pk!.S!, command.input.Key!.sk!.S!);
@@ -86,39 +102,7 @@ function fixture(ids = ["a"], owner = "account") {
 }
 const request = { joinCode: CODE, userId: "account", playerId: "a", idempotencyKey: "request-1" };
 
-test("rejected lookup drains a pending sibling before rejecting the whole page", async () => {
-  const { client, service } = fixture(["a", "b"]);
-  let release!: () => void, started!: () => void, rejected!: () => void;
-  const blocked = new Promise<void>(resolve => { release = resolve; });
-  const siblingStarted = new Promise<void>(resolve => { started = resolve; });
-  const lookupRejected = new Promise<void>(resolve => { rejected = resolve; });
-  const failure = new Error("controlled lookup rejection");
-  let siblingFinished = false, settled = false;
-  client.beforeRead = async (pk, sk) => {
-    if (pk === "PLAYER#a" && sk === "IDENTITY") { rejected(); throw failure; }
-    if (pk === "PLAYER#b" && sk === "PROFILE") { started(); await blocked; siblingFinished = true; }
-  };
-  const outcome = service.list({ joinCode: CODE, userId: "account" }).then(
-    value => { settled = true; return { value, error: null }; },
-    error => { settled = true; return { value: null, error }; },
-  );
-  try {
-    await Promise.all([siblingStarted, lookupRejected]);
-    // One event-loop boundary drains rejection microtasks. No elapsed-time or
-    // machine-speed threshold is used: the sibling has an explicit held gate.
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(settled, false, "a failed sibling must not detach another in-flight lookup");
-    assert.equal(siblingFinished, false);
-    assert.equal(client.transactions, 0, "no partial page is validated or returned");
-  } finally { release(); }
-  const result = await outcome;
-  assert.equal(result.error, failure);
-  assert.equal(result.value, null);
-  assert.equal(siblingFinished, true);
-  assert.equal(client.transactions, 0);
-});
-
-test("maximum 20 roots with 20 aliases overlap reads within one bounded source-page budget", async () => {
+test("maximum 20 roots with 20 aliases uses bounded strong batch reads and preserves original IDs", async () => {
   const roots = Array.from({ length: 20 }, (_, index) => `root-${String(index).padStart(2, "0")}`);
   const { client, service } = fixture(roots);
   for (const root of roots) {
@@ -127,13 +111,16 @@ test("maximum 20 roots with 20 aliases overlap reads within one bounded source-p
     for (const alias of aliases) client.seed(`PLAYER#${alias}`, "IDENTITY", "playerIdentity", {
       playerId: alias, rootId: root, members: [], identityVersion: 1, writeVersion: "alias-version", displayName: alias, formerNames: [],
     });
+    client.seed("GAME#game", `PLAYER#${aliases.at(-1)}`, "gamePlayer", { gameId: "game", playerId: aliases.at(-1) });
   }
   client.measureReadOverlap = true;
   const page = await service.list({ joinCode: CODE, userId: "account", limit: 20 });
   assert.deepEqual(page.players.map(player => player.playerId), roots, "source order survives concurrent lookup completion");
-  assert(page.players.every(player => player.registeredPlayerId === null && player.team === null && player.seasons[0]?.name === "Season"));
-  assert(client.readCount > 2000, "exercise the full legal alias fanout, not twenty trivial roots");
-  assert.equal(client.maximumReads, 20, "one lookup stream per source entry; never nested alias fanout");
+  assert(page.players.every(player => player.registeredPlayerId === `${player.playerId}-alias-18` && player.team === null && player.seasons[0]?.name === "Season"));
+  assert(client.batchKeys > 2000, "exercise the full legal alias fanout, not twenty trivial roots");
+  assert(client.readCount <= 8, "no per-member serial network GetItem fallback");
+  assert(client.batchCount <= 24, "bounded physical network calls rather than thousands of GetItems");
+  assert.equal(client.maximumReads, 4, "at most four batches overlap");
   assert.equal(client.activeReads, 0);
   assert(client.lastTransactionSize <= 100, "root/profile/directory CAS fits one atomic read validation");
   assert.equal(page.complete, false); assert(page.cursor, "hashed claim namespace remains to be checked");
@@ -142,7 +129,20 @@ test("maximum 20 roots with 20 aliases overlap reads within one bounded source-p
   });
   await assert.rejects(service.list({ joinCode: CODE, userId: "account", limit: 20 }), /changed/);
   assert.equal(client.activeReads, 0, "all lookup streams settle before failure is returned");
-  assert(client.maximumReads <= 20);
+  assert(client.maximumReads <= 4);
+});
+
+test("batch hints retain full alias validation, canonical dedup and foreign-league privacy", async () => {
+  const { client, service } = fixture(["a", "b", "c"]);
+  client.seed("PLAYER#a", "IDENTITY", "playerIdentity", { ...client.data("PLAYER#a", "IDENTITY"), members: ["a", "b"] });
+  client.seed("PLAYER#b", "IDENTITY", "playerIdentity", { ...client.data("PLAYER#b", "IDENTITY"), rootId: "a", members: [] });
+  client.items.delete(client.key("LEAGUE#league", identityDirectorySk("c")));
+  const result = await service.list({ joinCode: CODE, userId: "account" });
+  assert.deepEqual(result.players.map(player => player.playerId), ["a"]);
+  assert(!client.batchPhysicalKeys.includes(client.key("GAME#game", "PLAYER#c")), "filtered foreign identity does not drive target history reads");
+  client.items.delete(client.key("PLAYER#b", "IDENTITY"));
+  await assert.rejects(service.list({ joinCode: CODE, userId: "account" }), /could not be checked|unavailable|inconsistent/i);
+  assert.equal(client.transactions, 1, "missing alias cannot validate another page using a prior request cache");
 });
 
 test("owned pagination follows DynamoDB UTF-8 order across supplementary IDs", async () => {

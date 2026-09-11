@@ -6,6 +6,7 @@ import { identityCondition, identityPut, identityDirectorySk, identityLeagueSk, 
   type ResolvedPlayerIdentity } from "./player-identity.js";
 import { playerClaimSk } from "./keys.js";
 import { readPlayerClaimsRevision } from "./player-claims-revision.js";
+import { IdentityReadCache, type IdentityReadKey } from "./identity-read-cache.js";
 
 type Data = Record<string, unknown>;
 type Snap = IdentitySnapshot<Data>;
@@ -120,10 +121,7 @@ export class OwnedPlayerJoinService {
       identityCondition(this.tableName, scope.control), identityCondition(this.tableName, scope.directory), ...revisions.map(revision => identityCondition(this.tableName, revision))];
     const source = page.Items ?? [];
     if (source.length > limit || source.length > 20) return fail();
-    // Validate the whole bounded source page before launching lookups. Each
-    // entry performs sequential reads, so at most 20 DynamoDB calls overlap.
-    // Twenty is the existing source-page/transaction budget, not a new pool
-    // multiplier for each of its up-to-20 underlying aliases.
+    // Validate the bounded source before using any identity as a read hint.
     const claims = source.map(item => {
       let claim: Data;
       try { claim = JSON.parse(item.data?.S ?? "null"); } catch { return fail(); }
@@ -131,21 +129,58 @@ export class OwnedPlayerJoinService {
         !validPlayerIdentityId(claim.playerId) || item.sk?.S !== playerClaimSk(claim.playerId) || !item.sk.S.startsWith(namespace)) return fail();
       return claim.playerId;
     });
-    const resolved = await Promise.allSettled(claims.map(async playerId => {
-      const owned = await this.owned(playerId, accounts, scope.value.leagueId);
+    const cache = new IdentityReadCache(this.client, this.tableName);
+    const reader = new OwnedPlayerJoinService(cache, this.tableName, this.now, this.membershipPlan, this.enabled);
+    const identityKey = (id: string): IdentityReadKey => ({ pk: `PLAYER#${id}`, sk: "IDENTITY" });
+    await cache.prefetch(claims.map(identityKey));
+    const roots = new Set<string>();
+    for (const id of claims) {
+      const hint = await reader.read(`PLAYER#${id}`, "IDENTITY", "playerIdentity");
+      if (!hint || !validPlayerIdentityId(hint.value.rootId)) return fail();
+      roots.add(hint.value.rootId);
+    }
+    await cache.prefetch([...roots].map(identityKey));
+    const metadata: IdentityReadKey[] = [];
+    for (const root of roots) {
+      const hint = await reader.read(`PLAYER#${root}`, "IDENTITY", "playerIdentity");
+      const members = hint?.value.members;
+      if (!Array.isArray(members) || members.length < 1 || members.length > 20 || !members.every(validPlayerIdentityId)) return fail();
+      metadata.push(...members.map(identityKey), { pk: `PLAYER#${root}`, sk: "PROFILE" },
+        { pk: `LEAGUE#${scope.value.leagueId}`, sk: identityDirectorySk(root) },
+        { pk: `PLAYER#${root}`, sk: identityLeagueSk(scope.value.leagueId) });
+    }
+    await cache.prefetch(metadata);
+    // Hints above bound reads only. The existing full root/alias/ownership/scope
+    // validators below remain authoritative, including every alias's closure.
+    const ownedEntries = [];
+    for (const id of claims) ownedEntries.push(await reader.owned(id, accounts, scope.value.leagueId));
+    const gameKeys: IdentityReadKey[] = TEAM_IDS.map(team => ({ pk: `GAME#${scope.value.gameId}`, sk: `TEAM#${team}` }));
+    for (const owned of ownedEntries) {
+      if (!owned) continue;
+      for (const member of owned.identity.root.value.members) {
+        for (const sortKey of [`PLAYER#${member}`, ...TEAM_IDS.map(team => `ROSTER#${team}#${member}`)]) {
+          if (Buffer.byteLength(sortKey) <= 1024) gameKeys.push({ pk: `GAME#${scope.value.gameId}`, sk: sortKey });
+        }
+      }
+      const seasons = owned.directory.value.seasonIds ?? [];
+      if (!Array.isArray(seasons) || seasons.length > 3 || !seasons.every(text)) return fail();
+      for (const season of seasons) gameKeys.push({ pk: `LEAGUE#${scope.value.leagueId}`, sk: `SEASON#${season}` });
+    }
+    await cache.prefetch(gameKeys);
+    const resolved = await Promise.allSettled(ownedEntries.map(async owned => {
       if (!owned) return null;
-      const original = await this.planner.registeredOriginal(owned.identity, scope.value.gameId);
+      const original = await reader.planner.registeredOriginal(owned.identity, scope.value.gameId);
       const seasons: OwnedJoinPlayer["seasons"] = [];
       const ids = owned.directory.value.seasonIds ?? [];
       if (!Array.isArray(ids) || ids.length > 3 || !ids.every(text)) return fail();
       for (const id of ids) {
         if (Buffer.byteLength(`SEASON#${id}`) > 1024) return fail();
-        const season = await this.read(`LEAGUE#${scope.value.leagueId}`, `SEASON#${id}`, "season");
+        const season = await reader.read(`LEAGUE#${scope.value.leagueId}`, `SEASON#${id}`, "season");
         if (season && season.value.seasonId === id && text(season.value.name)) seasons.push({ seasonId: id, name: season.value.name });
       }
       return { rootId: owned.rootId,
         checks: [identityCondition(this.tableName, owned.identity.root), identityCondition(this.tableName, owned.profile), identityCondition(this.tableName, owned.directory)],
-        player: { playerId: owned.rootId, nickname: owned.nickname, registeredPlayerId: original, team: await this.team(scope.value.gameId, original), seasons } };
+        player: { playerId: owned.rootId, nickname: owned.nickname, registeredPlayerId: original, team: await reader.team(scope.value.gameId, original), seasons } };
     }));
     // Wait for every bounded read task, including on failure; never return a
     // partial page or leave detached lookups after a rejected sibling task.

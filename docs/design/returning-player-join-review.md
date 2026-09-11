@@ -138,6 +138,43 @@ reviews found no further demonstrated P1/P2 findings in these changes.
 
 Exact-head remote acceptance remains pending.
 
+The isolated deployed 20-by-20 identity fanout exposed a remaining Lambda
+timeout at `ae6990e`: diagnostic group3009 exited1 with an AWS function timeout
+and a 10,686ms client round trip under Node20/arm64/256MiB/10 seconds. This was an
+application timeout, not a local resource incident; peak147952KiB, remaining[].
+The performance finding is therefore still open, despite the earlier no-findings
+Codex completion. Do not treat twenty concurrent sequential lookup streams as
+adequate deployed latency evidence.
+
+The follow-up replaces discovery-only network lookups with request-local,
+strongly consistent BatchGet prefetch. Batches contain at most 100 keys, with at
+most 4 batches outstanding and bounded retries for unprocessed keys. Unprocessed
+keys cannot be mistaken for missing rows. Existing alias, ownership, scope and
+registration validators consume the same prefetched snapshots; final revision
+checks remain atomic. No cache is shared between requests or used by mutation
+paths. The existing application IAM already permits BatchGetItem; isolated
+fixture IAM adds only that action on its own table. No Terraform change.
+
+The fixture's deletion test correctly invalidated coverage. A separate audited
+reconciliation preserved the original migration and verified 840/840 source
+records with equal digests and zero issues before restoring coverage. All 20
+consolidation groups were then created through preview, owner approval and
+commit. They may be reused for the read-only fix, preserving seed/migration/code
+provenance rather than repeating mutations or inventing a new migration result.
+
+Independent architecture/security review found no material blocker in the batch
+design. Engineering/QA review identified malformed present response containers
+being treated as missing; the fix explicitly rejects those shapes. Regression
+tests cover partial unprocessed exhaustion, snapshot preservation, caller/upstream
+object mutation and sibling completion after failure. Focused group4015 passed
+19 helper and15 owned-join tests, exit0, peak530064KiB, remaining[]. Full group4099
+passed lint/typecheck,488 API/636 app/3 operator/57 gate tests, contracts, backlog
+validation/export and build; exit0, peak2824032KiB, remaining[]. Real local
+HTTP/DynamoDB plus Chromium group9328 passed with peak963664KiB plus512MiB Docker,
+exit0, remaining[]; both API children exited and the disposable database was
+removed. Fresh browser captures are `3fc-returning-browser-josx8z`. Deployed
+maximum-identity-fanout acceptance and exact-head remote review remain required.
+
 ### Rejected findings and evidence
 
 None.
