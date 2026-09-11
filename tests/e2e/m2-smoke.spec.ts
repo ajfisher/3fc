@@ -595,16 +595,25 @@ async function waitForMagicLink(email: string): Promise<string> {
   return magicLink;
 }
 
+async function openNewPlayerForm(page: Page): Promise<void> {
+  if (!(await page.locator("#player-create-region").isVisible())) {
+    await page.locator('[data-action="toggle-player-create"]').click();
+  }
+  await expect(page.locator("#player-create-region")).toBeVisible();
+  await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
+  if (!(await page.locator("#player-create-form").isVisible())) {
+    await page.locator("#game-player-new-toggle").click();
+  }
+  await expect(page.locator("#player-create-form")).toBeVisible();
+}
+
 async function createAndAssignPlayer(
   page: Page,
   nickname: string,
   teamId: "red" | "blue" | "yellow",
   onCreatedPlayerId: (playerId: string) => void,
 ): Promise<string> {
-  if (!(await page.locator("#player-create-region").isVisible())) {
-    await page.locator('[data-action="toggle-player-create"]').click();
-  }
-  await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
+  await openNewPlayerForm(page);
   await page.locator("#player-nickname").fill(nickname);
   await page.getByTestId("quick-create-player").click();
 
@@ -913,7 +922,7 @@ test.describe("M2 local-stack smoke", () => {
     await waitForHealthy(`${fakeSesBaseUrl}/health`);
   });
 
-  test("scorekeeper can set up and finish a live game", async ({ page }) => {
+  test("scorekeeper can set up and finish a live game", async ({ page, browser }) => {
     const runId = uniqueRunId();
     const email = `m2-smoke-${runId}@example.com`;
     const leagueSlug = `m2-smoke-league-${runId}`;
@@ -1002,44 +1011,30 @@ test.describe("M2 local-stack smoke", () => {
       const joinCode = (await joinCodeValue.innerText()).trim();
       expect(joinCode).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
 
-      const joinResult = await page.evaluate(
-        async ({ apiBaseUrl: browserApiBaseUrl, joinCode: browserJoinCode }) => {
-          const response = await fetch(`${browserApiBaseUrl}/v1/join/${encodeURIComponent(browserJoinCode)}`, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ nickname: "Cy" }),
-          });
-          const responseText = await response.text();
-          type JoinRegistrationSmokeBody = {
-            gameId?: string;
-            joinCode?: string;
-            player?: { nickname?: string; playerId?: string };
-            rawBody?: string;
-          };
-          let body: JoinRegistrationSmokeBody;
-          try {
-            body = responseText
-              ? (JSON.parse(responseText) as JoinRegistrationSmokeBody)
-              : {};
-          } catch {
-            body = { rawBody: responseText };
-          }
-          return {
-            status: response.status,
-            body,
-          };
-        },
-        { apiBaseUrl, joinCode },
-      );
-      expect(joinResult.status).toBe(201);
-      expect(joinResult.body.gameId).toBe(gameId);
-      expect(joinResult.body.joinCode).toBe(joinCode);
-      expect(joinResult.body.player?.nickname).toBe("Cy");
-      if (joinResult.body.player?.playerId) {
-        playerIds.push(joinResult.body.player.playerId);
-      }
+      // A separate unauthenticated browser uses the real UI to generate its
+      // private proof/verifier and idempotency key. Never copy those values into
+      // test output, screenshots, traces or the organiser's browser context.
+      const anonymousContext = await browser.newContext({ serviceWorkers: "block" });
+      try {
+        const anonymousPage = await anonymousContext.newPage();
+        await anonymousPage.goto(new URL(`/join/${joinCode}`, page.url()).toString());
+        await expect(anonymousPage.locator("#join-player-nickname")).toBeVisible();
+        await anonymousPage.locator("#join-player-nickname").fill("Cy");
+        const responsePromise = anonymousPage.waitForResponse(response =>
+          response.url() === `${apiBaseUrl}/v1/join/${encodeURIComponent(joinCode)}` && response.request().method() === "POST",
+        );
+        await anonymousPage.locator("#join-player-nickname").press("Enter");
+        const response = await responsePromise;
+        expect(response.status()).toBe(201);
+        // Only the player ID leaves this context for exact fixture cleanup.
+        const joined = await response.json() as { gameId?: string; joinCode?: string; player?: { playerId?: string; nickname?: string } };
+        const joinedPlayerId = joined.player?.playerId;
+        expect(typeof joinedPlayerId).toBe("string");
+        if (joinedPlayerId) playerIds.push(joinedPlayerId);
+        expect(joined.gameId).toBe(gameId); expect(joined.joinCode).toBe(joinCode); expect(joined.player?.nickname).toBe("Cy");
+        await expect(anonymousPage.locator("#join-result-player")).toHaveText("Cy");
+        await expect(anonymousPage.locator("#join-signin-link")).toBeVisible();
+      } finally { await anonymousContext.close(); }
 
       await selectGameMode(page, "players");
       await page.locator("#player-search").fill("Cy");
@@ -1122,9 +1117,7 @@ test.describe("M2 local-stack smoke", () => {
       await selectGameMode(page, "players");
       await expect(page.locator('[data-action="toggle-player-create"]')).toBeHidden();
       await page.locator('[data-action="edit-finished-teams"]').click();
-      if (!(await page.locator("#player-create-region").isVisible())) {
-        await page.locator('[data-action="toggle-player-create"]').click();
-      }
+      await openNewPlayerForm(page);
       await expect(page.getByTestId("quick-create-player")).toBeEnabled();
       await expectAllEnabled(page.locator('[data-action="assign-player"]'));
       await selectGameMode(page, "final");

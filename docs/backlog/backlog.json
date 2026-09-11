@@ -2921,13 +2921,14 @@
         "No merge, production migration or release without explicit AJ authorisation."
       ],
       "delivery": {
-        "asOf": "2026-09-10",
+        "asOf": "2026-09-11",
         "wave": "reusable-players",
-        "status": "planned",
+        "status": "in-progress",
         "githubIssue": 162,
         "branch": "codex/player-identity-acceptance",
         "notes": [
-          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md."
+          "AJ approved implementation on 2026-09-10; specification: docs/design/player-identity-delivery.md.",
+          "Parent PR168 is review:ready at f6f3882 with exact-head Codex no-findings, CI, shared QA and isolated enabled acceptance. Final browser/M2 regression and operational evidence mapping are in progress; physical-device checks remain separate."
         ]
       }
     }

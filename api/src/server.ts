@@ -5556,12 +5556,13 @@ async function start(): Promise<void> {
     }
   });
 
-  server.listen(PORT, () => {
+  server.listen({ port: PORT, host: process.env.THREEFC_LISTEN_HOST }, () => {
     console.log(
       JSON.stringify({
         level: "info",
         service: "api",
         message: "API local server started",
+        host: server.address(),
         port: PORT,
         tableName: TABLE_NAME,
         dynamodbEndpoint: DYNAMODB_ENDPOINT,

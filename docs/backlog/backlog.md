@@ -122,7 +122,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `PLAYER-01` | reusable-players | in-progress | [#159](https://github.com/ajfisher/3fc/issues/159) | codex/league-player-directory |
 | `PLAYER-02` | reusable-players | in-progress | [#160](https://github.com/ajfisher/3fc/issues/160) | codex/player-consolidation |
 | `PLAYER-03` | reusable-players | in-progress | [#161](https://github.com/ajfisher/3fc/issues/161) | codex/returning-player-join |
-| `PLAYER-04` | reusable-players | planned | [#162](https://github.com/ajfisher/3fc/issues/162) | codex/player-identity-acceptance |
+| `PLAYER-04` | reusable-players | in-progress | [#162](https://github.com/ajfisher/3fc/issues/162) | codex/player-identity-acceptance |
 
 ## Global Test Scenarios
 

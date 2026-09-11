@@ -142,12 +142,13 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen({ port: PORT, host: process.env.THREEFC_LISTEN_HOST }, () => {
   console.log(
     JSON.stringify({
       level: "info",
       service: "fake-ses",
       message: "Fake SES server started",
+      host: server.address(),
       port: PORT,
       logFile: LOG_FILE,
     }),

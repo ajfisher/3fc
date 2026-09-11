@@ -346,12 +346,13 @@ export function createAppRequestHandler(apiBaseUrl: string) {
 export function startServer(port: number = PORT, apiBaseUrl: string = API_BASE_URL): void {
   const server = createServer(createAppRequestHandler(apiBaseUrl));
 
-  server.listen(port, () => {
+  server.listen({ port, host: process.env.THREEFC_LISTEN_HOST }, () => {
     console.log(
       JSON.stringify({
         level: "info",
         service: "app",
         message: "App local server started",
+        host: server.address(),
         port,
         apiBaseUrl,
       }),
