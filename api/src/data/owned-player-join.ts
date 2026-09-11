@@ -95,6 +95,7 @@ export class OwnedPlayerJoinService {
     return found;
   }
   async list(input: { joinCode: string; userId: string; userIds?: readonly string[]; cursor?: string; limit?: number }): Promise<OwnedJoinPage> {
+    const readDeadlineMs = Date.now() + 8000;
     this.requireEnabled();
     const accounts = this.accounts(input), scope = await this.scope(input.joinCode);
     const revisions = await Promise.all(accounts.map(id => readPlayerClaimsRevision(this.client, this.tableName, id)));
@@ -129,7 +130,7 @@ export class OwnedPlayerJoinService {
         !validPlayerIdentityId(claim.playerId) || item.sk?.S !== playerClaimSk(claim.playerId) || !item.sk.S.startsWith(namespace)) return fail();
       return claim.playerId;
     });
-    const cache = new IdentityReadCache(this.client, this.tableName);
+    const cache = new IdentityReadCache(this.client, this.tableName, { deadlineMs: readDeadlineMs });
     const reader = new OwnedPlayerJoinService(cache, this.tableName, this.now, this.membershipPlan, this.enabled);
     const identityKey = (id: string): IdentityReadKey => ({ pk: `PLAYER#${id}`, sk: "IDENTITY" });
     await cache.prefetch(claims.map(identityKey));

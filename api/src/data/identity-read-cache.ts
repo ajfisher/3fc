@@ -3,6 +3,7 @@ import { PlayerIdentityError, type IdentityClient } from "./player-identity.js";
 
 type Item = Record<string, AttributeValue>;
 export type IdentityReadKey = { pk: string; sk: string };
+type ReadTiming = { now?: () => number; sleep?: (milliseconds: number) => Promise<void>; deadlineMs?: number };
 const unavailable = (): never => { throw new PlayerIdentityError("owned_players_unavailable", 503, "Your linked players could not be checked. Try again."); };
 const physical = ({ pk, sk }: IdentityReadKey): string => {
   if (typeof pk !== "string" || typeof sk !== "string" || !pk || !sk || Buffer.byteLength(pk) > 2048 || Buffer.byteLength(sk) > 1024) return unavailable();
@@ -16,7 +17,19 @@ function itemKey(item: Item): string {
 /** One discovery request only. No writes and no cache across requests. */
 export class IdentityReadCache implements IdentityClient {
   private readonly items = new Map<string, Item | undefined>();
-  constructor(private readonly client: IdentityClient, private readonly tableName: string) {}
+  private readonly now: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly deadlineMs: number;
+  constructor(private readonly client: IdentityClient, private readonly tableName: string, timing: ReadTiming = {}) {
+    this.now = timing.now ?? Date.now;
+    this.sleep = timing.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
+    this.deadlineMs = timing.deadlineMs ?? this.now() + 6000;
+    if (!Number.isFinite(this.deadlineMs)) unavailable();
+  }
+  private hasTime(delay = 0): void {
+    const now = this.now();
+    if (!Number.isFinite(now) || now + delay >= this.deadlineMs) unavailable();
+  }
   async send(command: unknown): Promise<unknown> {
     if (!(command instanceof GetItemCommand) || command.input.TableName !== this.tableName || command.input.ConsistentRead !== true || !command.input.Key) return unavailable();
     const key = itemKey(command.input.Key);
@@ -43,10 +56,19 @@ export class IdentityReadCache implements IdentityClient {
   private async batch(initial: Item[]): Promise<void> {
     let pending = initial;
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        const delay = 50 * 2 ** (attempt - 1);
+        this.hasTime(delay);
+        await this.sleep(delay);
+      }
+      // All waves share one request deadline. This does not cancel an SDK call
+      // already in progress, but never starts a retry after its budget expires.
+      this.hasTime();
       const requested = new Set(pending.map(itemKey));
       const output = await this.client.send(new BatchGetItemCommand({ RequestItems: {
         [this.tableName]: { Keys: pending, ConsistentRead: true },
       } })) as BatchGetItemCommandOutput;
+      this.hasTime();
       const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
       if (!object(output) || (Object.hasOwn(output, "Responses") && !object(output.Responses)) ||
           (Object.hasOwn(output, "UnprocessedKeys") && !object(output.UnprocessedKeys)) ||

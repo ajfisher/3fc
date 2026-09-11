@@ -7,6 +7,35 @@ const key = (id: number) => ({ pk: `PLAYER#${id}`, sk: "IDENTITY" });
 const physical = (id: number) => ({ pk: { S: key(id).pk }, sk: { S: key(id).sk } });
 const get = (cache: IdentityReadCache, id: number) => cache.send(new GetItemCommand({ TableName: "fixture", Key: physical(id), ConsistentRead: true }));
 
+test("unprocessed retries back off50/100ms and never resend processed keys", async () => {
+  let now = 1000; const sleeps: number[] = [], dispatches: Array<{ at: number; keys: unknown }> = [];
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    dispatches.push({ at: now, keys: command.input.RequestItems!.fixture!.Keys });
+    return dispatches.length === 1
+      ? { Responses: { fixture: [physical(0)] }, UnprocessedKeys: { fixture: { Keys: [physical(1)] } } }
+      : dispatches.length === 2 ? { UnprocessedKeys: { fixture: { Keys: [physical(1)] } } }
+        : { Responses: { fixture: [physical(1)] } };
+  } }, "fixture", { now: () => now, sleep: async milliseconds => { sleeps.push(milliseconds); now += milliseconds; }, deadlineMs: 2000 });
+  await cache.prefetch([key(0), key(1)]);
+  assert.deepEqual(sleeps, [50, 100]);
+  assert.deepEqual(dispatches, [{ at: 1000, keys: [physical(0), physical(1)] }, { at: 1050, keys: [physical(1)] }, { at: 1150, keys: [physical(1)] }]);
+});
+
+test("deadline prevents first send, insufficient-budget retry and overslept retry", async () => {
+  for (const scenario of ["expired", "insufficient", "overslept"] as const) {
+    let now = 1000, calls = 0; const sleeps: number[] = [];
+    const cache = new IdentityReadCache({ async send() {
+      calls++; return { UnprocessedKeys: { fixture: { Keys: [physical(1)] } } };
+    } }, "fixture", { now: () => now, deadlineMs: scenario === "expired" ? 1000 : scenario === "insufficient" ? 1050 : 1100,
+      sleep: async milliseconds => { sleeps.push(milliseconds); now += 150; } });
+    await assert.rejects(cache.prefetch([key(1)]), /could not be checked/);
+    assert.equal(calls, scenario === "expired" ? 0 : 1);
+    assert.deepEqual(sleeps, scenario === "overslept" ? [50] : []);
+    await assert.rejects(get(cache, 1), /could not be checked/);
+  }
+});
+
 test("request cache deduplicates keys, bounds batches/concurrency and caches processed absence", async () => {
   let calls = 0, active = 0, maximum = 0;
   const client = { async send(command: unknown) {
@@ -106,4 +135,32 @@ test("batch rejection waits for already started siblings before returning failur
     assert.equal(settled, false); assert.equal(finished, false);
   } finally { release(); }
   assert.equal(await outcome, failure); assert.equal(finished, true); assert.equal(calls, 2);
+});
+
+test("late response is not cached and pending siblings drain without another wave", async () => {
+  let now = 1000, calls = 0, settled = false;
+  let releaseLate!: () => void, releaseOthers!: () => void, allStarted!: () => void;
+  const late = new Promise<void>(resolve => { releaseLate = resolve; });
+  const others = new Promise<void>(resolve => { releaseOthers = resolve; });
+  const started = new Promise<void>(resolve => { allStarted = resolve; });
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    const index = ++calls;
+    if (calls === 4) allStarted();
+    await (index === 1 ? late : others);
+    return { Responses: { fixture: command.input.RequestItems!.fixture!.Keys! } };
+  } }, "fixture", { now: () => now, deadlineMs: 1100, sleep: async () => { assert.fail("No retry sleep expected"); } });
+  const result = cache.prefetch(Array.from({ length: 401 }, (_, index) => key(index))).then(
+    () => { settled = true; return null; }, error => { settled = true; return error; },
+  );
+  try {
+    await started; now = 1100; releaseLate();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, "deadline failure still awaits held sibling batches");
+    assert.equal(calls, 4, "fifth batch is not dispatched");
+    await assert.rejects(get(cache, 0), /could not be checked/, "late first response must not be cached");
+  } finally { releaseLate(); releaseOthers(); }
+  assert(await result instanceof Error);
+  assert.equal(calls, 4); assert.equal(settled, true);
+  await assert.rejects(get(cache, 100), /could not be checked/, "late sibling response must not be cached");
 });

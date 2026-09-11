@@ -175,6 +175,34 @@ exit0, remaining[]; both API children exited and the disposable database was
 removed. Fresh browser captures are `3fc-returning-browser-josx8z`. Deployed
 maximum-identity-fanout acceptance and exact-head remote review remain required.
 
+At `02b28e8`, deployed maximum identity fanout passed: all 20 canonical roots and
+their original alias registrations returned in a 4072ms client round trip under
+the unchanged 10-second Lambda timeout. Namespace continuation pages completed
+in 686/538/524ms without duplicates or errors. This is measured fixture evidence,
+not a server-duration or percentile SLA. Normal deployed acceptance also passed.
+
+Codex review5176551765/comment3987349348 requested backoff for unprocessed reads.
+The follow-up waits 50ms then100ms between bounded retries and checks a shared
+eight-second read/retry scheduling budget from list entry before sleeping,
+dispatching and accepting responses. This does not promise cancellation of an
+already-running SDK call or a hard total Lambda deadline. Mutation paths are
+unchanged. Injected-clock tests cover exact delays, processed-key exclusion,
+insufficient/expired/overslept budgets, rejected late snapshots and sibling drain.
+Independent architecture/security review found no blocker. Focused group13750
+passed 22 helper and15 owned-join tests, exit0, peak530256KiB, remaining[].
+
+The deployed browser harness needed explicit assertion timeouts and an enabled
+Retry control before keyboard activation; no application change was inferred
+from those harness failures. Previously created disposable profiles are retained
+and never recreated by a blind retry. Current-head browser/cleanup evidence is
+still required before readiness.
+
+After the backoff fix, full group13786 passed lint/typecheck, 491 API/636 app/3
+operator/57 gate tests, contracts, backlog validation/export and build; exit0,
+peak2840384KiB, remaining[]. Refreshed real local HTTP/DynamoDB and Chromium
+group19054 passed, exit0, peak991568KiB plus512MiB Docker, remaining[]; API children
+and disposable database cleaned up. Captures: `3fc-returning-browser-623JbO`.
+
 ### Rejected findings and evidence
 
 None.
