@@ -3935,8 +3935,19 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(deleteLeagueMatch[1]);
+        let deletionBody: Record<string, unknown>;
+        try { deletionBody = await parseJsonBody(request); } catch {
+          status = badRequest(request, response, "Request body must be valid JSON."); return;
+        }
+        if (!deletionBody || Array.isArray(deletionBody) || typeof deletionBody !== "object") {
+          status = badRequest(request, response, "Request body must be an object."); return;
+        }
+        if (deletionBody.expectedAccountId !== undefined && deletionBody.expectedAccountId !== sessionSubject(authGate.session)) {
+          status = forbidden(request, response, "account_changed", "Your sign-in changed. Reload before retrying."); return;
+        }
         const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
-        if (!isAdmin) {
+        const canResume = await repository.canResumeLeagueDeletion(leagueId, sessionUserIds(authGate.session));
+        if (!isAdmin && !canResume) {
           status = forbidden(
             request,
             response,
@@ -3947,7 +3958,7 @@ async function start(): Promise<void> {
         }
 
         try {
-          const deleted = await repository.deleteLeague(leagueId);
+          const deleted = await repository.deleteLeague(leagueId, sessionUserIds(authGate.session));
           if (!deleted) {
             status = notFound(request, response, `League ${leagueId} was not found.`);
             return;

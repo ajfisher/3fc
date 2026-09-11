@@ -2083,6 +2083,7 @@ test("repository preserves legacy same-owner retries but rejects proofless owner
 
 test("repository grants league access monotonically without downgrading admins", async () => {
   const { repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "league-1", name: "League", createdByUserId: "admin-subject" });
 
   const scorerGrant = await repository.grantLeagueAccess({
     leagueId: "league-1",
@@ -2110,6 +2111,93 @@ test("repository grants league access monotonically without downgrading admins",
 
   const storedAccess = await repository.getLeagueAccess("league-1", "delegate-subject");
   assert.equal(storedAccess?.role, "admin");
+});
+
+test("league deletion resumes partial multi-page cleanup only for its initiator and keeps a completion receipt", async () => {
+  const client = new InMemoryDynamoClient();
+  let failCleanup = true, loseResponse = false;
+  const repository = new ThreeFcRepository({ async send(command: unknown) {
+    const cleanup = command instanceof TransactWriteItemsCommand && command.input.TransactItems?.some(action => action.Put?.Item?.sk?.S === "DELETION") &&
+      !command.input.TransactItems?.some(action => action.Delete?.Key?.sk?.S === "METADATA");
+    if (cleanup && failCleanup) { failCleanup = false; throw new Error("cleanup network failure"); }
+    const result = await client.send(command);
+    if (cleanup && loseResponse) { loseResponse = false; throw new Error("cleanup response lost"); }
+    return result;
+  } }, "threefc_test");
+  await repository.createLeague({ leagueId: "cleanup", name: "Cleanup", createdByUserId: "owner" });
+  await repository.createLeague({ leagueId: "other", name: "Other", createdByUserId: "other-owner" });
+  const now = "2026-09-11T00:00:00Z";
+  for (let index = 0; index < 110; index += 1) {
+    client.seedItem(identityItem("LEAGUE#cleanup", `ACL#USER#member-${index}`, "acl", { leagueId: "cleanup", userId: `member-${index}`, role: "admin", grantedByUserId: "owner" }, now));
+    client.seedItem(identityItem(`LEAGUE_INVITE#cleanup-${index}`, "METADATA", "leagueInvite", { leagueId: "cleanup", inviteCode: `cleanup-${index}`, email: "private@example.com" }, now));
+  }
+  const other = identityItem("LEAGUE_INVITE#other", "METADATA", "leagueInvite", { leagueId: "other", inviteCode: "other", email: "other@example.com" }, now);
+  client.seedItem(other);
+  await assert.rejects(repository.deleteLeague("cleanup", ["owner"]), /cleanup network failure/);
+  assert.equal(await repository.getLeague("cleanup"), null);
+  assert.equal(await repository.canResumeLeagueDeletion("cleanup", ["owner"]), true);
+  assert.equal(await repository.canResumeLeagueDeletion("cleanup", ["member-1"]), false);
+  await assert.rejects(repository.deleteLeague("cleanup", ["member-1"]), (error: unknown) => error instanceof PlayerIdentityError && error.status === 403);
+  const before = client.readItem("LEAGUE#cleanup", "DELETION")!.data.S!;
+  loseResponse = true;
+  await assert.rejects(repository.deleteLeague("cleanup", ["owner"]), /cleanup response lost/);
+  assert.notEqual(client.readItem("LEAGUE#cleanup", "DELETION")!.data.S!, before, "confirmed cleanup and checkpoint are atomic even when response is lost");
+  client.deleteItem("LEAGUE#cleanup", "ACL#USER#owner");
+  let complete = false, attempts = 0;
+  while (!complete && attempts++ < 30) {
+    try { complete = await repository.deleteLeague("cleanup", ["owner"]); }
+    catch (error) { assert(error instanceof PlayerIdentityError && error.code === "league_cleanup_pending"); }
+  }
+  assert.equal(complete, true); assert(attempts > 1, "bounded pages require resumable progress for large cleanup");
+  for (let index = 0; index < 110; index += 1) {
+    assert.equal(client.readItem("LEAGUE#cleanup", `ACL#USER#member-${index}`), undefined);
+    assert.equal(client.readItem(`LEAGUE_INVITE#cleanup-${index}`, "METADATA"), undefined);
+  }
+  assert.deepEqual(client.readItem("LEAGUE_INVITE#other", "METADATA"), other);
+  assert.equal(await repository.deleteLeague("cleanup", ["owner"]), true, "lost final response remains recoverable after all ACLs disappear");
+  assert.equal(await repository.getLeagueAccess("cleanup", "owner"), null, "receipt never grants league access");
+  await assert.rejects(repository.createLeague({ leagueId: "cleanup", name: "Replacement", createdByUserId: "owner" }), /no longer available/);
+});
+
+for (const corruption of ["key", "type", "json"] as const) test(`league cleanup fails closed on ${corruption} invitation corruption without advancing its checkpoint`, async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "cleanup-corrupt", name: "Cleanup", createdByUserId: "owner" });
+  const record = identityItem("LEAGUE_INVITE#private", "METADATA", corruption === "type" ? "unknown" : "leagueInvite",
+    { leagueId: "cleanup-corrupt", inviteCode: corruption === "key" ? "different" : "private" }, "2026-09-11T00:00:00Z");
+  if (corruption === "json") record.data = { S: "{" };
+  client.seedItem(record);
+  await assert.rejects(repository.deleteLeague("cleanup-corrupt", ["owner"]),
+    (error: unknown) => error instanceof PlayerIdentityError && error.code === "league_cleanup_unavailable");
+  assert.deepEqual(client.readItem("LEAGUE_INVITE#private", "METADATA"), record);
+  const receipt = JSON.parse(client.readItem("LEAGUE#cleanup-corrupt", "DELETION")!.data.S!);
+  assert.equal(receipt.phase, "invites");
+  assert.equal(receipt.cursor, null);
+  assert(await repository.getLeagueAccess("cleanup-corrupt", "owner"));
+});
+
+test("league deletion checks initiating admin authority again at metadata commit", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "cleanup-race", name: "Cleanup", createdByUserId: "owner" });
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#cleanup-race", "ACL#USER#owner"));
+  await assert.rejects(repository.deleteLeague("cleanup-race", ["owner"]), /Conditional/);
+  assert(await repository.getLeague("cleanup-race"));
+  assert.equal(client.readItem("LEAGUE#cleanup-race", "DELETION"), undefined);
+});
+
+for (const operation of ["grant", "email", "share", "accept"] as const) test(`league deletion fences an in-flight ${operation} authority write`, async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "cleanup-race", name: "Cleanup", createdByUserId: "owner" });
+  const invite = operation === "accept" ? await repository.createLeagueOrganiserInvite({ leagueId: "cleanup-race", kind: "email", email: "joining@example.com", createdByUserId: "owner" }) : null;
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#cleanup-race", "METADATA"));
+  await assert.rejects(operation === "grant"
+    ? repository.grantLeagueAccess({ leagueId: "cleanup-race", userId: "joining", role: "admin", grantedByUserId: "owner" })
+    : operation === "accept"
+      ? repository.acceptLeagueOrganiserInvite({ inviteCode: invite!.inviteCode, userId: "joining", email: "joining@example.com" })
+      : repository.createLeagueOrganiserInvite({ leagueId: "cleanup-race", kind: operation, email: operation === "email" ? "joining@example.com" : null, createdByUserId: "owner" }));
+  assert.equal(client.readItem("LEAGUE#cleanup-race", "ACL#USER#joining"), undefined);
+  assert.equal(client.readItem("LEAGUE#cleanup-race", "INVITE#ORGANISER_SHARE"), undefined);
+  const items = (await client.send(new ScanCommand({ TableName: "threefc_test" }))) as { Items: Item[] };
+  assert.equal(items.Items.filter(item => item.entityType?.S === "leagueInvite").length, operation === "accept" ? 1 : 0);
 });
 
 test("repository ensures reusable league organiser share invites", async () => {

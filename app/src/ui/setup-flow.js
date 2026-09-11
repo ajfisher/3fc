@@ -86,6 +86,7 @@
   let hasAuthenticatedAccount = false;
   let accountRevalidating = false;
   let entryClaimPlayerId = null;
+  let leagueDeletionRecovery = null;
 
   function normalizedEntryCode(value) {
     return typeof value === "string" ? value.trim().toUpperCase().replace(/\s+/g, "") : "";
@@ -605,6 +606,89 @@
     const error = new Error(result.body?.message || "Deletion could not be confirmed.");
     if (!result.ok) error.statusCode = result.status;
     throw error;
+  }
+
+  function initializeLeagueDeletionRecovery(session) {
+    if (!["dashboard", "league"].includes(page) || !usableEntityId(session?.email)) return null;
+    const owner = session.subject ?? session.email;
+    if (!usableEntityId(owner)) return null;
+    const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+    let attempt = null, pending = false, invalidated = false;
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(key) || "null");
+      if (stored?.owner === owner && usableEntityId(stored.leagueId) && typeof stored.uncertain === "boolean") attempt = stored;
+    } catch { /* A new request must persist successfully before dispatch. */ }
+    const panel = document.createElement("section"); panel.dataset.ui = "panel"; panel.id = "league-deletion-recovery";
+    const heading = document.createElement("h2"); heading.textContent = "League deletion";
+    const status = document.createElement("p"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+    const retry = document.createElement("button"); retry.type = "button"; retry.dataset.ui = "button"; retry.textContent = "Retry league deletion";
+    panel.append(heading, status, retry); root.prepend(panel);
+    function render(message = "League deletion is not yet confirmed. Retry to finish checking it.") {
+      panel.hidden = !attempt || invalidated; retry.disabled = pending || invalidated;
+      retry.hidden = false;
+      status.textContent = message;
+    }
+    function persist(value) { sessionStorage.setItem(key, JSON.stringify(value)); }
+    function invalidate() { invalidated = true; render(); }
+    window.addEventListener("threefc:player-proof-cleared", invalidate);
+    window.addEventListener("threefc:player-proof-invalidated", invalidate);
+    window.addEventListener("pagehide", invalidate);
+    async function run() {
+      if (!attempt || pending || invalidated || signOutPending || signOutUnconfirmed) return false;
+      const ownsFocus = document.activeElement === retry;
+      let focusOwned = ownsFocus;
+      const moved = event => { if (event.target !== retry && event.target !== document.body) focusOwned = false; };
+      document.addEventListener("focusin", moved); document.addEventListener("pointerdown", moved);
+      pending = true; render("Checking league deletion…");
+      const wasUncertain = attempt.uncertain;
+      let dispatched = false;
+      const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const account = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store", signal: controller.signal });
+        if (!account.ok || account.body?.authenticated !== true || (account.body?.session?.subject ?? account.body?.session?.email) !== owner ||
+            account.body?.session?.sessionId !== session.sessionId) {
+          invalidate(); showError("Your sign-in changed. Reload before retrying league deletion.", { includesOutcome: true }); return false;
+        }
+        if (invalidated || signOutPending) return false;
+        const path = encodedRecordPath("/v1/leagues/", attempt.leagueId, "");
+        if (!path) throw new Error("unaddressable_league");
+        // A reload after dispatch must treat the result as uncertain, even when
+        // the first response was lost after the server removed the league ACL.
+        attempt.uncertain = true; persist(attempt); dispatched = true;
+        const response = await requestJson(path, { method: "DELETE", signal: controller.signal,
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expectedAccountId: owner }) });
+        if (invalidated) return false;
+        if (response.status === 204) {
+          sessionStorage.removeItem(key); attempt = null;
+          panel.hidden = false; status.textContent = "League deleted."; retry.hidden = true;
+          if (focusOwned) { status.tabIndex = -1; status.focus(); }
+          return true;
+        }
+        if (!wasUncertain && [400, 401, 403, 404, 409, 422].includes(response.status)) {
+          sessionStorage.removeItem(key); attempt = null; panel.hidden = true;
+          showError("League could not be deleted. Check that it has no seasons and try again.", { includesOutcome: true });
+        } else render("League deletion is not yet confirmed. Retry to finish checking it.");
+        return false;
+      } catch {
+        if (!invalidated) render(dispatched ? "League deletion is not yet confirmed. Retry to finish checking it."
+          : "Could not check or save deletion recovery. Allow site storage and try again.");
+        return false;
+      } finally {
+        clearTimeout(timeout); pending = false; retry.disabled = invalidated;
+        document.removeEventListener("focusin", moved); document.removeEventListener("pointerdown", moved);
+      }
+    }
+    retry.addEventListener("click", () => { void run(); });
+    render();
+    return { async start(leagueId) {
+      if (pending || invalidated) return false;
+      if (attempt && attempt.leagueId !== leagueId) { render("Finish the earlier league deletion before starting another one."); retry.focus(); return false; }
+      if (!attempt) {
+        const next = { owner, leagueId, uncertain: false };
+        try { persist(next); attempt = next; } catch { showError("Your browser could not save deletion recovery. Allow site storage before deleting this league.", { includesOutcome: true }); return false; }
+      }
+      return run();
+    } };
   }
 
   function trackDeletedRowFocus(button) {
@@ -2713,11 +2797,12 @@
 
         deleteLeagueButton.disabled = true;
         clearError();
-        setStatus(`Deleting league ${leagueId}…`, "default");
+        // The recoverable action owns its pending/error feedback; do not leave
+        // an unrelated global progress message behind after a failed attempt.
+        setStatus("");
 
         try {
-          await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}`);
-          navigateTo("/setup");
+          if (await leagueDeletionRecovery?.start(leagueId)) navigateTo("/setup");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete league.";
           showError(message);
@@ -7404,6 +7489,7 @@
     try {
       authenticatedSession = await ensureAuthenticatedSession();
       setAccountSession(authenticatedSession);
+      leagueDeletionRecovery = initializeLeagueDeletionRecovery(authenticatedSession);
     } catch (error) {
       if (error instanceof Error && error.message === "redirecting_to_sign_in") {
         return;

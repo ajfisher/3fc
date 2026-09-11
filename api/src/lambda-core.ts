@@ -392,7 +392,8 @@ interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "
   finishGame(input: { gameId: string }): Promise<RepositoryGameRecord | null>;
   deleteGame(gameId: string): Promise<boolean>;
   deleteSeason(seasonId: string, options?: { leagueId?: string }): Promise<boolean>;
-  deleteLeague(leagueId: string): Promise<boolean>;
+  deleteLeague(leagueId: string, userIds?: readonly string[]): Promise<boolean>;
+  canResumeLeagueDeletion?(leagueId: string, userIds: readonly string[]): Promise<boolean>;
   createPlayer(input: {
     playerId: string;
     nickname: string;
@@ -3617,8 +3618,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
         if (method === "DELETE" && deleteLeagueMatch) {
           const leagueId = decodeRouteParam(deleteLeagueMatch[1]);
+          let deletionBody: Record<string, unknown>;
+          try { deletionBody = parseJsonBody(event); } catch {
+            status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+          if (!deletionBody || Array.isArray(deletionBody) || typeof deletionBody !== "object") {
+            status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be an object.");
+          }
+          // Bind recovery to the account on this actual request, not a racy
+          // browser preflight. Omitted for backwards-compatible old clients.
+          if (deletionBody.expectedAccountId !== undefined && deletionBody.expectedAccountId !== sessionSubject(session)) {
+            status = 403; return forbidden(origin, dependencies.corsAllowedOrigins, "account_changed", "Your sign-in changed. Reload before retrying.");
+          }
           const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
-          if (!isAdmin) {
+          const canResume = await dependencies.repository.canResumeLeagueDeletion?.(leagueId, sessionUserIds(session)) ?? false;
+          if (!isAdmin && !canResume) {
             status = 403;
             return forbidden(
               origin,
@@ -3629,7 +3643,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           }
 
           try {
-            const deleted = await dependencies.repository.deleteLeague(leagueId);
+            const deleted = await dependencies.repository.deleteLeague(leagueId, sessionUserIds(session));
             if (!deleted) {
               status = 404;
               return notFound(

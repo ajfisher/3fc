@@ -27,6 +27,7 @@ import {
 
 interface MockSession {
   sessionId: string;
+  subject?: string;
   email: string;
   createdAt: string;
   expiresAt: string;
@@ -6121,6 +6122,109 @@ test("season page does not fall back to legacy create routes when scoped writes 
   assert.equal(apiState.games.size, 0);
   assert.equal(seasonPage.navigations.length, 0);
   assert.equal(seasonPage.document.getElementById("setup-status")?.textContent, "Game could not be created.");
+});
+
+test("league deletion persists its target before a committed cleanup failure", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "delete-pending-fixture", role: "admin" });
+  const owner = apiState.session!.email;
+  apiState.leagues.set("empty-delete", { leagueId: "empty-delete", name: "Private league name", slug: null,
+    createdByUserId: owner, createdAt: "2026-03-28T11:00:00.000Z", updatedAt: "2026-03-28T11:00:00.000Z" });
+  grantMockLeagueAccess(apiState, "empty-delete", owner, "admin");
+  const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+  const storage = new Map<string, string>(); const base = createMockFetch(apiState);
+  let deletes = 0;
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "empty-delete"),
+    url: "http://localhost:3000/leagues/empty-delete", scriptFile: "setup-flow.js", apiState, sessionStorage: storage,
+    fetch: async (input, init = {}) => {
+      if (init.method === "DELETE") {
+        deletes += 1;
+        assert.deepEqual(JSON.parse(String(init.body)), { expectedAccountId: owner });
+        assert.deepEqual(JSON.parse(storage.get(key)!), { owner, leagueId: "empty-delete", uncertain: true });
+        apiState.leagues.delete("empty-delete");
+        return createJsonResponse(503, { error: "unavailable", code: "league_cleanup_pending" });
+      }
+      return base(input, init);
+    },
+  });
+  try {
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    dispatchClick(page.document.querySelector('[data-testid="delete-league"]')!); await flushAsync();
+    assert.equal(deletes, 1);
+    assert.equal(JSON.parse(storage.get(key)!).uncertain, true);
+    assert.equal(storage.get(key)?.includes("Private league name"), false);
+    const recovery = page.document.getElementById("league-deletion-recovery")!;
+    assert.equal(recovery.hidden, false);
+    assert.match(recovery.textContent ?? "", /not yet confirmed/);
+    assert.equal(page.document.getElementById("setup-status")?.textContent, "");
+    assert.equal(page.navigations.length, 0);
+  } finally { page.dom.window.close(); }
+});
+
+for (const destination of ["home", "missing-league", "other-account", "same-subject", "same-email-other-subject"] as const) {
+  test(`league deletion recovery survives committed cleanup failure on ${destination}`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "deletion-recovery-fixture", role: "admin" });
+    const owner = destination === "same-email-other-subject" || destination === "same-subject" ? "original-account-subject" : apiState.session!.email;
+    const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+    const storage = new Map([[key, JSON.stringify({ owner, leagueId: "deleted-league", uncertain: true })]]);
+    if (destination === "other-account") apiState.session!.email = "someone-else@example.com";
+    if (destination === "same-email-other-subject") apiState.session!.subject = "different-account-subject";
+    if (destination === "same-subject") apiState.session!.subject = owner;
+    const otherAccount = destination === "other-account" || destination === "same-email-other-subject";
+    const base = createMockFetch(apiState);
+    let deletes = 0;
+    const page = await bootPage({
+      html: destination === "missing-league" ? renderLeaguePage("http://localhost:3001", "deleted-league") : renderSetupHomePage("http://localhost:3001"),
+      url: destination === "missing-league" ? "http://localhost:3000/leagues/deleted-league" : "http://localhost:3000/setup",
+      scriptFile: "setup-flow.js", apiState, sessionStorage: storage,
+      fetch: async (input, init = {}) => {
+        if (init.method === "DELETE") {
+          deletes += 1;
+          assert.deepEqual(JSON.parse(String(init.body)), { expectedAccountId: owner });
+          return new Response(null, { status: 204 });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const recovery = page.document.getElementById("league-deletion-recovery")!;
+      assert.equal(recovery.hidden, otherAccount);
+      assert.equal(recovery.textContent?.includes("deleted-league"), false, "no target identifier or private league name is displayed");
+      if (!otherAccount) {
+        dispatchClick(recovery.querySelector("button")!); await flushAsync();
+        assert.equal(deletes, 1); assert.equal(storage.has(key), false);
+        assert.match(recovery.textContent ?? "", /League deleted/);
+      } else { assert.equal(deletes, 0); assert.equal(storage.has(key), true); }
+    } finally { page.dom.window.close(); }
+  });
+}
+
+test("league deletion recovery retains uncertainty after another rejection and hides on logout purge", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "deletion-recovery-fixture", role: "admin" });
+  const owner = apiState.session!.email;
+  const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+  const storage = new Map([[key, JSON.stringify({ owner, leagueId: "deleted-league", uncertain: true })]]);
+  const base = createMockFetch(apiState);
+  let deletes = 0;
+  const page = await bootPage({ html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js", apiState, sessionStorage: storage,
+    fetch: async (input, init = {}) => {
+      if (init.method === "DELETE") { deletes += 1; return createJsonResponse(409, { error: "conflict" }); }
+      return base(input, init);
+    },
+  });
+  try {
+    const panel = page.document.getElementById("league-deletion-recovery")!;
+    dispatchClick(panel.querySelector("button")!); await flushAsync();
+    assert.equal(JSON.parse(storage.get(key)!).uncertain, true);
+    assert.match(panel.textContent ?? "", /not yet confirmed/);
+    page.window.dispatchEvent(new page.window.Event("threefc:player-proof-cleared"));
+    assert.equal(panel.hidden, true);
+    dispatchClick(panel.querySelector("button")!); await flushAsync();
+    assert.equal(deletes, 1);
+  } finally { page.dom.window.close(); }
 });
 
 test("league page header delete button deletes an empty league", async () => {

@@ -366,6 +366,45 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}:
+    delete:
+      summary: Remove an empty league and finish resumable private-record cleanup
+      operationId: deleteLeague
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expectedAccountId:
+                  type: string
+                  description: Optional stable account binding, checked against the authenticated request. Prevents a pending browser action running under a different account.
+      responses:
+        "204":
+          description: Removal and private-record cleanup confirmed, including same-initiator retries
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: League still contains seasons; nothing removed
+        "503":
+          description: Cleanup is pending or needs repair; retain the exact target and retry as the initiating account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/leagues/{leagueId}/access:
     post:
       summary: Grant league scoring or co-organiser access

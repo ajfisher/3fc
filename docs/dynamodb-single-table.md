@@ -143,6 +143,7 @@ coverage verified; API traffic cannot certify its own coverage.
 | `PLAYER#{originalId}` | `IDENTITY` | Canonical root, complete member IDs, display/former names and identity/write revisions |
 | `PLAYER#{originalId}` | `GAME#{digest}`, `SEASON#{digest}`, `LEAGUE#{digest}` | Reverse membership; original identifiers remain in the payload |
 | `LEAGUE#{leagueId}` | `PLAYER#{digest}` | Private reusable-player directory with verified season context |
+| `LEAGUE#{leagueId}` | `DELETION` | Initiating account and bounded cleanup checkpoint; completed receipt preserves DELETE-only retry |
 | `PLAYER_MIGRATION#{migrationId}` | `AUDIT`, `ATTEMPT#{epoch}` | Audited progress and archived blocked attempts |
 
 Projection digests are SHA-256 of the JSON-encoded identifier tuple, generated

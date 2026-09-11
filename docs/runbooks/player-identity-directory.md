@@ -123,6 +123,24 @@ After any consolidation exists, disabling further consolidations is safe;
 deploying alias-unaware readers/writers is not. A mistaken consolidation needs a
 checked compensating operation, never deletion of an alias pointer.
 
+### Interrupted league removal
+
+League removal creates an initiator-bound `LEAGUE#id / DELETION` receipt in the
+same transaction as metadata removal and the identity tombstone. Invitation and
+ACL cleanup then advances in bounded, strongly read pages; each page's deletions
+and cursor are one transaction. A retryable `league_cleanup_pending` response
+means removal is not yet confirmed, not that the league can be recreated.
+The initiating account may retry the same DELETE after its ACL has disappeared;
+this receipt grants no other access. A completed receipt retains safe response-loss
+recovery. Invitation and access writers check live metadata in their transactions
+so they cannot recreate authority behind the cleanup cursor.
+
+Malformed invitation records stop cleanup without advancing that page. Inspect
+and separately authorise repair of the exact conflicting record, then retry as
+the initiating account. Never delete or fabricate a receipt/cursor to claim
+completion. The ordinary identity write pause also fences cleanup transactions.
+Retain receipt-aware deletion code during rollback while removals are pending.
+
 ## Acceptance evidence still required before PR2 publication
 
 - Real disposable DynamoDB table: pause fences, complete scans, response loss,

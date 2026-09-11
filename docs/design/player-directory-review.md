@@ -21,7 +21,8 @@ Consolidation #160 and returning-player joining #161 are not implemented here.
 | Historical IDs and canonical compatibility | Root/alias planner cases; getPlayerView preserves original IDs and raw proof records; long ASCII/Unicode read-envelope cases | PASS locally |
 | Migration completeness, pause, retry and cutover | Fake-client cases, CLI provenance tests, actual isolated AWS CLI audit/restart/recovery/activation on `74830fe` | PASS; current-head refresh pending |
 | HTTP parsing and privacy headers | Real loopback socket test of local directory/invitation adapters | PASS locally |
-| Full repository validation | Serial lint/typecheck, 396 API / 594 app / 3 operator / 57 gate tests, contracts, build; group 97611, peak 3,146,144 KiB, exit 0, remaining [] | PASS locally including review fixes |
+| Full repository validation | Serial lint/typecheck, 406 API / 601 app / 3 operator / 57 gate tests, contracts, build; group 5187, peak 1,761,008 KiB, exit 0, remaining [] | PASS locally including cleanup review fixes |
+| Interrupted league deletion and account-bound retry | Repository lost-response/pagination/race/corruption tests; Lambda owner/malformed/account-switch cases; reload/Home UI cases; real local HTTP group 8261 | PASS locally |
 | Exact-head CI, Codex, isolated backend and browser acceptance | To be recorded in PR evidence | PENDING |
 
 ## Change classification
@@ -67,6 +68,26 @@ repointed or marked verified for fixture acceptance. Once aliases are introduced
 by the child feature, rollback must retain alias-aware readers and writers.
 
 ## Independent findings and disposition
+
+- Codex review 5174466598 on `a34f3a1`: accepted interrupted league-cleanup
+  finding. Metadata removal now atomically records its initiating account and
+  resumable cleanup receipt. Bounded cleanup pages commit with their cursor;
+  lost responses and retries after ACL removal remain recoverable. Concurrent
+  invitation/access writes are fenced by live league metadata. Corrupt reserved
+  invitation keys fail closed rather than being deleted or skipped. Focused
+  repository, adapter and UI regressions pass. Real local HTTP/DynamoDB acceptance
+  confirms pending 503, account binding, owner-only recovery after ACL loss and
+  repeated 204; group 8261, peak 222,944 KiB plus capped 512 MiB container, exit 0,
+  no remaining workers/container. Refreshed deployed head evidence remains pending.
+- Independent security follow-up: deletion recovery now retains a tab-local
+  target under the stable account subject (email fallback for legacy sessions),
+  not merely the displayed email. Home and missing-league pages expose recovery
+  without a league name; DELETE validates the expected account on the actual
+  authenticated request to close the preflight/cookie-switch race. No general
+  league permission is granted by a deletion receipt.
+- QA follow-up removed the original global Deleting message so only the recovery
+  panel owns pending and failure feedback. Final focused assertion passed after
+  full validation (group 8209, exit 0, remaining []).
 
 - Architecture: league creation could overwrite metadata/grant authority, and
   season creation could retarget a legacy route. Fixed with conditional atomic

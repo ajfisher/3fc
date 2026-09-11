@@ -14,6 +14,7 @@ import {
   type TransactWriteItem,
 } from "@aws-sdk/client-dynamodb";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
   identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
 import {
@@ -3223,9 +3224,16 @@ export class ThreeFcRepository {
     return true;
   }
 
-  async deleteLeague(leagueId: string): Promise<boolean> {
-    requireNonEmpty("leagueId", leagueId);
+  async canResumeLeagueDeletion(leagueId: string, userIds: readonly string[]): Promise<boolean> {
+    const cleanup = new LeagueDeletionCleanup(this.client, this.tableName, () => this.clock.now());
+    const receipt = await cleanup.read(leagueId);
+    return Boolean(receipt && cleanup.owns(receipt, userIds));
+  }
 
+  async deleteLeague(leagueId: string, userIds?: readonly string[]): Promise<boolean> {
+    requireNonEmpty("leagueId", leagueId);
+    const cleanup = new LeagueDeletionCleanup(this.client, this.tableName, () => this.clock.now());
+    if (await cleanup.read(leagueId)) return cleanup.resume(leagueId, userIds);
     const identityControl = await this.identities.readControl();
 
     const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
@@ -3238,21 +3246,19 @@ export class ThreeFcRepository {
       throw new Error("Cannot delete league with existing seasons.");
     }
 
-    const [aclEntries, inviteEntries] = await Promise.all([
-      this.listLeagueAccess(leagueId),
-      this.listLeagueOrganiserInviteEntities(leagueId),
-    ]);
+    let authority: StoredEntity<unknown> | null = null;
+    if (userIds) {
+      for (const userId of userIds) {
+        const acl = await this.getEntity(leaguePk(leagueId), aclSk(userId), { consistentRead: true });
+        if (acl?.entityType === ENTITY_TYPE.acl && (acl.data as LeagueAclRecord).role === "admin") { authority = acl; break; }
+      }
+      if (!authority) throw new PlayerIdentityError("league_cleanup_forbidden", 403, "Only a league organiser can remove this league.");
+    }
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       ...await this.identities.planDeletion("league", [leagueId], this.clock.now(), undefined, identityControl), this.buildConditionalDeleteFromStoredEntity(league),
+      cleanup.start(leagueId, userIds), ...(authority ? [this.buildConditionalCheckFromStoredEntity(authority)!] : []),
     ]) }));
-    await Promise.all(
-      [
-        ...inviteEntries.map((entry) => this.deleteEntity(entry.pk, entry.sk)),
-        this.deleteEntity(leaguePk(leagueId), leagueOrganiserShareInviteSk()),
-        ...aclEntries.map((entry) => this.deleteEntity(leaguePk(leagueId), aclSk(entry.userId))),
-      ],
-    );
-    return true;
+    return cleanup.resume(leagueId, userIds);
   }
 
   async createPlayer(input: CreatePlayerInput): Promise<PlayerRecord> {
@@ -4090,6 +4096,12 @@ export class ThreeFcRepository {
       );
   }
 
+  private async liveLeagueForAuthority(leagueId: string): Promise<StoredEntity<unknown>> {
+    const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
+    if (!league || league.entityType !== ENTITY_TYPE.league) throw new PlayerIdentityError("league_unavailable", 404, "This league is no longer available.");
+    return league;
+  }
+
   async grantLeagueAccess(input: GrantLeagueAccessInput): Promise<LeagueAclRecord> {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("userId", input.userId);
@@ -4100,6 +4112,7 @@ export class ThreeFcRepository {
     const sk = aclSk(input.userId);
 
     for (;;) {
+      const league = await this.liveLeagueForAuthority(input.leagueId);
       const existingItem = await this.getEntity(pk, sk, { consistentRead: true });
       const existing =
         existingItem?.entityType === ENTITY_TYPE.acl
@@ -4125,7 +4138,7 @@ export class ThreeFcRepository {
 
       try {
         await this.client.send(
-          new PutItemCommand({
+          new TransactWriteItemsCommand({ TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!, { Put: {
             TableName: this.tableName,
             Item: buildItemWithTimestamps(
               pk,
@@ -4150,7 +4163,7 @@ export class ThreeFcRepository {
               : {
                   ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
                 }),
-          }),
+          } }] }),
         );
         return withTimestamps(payload, existing?.createdAt ?? now, now);
       } catch (error) {
@@ -4212,6 +4225,7 @@ export class ThreeFcRepository {
     const customInviteCode = input.inviteCode ? normalizeCustomJoinCode(input.inviteCode) : null;
 
     for (let attempt = 0; attempt < JOIN_CODE_GENERATION_ATTEMPTS; attempt += 1) {
+      const league = await this.liveLeagueForAuthority(input.leagueId);
       const inviteCode = customInviteCode ?? generateJoinCode();
       const now = this.clock.now();
       const payload: Omit<LeagueInviteRecord, "createdAt" | "updatedAt"> = {
@@ -4227,11 +4241,11 @@ export class ThreeFcRepository {
 
       try {
         await this.client.send(
-          new PutItemCommand({
+          new TransactWriteItemsCommand({ TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!, { Put: {
             TableName: this.tableName,
             Item: buildItem(leagueInvitePk(inviteCode), metadataSk(), ENTITY_TYPE.leagueInvite, payload, now),
             ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-          }),
+          } }] }),
         );
         return withTimestamps(payload, now, now);
       } catch (error) {
@@ -4282,6 +4296,7 @@ export class ThreeFcRepository {
     createdByUserId: string;
   }): Promise<LeagueInviteRecord> {
     for (let attempt = 0; attempt < JOIN_CODE_GENERATION_ATTEMPTS; attempt += 1) {
+      const league = await this.liveLeagueForAuthority(input.leagueId);
       const existingInvite = await this.getExistingLeagueOrganiserShareInvite(input.leagueId);
       if (existingInvite) {
         return existingInvite;
@@ -4303,7 +4318,7 @@ export class ThreeFcRepository {
       try {
         await this.client.send(
           new TransactWriteItemsCommand({
-            TransactItems: [
+            TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!,
               {
                 Put: {
                   TableName: this.tableName,
@@ -4343,6 +4358,7 @@ export class ThreeFcRepository {
       }
     }
 
+    await this.liveLeagueForAuthority(input.leagueId);
     const existingInvite = await this.getExistingLeagueOrganiserShareInvite(input.leagueId);
     if (existingInvite) {
       return existingInvite;
@@ -4367,25 +4383,6 @@ export class ThreeFcRepository {
       item.createdAt,
       item.updatedAt,
     );
-  }
-
-  private async listLeagueOrganiserInviteEntities(
-    leagueId: string,
-  ): Promise<Array<StoredEntity<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>>> {
-    const scanResult = (await this.client.send(
-      new ScanCommand({
-        TableName: this.tableName,
-      }),
-    )) as ScanCommandOutput;
-
-    return (scanResult.Items ?? [])
-      .filter((item) => item.entityType?.S === ENTITY_TYPE.leagueInvite)
-      .map((item) => parseStoredEntity<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>(item))
-      .map((item) => ({
-        ...item,
-        data: normalizeLeagueInvitePayload(item.data),
-      }))
-      .filter((item) => item.data.leagueId === leagueId);
   }
 
   async acceptLeagueOrganiserInvite(

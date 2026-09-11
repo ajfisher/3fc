@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { handlePlayerDirectoryRoute, leaguePlayerPageSchema, createLeaguePlayerSchema } from "../player-directory-routes.js";
+import { PlayerIdentityError } from "../data/player-identity.js";
 
 import {
   createLambdaCoreHandler,
@@ -258,6 +259,9 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  onLeagueAccessRead?: () => void;
+  resumeLeagueDeletion?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
+  deleteLeagueOverride?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
   sessionCookieSecure?: boolean;
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
@@ -1609,7 +1613,11 @@ function createHarness(config: HarnessConfig = {}) {
 
         return seasons.delete(seasonId);
       },
-      async deleteLeague(leagueId: string) {
+      async canResumeLeagueDeletion(leagueId: string, userIds: readonly string[]) {
+        return config.resumeLeagueDeletion?.(leagueId, userIds) ?? false;
+      },
+      async deleteLeague(leagueId: string, userIds: readonly string[] = []) {
+        if (config.deleteLeagueOverride) return config.deleteLeagueOverride(leagueId, userIds);
         const deleted = leagues.delete(leagueId);
         if (!deleted) {
           return false;
@@ -1993,6 +2001,7 @@ function createHarness(config: HarnessConfig = {}) {
         };
       },
       async getLeagueAccess(leagueId: string, userId: string) {
+        config.onLeagueAccessRead?.();
         return leagueAccess.get(`${leagueId}:${userId}`) ?? null;
       },
       async grantLeagueAccess(input) {
@@ -2226,6 +2235,73 @@ function createHarness(config: HarnessConfig = {}) {
     leagueInvites,
   };
 }
+
+test("league deletion receipt only resumes the initiating authenticated DELETE after metadata and ACL cleanup", async () => {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const checks: Array<{ leagueId: string; userIds: readonly string[] }> = [];
+  const deletes: Array<{ leagueId: string; userIds: readonly string[] }> = [];
+  let aclReads = 0;
+  let cleanupPending = false;
+  const harness = createHarness({
+    sessions: {
+      owner: { sessionId: "owner", subject: "owner-subject", email: "owner@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" },
+      outsider: { sessionId: "outsider", subject: "outsider-subject", email: "outsider@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" },
+    },
+    // Both maps are intentionally empty: receipt recovery must not depend on
+    // metadata or an ACL that the previous committed deletion already removed.
+    leagues: {}, leagueAccess: {},
+    onLeagueAccessRead() { aclReads += 1; },
+    async resumeLeagueDeletion(leagueId, userIds) {
+      checks.push({ leagueId, userIds: [...userIds] });
+      return leagueId === "deleted-league" && userIds.includes("owner-subject");
+    },
+    async deleteLeagueOverride(leagueId, userIds) {
+      deletes.push({ leagueId, userIds: [...userIds] });
+      if (cleanupPending) throw new PlayerIdentityError("league_deletion_pending", 503, "League cleanup is still pending. Retry deletion.");
+      return true;
+    },
+  });
+  const request = (method: string, account?: string, leagueId = "deleted-league", rawBody?: string) => {
+    const event = createEvent({ method, path: `/v1/leagues/${leagueId}`, headers: {
+      Origin: "https://qa.3fc.football", ...(account ? { Cookie: `threefc_session=${account}` } : {}),
+    } });
+    event.body = rawBody;
+    return harness.handler(event);
+  };
+  assert.equal((await request("DELETE")).statusCode, 401);
+  assert.equal(checks.length, 0); assert.equal(deletes.length, 0);
+  harness.leagueAccess.set("deleted-league:owner-subject", {
+    leagueId: "deleted-league", userId: "owner-subject", role: "admin", grantedByUserId: "owner-subject", createdAt: stamp, updatedAt: stamp,
+  });
+  const beforeInvalid = { checks: checks.length, deletes: deletes.length, aclReads };
+  for (const expectedAccountId of ["another-account", "owner@example.com", null, 123]) {
+    const mismatch = await request("DELETE", "owner", "deleted-league", JSON.stringify({ expectedAccountId }));
+    assert.equal(mismatch.statusCode, 403);
+    assert.equal(JSON.parse(mismatch.body).code, "account_changed");
+  }
+  for (const raw of ["{invalid", "[]", "null"]) {
+    assert.equal((await request("DELETE", "owner", "deleted-league", raw)).statusCode, 400);
+  }
+  assert.deepEqual({ checks: checks.length, deletes: deletes.length, aclReads }, beforeInvalid,
+    "account mismatch and malformed bodies are rejected before any ACL, receipt or delete repository call, even for an admin");
+  harness.leagueAccess.clear();
+  assert.equal((await request("DELETE", "outsider")).statusCode, 403);
+  assert.equal((await request("DELETE", "owner", "another-league")).statusCode, 403);
+  assert.equal(deletes.length, 0);
+  const checkedBeforeRead = checks.length;
+  assert.notEqual((await request("GET", "owner")).statusCode, 200);
+  assert.equal(checks.length, checkedBeforeRead, "a deletion receipt never authorises league reads");
+  for (let retry = 0; retry < 2; retry++) {
+    const response = await request("DELETE", "owner", "deleted-league", retry === 0 ? undefined : JSON.stringify({ expectedAccountId: "owner-subject" }));
+    assert.equal(response.statusCode, 204); assert.equal(response.body, "");
+  }
+  assert.deepEqual(deletes, Array.from({ length: 2 }, () => ({ leagueId: "deleted-league", userIds: ["owner-subject", "owner@example.com"] })));
+  cleanupPending = true;
+  const pending = await request("DELETE", "owner");
+  assert.equal(pending.statusCode, 503, "unfinished cleanup must not report successful deletion");
+  assert.equal(JSON.parse(pending.body).code, "league_deletion_pending");
+  assert.equal(JSON.parse(pending.body).error, "unavailable");
+});
 
 function createGoalHarness(input: {
   email?: string;
