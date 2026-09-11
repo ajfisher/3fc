@@ -14,12 +14,13 @@ close the issue. Base: `codex/returning-player-join` (#168).
 
 | Acceptance criterion | Evidence | Result |
 | --- | --- | --- |
-| Explicit proof confirmation; no proofless claim; unknown-session/storage failure recovery | Focused5 and full71 results-entry Playwright fixtures, group31500 exit0, peak1319648KiB, remaining[] | PASS |
-| Actual sign-in, setup, player creation/anonymous proof join, scoring and finished corrections | Disposable M2 group31360,4 tests, actual API/app/DynamoDB/fake email | PASS |
-| Private listener and secret-safe local operation | M2 verifies127.0.0.1 actual addresses; status-only reporter; reporter regression | PASS |
-| Exact owned cleanup including ambiguous Docker creation | UUID-only inventory/cleanup; M2 workers closed, database absent, private directory removed | PASS |
-| Full unit/contract/security/build/backlog validation | Group31843,493 API/636 app/4 operator/57 gate, lint/typecheck, contracts, backlog/export and build; exit0, peak2262560KiB, remaining[] | PASS |
-| Current-head CI/QA/Codex and review gate | PR links appended after publishing | PENDING |
+| Explicit proof confirmation; no proofless claim; unknown-session/storage failure recovery | Refreshed71 results-entry Playwright fixtures, group43093 exit0, peak1384176KiB, remaining[] | PASS |
+| Actual sign-in, setup, player creation/anonymous proof join, scoring and finished corrections | Corrected disposable M2 group42960,4 tests, actual API/app/DynamoDB/fake email; exit0, peak1308592KiB plus512MiB Docker, remaining[] | PASS |
+| Private listener and secret-safe local operation | Group37648,7 readiness/cleanup/reporter tests; actual listener confirmation in corrected M2 group42960 | PASS |
+| Exact owned cleanup including ambiguous Docker creation and Docker failure | Group37648 fault injection proves private cleanup after Docker failure; corrected M2 group42960 verifies workers closed, database absent and private directory removed | PASS |
+| Full unit/contract/security/build/backlog validation | Post-fix group37720,493 API/636 app/10 operator/57 gate, lint/typecheck, contracts, backlog/export and build; exit0, peak2526272KiB, remaining[] | PASS |
+| Complete proof/consolidation/history/returning integration | Final runtime head513a9ac, explicit loopback group43549 with real local HTTP/DynamoDB/Chromium; exit0, peak963632KiB plus512MiB Docker, remaining[] | PASS |
+| Current-head CI/QA/Codex and review gate | Exact-head PR body/checks are the live remote evidence record; refreshed after this documentation-only update | PENDING |
 | Physical iOS/Android | Explicit checklist in delivery index/#162; no emulation substituted | NOT RUN |
 
 ## Scope boundaries
@@ -116,6 +117,13 @@ Corrected real M2 group42960 passed all4 tests, exit0, peak1308592KiB plus512MiB
 Docker, remaining[]; actual worker, database and private-artifact cleanup verified.
 Refreshed71 entry-browser tests passed under group43093, exit0,
 peak1384176KiB, remaining[].
+
+Codex review5177241041/comment3987921038 requested the acceptance rows themselves
+reference these post-fix runs. The table is refreshed, including the final
+explicit-loopback identity integration at513a9ac. This follow-up changes only
+this evidence document: runtime and test sources remain byte-for-byte unchanged.
+Earlier run descriptions below the table are historical evidence, not substitutes
+for the current acceptance rows. Remote evidence is refreshed in the PR body.
 
 ### Unresolved blocking findings
 
