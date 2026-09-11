@@ -2,6 +2,18 @@
   const prefix = "threefc.returning-join.v1:";
   const identity = session => session?.subject ?? session?.email;
   const text = value => typeof value === "string" && value.trim().length > 0;
+  function validPlayerId(value) {
+    if (!text(value)) return false;
+    try { return encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, "x").length <= 2041; }
+    catch { return false; }
+  }
+  function validSavedAttempt(value, accountId, joinCode) {
+    const body = value?.body, key = value?.idempotencyKey;
+    return value?.joinCode === joinCode && text(value.gameId) && text(value.nickname) &&
+      body && !Array.isArray(body) && Object.keys(body).sort().join(",") === "expectedAccountId,playerId" &&
+      body.expectedAccountId === accountId && text(accountId) && accountId.length <= 2048 && validPlayerId(body.playerId) &&
+      text(key) && key.trim().length <= 128 && !/[^\t\x20-\x7e\x80-\xff]/.test(key);
+  }
   function node(tag, content, attributes = {}) {
     const element = document.createElement(tag); if (content !== undefined) element.textContent = content;
     for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
@@ -129,7 +141,7 @@
         const saved = sessionStorage.getItem(key());
         if (saved) {
           const value = JSON.parse(saved);
-          if (value?.body?.expectedAccountId !== identity(owner) || value.joinCode !== joinCode || !text(value.body.playerId) || !text(value.gameId) || !text(value.idempotencyKey) || !text(value.nickname)) throw new Error("invalid_saved_request");
+          if (!validSavedAttempt(value, identity(owner), joinCode)) throw new Error("invalid_saved_request");
           attempt = { ...value, uncertain: true }; say("An earlier join could not be confirmed. Retry uses the same player."); return;
         }
         if (!append) { players.clear(); cursor = null; complete = false; selected = ""; }

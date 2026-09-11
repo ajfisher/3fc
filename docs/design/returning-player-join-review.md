@@ -114,6 +114,26 @@ empty results while rejecting a cursor after the first membership is written.
 The root also added central verified returning-draft cleanup on every sign-out
 surface and deployed route/asset parity. Reviewers do not launch tests.
 
+GitHub review on `75ae2e4c3bf442a64436a6302fda9087d194c984` identified two
+additional P2 findings. Comment3986293540 is addressed by validating saved retry
+keys and strict body fields before exposing Retry; seven malformed-storage cases
+prove explicit cleanup without a POST. Group71491 passed all19 returning-player
+tests, exit0, peak390416KiB, remaining[]. Comment3986293541 is addressed by
+parallelising the bounded source page, with at most20 outstanding reads and
+ordered assembly after all lookups settle. Group71532 passed all15 repository
+tests, exit0, peak523120KiB, remaining[]. The maximum legal20-by20 fixture proves
+bounded overlap, ordered results and unchanged transaction fencing; a rejected
+lookup test proves pending siblings drain before failure. These tests do not
+establish a deployed latency bound; deployed performance evidence remains due.
+
+After both fixes, group71570 passed lint/typecheck, full469 API /636 app /3
+operator /57 gate tests, contracts, backlog validation/export and build; exit0,
+peak2827344KiB, remaining[]. Fresh actual HTTP/DynamoDB and Chromium acceptance
+group76873 passed, exit0, peak963040KiB plus512MiB Docker, remaining[]; both API
+children exited and the disposable container was removed. Fresh browser captures
+are `3fc-returning-browser-BrPvtN`. Read-only frontend and architecture/security
+reviews found no further demonstrated P1/P2 findings in these changes.
+
 ### Unresolved blocking findings
 
 Exact-head remote acceptance remains pending.

@@ -13,12 +13,28 @@ class Client {
   before: (() => void) | null = null;
   lost = false;
   transactions = 0;
+  measureReadOverlap = false;
+  activeReads = 0;
+  maximumReads = 0;
+  readCount = 0;
+  lastTransactionSize = 0;
+  beforeRead: ((pk: string, sk: string) => Promise<void>) | null = null;
   key(pk: string, sk: string) { return JSON.stringify([pk, sk]); }
   item(pk: string, sk: string) { return this.items.get(this.key(pk, sk)); }
   seed(pk: string, sk: string, type: string, data: unknown) { this.items.set(this.key(pk, sk), identityItem(pk, sk, type, data, NOW)); }
   data(pk: string, sk: string) { return JSON.parse(this.item(pk, sk)!.data!.S!); }
   async send(command: unknown): Promise<unknown> {
-    if (command instanceof GetItemCommand) return { Item: structuredClone(this.item(command.input.Key!.pk!.S!, command.input.Key!.sk!.S!)) };
+    if (command instanceof GetItemCommand) {
+      this.readCount++;
+      await this.beforeRead?.(command.input.Key!.pk!.S!, command.input.Key!.sk!.S!);
+      if (this.measureReadOverlap) {
+        this.activeReads++; this.maximumReads = Math.max(this.maximumReads, this.activeReads);
+        // An explicit asynchronous boundary detects overlapping lookups without
+        // making elapsed time or scheduler speed part of the assertion.
+        await Promise.resolve(); this.activeReads--;
+      }
+      return { Item: structuredClone(this.item(command.input.Key!.pk!.S!, command.input.Key!.sk!.S!)) };
+    }
     if (command instanceof QueryCommand) {
       const pk = command.input.ExpressionAttributeValues![":pk"]!.S!, prefix = command.input.ExpressionAttributeValues![":prefix"]!.S!;
       const start = command.input.ExclusiveStartKey?.sk?.S;
@@ -29,6 +45,7 @@ class Client {
       return { Items: structuredClone(page), ...(all.length > page.length && last ? { LastEvaluatedKey: { pk: last.pk, sk: last.sk } } : {}) };
     }
     if (command instanceof TransactWriteItemsCommand) {
+      this.lastTransactionSize = command.input.TransactItems!.length;
       this.transactions++; const hook = this.before; this.before = null; hook?.();
       for (const action of command.input.TransactItems!) {
         const operation = action.Put ?? action.ConditionCheck!;
@@ -68,6 +85,65 @@ function fixture(ids = ["a"], owner = "account") {
   return { client, service };
 }
 const request = { joinCode: CODE, userId: "account", playerId: "a", idempotencyKey: "request-1" };
+
+test("rejected lookup drains a pending sibling before rejecting the whole page", async () => {
+  const { client, service } = fixture(["a", "b"]);
+  let release!: () => void, started!: () => void, rejected!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const siblingStarted = new Promise<void>(resolve => { started = resolve; });
+  const lookupRejected = new Promise<void>(resolve => { rejected = resolve; });
+  const failure = new Error("controlled lookup rejection");
+  let siblingFinished = false, settled = false;
+  client.beforeRead = async (pk, sk) => {
+    if (pk === "PLAYER#a" && sk === "IDENTITY") { rejected(); throw failure; }
+    if (pk === "PLAYER#b" && sk === "PROFILE") { started(); await blocked; siblingFinished = true; }
+  };
+  const outcome = service.list({ joinCode: CODE, userId: "account" }).then(
+    value => { settled = true; return { value, error: null }; },
+    error => { settled = true; return { value: null, error }; },
+  );
+  try {
+    await Promise.all([siblingStarted, lookupRejected]);
+    // One event-loop boundary drains rejection microtasks. No elapsed-time or
+    // machine-speed threshold is used: the sibling has an explicit held gate.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, "a failed sibling must not detach another in-flight lookup");
+    assert.equal(siblingFinished, false);
+    assert.equal(client.transactions, 0, "no partial page is validated or returned");
+  } finally { release(); }
+  const result = await outcome;
+  assert.equal(result.error, failure);
+  assert.equal(result.value, null);
+  assert.equal(siblingFinished, true);
+  assert.equal(client.transactions, 0);
+});
+
+test("maximum 20 roots with 20 aliases overlap reads within one bounded source-page budget", async () => {
+  const roots = Array.from({ length: 20 }, (_, index) => `root-${String(index).padStart(2, "0")}`);
+  const { client, service } = fixture(roots);
+  for (const root of roots) {
+    const aliases = Array.from({ length: 19 }, (_, index) => `${root}-alias-${index}`);
+    client.seed(`PLAYER#${root}`, "IDENTITY", "playerIdentity", { ...client.data(`PLAYER#${root}`, "IDENTITY"), members: [root, ...aliases] });
+    for (const alias of aliases) client.seed(`PLAYER#${alias}`, "IDENTITY", "playerIdentity", {
+      playerId: alias, rootId: root, members: [], identityVersion: 1, writeVersion: "alias-version", displayName: alias, formerNames: [],
+    });
+  }
+  client.measureReadOverlap = true;
+  const page = await service.list({ joinCode: CODE, userId: "account", limit: 20 });
+  assert.deepEqual(page.players.map(player => player.playerId), roots, "source order survives concurrent lookup completion");
+  assert(page.players.every(player => player.registeredPlayerId === null && player.team === null && player.seasons[0]?.name === "Season"));
+  assert(client.readCount > 2000, "exercise the full legal alias fanout, not twenty trivial roots");
+  assert.equal(client.maximumReads, 20, "one lookup stream per source entry; never nested alias fanout");
+  assert.equal(client.activeReads, 0);
+  assert(client.lastTransactionSize <= 100, "root/profile/directory CAS fits one atomic read validation");
+  assert.equal(page.complete, false); assert(page.cursor, "hashed claim namespace remains to be checked");
+  client.before = () => client.seed(`PLAYER#${roots[19]}`, "IDENTITY", "playerIdentity", {
+    ...client.data(`PLAYER#${roots[19]}`, "IDENTITY"), writeVersion: "membership-raced",
+  });
+  await assert.rejects(service.list({ joinCode: CODE, userId: "account", limit: 20 }), /changed/);
+  assert.equal(client.activeReads, 0, "all lookup streams settle before failure is returned");
+  assert(client.maximumReads <= 20);
+});
 
 test("owned pagination follows DynamoDB UTF-8 order across supplementary IDs", async () => {
   const ids = ["\uE000", "😀", "😁"], { service } = fixture(ids);

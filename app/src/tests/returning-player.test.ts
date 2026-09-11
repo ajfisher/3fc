@@ -135,6 +135,30 @@ for (const cleanupFails of [false, true]) test(`malformed saved context offers v
   } finally { dom.window.close(); }
 });
 
+for (const [name, patch] of [
+  ["oversized key", { idempotencyKey: "x".repeat(129) }],
+  ["empty key", { idempotencyKey: "   " }],
+  ["header newline", { idempotencyKey: "one\r\ntwo" }],
+  ["invalid body field", { body: { playerId: "one", expectedAccountId: account.subject, extra: true } }],
+  ["oversized player", { body: { playerId: "x".repeat(2042), expectedAccountId: account.subject } }],
+  ["oversized Unicode player", { body: { playerId: "é".repeat(1021), expectedAccountId: account.subject } }],
+  ["malformed Unicode player", { body: { playerId: "bad\ud800", expectedAccountId: account.subject } }],
+] as const) test(`contract-invalid saved attempt offers cleanup instead of retry: ${name}`, async () => {
+  let posts = 0;
+  const { dom } = boot(async (input, init) => {
+    if (init?.method === "POST") posts++;
+    return reply(String(input).endsWith("/auth/session") ? { authenticated: true, session: account } : page([player()]));
+  }, Object.assign({ joinCode: "CODE1234", gameId: "game", nickname: "Xavier", idempotencyKey: "original-key",
+    body: { playerId: "one", expectedAccountId: account.subject } }, patch));
+  try {
+    await flush(); assert.equal(posts, 0);
+    assert.doesNotMatch(dom.window.document.body.textContent!, /Retry join/);
+    button(dom, "Clear saved request").click(); await flush();
+    assert.equal(posts, 0); assert.equal(dom.window.sessionStorage.length, 0);
+    assert(button(dom, "Join as Xavier"));
+  } finally { dom.window.close(); }
+});
+
 for (const phase of ["session", "post"] as const) test(`account invalidation during ${phase} hides details and fences late responses`, async () => {
   let sessions = 0, posts = 0; let release: ((value: Response) => void) | undefined;
   const { dom, isLocked } = boot(async (input, init) => {

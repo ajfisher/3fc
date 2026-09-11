@@ -118,16 +118,22 @@ export class OwnedPlayerJoinService {
       ...(sk ? { ExclusiveStartKey: { pk: { S: pk }, sk: { S: sk } } } : {}) })) as QueryCommandOutput;
     const checks = [identityCondition(this.tableName, scope.code), identityCondition(this.tableName, scope.game), identityCondition(this.tableName, scope.league),
       identityCondition(this.tableName, scope.control), identityCondition(this.tableName, scope.directory), ...revisions.map(revision => identityCondition(this.tableName, revision))];
-    const players: OwnedJoinPlayer[] = [], seen = new Set<string>();
-    for (const item of page.Items ?? []) {
+    const source = page.Items ?? [];
+    if (source.length > limit || source.length > 20) return fail();
+    // Validate the whole bounded source page before launching lookups. Each
+    // entry performs sequential reads, so at most 20 DynamoDB calls overlap.
+    // Twenty is the existing source-page/transaction budget, not a new pool
+    // multiplier for each of its up-to-20 underlying aliases.
+    const claims = source.map(item => {
       let claim: Data;
       try { claim = JSON.parse(item.data?.S ?? "null"); } catch { return fail(); }
       if (!claim || item.pk?.S !== pk || item.entityType?.S !== "playerClaim" || claim.userId !== accounts[accountIndex] ||
         !validPlayerIdentityId(claim.playerId) || item.sk?.S !== playerClaimSk(claim.playerId) || !item.sk.S.startsWith(namespace)) return fail();
-      const owned = await this.owned(claim.playerId, accounts, scope.value.leagueId);
-      if (!owned || seen.has(owned.rootId)) continue;
-      seen.add(owned.rootId);
-      checks.push(identityCondition(this.tableName, owned.identity.root), identityCondition(this.tableName, owned.profile), identityCondition(this.tableName, owned.directory));
+      return claim.playerId;
+    });
+    const resolved = await Promise.allSettled(claims.map(async playerId => {
+      const owned = await this.owned(playerId, accounts, scope.value.leagueId);
+      if (!owned) return null;
       const original = await this.planner.registeredOriginal(owned.identity, scope.value.gameId);
       const seasons: OwnedJoinPlayer["seasons"] = [];
       const ids = owned.directory.value.seasonIds ?? [];
@@ -137,7 +143,18 @@ export class OwnedPlayerJoinService {
         const season = await this.read(`LEAGUE#${scope.value.leagueId}`, `SEASON#${id}`, "season");
         if (season && season.value.seasonId === id && text(season.value.name)) seasons.push({ seasonId: id, name: season.value.name });
       }
-      players.push({ playerId: owned.rootId, nickname: owned.nickname, registeredPlayerId: original, team: await this.team(scope.value.gameId, original), seasons });
+      return { rootId: owned.rootId,
+        checks: [identityCondition(this.tableName, owned.identity.root), identityCondition(this.tableName, owned.profile), identityCondition(this.tableName, owned.directory)],
+        player: { playerId: owned.rootId, nickname: owned.nickname, registeredPlayerId: original, team: await this.team(scope.value.gameId, original), seasons } };
+    }));
+    // Wait for every bounded read task, including on failure; never return a
+    // partial page or leave detached lookups after a rejected sibling task.
+    const players: OwnedJoinPlayer[] = [], seen = new Set<string>();
+    for (const result of resolved) {
+      if (result.status === "rejected") throw result.reason;
+      if (!result.value || seen.has(result.value.rootId)) continue;
+      seen.add(result.value.rootId);
+      checks.push(...result.value.checks); players.push(result.value.player);
     }
     const last = page.LastEvaluatedKey;
     if (last && (last.pk?.S !== pk || !last.sk?.S?.startsWith(namespace) || Buffer.byteLength(last.sk.S) > 1024 ||
