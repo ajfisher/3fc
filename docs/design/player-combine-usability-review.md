@@ -21,7 +21,7 @@ under the preview; meaningful Back/Cancel; clear success and a fresh next task.
 | Existing repository, local HTTP and directory regressions | 197 tests, group79401, exit0, peak201840KiB, remaining[] | PASS |
 | Automatic query continuation | setup-flow-e2e.test.ts focused search regression, group78915 | PASS (same run had an unrelated stale checkbox fixture failure) |
 | Success/reset, selection/review, uncertainty and approval | 17 interaction tests, group82496 exit0, peak285568KiB, remaining[] | PASS |
-| Full API and app validation | 506 API tests group79551; final643 app tests group83386; both exit0/remaining[], peaks1236400/2809504KiB | PASS |
+| Full API and app validation | 506 API tests group79551; final643 app tests group84184; both exit0/remaining[], peaks1236400/2076272KiB | PASS |
 | Lint/typecheck, contracts, build, operator/review-gate tests and backlog | Group82531 exit0,10operator/57gate, peak582384KiB, remaining[] | PASS |
 | Browser selection/review, two sequential combinations, Back/Cancel, owner approval, current game dates, 44px targets and no overflow | Actual disposable local API/DynamoDB/Chromium,320/390/430/768/1280px light/dark; group83240 exit0, peak958464KiB plus bounded512MiB container, remaining[] and container deletion verified | PASS |
 | Exact-head GitHub review/CI/QA | To be attached after publication | PENDING |
@@ -107,6 +107,16 @@ Root reviewed the read budgets and fail-closed scope checks. An initial UI
 fixture clicked detached checkboxes after a re-render; it is corrected to re-query
 the live control as a user would. Initial API fixture errors (missing SDK metadata
 and invalid alias members) were corrected; complete repository regressions pass.
+
+Final inspection also found that game context arriving after a selection updated
+the table but not its retained-profile option text. Options now refresh without
+changing the selected identity or edited name. The focused regression, complete17
+interaction tests (group84066) and complete643app tests (group84184) pass.
+
+Historical remote evidence: initial head02b2566 passed CI34668749055 and
+QA34668751088. A signed-in, read-only in-app browser check loaded the Melbourne
+directory successfully with the two consolidated entries present. This evidence
+does not substitute for checks of a later head; no real player was mutated.
 
 ### Unresolved blocking findings
 

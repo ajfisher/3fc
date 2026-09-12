@@ -51,6 +51,7 @@ test("selection is one accessible table, preserves selected game enrichment acro
     selectPlayers(dom, ["p1"]);
     players = profiles.map(player => ({ ...player, gamesIncomplete: player.playerId === "p2" })); ui.refreshRows();
     assert.doesNotMatch(dom.window.document.querySelector('tbody')!.textContent!, /Game history unavailable/);
+    assert.doesNotMatch(dom.window.document.querySelector('#consolidation-retained option')!.textContent!, /Game history unavailable/);
     assert.match(dom.window.document.querySelector('tbody')!.textContent!, /Some games are unavailable/);
     const checkbox = dom.window.document.querySelector<HTMLInputElement>('[data-consolidation-select][data-player-id="p1"]')!;
     const description = dom.window.document.getElementById(checkbox.getAttribute('aria-describedby')!)!;

@@ -304,6 +304,12 @@
       rows.replaceChildren();
       const available = new Map((getPlayers ? getPlayers() : [...document.querySelectorAll("#league-player-list > li[data-player-id]")].map(row => getPlayer(row.dataset.playerId)).filter(Boolean)).map(player => [player.playerId, player]));
       for (const [id, player] of available) if (selected.has(id)) selected.set(id, player);
+      // Dates can arrive after selection. Update option descriptions without
+      // resetting the chosen identity or the organiser's edited player name.
+      for (const option of retained.options) {
+        const player = selected.get(option.value);
+        if (player) option.textContent = keeperLabel(player);
+      }
       // Keep already-selected profiles visible when the search changes, once each.
       for (const [id, player] of selected) if (!available.has(id)) available.set(id, player);
       for (const player of available.values()) {
