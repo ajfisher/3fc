@@ -6515,6 +6515,13 @@ test("match roster keeps assigned identities beyond the candidate cap without in
   assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "unknown");
   assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /claimed@example.com/);
   assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 26);
+  const refresh = page.document.getElementById("roster-retry")!;
+  assert.equal(refresh.hidden, false);
+  dispatchClick(refresh); await flushAsync();
+  assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "linked");
+  assert.equal(refresh.hidden, true);
+  assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 26);
+  assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /claimed@example.com/);
 });
 
 test("match roster renders permitted teams when optional operator enrichment fails", async () => {
@@ -15023,6 +15030,18 @@ test("ux10 a scheduled external join appears at the 15-second public roster refr
     assert.equal(page.document.activeElement, search); assert.equal(search.selectionStart, 0); assert.equal(search.selectionEnd, 1);
     assert.equal(region.hidden, false); assert.equal(interactionVisible(toggle), false);
     assert.equal(page.window.location.hash, "#teams"); assert.equal(page.document.getElementById("setup-status")?.hidden, true);
+    const refreshDetails = page.document.getElementById("roster-retry");
+    assert(refreshDetails instanceof page.window.HTMLButtonElement);
+    assert.equal(refreshDetails.hidden, false, "a new public row must retain a private-metadata recovery path");
+    assert.equal(refreshDetails.textContent, "Refresh player details");
+    assert.equal(row.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"), "unknown");
+    refreshDetails.click(); await flushAsync();
+    assert.equal(observerRequests.filter(request => request.path === "/v1/games/ux10-match/players").length, 2);
+    const enriched = ux09PlayerRows(page, '[data-ui="roster-player"]', receipt.player.playerId)[0];
+    assert.equal(enriched.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"), "unlinked");
+    assert(enriched.querySelector('[data-action="toggle-action-menu"]'), "new player account actions are restored");
+    assert.equal(refreshDetails.hidden, true);
+    assert.equal(search.value, "Cy"); assert.equal(nickname.value, "Keep this local draft");
     assert.deepEqual(observerRequests.filter(request => request.method !== "GET"), [], "a read refresh never joins, claims or assigns for the observing page");
   } finally { closeUx10Page(page); }
 });

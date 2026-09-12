@@ -375,6 +375,13 @@ test("scheduled refresh preserves metadata and Add player drafts search caret an
       search: value.search === document.activeElement, start: (value.search as HTMLInputElement).selectionStart,
       end: (value.search as HTMLInputElement).selectionEnd }))).toEqual({ name: true, search: true, start: 2, end: 5 });
     await capture(observer, testInfo, "remote-arrival-preserved-drafts-light-320");
+    const arrival = observer.locator('[data-ui="roster-player"]').filter({ hasText: "Arrival Alexandra Francesca Montgomery-Williams" });
+    await expect(arrival.locator('[data-ui="player-initial"]')).toHaveAttribute("data-link-state", "unknown");
+    await observer.getByRole("button", { name: "Refresh player details", exact: true }).click();
+    await expect(arrival.locator('[data-ui="player-initial"]')).toHaveAttribute("data-link-state", "unlinked");
+    await expect(arrival.locator('[data-action="toggle-action-menu"]')).toBeVisible();
+    await expect(observer.locator("#roster-retry")).toBeHidden();
+    await expect(observer.locator("#player-nickname")).toHaveValue("Keep this local player draft");
     await observer.getByTestId("game-mode-structure-tab").click();
     // Opening Add player intentionally closes the other transient disclosure.
     // Its hidden metadata draft and native field still survive the refresh.

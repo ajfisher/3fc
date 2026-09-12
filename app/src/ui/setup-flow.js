@@ -5483,7 +5483,15 @@
     function renderRosterSetup() {
       syncGameCapabilities();
       const retry = document.getElementById("roster-retry");
-      if (retry) retry.hidden = !isLeagueOperator() || !(playerDetailsState === "unavailable" || (playerDetailsState !== "loading" && rosterUnassignedPlayers === null));
+      if (retry) {
+        const failed = playerDetailsState === "unavailable" || (playerDetailsState !== "loading" && rosterUnassignedPlayers === null);
+        // Public polling can discover a new player without private enrichment.
+        // Keep an explicit recovery path without giving other roles admin reads.
+        const missingDetails = currentLeagueRole === "admin" && playerDetailsState === "loaded"
+          && [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].some(player => !verifiedAdminPlayers.has(player.playerId));
+        retry.hidden = !isLeagueOperator() || !(failed || missingDetails);
+        retry.textContent = failed ? "Retry loading players" : "Refresh player details";
+      }
       const focus = captureRosterFocus();
       const active = document.activeElement;
       const rosterLocked = finishedRosterControlsLocked();
@@ -5593,7 +5601,7 @@
       }
     }
 
-    async function loadPlayerDetails() {
+    async function loadPlayerDetails({ resolveMissing = false } = {}) {
       if (!rosterControlsAvailable() || !isLeagueOperator()) return;
       const version = ++playersReadVersion;
       const role = currentLeagueRole;
@@ -5601,7 +5609,23 @@
       try {
         const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players`, { method: "GET" });
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
-        rosterPlayers = Array.isArray(payload?.players) ? payload.players : [];
+        const details = new Map((Array.isArray(payload?.players) ? payload.players : []).map(player => [player.playerId, player]));
+        if (resolveMissing && role === "admin") {
+          // The existing private endpoint caps each nickname search at 20.
+          // Explicit recovery may target known roster names, never account IDs
+          // or a wider directory. Bound the work and keep unresolved rows neutral.
+          const searched = new Set();
+          for (const entry of [...(rosterUnassignedPlayers ?? []), ...rosterAssignments]) {
+            if (details.has(entry.playerId)) continue;
+            const nickname = (entry.nickname ?? entry.player?.nickname ?? knownRosterPlayers.get(entry.playerId)?.nickname ?? "").trim();
+            if (!nickname || searched.has(nickname) || searched.size >= 20) continue;
+            searched.add(nickname);
+            const extra = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players?${new URLSearchParams({ search: nickname })}`, { method: "GET" });
+            if (version !== playersReadVersion || role !== currentLeagueRole) return;
+            for (const player of Array.isArray(extra?.players) ? extra.players : []) details.set(player.playerId, player);
+          }
+        }
+        rosterPlayers = [...details.values()];
         verifiedAdminPlayers.clear();
         if (role === "admin") {
           for (const player of rosterPlayers) verifiedAdminPlayers.set(player.playerId, player);
@@ -6317,10 +6341,11 @@
         button.disabled = true; status.hidden = false; status.textContent = "Loading players…";
         const finishFocus = trackInteractionFocus(button);
         try {
-          const [rosterResult] = await Promise.allSettled([loadRosterSetup({ updateStatus: false }), loadPlayerDetails()]);
+          const [rosterResult] = await Promise.allSettled([loadRosterSetup({ updateStatus: false }), loadPlayerDetails({ resolveMissing: true })]);
           status.textContent = rosterResult.status === "rejected" ? "Players couldn’t be refreshed. The available list is still shown."
             : rosterUnassignedPlayers === null || playerDetailsState === "unavailable"
-            ? "Some player details are still unavailable. Retry loading players." : "Players updated.";
+            ? "Some player details are still unavailable. Retry loading players." : !button.hidden
+            ? "Some player details are still unavailable. The available list is still shown." : "Players updated.";
           if (rosterResult.status === "rejected") button.hidden = false;
         } catch {
           status.textContent = "Players couldn’t be refreshed. The available list is still shown.";
