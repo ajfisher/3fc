@@ -3116,6 +3116,41 @@
       "reviewRequirements": ["Independent architecture/security and engineering/QA review of release authority, provenance, partial failure and cutover.", "No production execution as a validation technique; local serialized tests and QA only.", "Current-head Codex assessment, CI, QA and unchanged review gate before delivery."],
       "delivery": {"asOf": "2026-09-12", "wave": "reusable-players-follow-up", "status": "in-progress", "githubIssue": 175, "branch": "codex/player-production-preflight", "notes": ["AJ requests readiness before merge, not production execution. Production workflow held; safe future feature variables pinned. Read-only production table COUNT0/no continuation and35-day PITR observed; recheck before execution."]}
     }
+    ,{
+      "id": "UX-11", "title": "Unify player identity rows and season player navigation", "storyPoints": 5,
+      "parentEpic": "EPIC-UX", "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["PLAYER-07", "UX-07"],
+      "summary": "Use one initial/name/context/action presentation across player lists while preserving private claim metadata and management permissions.",
+      "scope": ["Shared identity renderer and component-owned CSS across directories, rosters, pickers, suggestions and consolidation cells.", "Linked tick, outlined unlinked initial and neutral unknown status; accessible status once.", "Season Manage players moves inside existing kebab with preserved organiser/scorer access."],
+      "outOfScope": ["Backend, contracts, identity semantics, scoring rules, new dependencies, Terraform and production changes."],
+      "acceptanceCriteria": ["Avatar, name and trailing actions are vertically centred with consistent secondary spacing and at least44px action targets.", "Unicode initials, long names and linked/unlinked/unknown status render safely without account identifiers.", "Directory, roster, picker, suggestions, combine table and showcase use the shared renderer.", "Manage players preserves season scope and role visibility; delete remains organiser-only.", "Current-head independent reviews, CI, QA and review gate pass before child implementation."],
+      "testScenarios": ["Renderer escape/Unicode/status tests, actor variants, SVG-child menu actions and focus recovery.", "320/390/430px, tablet/desktop, light/dark, keyboard and200% zoom with computed alignment evidence."],
+      "reviewRequirements": ["Read-only design, frontend/accessibility, engineering, QA and privacy/security reviews.", "Serialized4GiB validation, exact-head Codex review, CI and disposable QA evidence; no merge."],
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"in-progress","githubIssue":177,"branch":"codex/ux-player-row-consistency","notes":["First of three frontend-only follow-up PRs; retain accepted identity backend."]}
+    },{
+      "id": "UX-12", "title": "Make adding reusable players search-first", "storyPoints": 5,
+      "parentEpic": "EPIC-UX", "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-11"], "summary": "Remove redundant roster filters and add-to selector, searching existing players only after a non-empty query.",
+      "scope": ["300ms search-as-you-type and immediate Enter, scope changes, stale-response cancellation, empty state and explicit retry.", "Existing-player registration always Unassigned, preserving already-registered assignments and uncertain exact-request retries.", "Remove Search this game without losing authorised player metadata or explicit roster recovery."],
+      "outOfScope": ["Backend/search contracts, identity/claim semantics, assignment permissions and production changes."],
+      "acceptanceCriteria": ["Opening an empty picker makes no directory request; clearing or closing invalidates outstanding reads.", "All matching pages are traversed with truthful bounded continuation and recovery.", "No Search this game or Add to control remains; full available rosters and metadata reads still work.", "Registration failures preserve exact retry and idempotency state; success never changes an existing assignment.", "Forms have consistent gaps with no mobile overlap and current-head review/CI/QA evidence."],
+      "testScenarios": ["Debounce, Enter, scope, empty input, multi-page results, stale responses, close/reopen, network errors.", "Roster unavailable recovery, creation suggestions, duplicate registration, uncertain writes and finished locks."],
+      "reviewRequirements": ["Independent design, accessibility, engineering and QA; privacy review of retained metadata reads.", "Parent review:ready before implementation; serialized validation and exact-head Codex/QA/gate."],
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"planned","githubIssue":178,"branch":"codex/ux-player-picker-search","notes":["Child of UX-11; no implementation before its parent review cycle completes."]}
+    },{
+      "id": "UX-13", "title": "Unify live and finished score presentation", "storyPoints": 3,
+      "parentEpic": "EPIC-UX", "milestone": "UX Mobile-First Frontend Redesign",
+      "labels": ["area:app", "area:qa", "type:feature", "milestone:UX", "priority:P1"],
+      "dependsOn": ["UX-12"], "summary": "Share centred team totals across game states and remove visual radio dots without losing native selection semantics.",
+      "scope": ["Shared team totals/CSS with centred headings, labels and numbers and consistent narrow-container layout.", "Visually hidden native goal-team radios, full-label focus, checked borders and disabled states.", "Final cross-stack acceptance checklist linking UX-11..UX-13 to tests, reviews and QA."],
+      "outOfScope": ["Score/outcome computations, own-goal checkbox, draft/idempotency logic, APIs and production deployment."],
+      "acceptanceCriteria": ["Live and finished team totals use consistent centring and Red/Blue/Yellow order with Conceded primary.", "Native radio dots are invisible but keyboard navigation, names, disabled prerequisites and checked state work.", "Mobile/zoom layout and scoring regressions pass; complete stack is ready for AJ without merging."],
+      "testScenarios": ["Scheduled/live/finished computed alignment, narrow containers and200% zoom.", "Radio arrow keys, focus-visible, label/SVG child clicks, normal/own goals and unchanged winner/contributions."],
+      "reviewRequirements": ["Independent UX, frontend, engineering and QA; unchanged scoring invariants explicitly reviewed.", "Serialized full validation, controlled M2 smoke, exact-head Codex, QA and review:ready."],
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"planned","githubIssue":179,"branch":"codex/ux-scoreboard-consistency","notes":["Child of UX-12; no backend or deployment configuration changes planned."]}
+    }
   ],
   "globalTestScenarios": [
     "Winner computation across all tie patterns, including full draw.",

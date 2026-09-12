@@ -141,6 +141,10 @@ test("private consolidation approval serves a no-store shell and bundled local s
   assert.match(first.body, /Review profiles to combine/);
   assert.equal(executeRoute("GET", "/ui/player-consolidation.js").statusCode, 200);
   assert.equal(executeRoute("GET", "/ui/returning-player.js").statusCode, 200);
+  const presentation = executeRoute("GET", "/ui/player-presentation-browser.js");
+  assert.equal(presentation.statusCode, 200);
+  assert.match(presentation.body, /globalThis.ThreeFcPlayers/);
+  assert.doesNotMatch(presentation.body, /https?:\/\//);
 });
 
 test("generated icon stylesheet is local, allow-listed, and CSP compatible", () => {

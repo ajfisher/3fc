@@ -1,4 +1,5 @@
 import { isIconName, type IconName } from "./icon-names.js";
+import { renderPlayerIdentity, type PlayerLinkState } from "./player-presentation.js";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
@@ -32,7 +33,7 @@ export interface NavItemInput {
 export interface PlayerCardInput {
   name: string;
   subtitle?: string;
-  avatarUrl?: string | null;
+  linkState?: PlayerLinkState;
 }
 
 export interface DataTableInput {
@@ -70,17 +71,6 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll("\"", "&quot;")
     .replaceAll("'", "&#39;");
-}
-
-function getNameInitials(name: string): string {
-  const parts = name
-    .trim()
-    .split(/\s+/)
-    .filter((segment) => segment.length > 0)
-    .slice(0, 2)
-    .map((segment) => segment[0]?.toUpperCase() ?? "");
-
-  return parts.join("") || "P";
 }
 
 export function renderButton(
@@ -293,19 +283,8 @@ export function renderNavigation(items: NavItemInput[], navId = "main-nav"): str
 }
 
 export function renderPlayerCard(input: PlayerCardInput, cardId?: string): string {
-  const avatar = input.avatarUrl
-    ? `<img src="${escapeHtml(input.avatarUrl)}" alt="${escapeHtml(input.name)}" />`
-    : `<span>${escapeHtml(getNameInitials(input.name))}</span>`;
-  const subtitle = input.subtitle ? `<p>${escapeHtml(input.subtitle)}</p>` : "";
   const idAttribute = cardId ? ` data-testid="${escapeHtml(cardId)}"` : "";
-
-  return `<article data-ui="player-card"${idAttribute}>
-  <figure data-ui="avatar">${avatar}</figure>
-  <div>
-    <h3>${escapeHtml(input.name)}</h3>
-    ${subtitle}
-  </div>
-</article>`;
+  return `<article data-ui="player-card"${idAttribute}>${renderPlayerIdentity({ name: input.name, context: input.subtitle, linkState: input.linkState })}</article>`;
 }
 
 export function renderDataTable(input: DataTableInput): string {

@@ -87,6 +87,9 @@ Generated from `docs/backlog/backlog.json`.
 | `PLAYER-06` | Replace table-wide league discovery with an account-keyed ACL index | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04` |
 | `PLAYER-07` | Make player search complete and profile combination a focused task | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02` |
 | `PLAYER-08` | Prepare controlled production rollout for reusable players | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04`, `PLAYER-07` |
+| `UX-11` | Unify player identity rows and season player navigation | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `PLAYER-07`, `UX-07` |
+| `UX-12` | Make adding reusable players search-first | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-11` |
+| `UX-13` | Unify live and finished score presentation | 3 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-12` |
 
 ## Delivery Tracking
 
@@ -131,6 +134,9 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `PLAYER-06` | reusable-players-follow-up | planned | [#172](https://github.com/ajfisher/3fc/issues/172) | - |
 | `PLAYER-07` | reusable-players-follow-up | in-progress | [#173](https://github.com/ajfisher/3fc/issues/173) | codex/player-combine-usability |
 | `PLAYER-08` | reusable-players-follow-up | in-progress | [#175](https://github.com/ajfisher/3fc/issues/175) | codex/player-production-preflight |
+| `UX-11` | frontend-consistency | in-progress | [#177](https://github.com/ajfisher/3fc/issues/177) | codex/ux-player-row-consistency |
+| `UX-12` | frontend-consistency | planned | [#178](https://github.com/ajfisher/3fc/issues/178) | codex/ux-player-picker-search |
+| `UX-13` | frontend-consistency | planned | [#179](https://github.com/ajfisher/3fc/issues/179) | codex/ux-scoreboard-consistency |
 
 ## Global Test Scenarios
 
