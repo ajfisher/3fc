@@ -1202,10 +1202,10 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <form id="game-player-picker-form" data-ui="management-form" aria-label="Find a player to add">
         <div data-ui="field"><label for="game-player-picker-search">Find an existing player</label><input id="game-player-picker-search" data-ui="input" type="search" maxlength="100" autocomplete="off" /></div>
         <div data-ui="field"><label for="game-player-picker-scope">Player list</label><select id="game-player-picker-scope" data-ui="input"><option value="season">This season</option><option value="league">All league players</option></select></div>
-        <div data-ui="field"><label for="game-player-picker-team">Add to</label><select id="game-player-picker-team" data-ui="input"><option value="">Unassigned</option><option value="red">Red</option><option value="blue">Blue</option><option value="yellow">Yellow</option></select></div>
-        <div data-ui="button-row">${renderButton("Search", "secondary", { type: "submit" })}${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-player-create" })}</div>
+        <div data-ui="button-row">${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-player-create" })}</div>
       </form>
       <p id="game-player-picker-status" data-ui="status-note" role="status" aria-live="polite" hidden></p>
+      ${renderButton("Retry search", "secondary", { type: "button", id: "game-player-picker-retry", hidden: "" })}
       <ul id="game-player-picker-list" data-ui="directory-list" aria-label="Players available to add"></ul>
       ${renderButton("Load more players", "secondary", { type: "button", id: "game-player-picker-more", hidden: "" })}
       <div data-ui="button-row">${renderButton("Create new player", "secondary", { type: "button", id: "game-player-new-toggle", "aria-expanded": "false", "aria-controls": "player-create-form" })}</div>
@@ -1225,10 +1225,8 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       </form>
     </div>
     ${renderPlayerInvitationPanel()}
-    <div data-ui="field">
-      <label for="player-search">Search this game</label>
-      <input data-ui="input" id="player-search" name="player-search" type="search" autocomplete="off" />
-    </div>
+    <p id="roster-retry-status" data-ui="status-note" role="status" hidden></p>
+    ${renderButton("Retry loading players", "secondary", { type: "button", id: "roster-retry", hidden: "" })}
     <div data-ui="roster-workspace" data-testid="roster-workspace">
       <section data-ui="player-pool" aria-labelledby="player-pool-title">
         <h3 id="player-pool-title">Unassigned</h3>

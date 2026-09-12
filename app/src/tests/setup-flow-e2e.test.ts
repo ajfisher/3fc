@@ -6511,17 +6511,9 @@ test("match roster keeps assigned identities beyond the candidate cap without in
   assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="claim-badge"]'), null);
   assert.match(page.document.getElementById("player-pool")?.textContent ?? "", /No unassigned players to show/);
   assert.doesNotMatch(page.document.getElementById("player-pool")?.textContent ?? "", /Search by name to find more players|full Unassigned list is unavailable/);
-  const search = page.document.getElementById("player-search");
-  assert(search instanceof page.window.HTMLInputElement);
-  search.value = "Extra 22";
-  search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
-  await flushAsync();
-  assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 1);
-  assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "linked");
+  assert.equal(page.document.getElementById("player-search"), null);
+  assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "unknown");
   assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /claimed@example.com/);
-  search.value = "";
-  search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
-  await flushAsync();
   assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 26);
 });
 
@@ -6798,10 +6790,10 @@ test("match player committed addition survives refresh failure and cancellation 
   dispatchClick(toggle);
   assert.equal(input.value, "Draft");
   assert.equal(interactionVisible(toggle), false);
-  assert.equal(page.document.activeElement, input);
+  assert.equal(page.document.activeElement?.id, "game-player-picker-search");
 });
 
-test("match player commit preserves retyped identical nickname and search drafts by input revision", async () => {
+test("match player commit preserves retyped identical nickname and picker drafts", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "game-player-revisions", role: "admin" });
   const original = createMockFetch(apiState);
@@ -6817,7 +6809,7 @@ test("match player commit preserves retyped identical nickname and search drafts
   };
   const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-player-revisions" }), url: "http://localhost:3000/games/game-player-revisions#teams", scriptFile: "setup-flow.js", apiState, fetch });
   const nickname = page.document.getElementById("player-nickname");
-  const search = page.document.getElementById("player-search");
+  const search = page.document.getElementById("game-player-picker-search");
   const form = page.document.getElementById("player-create-form");
   assert(nickname instanceof page.window.HTMLInputElement);
   assert(search instanceof page.window.HTMLInputElement);
@@ -6899,38 +6891,25 @@ test("match finish refresh preserves unassigned candidates without treating pend
   assert.equal(candidate.querySelector('[data-action="grant-player-access"]'), null);
 });
 
-test("match roster ignores stale search responses and filters assigned names locally", async () => {
-  const apiState = createMockApiState();
-  seedGoalScoringGame(apiState, { gameId: "game-search-race", role: "admin" });
-  const original = createMockFetch(apiState);
-  let releaseOld: ((response: Response) => void) | undefined;
-  let oldResponse: Response | undefined;
-  let rosterReads = 0;
-  const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
-    const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url);
-    if (url.pathname.endsWith("/roster")) rosterReads += 1;
-    if (url.searchParams.get("search") === "Ari") {
-      oldResponse = await original(input, init);
-      return new Promise<Response>((resolve) => { releaseOld = resolve; });
-    }
-    return original(input, init);
-  };
-  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-search-race" }), url: "http://localhost:3000/games/game-search-race#teams", scriptFile: "setup-flow.js", apiState, fetch });
-  const search = page.document.getElementById("player-search");
-  assert(search instanceof page.window.HTMLInputElement);
-  search.value = "Ari";
-  search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
-  await flushAsync();
-  search.value = "Bea";
-  search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
-  await flushAsync();
-  assert(releaseOld && oldResponse);
-  releaseOld(oldResponse);
-  await flushAsync();
-  assert.equal(rosterReads, 1);
-  assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 1);
-  assert.equal(page.document.querySelector('[data-ui="roster-member"]')?.getAttribute("data-player-id"), "player-bea");
-  assert.doesNotMatch(page.document.getElementById("player-pool")?.textContent ?? "", /Ari/);
+test("match roster retry restores private actions without filtering the complete roster", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "game-retry", role: "admin" });
+  const base = createMockFetch(apiState); let fail = true, reads = 0;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-retry" }), url: "http://localhost:3000/games/game-retry#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      if (new URL(String(input)).pathname.endsWith("/players")) { reads++; if (fail) return createJsonResponse(503, { error: "unavailable" }); }
+      return base(input, init);
+    } });
+  try {
+    assert.equal(page.document.getElementById("player-search"), null);
+    assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 3);
+    assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 3);
+    const retry = page.document.getElementById("roster-retry")!; assert.equal(retry.hidden, false);
+    fail = false; dispatchClick(retry); await flushAsync();
+    assert.equal(reads, 2); assert.equal(retry.hidden, true);
+    assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 3);
+    assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 0);
+    assert.equal(page.document.getElementById("roster-retry-status")?.textContent, "Players updated.");
+  } finally { page.dom.window.close(); }
 });
 
 test("game possible-name search visibly selects the wider league scope and preserves the draft", async () => {
@@ -6981,7 +6960,7 @@ test("game reusable player picker starts with this season and retries the origin
         const stamp = "2026-03-28T11:00:00.000Z";
         apiState.players.set(body.playerId, { playerId: body.playerId, nickname: "Kesh", claimedByUserId: null, createdAt: stamp, updatedAt: stamp });
         apiState.gamePlayers.set(`picker-game:${body.playerId}`, { gameId: "picker-game", playerId: body.playerId, createdAt: stamp, updatedAt: stamp });
-        apiState.roster.set(`picker-game:${body.playerId}`, { gameId: "picker-game", playerId: body.playerId, teamId: body.teamId, createdAt: stamp, updatedAt: stamp });
+        if (body.teamId) apiState.roster.set(`picker-game:${body.playerId}`, { gameId: "picker-game", playerId: body.playerId, teamId: body.teamId, createdAt: stamp, updatedAt: stamp });
         if (writes.length === 1) throw new Error("committed response lost");
         return createJsonResponse(200, { registration: { playerId: body.playerId, alreadyInGame: true } });
       }
@@ -6992,24 +6971,33 @@ test("game reusable player picker starts with this season and retries the origin
     assert.equal(queries.length, 0, "directory loading is intentional, not a background scan");
     dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!); await flushAsync();
     assert.equal(page.document.activeElement?.id, "game-player-picker-search");
+    assert.equal(queries.length, 0, "opening an empty picker never fetches the directory");
+    const search = page.document.getElementById("game-player-picker-search") as HTMLInputElement;
+    search.value = "Kesh";
+    dispatchSubmit(page.document.getElementById("game-player-picker-form") as HTMLFormElement); await flushAsync();
     assert.equal(queries[0].get("seasonId"), "autumn-cup"); assert.equal(queries[0].get("gameId"), "picker-game");
     assert.equal(page.document.getElementById("player-create-form")!.hidden, true);
     const list = page.document.getElementById("game-player-picker-list")!;
     assert.equal((list.querySelector('[data-player-id="player-ari"] button') as HTMLButtonElement).disabled, true);
-    const team = page.document.getElementById("game-player-picker-team") as HTMLSelectElement;
+    assert.equal(page.document.getElementById("game-player-picker-team"), null);
     const add = list.querySelector('[data-player-id="reuse-kesh"] button')!;
     assert.match(page.document.getElementById(add.getAttribute("aria-describedby")!)!.textContent ?? "", /Autumn Cup/);
-    team.value = "red";
     dispatchClick(list.querySelector('[data-player-id="reuse-kesh"] button')!); await flushAsync();
-    assert.equal(writes.length, 1); assert.equal(team.disabled, true);
+    assert.equal(writes.length, 1); assert.equal(search.disabled, true);
     assert.match(page.document.getElementById("game-player-picker-status")!.textContent ?? "", /Retry adding sends the same request/);
-    team.value = "blue";
+    dispatchClick(page.document.querySelector<HTMLButtonElement>('#game-player-picker-form [data-action="cancel-player-create"]')!);
+    dispatchClick(page.document.querySelector<HTMLButtonElement>('[data-action="toggle-player-create"]')!);
+    assert.equal(page.document.activeElement?.getAttribute("data-action"), "add-existing-player");
+    assert.equal(page.document.activeElement?.textContent, "Retry adding");
+    search.value = "Other"; search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
     dispatchClick(list.querySelector('[data-player-id="reuse-kesh"] button')!); await flushAsync();
     assert.equal(writes.length, 2); assert.equal(writes[0], writes[1]);
-    assert.equal(JSON.parse(writes[1]).teamId, "red");
+    assert.equal(JSON.parse(writes[1]).teamId, null);
+    assert.equal(apiState.roster.has("picker-game:reuse-kesh"), false);
+    assert.equal(page.document.querySelectorAll('[data-ui="roster-player"][data-player-id="reuse-kesh"]').length, 1);
     assert.equal((list.querySelector('[data-player-id="reuse-kesh"] button') as HTMLButtonElement).disabled, true);
     assert.equal([...apiState.gamePlayers.values()].filter(row => row.playerId === "reuse-kesh").length, 1);
-    assert.equal(page.document.querySelector('label[for="player-search"]')?.textContent, "Search this game");
+    assert.equal(page.document.querySelector('label[for="player-search"]'), null);
     const scope = page.document.getElementById("game-player-picker-scope") as HTMLSelectElement;
     scope.value = "league"; scope.dispatchEvent(new page.window.Event("change", { bubbles: true })); await flushAsync();
     assert.equal(queries.at(-1)?.has("seasonId"), false);
@@ -7025,7 +7013,7 @@ test("game reusable player picker cannot dispatch an old result during a newer s
   const baseFetch = createMockFetch(apiState);
   let reads = 0, writes = 0, release: ((response: Response) => void) | undefined;
   const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-race" }),
-    url: "http://localhost:3000/games/picker-race#teams", scriptFile: "setup-flow.js", apiState,
+    url: "http://localhost:3000/games/picker-race#teams", scriptFile: "setup-flow.js", apiState, timers: createManualTimers(),
     fetch: async (input, init = {}) => {
       const url = new URL(String(input));
       if (url.pathname === "/v1/game-player-registrations") { writes += 1; throw new Error("response lost"); }
@@ -7037,14 +7025,88 @@ test("game reusable player picker cannot dispatch an old result during a newer s
   });
   try {
     dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!); await flushAsync();
-    const form = page.document.getElementById("game-player-picker-form")!;
+    const form = page.document.getElementById("game-player-picker-form") as HTMLFormElement;
+    const search = page.document.getElementById("game-player-picker-search") as HTMLInputElement;
+    search.value = "Kesh";
     form.dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true })); await flushAsync();
     const old = page.document.querySelector<HTMLButtonElement>('#game-player-picker-list [data-action="add-existing-player"]')!;
-    assert.equal(old.disabled, true);
+    search.value = "Gavin"; search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    assert.equal(page.document.getElementById("game-player-picker-list")!.children.length, 0);
     dispatchClick(old); await flushAsync(); assert.equal(writes, 0);
+    dispatchSubmit(form); await flushAsync();
     release!(createJsonResponse(200, { players: [], cursor: null })); await flushAsync();
     assert.equal(page.document.getElementById("game-player-picker-list")!.children.length, 0);
     assert.equal(writes, 0);
+  } finally { page.dom.window.close(); }
+});
+
+test("search-first picker debounces, cancels, scopes, traverses pages and recovers without empty reads", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "picker-timing", role: "admin" });
+  const base = createMockFetch(apiState), timers = createManualTimers(), queries: URLSearchParams[] = [];
+  let fail = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-timing" }), url: "http://localhost:3000/games/picker-timing#teams", scriptFile: "setup-flow.js", apiState, timers,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return base(input, init);
+      queries.push(url.searchParams);
+      if (fail) return createJsonResponse(503, { error: "unavailable" });
+      const second = url.searchParams.has("cursor");
+      return createJsonResponse(200, { players: [{ playerId: second ? "second" : "first", nickname: "Gavin", claimed: false, inGame: false, seasons: [] }], cursor: second ? null : "next" });
+    } });
+  try {
+    const toggle = page.document.querySelector<HTMLButtonElement>('[data-action="toggle-player-create"]')!;
+    const input = page.document.getElementById("game-player-picker-search") as HTMLInputElement;
+    const scope = page.document.getElementById("game-player-picker-scope") as HTMLSelectElement;
+    const form = page.document.getElementById("game-player-picker-form") as HTMLFormElement;
+    const list = page.document.getElementById("game-player-picker-list")!;
+    const type = (value: string) => { input.value = value; input.dispatchEvent(new page.window.Event("input", { bubbles: true })); };
+    dispatchClick(toggle); assert.equal(queries.length, 0);
+    type("Gav"); timers.advanceBy(299); await flushAsync(); assert.equal(queries.length, 0);
+    type(" Gavin "); timers.advanceBy(299); await flushAsync(); assert.equal(queries.length, 0);
+    timers.advanceBy(1); await flushAsync(); assert.equal(queries.length, 2); assert.equal(queries[0].get("query"), "Gavin");
+    assert.equal(list.children.length, 2); assert.equal(page.document.getElementById("game-player-picker-more")!.hidden, true);
+    type("Kesh"); assert.equal(list.children.length, 0); dispatchSubmit(form); await flushAsync();
+    assert.equal(queries.length, 4); timers.advanceBy(300); await flushAsync(); assert.equal(queries.length, 4, "Enter cancels debounce");
+    type(" "); timers.advanceBy(300); await flushAsync(); assert.equal(queries.length, 4); assert.equal(list.children.length, 0);
+    scope.value = "league"; scope.dispatchEvent(new page.window.Event("change", { bubbles: true })); await flushAsync(); assert.equal(queries.length, 4);
+    type("Gavin"); dispatchClick(form.querySelector('[data-action="cancel-player-create"]')!);
+    timers.advanceBy(300); await flushAsync(); assert.equal(queries.length, 4); assert.equal(input.value, "Gavin");
+    dispatchClick(toggle); await flushAsync(); assert.equal(queries.length, 6); assert.equal(queries.at(-1)?.has("seasonId"), false);
+    fail = true; type("Failure"); timers.advanceBy(300); await flushAsync();
+    const retry = page.document.getElementById("game-player-picker-retry")!; assert.equal(retry.hidden, false); assert.equal(list.children.length, 0);
+    retry.focus();
+    fail = false; dispatchClick(retry); await flushAsync(); assert.equal(retry.hidden, true); assert.equal(list.children.length, 2);
+    assert.equal(page.document.activeElement?.id, "game-player-picker-status");
+    assert.equal(queries.every(query => Boolean(query.get("query")?.trim())), true);
+  } finally { page.dom.window.close(); }
+});
+
+test("closing an in-flight picker search aborts it and stale success cannot replace a scoped reopen", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "picker-close", role: "admin" });
+  const base = createMockFetch(apiState); let release: ((response: Response) => void) | undefined;
+  let signal: AbortSignal | undefined; let reads = 0;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-close" }), url: "http://localhost:3000/games/picker-close#teams", scriptFile: "setup-flow.js", apiState, timers: createManualTimers(),
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input)); if (url.pathname !== "/v1/league-players") return base(input, init);
+      reads++;
+      if (reads === 1) { signal = init.signal as AbortSignal; return new Promise(resolve => { release = resolve; }); }
+      return createJsonResponse(200, { players: [{ playerId: "fresh", nickname: "Fresh", inGame: false, claimed: false, seasons: [] }], cursor: null });
+    } });
+  try {
+    const toggle = page.document.querySelector<HTMLButtonElement>('[data-action="toggle-player-create"]')!;
+    const search = page.document.getElementById("game-player-picker-search") as HTMLInputElement;
+    const form = page.document.getElementById("game-player-picker-form") as HTMLFormElement;
+    dispatchClick(toggle); search.value = "Old"; dispatchSubmit(form); await flushAsync(); assert(release && signal);
+    dispatchClick(form.querySelector<HTMLButtonElement>('[data-action="cancel-player-create"]')!);
+    assert.equal(signal.aborted, true); assert.equal(search.value, "Old");
+    dispatchClick(toggle); await flushAsync();
+    const scope = page.document.getElementById("game-player-picker-scope") as HTMLSelectElement;
+    scope.value = "league"; scope.dispatchEvent(new page.window.Event("change", { bubbles: true })); await flushAsync();
+    release(createJsonResponse(200, { players: [{ playerId: "obsolete", nickname: "Obsolete", inGame: false }], cursor: "obsolete-page" })); await flushAsync();
+    assert.equal(reads, 3); assert.equal(page.document.querySelector('#game-player-picker-list [data-player-id="obsolete"]'), null);
+    assert(page.document.querySelector('#game-player-picker-list [data-player-id="fresh"]'));
+    assert.equal(page.document.getElementById("game-player-picker-more")!.hidden, true);
+    assert.equal(page.document.getElementById("game-player-picker-retry")!.hidden, true);
   } finally { page.dom.window.close(); }
 });
 
@@ -14212,10 +14274,10 @@ for (const close of ["Cancel", "Escape"] as const) {
       if (close === "Cancel") { cancel.focus(); dispatchClick(cancel); }
       else { input.focus(); input.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); }
       assert.equal(interactionVisible(form), false); assert.equal(interactionVisible(toggle), true); assert.equal(page.document.activeElement, toggle);
-      dispatchClick(toggle); assert.equal(interactionVisible(toggle), false); assert.equal(input.value, "Next draft"); assert.equal(page.document.activeElement, input);
+      dispatchClick(toggle); assert.equal(interactionVisible(toggle), false); assert.equal(input.value, "Next draft"); assert.equal(page.document.activeElement?.id, "game-player-picker-search");
       assert.equal([...apiState.players.values()].filter((player) => player.nickname === "Consecutive player").length, 1);
       assert.equal([...apiState.players.values()].filter((player) => player.nickname === "Next draft").length, 0);
-      await flushAsync(); // Reopening the picker starts a fresh directory read.
+      await flushAsync(); // An empty picker reopens without a directory request.
     } finally { page.dom.window.close(); }
   });
 }
@@ -14578,8 +14640,7 @@ for (const enrichment of ["capped", "failed", "empty", "public-metadata"] as con
       assert.equal(pool.querySelector('[data-ui="claim-badge"]'), null);
       assert.equal(pool.querySelector('[data-action="grant-player-access"]'), null);
       assert.doesNotMatch(pool.textContent ?? "", /private@example|couldn’t be loaded|full Unassigned list is unavailable|Search by name to find more players/);
-      const search = page.document.getElementById("player-search"); assert(search instanceof page.window.HTMLInputElement);
-      assert.equal(search.value, "", "complete Unassigned does not require a search to reveal a joined player");
+      assert.equal(page.document.getElementById("player-search"), null, "complete Unassigned does not require a search to reveal a joined player");
     } finally { page.dom.window.close(); }
   });
 }
@@ -14730,17 +14791,17 @@ test("ux09 committed player survives search acknowledgement while complete roste
     const toggle = page.document.querySelector('[data-action="toggle-player-create"]');
     const form = page.document.getElementById("player-create-form");
     const nickname = page.document.getElementById("player-nickname");
-    const search = page.document.getElementById("player-search");
+    const retry = page.document.getElementById("roster-retry");
     assert(toggle instanceof page.window.HTMLButtonElement && form instanceof page.window.HTMLFormElement);
-    assert(nickname instanceof page.window.HTMLInputElement && search instanceof page.window.HTMLInputElement);
+    assert(nickname instanceof page.window.HTMLInputElement && retry instanceof page.window.HTMLButtonElement);
     assert.equal(page.document.querySelectorAll('[data-ui="roster-player"]').length, 0, "the last complete public snapshot is known empty");
     dispatchClick(toggle); nickname.value = "Newly added"; dispatchSubmit(form); await flushAsync();
     const created = [...apiState.players.values()].find(player => player.nickname === "Newly added"); assert(created);
     assert.equal(creates, 1); assert.equal(searches, 1);
     assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Player added\./);
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', created.playerId).length, 1);
-    for (const value of ["Newly", ""]) {
-      search.value = value; search.dispatchEvent(new page.window.Event("input", { bubbles: true })); await flushAsync();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      dispatchClick(retry); await flushAsync();
       const rows = ux09PlayerRows(page, '[data-ui="roster-player"]', created.playerId);
       assert.equal(rows.length, 1, "private search acknowledgement cannot retire a public-roster overlay the stale complete list still needs");
       const choice = rows[0].querySelector('[data-action="assign-player"][data-team-id="red"]');
@@ -14924,7 +14985,7 @@ test("ux10 a scheduled external join appears at the 15-second public roster refr
     const toggle = page.document.querySelector('[data-action="toggle-player-create"]');
     const region = page.document.getElementById("player-create-region");
     const nickname = page.document.getElementById("player-nickname");
-    const search = page.document.getElementById("player-search");
+    const search = page.document.getElementById("game-player-picker-search");
     assert(toggle instanceof page.window.HTMLButtonElement && region instanceof page.window.HTMLElement);
     assert(nickname instanceof page.window.HTMLInputElement && search instanceof page.window.HTMLInputElement);
     toggle.click(); nickname.value = "Keep this local draft";
@@ -14946,8 +15007,8 @@ test("ux10 a scheduled external join appears at the 15-second public roster refr
 
     await advanceUx10(page, 14999);
     assert.equal(rosterReads(), initialRosterReads, "scheduled roster polling must not run before 15 seconds");
-    assert(observerRequests.filter(request => request.path === "/v1/games/ux10-match/players").length >= 2,
-      "the local search has completed, but private capped search is not authority for the complete Unassigned collection");
+    assert.equal(observerRequests.filter(request => request.path === "/v1/games/ux10-match/players").length, 1,
+      "picker queries do not filter or refresh private roster enrichment");
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', receipt.player.playerId).length, 0);
     assert.equal(page.document.activeElement, search);
 
@@ -14958,7 +15019,7 @@ test("ux10 a scheduled external join appears at the 15-second public roster refr
     const row = rows[0]; assert(row instanceof page.window.HTMLElement);
     assert.equal(interactionVisible(row), true); assert.equal(row.querySelector("strong")?.textContent, "Cy");
     assert.equal(page.document.getElementById("player-nickname"), nickname); assert.equal(nickname.value, "Keep this local draft");
-    assert.equal(page.document.getElementById("player-search"), search); assert.equal(search.value, "Cy");
+    assert.equal(page.document.getElementById("game-player-picker-search"), search); assert.equal(search.value, "Cy");
     assert.equal(page.document.activeElement, search); assert.equal(search.selectionStart, 0); assert.equal(search.selectionEnd, 1);
     assert.equal(region.hidden, false); assert.equal(interactionVisible(toggle), false);
     assert.equal(page.window.location.hash, "#teams"); assert.equal(page.document.getElementById("setup-status")?.hidden, true);
@@ -15462,7 +15523,7 @@ test("ux10 hidden held read is discarded and foreground keeps later navigation a
     setUx10Visible(page, true); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
     assert.equal(held, 1);
     const navigation = qaGameNavigation(page); dispatchClick(navigation.teams); dispatchClick(navigation.score); dispatchClick(navigation.teams);
-    const search = page.document.getElementById("player-search"); assert(search instanceof page.window.HTMLInputElement); search.focus();
+    const search = qaGameNavigation(page).teams; search.focus();
     const appliedIds: string[] = [];
     const observer = new page.window.MutationObserver(() => {
       for (const row of page.document.querySelectorAll('[data-ui="goal-event"]')) appliedIds.push(row.getAttribute("data-event-id") ?? "");
@@ -16155,7 +16216,7 @@ for (const outcome of ["uncertain-owned", "uncertain-outside", "uncertain-score-
       let outside: HTMLElement | undefined;
       if (focusDestination === "elsewhere") {
         dispatchClick(qaGameNavigation(page).teams);
-        const search = page.document.getElementById("player-search"); assert(search instanceof page.window.HTMLInputElement);
+        const search = qaGameNavigation(page).teams;
         outside = search; outside.focus();
       } else if (focusDestination === "score-nav") {
         outside = qaGameNavigation(page).teams; outside.focus();

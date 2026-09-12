@@ -333,6 +333,8 @@ body {
 }
 
 [data-ui="management-form"] {
+  display: grid;
+  gap: 1rem;
   margin: 0;
   max-width: 42rem;
 

@@ -30,7 +30,7 @@ type FixtureOptions = {
   metadataGate?: ReturnType<typeof deferred>;
   extraUnassigned?: number; missingUnassigned?: boolean;
 };
-const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
+const assets = new Map(["player-proof.js", "player-consolidation.js", "player-presentation-browser.js", "styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
 

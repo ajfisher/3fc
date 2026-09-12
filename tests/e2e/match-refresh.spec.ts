@@ -28,7 +28,7 @@ type Goal = {
   assistPlayerIds: string[]; ownGoal: boolean; createdAt: string; updatedAt: string;
 };
 type RecordedRequest = { client: Client; method: string; path: string; query: string; body: Record<string, unknown> | null; serialized: string | null; key?: string };
-const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
+const assets = new Map(["player-proof.js", "player-consolidation.js", "player-presentation-browser.js", "styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
 function snapshot<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
@@ -127,6 +127,9 @@ function sharedBackend(status: Status = "live") {
         if (url.pathname === `${apiPath}/goals`) return read(goalPayload());
         if (url.pathname === `${apiPath}/roster`) return read(roster());
         if (url.pathname === `${apiPath}/teams`) return read({ teams: teams() });
+        if (url.pathname === "/v1/league-players" && url.searchParams.get("leagueId") === leagueId) return role === "viewer" ? reject(403, "Operator access required.")
+          : read({ players: players.filter(player => player.nickname.toLocaleLowerCase().includes((url.searchParams.get("query") ?? "").toLocaleLowerCase()))
+            .map(player => ({ ...player, claimed: player.playerId === players[0].playerId, inGame: true, seasons: [], hasMoreSeasons: false })), cursor: null });
         if (url.pathname === `${apiPath}/players`) return role === "viewer" ? reject(403, "Operator access required.")
           : read({ players: players.filter(player => player.nickname.toLocaleLowerCase().includes((url.searchParams.get("search") ?? "").toLocaleLowerCase())).slice(0, 20)
             .map(player => player.playerId === players[0].playerId ? { ...player, access: { userId: "fictional-claimed-account", role: null } } : player) });
@@ -351,18 +354,20 @@ test("scheduled refresh preserves metadata and Add player drafts search caret an
     const metadata = await kickoffInput.elementHandle();
     await observer.getByTestId("game-mode-players-tab").click();
     await observer.locator('[data-action="toggle-player-create"]').click();
+    await observer.locator("#game-player-new-toggle").click();
     await observer.locator("#player-nickname").fill("Keep this local player draft");
-    await observer.locator("#player-search").fill("Arrival");
+    await observer.locator("#game-player-picker-search").fill("Arrival");
     await observer.clock.runFor(200);
-    await observer.locator("#player-search").evaluate((input: HTMLInputElement) => { input.focus(); input.setSelectionRange(2, 5); });
-    const draftNodes = await observer.evaluateHandle(() => ({ name: document.getElementById("player-nickname"), search: document.getElementById("player-search") }));
+    await observer.locator("#game-player-picker-search").evaluate((input: HTMLInputElement) => { input.focus(); input.setSelectionRange(2, 5); });
+    const draftNodes = await observer.evaluateHandle(() => ({ name: document.getElementById("player-nickname"), search: document.getElementById("game-player-picker-search") }));
     await author.locator('[data-action="toggle-player-create"]').click();
+    await author.locator("#game-player-new-toggle").click();
     await author.locator("#player-nickname").fill("Arrival Alexandra Francesca Montgomery-Williams");
     await author.locator('[data-action="quick-create-player"]').click();
     await expect(author.locator("#player-nickname")).toHaveValue("");
     await refresh(observer, 15_100);
-    await expect(observer.locator('[data-ui="roster-player"]')).toHaveCount(1);
-    await expect(observer.locator('[data-ui="roster-player"] strong')).toHaveText("Arrival Alexandra Francesca Montgomery-Williams");
+    await expect(observer.locator('[data-ui="roster-player"]')).toHaveCount(3);
+    await expect(observer.locator('[data-ui="roster-player"]').filter({ hasText: "Arrival Alexandra Francesca Montgomery-Williams" })).toHaveCount(1);
     await expect(observer.locator("#player-create-region")).toBeVisible();
     await expect(observer.locator('[data-action="toggle-player-create"]')).toBeHidden();
     await expect(observer.locator("#player-nickname")).toHaveValue("Keep this local player draft");
