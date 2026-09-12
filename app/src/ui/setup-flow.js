@@ -5609,7 +5609,11 @@
       try {
         const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players`, { method: "GET" });
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
-        const details = new Map((Array.isArray(payload?.players) ? payload.players : []).map(player => [player.playerId, player]));
+        // Explicit recovery extends the same authority-scoped verified cache.
+        // Otherwise each bounded retry would revisit the first missing batch.
+        // Authority invalidation and failed reads still clear this cache below.
+        const details = new Map(resolveMissing && role === "admin" ? verifiedAdminPlayers : []);
+        for (const player of Array.isArray(payload?.players) ? payload.players : []) details.set(player.playerId, player);
         if (resolveMissing && role === "admin") {
           // The existing private endpoint caps each nickname search at 20.
           // Explicit recovery may target known roster names, never account IDs

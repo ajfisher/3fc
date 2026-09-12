@@ -6524,6 +6524,52 @@ test("match roster keeps assigned identities beyond the candidate cap without in
   assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /claimed@example.com/);
 });
 
+for (const failSecondBatch of [false, true]) test(`metadata recovery advances bounded batches and clears failed authority ${failSecondBatch}`, async () => {
+  const apiState = createMockApiState();
+  const gameId = "metadata-batches";
+  seedGoalScoringGame(apiState, { gameId, role: "admin" });
+  for (let index = 0; index < 48; index++) {
+    const playerId = `batch-player-${index}`, timestamp = "2026-03-28T11:00:09.000Z";
+    apiState.players.set(playerId, { playerId, nickname: `Person [${String(index).padStart(3, "0")}]`, claimedByUserId: null, createdAt: timestamp, updatedAt: timestamp });
+    apiState.gamePlayers.set(`${gameId}:${playerId}`, { gameId, playerId, createdAt: timestamp, updatedAt: timestamp });
+    apiState.roster.set(`${gameId}:${playerId}`, { gameId, playerId, teamId: "yellow", createdAt: timestamp, updatedAt: timestamp });
+  }
+  const base = createMockFetch(apiState), names: string[] = [];
+  let fail = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#teams`, scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname === `/v1/games/${gameId}/players` && url.searchParams.has("search")) {
+        names.push(url.searchParams.get("search")!);
+        if (fail) return createJsonResponse(503, { error: "unavailable" });
+      }
+      return base(input, init);
+    } });
+  try {
+    const unknown = () => page.document.querySelectorAll('[data-ui="roster-member"] [data-ui="player-initial"][data-link-state="unknown"]').length;
+    const retry = page.document.getElementById("roster-retry")!;
+    assert.equal(unknown(), 31);
+    dispatchClick(retry); await flushAsync();
+    assert.equal(names.length, 20); assert.equal(unknown(), 11); assert.equal(retry.hidden, false);
+    assert.match(page.document.getElementById("roster-retry-status")!.textContent!, /Some player details are still unavailable/);
+    const first = new Set(names);
+    if (failSecondBatch) {
+      fail = true; dispatchClick(retry); await flushAsync();
+      assert.equal(unknown(), 51, "a failed targeted read clears all verified authority, including earlier batches");
+      assert.equal(retry.textContent, "Retry loading players");
+      fail = false; dispatchClick(retry); await flushAsync();
+      assert.equal(unknown(), 11);
+    }
+    const before = names.length;
+    dispatchClick(retry); await flushAsync();
+    assert.equal(names.length - before, 11);
+    assert(names.slice(before).every(name => !first.has(name)), "later retries advance to the remaining names");
+    assert.equal(unknown(), 0); assert.equal(retry.hidden, true);
+    assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 51);
+    assert.equal(page.document.getElementById("roster-retry-status")!.textContent, "Players updated.");
+  } finally { page.dom.window.close(); }
+});
+
 test("match roster renders permitted teams when optional operator enrichment fails", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "game-match-enrichment", role: "admin" });

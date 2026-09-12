@@ -794,6 +794,12 @@ for (const [width, playersUnavailable] of [[320, false], [390, true]] as const) 
     await expect(targetRow).toBeVisible();
     await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
     if (!playersUnavailable) await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === target.nickname).length).toBe(1);
+    if (!playersUnavailable) {
+      await expect(page.locator("#roster-retry-status")).toContainText("Some player details are still unavailable");
+      await page.getByRole("button", { name: "Refresh player details", exact: true }).click();
+      await expect(page.locator("#roster-retry")).toBeHidden();
+      await expect(displayedPlayers(page).locator('[data-ui="player-initial"][data-link-state="unknown"]')).toHaveCount(0);
+    }
     await expect(targetRow).toBeVisible();
     await expectMatchGeometry(page);
     await capture(page, testInfo, `complete-unassigned-recovery-${width}`);

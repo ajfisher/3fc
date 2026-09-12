@@ -21,11 +21,12 @@ is a bot comment; AJ explicitly accepted verified exact-head no-findings outcome
 | Stale result cannot dispatch a write; exact null-team request survives loss and search changes | reusable player picker controller tests | PASS |
 | Retry and frozen-add reopening focus | explicit activeElement assertions in picker tests | PASS |
 | Complete rosters, metadata recovery, finished locks, transfers and refresh ownership | Complete507interaction tests, group20993 exit0, peak2372896KiB, remaining[] | PASS |
-| Full lint/typecheck, API/app tests, contracts, build, backlog and review gate | Final fix group29584 exit0; 648 app, 14 operations and 57 review-gate tests; peak2488400KiB; remaining[] | PASS |
+| Full lint/typecheck, API/app tests, contracts, build, backlog and review gate | Final progression fix group38970 exit0; 650 app, 14 operations and 57 review-gate tests; peak3114576KiB; remaining[] | PASS |
 | Computed player/form alignment and spacing across phone/tablet/desktop and enlarged text | check-player-ui: 20 browser cases PASS, group27331; subsequent independent fixture failure fixed below | PASS |
 | Two-client refresh, complete roster, picker draft/caret, transfer focus and scoring recovery | match-refresh.spec.ts: 14 browser tests PASS including 21st-player metadata recovery, group29584 exit0; remaining[] | PASS |
 | Complete roster browser suite and final shared geometry | 46 match-roster tests plus 20 shared-layout cases PASS, group36450 exit0; peak829152KiB; remaining[] | PASS |
 | Final affected app, lint/typecheck and review policy | Group36649 exit0; peak2438800KiB; remaining[] | PASS |
+| Final roster/refresh browser regressions, including bounded multi-batch recovery | All60 cases PASS in group38970; exit0 and remaining[] | PASS |
 | Exact-head Codex review, CI and deployed QA | Final remote evidence will be recorded in PR body/checks after publication | PENDING |
 
 Included acceptance work also covers in-flight abort and scoped reopen, and
@@ -111,10 +112,12 @@ The browser fixture also exposed the existing private endpoint's 20-result cap.
 Explicit administrator recovery now makes at most 20 additional nickname searches
 for known roster players; normal initial reads and other roles are unchanged.
 Results stage before replacing verified metadata, with authority/version checks.
-This is bounded best-effort enrichment: unusually large missing-name sets or more
-than 20 identical nicknames may remain unresolved under the existing API. Such
-rows remain neutral and feedback stays partial, never falsely complete. Guaranteed
-complete private enrichment would require separately reviewed API pagination.
+Each explicit recovery extends the existing authority-scoped verified cache so
+later retries advance beyond the first missing-name batch. Authority invalidation
+and failed reads clear that cache. More than20 identical nicknames may still be
+unresolvable through the existing capped nickname endpoint, as before this PR;
+those rows remain neutral and feedback stays partial, never falsely complete.
+Resolving that pre-existing endpoint limit requires separately reviewed pagination.
 
 GitHub comment3995586590 on24435e5 identified stale removed-search assumptions in
 the large-roster browser file. All such scenarios now exercise complete rosters,
@@ -124,6 +127,15 @@ the transfer component again owns its48px target. The enlarged-initial assertion
 now checks actual initial text rather than the intentionally attached tick, and
 asserts that initials exist instead of vacuously querying the removed avatar hook.
 The full20-case shared-layout browser matrix also passes after the sizing fix.
+
+GitHub comment3995617332 on4e74aa9 correctly rejected retry starvation for more
+than40 distinct names. Explicit recovery now extends the same authority-scoped
+verified cache, overlaying fresh rows and querying only still-missing names.
+Two51-player regressions prove bounded progress across retries and complete cache
+invalidation after a targeted503; the49-player browser fixture also retries through
+the remaining batch. Independent architecture/security re-review confirms unchanged
+server authority and role/version fencing. Duplicate-name endpoint collisions are
+a pre-existing limitation, not a reason to abandon distinct-name progress.
 
 Initial failures were stale fixtures expecting the removed Search this game input,
 immediate empty directory loading, or nickname focus on normal picker reopen.
