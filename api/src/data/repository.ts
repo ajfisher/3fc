@@ -3402,6 +3402,7 @@ export class ThreeFcRepository {
       players: Array<{ playerId: string; nickname: string; claimed: boolean; seasons: Array<{ seasonId: string; name: string }>; hasMoreSeasons: boolean; inGame?: boolean } & Partial<DirectoryGameSample>>;
       cursor: string | null; searchIncomplete?: boolean;
     }> {
+    const deadlineMs = Date.now() + 6000;
     if (input.includeGames && input.limit !== undefined && input.limit > 10) throw new PlayerIdentityError("invalid_player_search", 400, "Game details support up to ten players per page.");
     const authority = await this.leaguePlayerAuthority(input.leagueId, input.userIds);
     const game = input.gameId === undefined ? null : await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
@@ -3412,9 +3413,9 @@ export class ThreeFcRepository {
     if (input.seasonId !== undefined && !await this.getSeasonForLeague(input.leagueId, input.seasonId, { consistentRead: true })) {
       throw new PlayerIdentityError("player_season_unavailable", 404, "This season is no longer available.");
     }
-    const page = await this.identities.directoryPage({ ...input, ...(input.includeGames && input.limit === undefined ? { limit: 10 } : {}) });
+    const page = await this.identities.directoryPage({ ...input, ...(input.includeGames && input.limit === undefined ? { limit: 10 } : {}) }, { deadlineMs });
     const gameSamples = input.includeGames ? await directoryGameSamples(this.client, this.tableName, {
-      leagueId: input.leagueId, seasonId: input.seasonId, playerIds: page.entries.map(entry => entry.playerId),
+      leagueId: input.leagueId, seasonId: input.seasonId, playerIds: page.entries.map(entry => entry.playerId), deadlineMs,
     }) : null;
     const players = [];
     for (const entry of page.entries) {

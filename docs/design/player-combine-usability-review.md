@@ -63,6 +63,17 @@ search follows continuation automatically, retaining query/scope and rejecting
 cycles; after100responses it pauses explicitly rather than running indefinitely.
 An absent query remains user-paginated. Only a null cursor means exhaustion.
 
+Directory roots, aliases, season markers and optional game-registration keys are
+prefetched in strongly consistent batches of100 with at most4 concurrent calls.
+A shared six-second scheduling deadline begins before authority reads and also
+applies to optional game context. Exhaustion returns the last fully consumed
+cursor; partial first-page work returns a restart position without skipping it.
+Final revision/authority validation and small result hydration remain outside
+this scheduling cutoff. It is not a hard endpoint latency or SDK cancellation
+guarantee. The worst-case negative-season test covers250 candidates with20
+members each:10000 keys in at most110 batch calls and no serial identity/season
+GetItem calls.
+
 Optional includeGames requests use at most10returned players. Current game
 metadata and original registrations are checked through request-local strong
 reads. Reverse work and game-key batches are bounded; samples contain at most20
@@ -117,6 +128,20 @@ Historical remote evidence: initial head02b2566 passed CI34668749055 and
 QA34668751088. A signed-in, read-only in-app browser check loaded the Melbourne
 directory successfully with the two consolidated entries present. This evidence
 does not substitute for checks of a later head; no real player was mutated.
+
+GitHub Codex review5184939488 (02b2566) and5184953261 (3375872) identified the
+same valid P1: the physical-row bound still permitted approximately10000 serial
+alias/season reads. This is addressed by batched strong reads and the shared
+scheduling deadline above. Independent engineering/QA review of the correction
+found no concrete blocking issue and confirmed the deadline qualification.
+Focused224 API/cache/repository tests pass (group85300, exit0,
+peak534640KiB, remaining[]). All510 API tests pass (group85418,
+peak1234272KiB, exit0/remaining[]). Final lint/typecheck, contracts,
+10operator/57review-gate tests, build and backlog checks pass (group87584,
+peak577840KiB, exit0/remaining[]). The correction still requires exact-head remote
+review and deployed evidence. The prior UI head3375872 passed CI34668999071,
+QA34668999060 and the real local browser/API/DynamoDB acceptance (group84777,
+exit0, peak966896KiB plus512MiB container; all owned processes removed).
 
 ### Unresolved blocking findings
 

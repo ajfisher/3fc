@@ -14,16 +14,17 @@ const body = (item: Item, type: string): Record<string, unknown> => {
 
 /** Bounded, explicitly incomplete historical sample; never a latest-game index. */
 export async function directoryGameSamples(client: IdentityClient, tableName: string, input: {
-  leagueId: string; seasonId?: string; playerIds: string[];
+  leagueId: string; seasonId?: string; playerIds: string[]; deadlineMs?: number;
 }): Promise<{ samples: Map<string, DirectoryGameSample>; checks: TransactWriteItem[] }> {
   if (input.playerIds.length > 10) return unavailable();
   const started = Date.now();
+  const deadlineMs = input.deadlineMs ?? started + 6000;
+  if (!Number.isFinite(deadlineMs)) return unavailable();
   const budgetExpired = new Error("Game sample scheduling budget exhausted");
   try {
   // Use a distinct private sentinel so only scheduling exhaustion can degrade
   // to an incomplete sample. Malformed/failed storage responses still fail closed.
-  const cache = new IdentityReadCache(client, tableName, { deadlineMs: Number.MAX_SAFE_INTEGER,
-    now: () => { const current = Date.now(); if (current >= started + 6000) throw budgetExpired; return current; } });
+  const cache = new IdentityReadCache(client, tableName, { deadlineMs, deadlineError: budgetExpired });
   const read = async (pk: string, sk: string) => ((await cache.send(new GetItemCommand({ TableName: tableName,
     Key: { pk: { S: pk }, sk: { S: sk } }, ConsistentRead: true }))) as { Item?: Item }).Item;
   await cache.prefetch([{ pk: "PLAYER_IDENTITY", sk: "CONTROL" }, ...input.playerIds.map(id => ({ pk: `PLAYER#${id}`, sk: "IDENTITY" }))]);
@@ -48,7 +49,7 @@ export async function directoryGameSamples(client: IdentityClient, tableName: st
   }
   const refs: Array<{ owner: string; member: string; gameId: string }> = [];
   let queries = 0;
-  while (queue.length && queries < 40 && Date.now() < started + 4000) {
+  while (queue.length && queries < 40 && Date.now() < Math.min(started + 4000, deadlineMs - 2000)) {
     const tasks = queue.splice(0, Math.min(4, 40 - queries)); queries += tasks.length;
     const settled = await Promise.allSettled(tasks.map(async work => {
       const pk = `PLAYER#${work.member}`;

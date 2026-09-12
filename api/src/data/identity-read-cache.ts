@@ -1,9 +1,10 @@
 import { BatchGetItemCommand, GetItemCommand, type AttributeValue, type BatchGetItemCommandOutput } from "@aws-sdk/client-dynamodb";
-import { PlayerIdentityError, type IdentityClient } from "./player-identity.js";
+import type { IdentityClient } from "./player-identity.js";
+import { PlayerIdentityError } from "./player-identity-error.js";
 
 type Item = Record<string, AttributeValue>;
 export type IdentityReadKey = { pk: string; sk: string };
-type ReadTiming = { now?: () => number; sleep?: (milliseconds: number) => Promise<void>; deadlineMs?: number };
+type ReadTiming = { now?: () => number; sleep?: (milliseconds: number) => Promise<void>; deadlineMs?: number; deadlineError?: Error };
 const unavailable = (): never => { throw new PlayerIdentityError("owned_players_unavailable", 503, "Your linked players could not be checked. Try again."); };
 const physical = ({ pk, sk }: IdentityReadKey): string => {
   if (typeof pk !== "string" || typeof sk !== "string" || !pk || !sk || Buffer.byteLength(pk) > 2048 || Buffer.byteLength(sk) > 1024) return unavailable();
@@ -20,15 +21,18 @@ export class IdentityReadCache implements IdentityClient {
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly deadlineMs: number;
+  private readonly deadlineError?: Error;
   constructor(private readonly client: IdentityClient, private readonly tableName: string, timing: ReadTiming = {}) {
     this.now = timing.now ?? Date.now;
     this.sleep = timing.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
     this.deadlineMs = timing.deadlineMs ?? this.now() + 6000;
+    this.deadlineError = timing.deadlineError;
     if (!Number.isFinite(this.deadlineMs)) unavailable();
   }
   private hasTime(delay = 0): void {
     const now = this.now();
-    if (!Number.isFinite(now) || now + delay >= this.deadlineMs) unavailable();
+    if (!Number.isFinite(now)) unavailable();
+    if (now + delay >= this.deadlineMs) { if (this.deadlineError) throw this.deadlineError; unavailable(); }
   }
   async send(command: unknown): Promise<unknown> {
     if (!(command instanceof GetItemCommand) || command.input.TableName !== this.tableName || command.input.ConsistentRead !== true || !command.input.Key) return unavailable();
@@ -46,26 +50,26 @@ export class IdentityReadCache implements IdentityClient {
       if (!this.items.has(id)) unique.set(id, { pk: { S: key.pk }, sk: { S: key.sk } });
     }
     const entries = [...unique.values()];
-    const state = { failed: false };
+    const state: { failed: boolean; cause?: unknown } = { failed: false };
     for (let start = 0; start < entries.length; start += 400) {
-      if (state.failed) return unavailable();
+      if (state.failed) throw state.cause;
       const tasks: Promise<void>[] = [];
       for (let offset = start; offset < Math.min(start + 400, entries.length); offset += 100) tasks.push(this.batch(entries.slice(offset, offset + 100), state));
       const settled = await Promise.allSettled(tasks);
       for (const result of settled) if (result.status === "rejected") throw result.reason;
     }
   }
-  private async batch(initial: Item[], state: { failed: boolean }): Promise<void> {
+  private async batch(initial: Item[], state: { failed: boolean; cause?: unknown }): Promise<void> {
     try {
     let pending = initial;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (state.failed) return unavailable();
+      if (state.failed) throw state.cause;
       if (attempt > 0) {
         const delay = 50 * 2 ** (attempt - 1);
         this.hasTime(delay);
         await this.sleep(delay);
       }
-      if (state.failed) return unavailable();
+      if (state.failed) throw state.cause;
       // All waves share one request deadline. This does not cancel an SDK call
       // already in progress, but never starts a retry after its budget expires.
       this.hasTime();
@@ -73,7 +77,7 @@ export class IdentityReadCache implements IdentityClient {
       const output = await this.client.send(new BatchGetItemCommand({ RequestItems: {
         [this.tableName]: { Keys: pending, ConsistentRead: true },
       } })) as BatchGetItemCommandOutput;
-      if (state.failed) return unavailable();
+      if (state.failed) throw state.cause;
       this.hasTime();
       const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
       if (!object(output) || (Object.hasOwn(output, "Responses") && !object(output.Responses)) ||
@@ -106,7 +110,7 @@ export class IdentityReadCache implements IdentityClient {
     } catch (error) {
       // Latch in this task before rejecting it. Started SDK calls still settle,
       // but sibling backoff timers cannot launch retries after known failure.
-      state.failed = true;
+      if (!state.failed) { state.failed = true; state.cause = error; }
       throw error;
     }
   }

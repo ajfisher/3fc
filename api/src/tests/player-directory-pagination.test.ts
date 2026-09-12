@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GetItemCommand, QueryCommand, type AttributeValue, type QueryCommandOutput } from "@aws-sdk/client-dynamodb";
+import { BatchGetItemCommand, GetItemCommand, QueryCommand, type AttributeValue, type QueryCommandOutput } from "@aws-sdk/client-dynamodb";
 import { identityDirectorySk, identityItem, PlayerIdentityPlanner } from "../data/player-identity.js";
 
 type Item = Record<string, AttributeValue>;
@@ -10,11 +10,27 @@ const id = (index: number) => ids[index]!;
 const row = (index: number, nickname = "Other", active = true) => identityItem("LEAGUE#league", identityDirectorySk(id(index)),
   "leaguePlayer", { playerId: id(index), nickname, formerNames: [], active, seasonIds: [], hasMoreSeasons: false }, now);
 function fixture(rows: Item[]) {
-  let calls = 0, controlReads = 0;
+  let calls = 0, controlReads = 0, batchCalls = 0, batchKeys = 0, active = 0, maxActive = 0;
   const starts: Array<string | undefined> = [];
-  const state: { query?: (command: QueryCommand) => QueryCommandOutput; changeControl?: boolean } = {};
+  const state: { query?: (command: QueryCommand) => QueryCommandOutput; changeControl?: boolean; members?: number;
+    onBatch?: (count: number) => void; missingIdentity?: boolean; malformedIdentity?: boolean } = {};
   const planner = new PlayerIdentityPlanner({ async send(command: unknown) {
+    if (command instanceof BatchGetItemCommand) {
+      batchCalls++; const request = command.input.RequestItems!.fixture!;
+      assert.equal(request.ConsistentRead, true); assert(request.Keys!.length <= 100); batchKeys += request.Keys!.length;
+      active++; maxActive = Math.max(maxActive, active); await Promise.resolve(); active--;
+      state.onBatch?.(batchCalls);
+      return { Responses: { fixture: request.Keys!.flatMap(key => {
+        if (key.sk?.S !== "IDENTITY" || state.missingIdentity) return [];
+        const playerId = key.pk!.S!.slice("PLAYER#".length), rootId = playerId.split("~")[0]!;
+        const members = [rootId, ...Array.from({ length: (state.members ?? 1) - 1 }, (_, index) => `${rootId}~${index}`)];
+        return [identityItem(key.pk!.S!, "IDENTITY", "playerIdentity", { playerId,
+          rootId: state.malformedIdentity ? "other" : rootId, members: playerId === rootId ? members : [],
+          identityVersion: 0, writeVersion: "version", displayName: playerId, formerNames: [] }, now)];
+      }) } };
+    }
     if (command instanceof GetItemCommand) {
+      assert(!command.input.Key?.pk?.S?.startsWith("PLAYER#"), "Identity and season lookups must be batched, not serial network gets");
       if (command.input.Key?.pk?.S === "PLAYER_IDENTITY") {
         controlReads++;
         return { Item: identityItem("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl", {
@@ -34,15 +50,7 @@ function fixture(rows: Item[]) {
     const items = remaining.slice(0, command.input.Limit);
     return { Items: items, ...(remaining.length > items.length ? { LastEvaluatedKey: { pk: items.at(-1)!.pk!, sk: items.at(-1)!.sk! } } : {}) };
   } }, "fixture");
-  // Identity closure itself has dedicated tests; keep this fixture focused on
-  // physical-to-logical pagination rather than mocking hundreds of alias reads.
-  planner.resolve = async playerId => {
-    const root = { pk: `PLAYER#${playerId}`, sk: "IDENTITY", item: null, value: {
-      playerId, rootId: playerId, members: [playerId], identityVersion: 0, writeVersion: "version", displayName: playerId, formerNames: [],
-    } };
-    return { original: root, root };
-  };
-  return { planner, state, starts, calls: () => calls };
+  return { planner, state, starts, calls: () => calls, batchCalls: () => batchCalls, batchKeys: () => batchKeys, maxActive: () => maxActive };
 }
 
 test("logical directory pages find later matches and continue from the exact processed key", async () => {
@@ -98,4 +106,40 @@ test("logical directory results remain bound to query and current control snapsh
   f.state.changeControl = true;
   await assert.rejects(f.planner.directoryPage({ leagueId: "league", query: "kesh", cursor: result.cursor }), error =>
     (error as { code?: string }).code === "player_search_changed");
+});
+
+test("250 negative-season candidates with20 members use bounded batches rather than10000 serial gets", async () => {
+  const f = fixture(Array.from({ length: 251 }, (_, index) => row(index, "Kesh"))); f.state.members = 20;
+  const result = await f.planner.directoryPage({ leagueId: "league", query: "kesh", seasonId: "winter" }, { now: () => 0, deadlineMs: 6000 });
+  assert.deepEqual(result.entries, []); assert.equal(result.searchIncomplete, true); assert(result.cursor);
+  assert.equal(f.calls(), 10); assert.equal(f.batchKeys(), 10000); assert(f.batchCalls() <= 110);
+  assert.equal(f.maxActive(), 4);
+  assert.equal(JSON.parse(Buffer.from(result.cursor, "base64url").toString()).sk, identityDirectorySk(id(249)));
+});
+
+test("expired partial prefetch returns a restart cursor without skipping the first candidate", async () => {
+  const f = fixture([row(0, "Kesh"), row(1, "Kesh")]); let clock = 0;
+  f.state.onBatch = () => { clock = 6000; };
+  const first = await f.planner.directoryPage({ leagueId: "league", query: "kesh" }, { now: () => clock, deadlineMs: 6000 });
+  assert.deepEqual(first.entries, []); assert.equal(first.searchIncomplete, true); assert(first.cursor);
+  assert.equal(JSON.parse(Buffer.from(first.cursor, "base64url").toString()).sk, "PLAYER#");
+  clock = 0; f.state.onBatch = undefined;
+  const retry = await f.planner.directoryPage({ leagueId: "league", query: "kesh", cursor: first.cursor }, { now: () => clock, deadlineMs: 6000 });
+  assert.deepEqual(retry.entries.map(entry => entry.playerId), [id(0), id(1)]); assert.equal(retry.cursor, null);
+});
+
+test("deadline between physical pages retains the last fully consumed position", async () => {
+  const f = fixture(Array.from({ length: 30 }, (_, index) => row(index, "Kesh"))); let clock = 0;
+  f.state.members = 20;
+  f.state.onBatch = count => { if (count === 12) clock = 6000; };
+  const first = await f.planner.directoryPage({ leagueId: "league", query: "kesh", seasonId: "winter" }, { now: () => clock, deadlineMs: 6000 });
+  assert.equal(first.searchIncomplete, true); assert(first.cursor);
+  assert.equal(JSON.parse(Buffer.from(first.cursor, "base64url").toString()).sk, identityDirectorySk(id(24)));
+});
+
+test("missing or malformed batched identity remains an error, never an incomplete-search fallback", async () => {
+  for (const kind of ["missingIdentity", "malformedIdentity"] as const) {
+    const f = fixture([row(0, "Kesh")]); f.state[kind] = true;
+    await assert.rejects(f.planner.directoryPage({ leagueId: "league", query: "kesh" }), error => (error as { code?: string }).code === "player_identity_unavailable");
+  }
 });

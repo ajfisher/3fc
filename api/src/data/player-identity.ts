@@ -1,5 +1,8 @@
 import { GetItemCommand, QueryCommand, type AttributeValue, type GetItemCommandOutput, type QueryCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
+import { IdentityReadCache, type IdentityReadKey } from "./identity-read-cache.js";
+import { PlayerIdentityError } from "./player-identity-error.js";
+export { PlayerIdentityError } from "./player-identity-error.js";
 
 // Transaction planning only. The repository owns the single commit containing
 // both the original domain writes and these identity/membership fences.
@@ -40,12 +43,6 @@ export const identityDirectorySk = (playerId: string): string => projectionKey("
 export const identityGameSk = (gameId: string): string => projectionKey("GAME", gameId);
 export const identityLeagueSk = (leagueId: string): string => projectionKey("LEAGUE", leagueId);
 export const identityTombstoneSk = (kind: "game" | "season" | "league", ids: string[]): string => projectionKey(kind, ...ids);
-export class PlayerIdentityError extends Error {
-  constructor(readonly code: string, readonly status: 400 | 403 | 404 | 409 | 503, message: string) { super(message); }
-  get category(): string {
-    return { 400: "bad_request", 403: "forbidden", 404: "not_found", 409: "conflict", 503: "unavailable" }[this.status];
-  }
-}
 export const IDENTITY_CONTROL_KEY = { pk: "PLAYER_IDENTITY", sk: "CONTROL" } as const;
 export const IDENTITY_MAX_MEMBERS = 20;
 
@@ -232,10 +229,15 @@ export class PlayerIdentityPlanner {
     return matches[0] ?? null;
   }
 
-  async directoryPage(input: { leagueId: string; seasonId?: string; gameId?: string; query?: string; cursor?: string; limit?: number }): Promise<{
+  async directoryPage(input: { leagueId: string; seasonId?: string; gameId?: string; query?: string; cursor?: string; limit?: number },
+    timing: { deadlineMs?: number; now?: () => number } = {}): Promise<{
     entries: Array<PlayerDirectoryEntry & { inGame?: boolean }>; cursor: string | null; searchIncomplete?: boolean;
   }> {
     const { leagueId, seasonId } = input;
+    const now = timing.now ?? Date.now, deadlineMs = timing.deadlineMs ?? now() + 6000;
+    if (!Number.isFinite(deadlineMs)) return invalid();
+    const budgetExpired = new Error("Directory scheduling budget exhausted");
+    const checkBudget = () => { if (now() >= deadlineMs) throw budgetExpired; };
     const query = input.query?.trim().toLocaleLowerCase("en-AU") ?? "";
     const limit = input.limit ?? 25;
     if (!text(leagueId) || (seasonId !== undefined && !text(seasonId)) || (input.gameId !== undefined && !text(input.gameId)) || query.length > 100 ||
@@ -261,12 +263,18 @@ export class PlayerIdentityPlanner {
       }
     }
     const entries: Array<PlayerDirectoryEntry & { inGame?: boolean }> = [];
+    const cache = new IdentityReadCache(this.client, this.tableName, { now, deadlineMs, deadlineError: budgetExpired });
+    const cachedPlanner = new PlayerIdentityPlanner(cache, this.tableName);
     let key: Item | undefined = ExclusiveStartKey;
+    // PLAYER# precedes every valid hashed directory row. It is a valid restart
+    // position when the deadline expires before even the first row is consumed.
+    let processedKey: Item = ExclusiveStartKey ?? { pk: { S: pk }, sk: { S: "PLAYER#" } };
     let rowsRead = 0, pagesRead = 0;
     const compare = (left: string, right: string) => Buffer.compare(Buffer.from(left), Buffer.from(right));
     const validCursor = (candidate: Item) => candidate.pk?.S === pk && text(candidate.sk?.S) &&
       candidate.sk.S.startsWith("PLAYER#") && Buffer.byteLength(candidate.sk.S) <= 1024;
-    do {
+    try { do {
+    checkBudget();
     const physicalLimit = Math.min(25, 250 - rowsRead);
     const page = await this.client.send(new QueryCommand({ TableName: this.tableName,
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :skPrefix)",
@@ -286,26 +294,54 @@ export class PlayerIdentityPlanner {
     }
     if (next && (!validCursor(next) || (key && compare(next.sk!.S!, key.sk!.S!) <= 0) ||
         (previous !== undefined && compare(next.sk!.S!, previous) < 0))) return invalid();
-    key = next;
-    for (const [index, item] of items.entries()) {
+    const pageEntries = items.map(item => {
       const raw = parse(item, pk, item.sk!.S!, "leaguePlayer") as PlayerDirectoryEntry;
       const entry = directoryEntry(raw, raw?.playerId);
       if (item.sk!.S! !== identityDirectorySk(entry.playerId)) return invalid();
-      if (!entry.active || ![entry.nickname, ...entry.formerNames].some(name => name.toLocaleLowerCase("en-AU").includes(query))) continue;
-      const identity = await this.resolve(entry.playerId);
+      return entry;
+    });
+    const candidates = pageEntries.filter(entry => entry.active && [entry.nickname, ...entry.formerNames].some(name => name.toLocaleLowerCase("en-AU").includes(query)));
+    checkBudget();
+    await cache.prefetch(candidates.map(entry => ({ pk: `PLAYER#${entry.playerId}`, sk: "IDENTITY" })));
+    const metadataKeys: IdentityReadKey[] = [], registrationKeys: IdentityReadKey[] = [];
+    for (const entry of candidates) {
+      const item = await cachedPlanner.get(`PLAYER#${entry.playerId}`, "IDENTITY");
+      if (!item) return invalid();
+      const identity = validateIdentity(parse(item, `PLAYER#${entry.playerId}`, "IDENTITY", "playerIdentity"), entry.playerId);
+      if (identity.rootId !== entry.playerId) return invalid();
+      for (const member of identity.members) {
+        metadataKeys.push({ pk: `PLAYER#${member}`, sk: "IDENTITY" });
+        if (seasonId) metadataKeys.push({ pk: `PLAYER#${member}`, sk: identitySeasonKey(leagueId, seasonId) });
+        if (input.gameId !== undefined) for (const sk of [`PLAYER#${member}`, ...["red", "blue", "yellow"].map(team => `ROSTER#${team}#${member}`)]) {
+          if (Buffer.byteLength(sk) <= 1024) registrationKeys.push({ pk: `GAME#${input.gameId}`, sk });
+        }
+      }
+    }
+    await cache.prefetch(metadataKeys);
+    await cache.prefetch(registrationKeys);
+    checkBudget();
+    key = next;
+    for (const [index, item] of items.entries()) {
+      checkBudget();
+      const entry = pageEntries[index]!;
+      if (!entry.active || ![entry.nickname, ...entry.formerNames].some(name => name.toLocaleLowerCase("en-AU").includes(query))) {
+        processedKey = { pk: item.pk!, sk: item.sk! }; continue;
+      }
+      const identity = await cachedPlanner.resolve(entry.playerId);
       if (identity.root.value.playerId !== entry.playerId) return invalid();
       if (seasonId) {
         let included = false;
         for (const member of identity.root.value.members) {
-          const marker = await this.get(`PLAYER#${member}`, identitySeasonKey(leagueId, seasonId));
+          const marker = await cachedPlanner.get(`PLAYER#${member}`, identitySeasonKey(leagueId, seasonId));
           if (!marker) continue;
           const value = parse(marker, `PLAYER#${member}`, identitySeasonKey(leagueId, seasonId), "playerSeasonMembership") as Record<string, unknown>;
           if (!value || value.playerId !== member || value.leagueId !== leagueId || value.seasonId !== seasonId) return invalid();
           included = true;
         }
-        if (!included) continue;
+        if (!included) { processedKey = { pk: item.pk!, sk: item.sk! }; continue; }
       }
-      entries.push({ ...entry, ...(input.gameId === undefined ? {} : { inGame: await this.registeredOriginal(identity, input.gameId) !== null }) });
+      entries.push({ ...entry, ...(input.gameId === undefined ? {} : { inGame: await cachedPlanner.registeredOriginal(identity, input.gameId) !== null }) });
+      processedKey = { pk: item.pk!, sk: item.sk! };
       if (entries.length === limit) {
         // Never skip unconsumed rows from the fetched page. Re-query strictly
         // after this processed key, not after the page's continuation key.
@@ -313,7 +349,12 @@ export class PlayerIdentityPlanner {
         break;
       }
     }
+    if (key && entries.length < limit) processedKey = key;
     } while (key && entries.length < limit && rowsRead < 250 && pagesRead < 10);
+    } catch (error) {
+      if (error !== budgetExpired) throw error;
+      key = processedKey;
+    }
     const [after, afterControl] = await Promise.all([
       this.record(pk, "PLAYER_DIRECTORY", "playerDirectoryRevision", { revision: "legacy" }), this.readControl(),
     ]);

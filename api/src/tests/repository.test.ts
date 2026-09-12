@@ -11,6 +11,7 @@ import { handleLocalPlayerProofRoute, handleLocalPlayerDirectoryRoute } from "..
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
+  BatchGetItemCommand,
   DeleteItemCommand,
   GetItemCommand,
   ScanCommand,
@@ -116,6 +117,17 @@ class InMemoryDynamoClient {
       return {};
     }
 
+    if (command instanceof BatchGetItemCommand) {
+      const responses: Record<string, Array<Record<string, AttributeValue>>> = {};
+      for (const [table, request] of Object.entries(command.input.RequestItems ?? {})) {
+        if (request.ConsistentRead !== true || !request.Keys || request.Keys.length > 100) throw new Error("Invalid batch fixture read");
+        responses[table] = request.Keys.flatMap(key => {
+          const pk = this.readString(key.pk, "pk"), sk = this.readString(key.sk, "sk");
+          const item = this.items.get(`${pk}|${sk}`); return item ? [structuredClone(item)] : [];
+        });
+      }
+      return { Responses: responses };
+    }
     if (command instanceof GetItemCommand) {
       const key = command.input.Key;
       if (!key) {
