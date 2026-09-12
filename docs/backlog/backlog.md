@@ -13,6 +13,7 @@ Generated from `docs/backlog/backlog.json`.
 | `EPIC-M4` | Notifications and Product Polish | M4 Notifications and Product Polish | 5 |
 | `EPIC-REV` | Risk-Based Pull Request Review System | Review System Rollout | 6 |
 | `EPIC-UX` | Mobile-First Frontend Redesign | UX Mobile-First Frontend Redesign | 8 |
+| `EPIC-PLAYER` | Reusable players and profile linking | Reusable Players and Profile Linking | 9 |
 
 ## Child Issues
 
@@ -74,9 +75,18 @@ Generated from `docs/backlog/backlog.json`.
 | `UX-09` | Identify joining players and show them directly in Unassigned | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-08` |
 | `UX-10` | Refresh other clients after match updates without disrupting local work | 8 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-09` |
 | `UX-06` | Complete cross-stack mobile, role and release-readiness acceptance | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-01`, `M1-13`, `UX-02`, `UX-03`, `UX-07`, `UX-04`, `UX-05` |
-| `M3-07` | Harden player ownership eligibility before portal expansion | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M2-02`, `M1-04` |
+| `M3-07` | Harden player ownership eligibility before portal expansion | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M2-02`, `M1-04`, `PLAYER-00` |
 | `M3-08` | Add bounded linked-player history and participant home | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-05`, `M3-01` |
 | `M3-09` | Add safe join and organiser-invite context reads | 5 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-07`, `M3-01` |
+| `PLAYER-00` | Specify reusable-player delivery and reconcile backlog | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | - |
+| `PLAYER-01` | Add league player directory and reusable game assignment | 8 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `M3-07` |
+| `PLAYER-02` | Consolidate duplicate player profiles with owner approval | 8 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01` |
+| `PLAYER-03` | Reuse linked identities when returning players join | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-02` |
+| `PLAYER-04` | Complete player-identity acceptance and migration handoff | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-03` |
+| `PLAYER-05` | Define safe player retention after game deletion | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02`, `PLAYER-04` |
+| `PLAYER-06` | Replace table-wide league discovery with an account-keyed ACL index | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04` |
+| `PLAYER-07` | Make player search complete and profile combination a focused task | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02` |
+| `PLAYER-08` | Prepare controlled production rollout for reusable players | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04`, `PLAYER-07` |
 
 ## Delivery Tracking
 
@@ -109,9 +119,18 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-09` | frontend-stack | implemented | [#152](https://github.com/ajfisher/3fc/issues/152) | codex/design-join-unassigned |
 | `UX-10` | frontend-stack | implemented | [#153](https://github.com/ajfisher/3fc/issues/153) | codex/design-match-refresh |
 | `UX-06` | frontend-stack | partial | [#137](https://github.com/ajfisher/3fc/issues/137) | codex/design-results-entry |
-| `M3-07` | deferred-player-portal | planned | [#138](https://github.com/ajfisher/3fc/issues/138) | - |
+| `M3-07` | reusable-players | planned | [#138](https://github.com/ajfisher/3fc/issues/138) | codex/player-claim-proof |
 | `M3-08` | deferred-player-portal | planned | [#139](https://github.com/ajfisher/3fc/issues/139) | - |
 | `M3-09` | deferred-player-portal | planned | [#140](https://github.com/ajfisher/3fc/issues/140) | - |
+| `PLAYER-00` | reusable-players | planned | [#158](https://github.com/ajfisher/3fc/issues/158) | codex/player-identity-backlog |
+| `PLAYER-01` | reusable-players | in-progress | [#159](https://github.com/ajfisher/3fc/issues/159) | codex/league-player-directory |
+| `PLAYER-02` | reusable-players | in-progress | [#160](https://github.com/ajfisher/3fc/issues/160) | codex/player-consolidation |
+| `PLAYER-03` | reusable-players | in-progress | [#161](https://github.com/ajfisher/3fc/issues/161) | codex/returning-player-join |
+| `PLAYER-04` | reusable-players | in-progress | [#162](https://github.com/ajfisher/3fc/issues/162) | codex/player-identity-acceptance |
+| `PLAYER-05` | reusable-players-follow-up | planned | [#170](https://github.com/ajfisher/3fc/issues/170) | - |
+| `PLAYER-06` | reusable-players-follow-up | planned | [#172](https://github.com/ajfisher/3fc/issues/172) | - |
+| `PLAYER-07` | reusable-players-follow-up | in-progress | [#173](https://github.com/ajfisher/3fc/issues/173) | codex/player-combine-usability |
+| `PLAYER-08` | reusable-players-follow-up | in-progress | [#175](https://github.com/ajfisher/3fc/issues/175) | codex/player-production-preflight |
 
 ## Global Test Scenarios
 
@@ -137,3 +156,4 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 - 2026-09-07 approved delivery: frontend redesign UX-00..UX-06 plus M1-13 sign-out; new public/player portal and performance work is explicitly deferred.
 - Players are added and assigned on the day, including during play; retain this workflow and add no attendance/no-show feature. Future played counts use team membership in distinct finished games.
 - Delivery metadata is an as-of planning/evidence inventory, not proof that tests were rerun or a GitHub issue can be closed. Existing merged issue states remain unchanged.
+- 2026-09-10 AJ activates reusable-player stack PLAYER-00..04 plus existing M3-07: league-only consolidation, private shareable claims, block overlap/competing-owner conflicts; public results/performance remain deferred.

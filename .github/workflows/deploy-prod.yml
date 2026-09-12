@@ -1,6 +1,12 @@
 name: Deploy Production
 
 on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact full main commit approved by AJ for this production release
+        required: true
+        type: string
   push:
     branches:
       - main
@@ -17,7 +23,7 @@ on:
 
 concurrency:
   group: deploy-prod-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   id-token: write
@@ -29,6 +35,7 @@ env:
 jobs:
   deploy:
     name: deploy-prod
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -41,8 +48,27 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Verify approved production head
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/deploy/verify-production-head.mjs
+
       - name: Install dependencies
         run: npm ci
+
+      # A merged SHA may differ from every reviewed PR head. A manual release
+      # validates that exact checkout, without treating dispatch as a CI bypass.
+      - name: Validate manual production release
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          npm run lint
+          npm test
+          npm run contracts:check
+
+      - name: Recheck production head before credentials
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/deploy/verify-production-head.mjs
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,18 +77,143 @@ jobs:
           role-session-name: gha-prod-deploy
           aws-region: ap-southeast-2
 
-      - name: Deploy site to production
-        run: make deploy ENV=prod SERVICE=site
-
       - name: Deploy API health service to production
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
-        run: make deploy ENV=prod SERVICE=api-health
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          node scripts/deploy/verify-production-head.mjs
+          make deploy ENV=prod SERVICE=api-health
 
       - name: Deploy API core service to production
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          PLAYER_CLAIM_MODE: ${{ vars.PLAYER_CLAIM_MODE || 'proof' }}
+          PLAYER_CONSOLIDATION_ENABLED: ${{ vars.PLAYER_CONSOLIDATION_ENABLED || 'false' }}
+          PLAYER_RETURNING_JOIN_ENABLED: ${{ vars.PLAYER_RETURNING_JOIN_ENABLED || 'false' }}
         run: make deploy ENV=prod SERVICE=api-core
+
+      # Preserve the successfully fingerprinted core even if site publication
+      # subsequently fails. This artifact alone is not full-release acceptance.
+      - name: Preserve production API deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prod-api-core-deployment-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/deploy/prod/api-core-deploy-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Smoke test deployed production core endpoints
+        run: |
+          MANIFEST_PATH="out/deploy/prod/api-core-deploy-manifest.json"
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "Expected deploy manifest at $MANIFEST_PATH"
+            exit 1
+          fi
+
+          API_ID="$(jq -r '.httpApiId // empty' "$MANIFEST_PATH")"
+          if [ -z "$API_ID" ]; then
+            echo "Deploy manifest did not include httpApiId."
+            exit 1
+          fi
+
+          CORE_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues"
+          CORE_HTTP_CODE="$(curl -sS -o /tmp/prod-core.json -w '%{http_code}' \
+            -X POST "$CORE_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -d '{}')"
+
+          if [ "$CORE_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${CORE_ENDPOINT} (HTTP ${CORE_HTTP_CODE})"
+            cat /tmp/prod-core.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/prod-core.json >/dev/null
+
+          # No cookie is supplied: smoke the deployed logout route without
+          # touching an organiser session or emitting credentials to logs.
+          LOGOUT_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/logout"
+          LOGOUT_HTTP_CODE="$(curl -sS -D /tmp/prod-logout.headers -o /tmp/prod-logout.body -w '%{http_code}' \
+            -X POST "$LOGOUT_ENDPOINT" -H 'origin: https://3fc.football')"
+          test "$LOGOUT_HTTP_CODE" = "204"
+          test ! -s /tmp/prod-logout.body
+          grep -qi '^cache-control: no-store' /tmp/prod-logout.headers
+          grep -qi '^access-control-allow-origin: https:\/\/3fc\.football' /tmp/prod-logout.headers
+          grep -qi '^access-control-allow-credentials: true' /tmp/prod-logout.headers
+          grep -qi '^set-cookie: threefc_session=;' /tmp/prod-logout.headers
+          for ATTRIBUTE in 'Path=/' 'HttpOnly' 'SameSite=Lax' 'Max-Age=0' 'Secure'; do
+            grep -i '^set-cookie:' /tmp/prod-logout.headers | grep -q "$ATTRIBUTE"
+          done
+          LOGOUT_OPTIONS_HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X OPTIONS "$LOGOUT_ENDPOINT" -H 'origin: https://3fc.football')"
+          test "$LOGOUT_OPTIONS_HTTP_CODE" = "204"
+
+
+          CLAIM_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/players/smoke-player/claim"
+          CLAIM_HTTP_CODE="$(curl -sS -o /tmp/prod-claim.json -w '%{http_code}' \
+            -X POST "$CLAIM_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://3fc.football' \
+            -d '{}')"
+
+          if [ "$CLAIM_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${CLAIM_ENDPOINT} (HTTP ${CLAIM_HTTP_CODE})"
+            cat /tmp/prod-claim.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/prod-claim.json >/dev/null
+
+          ACCESS_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues/smoke-league/access"
+          ACCESS_HTTP_CODE="$(curl -sS -o /tmp/prod-access.json -w '%{http_code}' \
+            -X POST "$ACCESS_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://3fc.football' \
+            -d '{"userId":"scorekeeper@3fc.football","role":"scorekeeper"}')"
+
+          if [ "$ACCESS_HTTP_CODE" != "401" ]; then
+            echo "Smoke test failed for ${ACCESS_ENDPOINT} (HTTP ${ACCESS_HTTP_CODE})"
+            cat /tmp/prod-access.json
+            exit 1
+          fi
+
+          jq -e '.error == "unauthorized"' /tmp/prod-access.json >/dev/null
+
+          MAGIC_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/magic/start"
+          MAGIC_HTTP_CODE="$(curl -sS -o /tmp/prod-magic.json -w '%{http_code}' \
+            -X POST "$MAGIC_ENDPOINT" \
+            -H 'content-type: application/json' \
+            -H 'origin: https://3fc.football' \
+            -d '{}')"
+
+          if [ "$MAGIC_HTTP_CODE" != "400" ]; then
+            echo "Smoke test failed for ${MAGIC_ENDPOINT} (HTTP ${MAGIC_HTTP_CODE})"
+            cat /tmp/prod-magic.json
+            exit 1
+          fi
+
+          {
+            echo "SMOKE_CORE_ENDPOINT=${CORE_ENDPOINT}"
+            echo "SMOKE_CORE_HTTP_CODE=${CORE_HTTP_CODE}"
+            echo "SMOKE_CLAIM_ENDPOINT=${CLAIM_ENDPOINT}"
+            echo "SMOKE_CLAIM_HTTP_CODE=${CLAIM_HTTP_CODE}"
+            echo "SMOKE_ACCESS_ENDPOINT=${ACCESS_ENDPOINT}"
+            echo "SMOKE_ACCESS_HTTP_CODE=${ACCESS_HTTP_CODE}"
+            echo "SMOKE_MAGIC_ENDPOINT=${MAGIC_ENDPOINT}"
+            echo "SMOKE_MAGIC_HTTP_CODE=${MAGIC_HTTP_CODE}"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify deployed profile-proof routes
+        run: bash scripts/deploy/smoke-player-proof.sh prod api
+
+      # Harden claim acquisition before exposing the proof-aware frontend.
+      - name: Deploy site to production
+        run: make deploy ENV=prod SERVICE=site
+
+      - name: Verify deployed profile-link page and asset
+        run: bash scripts/deploy/smoke-player-proof.sh prod site
 
       - name: Smoke test deployed production health endpoint
         run: |
@@ -194,107 +345,21 @@ jobs:
             echo "SITE_JOIN_LINK_HTTP_CODE=${JOIN_LINK_HTTP_CODE}"
           } >> "$GITHUB_ENV"
 
-      - name: Smoke test deployed production core endpoints
-        run: |
-          MANIFEST_PATH="out/deploy/prod/api-core-deploy-manifest.json"
+      - name: Verify API fingerprint after site acceptance
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: bash scripts/deploy/verify-api-core.sh prod "$EXPECTED_HEAD"
 
-          if [ ! -f "$MANIFEST_PATH" ]; then
-            echo "Expected deploy manifest at $MANIFEST_PATH"
-            exit 1
-          fi
-
-          API_ID="$(jq -r '.httpApiId // empty' "$MANIFEST_PATH")"
-          if [ -z "$API_ID" ]; then
-            echo "Deploy manifest did not include httpApiId."
-            exit 1
-          fi
-
-          CORE_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues"
-          CORE_HTTP_CODE="$(curl -sS -o /tmp/prod-core.json -w '%{http_code}' \
-            -X POST "$CORE_ENDPOINT" \
-            -H 'content-type: application/json' \
-            -d '{}')"
-
-          if [ "$CORE_HTTP_CODE" != "401" ]; then
-            echo "Smoke test failed for ${CORE_ENDPOINT} (HTTP ${CORE_HTTP_CODE})"
-            cat /tmp/prod-core.json
-            exit 1
-          fi
-
-          jq -e '.error == "unauthorized"' /tmp/prod-core.json >/dev/null
-
-          # No cookie is supplied: smoke the deployed logout route without
-          # touching an organiser session or emitting credentials to logs.
-          LOGOUT_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/logout"
-          LOGOUT_HTTP_CODE="$(curl -sS -D /tmp/prod-logout.headers -o /tmp/prod-logout.body -w '%{http_code}' \
-            -X POST "$LOGOUT_ENDPOINT" -H 'origin: https://3fc.football')"
-          test "$LOGOUT_HTTP_CODE" = "204"
-          test ! -s /tmp/prod-logout.body
-          grep -qi '^cache-control: no-store' /tmp/prod-logout.headers
-          grep -qi '^access-control-allow-origin: https:\/\/3fc\.football' /tmp/prod-logout.headers
-          grep -qi '^access-control-allow-credentials: true' /tmp/prod-logout.headers
-          grep -qi '^set-cookie: threefc_session=;' /tmp/prod-logout.headers
-          for ATTRIBUTE in 'Path=/' 'HttpOnly' 'SameSite=Lax' 'Max-Age=0' 'Secure'; do
-            grep -i '^set-cookie:' /tmp/prod-logout.headers | grep -q "$ATTRIBUTE"
-          done
-          LOGOUT_OPTIONS_HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' \
-            -X OPTIONS "$LOGOUT_ENDPOINT" -H 'origin: https://3fc.football')"
-          test "$LOGOUT_OPTIONS_HTTP_CODE" = "204"
-
-
-          CLAIM_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/players/smoke-player/claim"
-          CLAIM_HTTP_CODE="$(curl -sS -o /tmp/prod-claim.json -w '%{http_code}' \
-            -X POST "$CLAIM_ENDPOINT" \
-            -H 'content-type: application/json' \
-            -H 'origin: https://3fc.football' \
-            -d '{}')"
-
-          if [ "$CLAIM_HTTP_CODE" != "401" ]; then
-            echo "Smoke test failed for ${CLAIM_ENDPOINT} (HTTP ${CLAIM_HTTP_CODE})"
-            cat /tmp/prod-claim.json
-            exit 1
-          fi
-
-          jq -e '.error == "unauthorized"' /tmp/prod-claim.json >/dev/null
-
-          ACCESS_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/leagues/smoke-league/access"
-          ACCESS_HTTP_CODE="$(curl -sS -o /tmp/prod-access.json -w '%{http_code}' \
-            -X POST "$ACCESS_ENDPOINT" \
-            -H 'content-type: application/json' \
-            -H 'origin: https://3fc.football' \
-            -d '{"userId":"scorekeeper@3fc.football","role":"scorekeeper"}')"
-
-          if [ "$ACCESS_HTTP_CODE" != "401" ]; then
-            echo "Smoke test failed for ${ACCESS_ENDPOINT} (HTTP ${ACCESS_HTTP_CODE})"
-            cat /tmp/prod-access.json
-            exit 1
-          fi
-
-          jq -e '.error == "unauthorized"' /tmp/prod-access.json >/dev/null
-
-          MAGIC_ENDPOINT="https://${API_ID}.execute-api.ap-southeast-2.amazonaws.com/v1/auth/magic/start"
-          MAGIC_HTTP_CODE="$(curl -sS -o /tmp/prod-magic.json -w '%{http_code}' \
-            -X POST "$MAGIC_ENDPOINT" \
-            -H 'content-type: application/json' \
-            -H 'origin: https://3fc.football' \
-            -d '{}')"
-
-          if [ "$MAGIC_HTTP_CODE" != "400" ]; then
-            echo "Smoke test failed for ${MAGIC_ENDPOINT} (HTTP ${MAGIC_HTTP_CODE})"
-            cat /tmp/prod-magic.json
-            exit 1
-          fi
-
-          {
-            echo "SMOKE_CORE_ENDPOINT=${CORE_ENDPOINT}"
-            echo "SMOKE_CORE_HTTP_CODE=${CORE_HTTP_CODE}"
-            echo "SMOKE_CLAIM_ENDPOINT=${CLAIM_ENDPOINT}"
-            echo "SMOKE_CLAIM_HTTP_CODE=${CLAIM_HTTP_CODE}"
-            echo "SMOKE_ACCESS_ENDPOINT=${ACCESS_ENDPOINT}"
-            echo "SMOKE_ACCESS_HTTP_CODE=${ACCESS_HTTP_CODE}"
-            echo "SMOKE_MAGIC_ENDPOINT=${MAGIC_ENDPOINT}"
-            echo "SMOKE_MAGIC_HTTP_CODE=${MAGIC_HTTP_CODE}"
-          } >> "$GITHUB_ENV"
+      - name: Preserve completed production release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prod-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/deploy/prod/api-core-deploy-manifest.json
+            out/deploy/prod/api-health-deploy-manifest.json
+            out/deploy/prod/site-deploy-manifest.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Write deployment summary
         run: |

@@ -61,6 +61,7 @@
   }
 
   function navigateTo(url, mode = "assign") {
+    if (window.ThreeFcPlayerProof?.isBlocked?.()) return;
     closeActionMenu();
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
       window.__THREEFC_NAVIGATE__(url, mode);
@@ -85,6 +86,7 @@
   let hasAuthenticatedAccount = false;
   let accountRevalidating = false;
   let entryClaimPlayerId = null;
+  let leagueDeletionRecovery = null;
 
   function normalizedEntryCode(value) {
     return typeof value === "string" ? value.trim().toUpperCase().replace(/\s+/g, "") : "";
@@ -175,6 +177,7 @@
       const restoreFocusOnFailure = document.activeElement === button;
       closeActionMenu();
       signOutPending = true;
+      if (window.ThreeFcPlayerProof?.clear() === false) { signOutPending = false; return; }
       signOutUnconfirmed = false;
       button.disabled = true;
       button.setAttribute("aria-busy", "true");
@@ -521,8 +524,10 @@
 
   function closeOtherDisclosures(activeTrigger) {
     closeActionMenu();
+    const activePanel = document.getElementById(activeTrigger.getAttribute("aria-controls"));
     for (const trigger of document.querySelectorAll('button[aria-controls][aria-expanded="true"]')) {
-      if (!(trigger instanceof HTMLButtonElement) || trigger === activeTrigger) {
+      // Reopening a parent must preserve the selected nested journey and draft.
+      if (!(trigger instanceof HTMLButtonElement) || trigger === activeTrigger || activePanel?.contains(trigger)) {
         continue;
       }
       const panelId = trigger.getAttribute("aria-controls");
@@ -601,6 +606,89 @@
     const error = new Error(result.body?.message || "Deletion could not be confirmed.");
     if (!result.ok) error.statusCode = result.status;
     throw error;
+  }
+
+  function initializeLeagueDeletionRecovery(session) {
+    if (!["dashboard", "league"].includes(page) || !usableEntityId(session?.email)) return null;
+    const owner = session.subject ?? session.email;
+    if (!usableEntityId(owner)) return null;
+    const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+    let attempt = null, pending = false, invalidated = false;
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(key) || "null");
+      if (stored?.owner === owner && usableEntityId(stored.leagueId) && typeof stored.uncertain === "boolean") attempt = stored;
+    } catch { /* A new request must persist successfully before dispatch. */ }
+    const panel = document.createElement("section"); panel.dataset.ui = "panel"; panel.id = "league-deletion-recovery";
+    const heading = document.createElement("h2"); heading.textContent = "League deletion";
+    const status = document.createElement("p"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+    const retry = document.createElement("button"); retry.type = "button"; retry.dataset.ui = "button"; retry.textContent = "Retry league deletion";
+    panel.append(heading, status, retry); root.prepend(panel);
+    function render(message = "League deletion is not yet confirmed. Retry to finish checking it.") {
+      panel.hidden = !attempt || invalidated; retry.disabled = pending || invalidated;
+      retry.hidden = false;
+      status.textContent = message;
+    }
+    function persist(value) { sessionStorage.setItem(key, JSON.stringify(value)); }
+    function invalidate() { invalidated = true; render(); }
+    window.addEventListener("threefc:player-proof-cleared", invalidate);
+    window.addEventListener("threefc:player-proof-invalidated", invalidate);
+    window.addEventListener("pagehide", invalidate);
+    async function run() {
+      if (!attempt || pending || invalidated || signOutPending || signOutUnconfirmed) return false;
+      const ownsFocus = document.activeElement === retry;
+      let focusOwned = ownsFocus;
+      const moved = event => { if (event.target !== retry && event.target !== document.body) focusOwned = false; };
+      document.addEventListener("focusin", moved); document.addEventListener("pointerdown", moved);
+      pending = true; render("Checking league deletion…");
+      const wasUncertain = attempt.uncertain;
+      let dispatched = false;
+      const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const account = await requestJson("/v1/auth/session", { method: "GET", cache: "no-store", signal: controller.signal });
+        if (!account.ok || account.body?.authenticated !== true || (account.body?.session?.subject ?? account.body?.session?.email) !== owner ||
+            account.body?.session?.sessionId !== session.sessionId) {
+          invalidate(); showError("Your sign-in changed. Reload before retrying league deletion.", { includesOutcome: true }); return false;
+        }
+        if (invalidated || signOutPending) return false;
+        const path = encodedRecordPath("/v1/leagues/", attempt.leagueId, "");
+        if (!path) throw new Error("unaddressable_league");
+        // A reload after dispatch must treat the result as uncertain, even when
+        // the first response was lost after the server removed the league ACL.
+        attempt.uncertain = true; persist(attempt); dispatched = true;
+        const response = await requestJson(path, { method: "DELETE", signal: controller.signal,
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expectedAccountId: owner }) });
+        if (invalidated) return false;
+        if (response.status === 204) {
+          sessionStorage.removeItem(key); attempt = null;
+          panel.hidden = false; status.textContent = "League deleted."; retry.hidden = true;
+          if (focusOwned) { status.tabIndex = -1; status.focus(); }
+          return true;
+        }
+        if (!wasUncertain && [400, 401, 403, 404, 409, 422].includes(response.status)) {
+          sessionStorage.removeItem(key); attempt = null; panel.hidden = true;
+          showError("League could not be deleted. Check that it has no seasons and try again.", { includesOutcome: true });
+        } else render("League deletion is not yet confirmed. Retry to finish checking it.");
+        return false;
+      } catch {
+        if (!invalidated) render(dispatched ? "League deletion is not yet confirmed. Retry to finish checking it."
+          : "Could not check or save deletion recovery. Allow site storage and try again.");
+        return false;
+      } finally {
+        clearTimeout(timeout); pending = false; retry.disabled = invalidated;
+        document.removeEventListener("focusin", moved); document.removeEventListener("pointerdown", moved);
+      }
+    }
+    retry.addEventListener("click", () => { void run(); });
+    render();
+    return { async start(leagueId) {
+      if (pending || invalidated) return false;
+      if (attempt && attempt.leagueId !== leagueId) { render("Finish the earlier league deletion before starting another one."); retry.focus(); return false; }
+      if (!attempt) {
+        const next = { owner, leagueId, uncertain: false };
+        try { persist(next); attempt = next; } catch { showError("Your browser could not save deletion recovery. Allow site storage before deleting this league.", { includesOutcome: true }); return false; }
+      }
+      return run();
+    } };
   }
 
   function trackDeletedRowFocus(button) {
@@ -1382,9 +1470,10 @@
     );
   }
 
-  async function requestJson(path, init = {}) {
+  async function requestJson(path, init = {}, onDispatch = null) {
     const finishWrite = !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? beforeGameWrite?.(path, init.method) : null;
     try {
+      onDispatch?.();
       const response = await fetch(buildApiUrl(path), {
         credentials: "include",
         ...init,
@@ -1414,8 +1503,8 @@
     }
   }
 
-  async function requestJsonOrThrow(path, init = {}) {
-    const result = await requestJson(path, init);
+  async function requestJsonOrThrow(path, init = {}, onDispatch = null) {
+    const result = await requestJson(path, init, onDispatch);
     if (!result.ok) {
       const message = result.body?.message || result.body?.error || `Request failed with status ${result.status}.`;
       const error = new Error(message);
@@ -1827,6 +1916,513 @@
     await renderLeagues();
   }
 
+  function trackInteractionFocus(scope) {
+    if (!(scope instanceof HTMLElement)) return () => false;
+    let ownsFocus = scope.contains(document.activeElement);
+    const playerId = scope.getAttribute("data-player-id");
+    const isInside = target => scope.contains(target) || (playerId && target.closest("[data-player-id]")?.getAttribute("data-player-id") === playerId);
+    const focusChanged = event => {
+      if (event.target !== document.body && event.target instanceof Element && !isInside(event.target)) ownsFocus = false;
+    };
+    const pointerChanged = event => {
+      if (event.target instanceof Element && !isInside(event.target)) ownsFocus = false;
+    };
+    document.addEventListener("focusin", focusChanged, true);
+    document.addEventListener("pointerdown", pointerChanged, true);
+    return () => {
+      document.removeEventListener("focusin", focusChanged, true);
+      document.removeEventListener("pointerdown", pointerChanged, true);
+      return ownsFocus;
+    };
+  }
+
+  function initPlayerInvitation({ path, canManage, canOpen, isLocked, playerName, proofPlayerId = playerId => playerId }) {
+    const invitationPanel = document.getElementById("player-invitation-panel");
+    const invitationStatus = document.getElementById("player-invitation-status");
+    const invitationCreate = document.getElementById("player-invitation-create");
+    const invitationCopy = document.getElementById("player-invitation-copy");
+    const invitationRevoke = document.getElementById("player-invitation-revoke");
+    const invitationClose = document.getElementById("player-invitation-close");
+    const invitationLink = document.getElementById("player-invitation-link");
+    let invitationPlayerId = null;
+    let invitationTarget = null;
+    let invitationMetadata = null;
+    let invitationAttempt = null;
+    let invitationPending = false;
+    let invitationLoaded = false;
+    let invitationRevokeUnconfirmed = false;
+    let invitationCleanup = null;
+    let invitationGeneration = 0;
+    function discardPlayerInvitation() {
+      invitationGeneration += 1;
+      invitationLink.value = "";
+      invitationAttempt = null; invitationMetadata = null; invitationPlayerId = null;
+      invitationTarget = null;
+      invitationLoaded = false; invitationPending = false; invitationRevokeUnconfirmed = false;
+      invitationCleanup = null;
+      invitationPanel.hidden = true;
+      invitationMessage("");
+    }
+    window.addEventListener("threefc:player-proof-cleared", discardPlayerInvitation);
+    window.addEventListener("threefc:player-proof-invalidated", discardPlayerInvitation);
+    function invitationMessage(text, error = false) {
+      invitationStatus.textContent = text;
+      invitationStatus.hidden = !text;
+      invitationStatus.setAttribute("role", error ? "alert" : "status");
+    }
+    function retireInvitationDraft() {
+      try {
+        window.ThreeFcPlayerProof.discardDraft(invitationAttempt.proof);
+        invitationAttempt = null;
+        return true;
+      } catch {
+        invitationMessage("Your browser couldn’t clear the saved private link. Allow site storage, then retry.", true);
+        return false;
+      }
+    }
+    function finishInvitationCleanup() {
+      if (!invitationCleanup) return;
+      window.ThreeFcPlayerProof.retireInvitation(invitationCleanup.proofId, invitationCleanup.playerId);
+      invitationCleanup = null;
+    }
+    function renderInvitation() {
+      const canIssue = invitationLoaded && canManage() && !isLocked();
+      invitationCreate.disabled = invitationPending || !canIssue || invitationRevokeUnconfirmed;
+      invitationClose.disabled = invitationPending;
+      invitationCopy.disabled = invitationPending || Boolean(invitationAttempt) || !invitationLoaded;
+      invitationRevoke.disabled = invitationPending || !canIssue || Boolean(invitationAttempt);
+      invitationCreate.textContent = invitationAttempt ? "Retry link creation" : invitationMetadata ? "Replace private link" : "Create private link";
+      invitationRevoke.hidden = !invitationMetadata || invitationMetadata.state !== "pending";
+      invitationCopy.hidden = !invitationLink.value;
+      document.getElementById("player-invitation-link-field").hidden = !invitationLink.value;
+    }
+    function invitationPath(suffix = "") { return invitationTarget?.paths[suffix] ?? null; }
+    async function invitationRequest(path, options, onDispatch = null) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 15000);
+      try { return await requestJsonOrThrow(path, { ...options, signal: controller.signal }, onDispatch); }
+      finally { window.clearTimeout(timeout); }
+    }
+    async function openPlayerInvitation(playerId) {
+      if (invitationPending || !canManage() || !canOpen(playerId)) return;
+      closeActionMenu();
+      if (invitationPlayerId !== playerId && (invitationAttempt || invitationRevokeUnconfirmed)) {
+        invitationPanel.hidden = false;
+        invitationMessage("Finish checking the previous profile-link request before starting another one.", true);
+        return;
+      }
+      if (invitationPlayerId === playerId && invitationLoaded) {
+        invitationPanel.hidden = false;
+        document.getElementById("player-invitation-title").focus();
+        return;
+      }
+      invitationPlayerId = playerId; invitationMetadata = null; invitationAttempt = null;
+      // The card keeps its historical game ID. Proof storage and all retries
+      // must instead retain the exact canonical target selected on opening.
+      invitationTarget = { playerId: proofPlayerId(playerId), paths: { "": path("", playerId), "/revoke": path("/revoke", playerId) } };
+      const generation = ++invitationGeneration;
+      invitationRevokeUnconfirmed = false;
+      invitationLoaded = false; invitationPending = true; invitationLink.value = "";
+      invitationPanel.hidden = false;
+      document.getElementById("player-invitation-title").textContent = `Invite ${playerName(playerId)} to link their profile`;
+      document.getElementById("player-invitation-title").focus();
+      invitationMessage("Checking profile link…"); renderInvitation();
+      try {
+        const result = await invitationRequest(invitationPath(), { method: "GET", cache: "no-store" });
+        if (generation !== invitationGeneration) return;
+        if (result.invitation !== null && (typeof result.invitation?.proofId !== "string" || typeof result.invitation?.expiresAt !== "string")) throw new Error("invite_unconfirmed");
+        invitationMetadata = result.invitation;
+        invitationLoaded = true;
+        invitationMessage(invitationMetadata ? "A private link already exists. Replace it if you need a new copy." : "");
+      } catch {
+        if (generation !== invitationGeneration) return;
+        invitationMessage("Could not check this player’s link. Close this panel and try again.", true);
+      } finally { if (generation === invitationGeneration) { invitationPending = false; renderInvitation(); } }
+    }
+    invitationCreate?.addEventListener("click", async () => {
+      if (invitationPending || !invitationLoaded || invitationRevokeUnconfirmed || !canManage() || isLocked()) return;
+      if (!invitationAttempt && invitationMetadata && !window.confirm("Replace this private link? The previous link will stop working. Share the new link privately.")) return;
+      const generation = invitationGeneration;
+      let dispatched = false;
+      invitationPending = true; renderInvitation(); invitationMessage("Creating private link…");
+      try {
+        finishInvitationCleanup();
+        if (!invitationAttempt) {
+          const proof = await window.ThreeFcPlayerProof.create(`invite:${randomSuffix(24)}`);
+          if (generation !== invitationGeneration) return;
+          invitationAttempt = { proof, previousProofId: invitationMetadata?.proofId ?? null, previousLink: invitationLink.value, body: JSON.stringify({ proofId: proof.proofId, verifier: proof.verifier,
+            replacesProofId: invitationMetadata?.proofId ?? null }) };
+        }
+        const result = await invitationRequest(invitationPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: invitationAttempt.body }, () => {
+          dispatched = true;
+          invitationLink.value = "";
+          renderInvitation();
+        });
+        if (generation !== invitationGeneration) return;
+        const record = window.ThreeFcPlayerProof.attach(invitationAttempt.proof, result.invitation, invitationTarget.playerId, invitationAttempt.previousProofId);
+        invitationMetadata = { ...result.invitation, state: "pending" };
+        invitationLink.value = window.ThreeFcPlayerProof.shareLink(record);
+        invitationAttempt = null;
+        invitationMessage(`Private link created. It expires on ${new Date(result.invitation.expiresAt).toLocaleString()}.`);
+      } catch (error) {
+        if (generation !== invitationGeneration) return;
+        if (error.statusCode === 503 && error.responseCode === "claims_unavailable" && invitationAttempt && !invitationAttempt.uncertain) {
+          invitationLink.value = invitationAttempt.previousLink;
+          if (!retireInvitationDraft()) return;
+          invitationMessage(invitationLink.value
+            ? "Profile linking is temporarily unavailable. Your existing link was not replaced. Try again later."
+            : "Profile linking is temporarily unavailable. No link was created. Try again later.", true);
+          return;
+        }
+        if (!dispatched && invitationAttempt && !invitationAttempt.uncertain) {
+          if (!retireInvitationDraft()) return;
+          invitationMessage("The link was not replaced. Reload to check the earlier game change before trying again.", true);
+          return;
+        }
+        if (invitationAttempt && ((!invitationAttempt.uncertain && [400, 401, 403, 404, 409].includes(error.statusCode)) ||
+            (error.statusCode === 409 && error.responseCode === "claim_invite_changed"))) {
+          if (!retireInvitationDraft()) return;
+          invitationLoaded = false; invitationLink.value = "";
+          invitationMessage("This player or its private link changed. Close this panel and check it again.", true);
+        } else {
+          if (invitationAttempt) invitationAttempt.uncertain = true;
+          invitationMessage(error.message === "proof_storage_full"
+            ? "This tab is holding too many private links. Save any links you need before signing out and back in."
+            : invitationAttempt ? "Link creation could not be confirmed. Retry sends the same request."
+            : "Your browser could not keep the private link. Allow site storage and try again.", true);
+        }
+      } finally { if (generation === invitationGeneration) { invitationPending = false; renderInvitation(); } }
+    });
+    invitationRevoke?.addEventListener("click", async () => {
+      if (invitationPending || invitationAttempt || !invitationMetadata || !canManage() || isLocked()) return;
+      if (!invitationRevokeUnconfirmed && !window.confirm("Revoke this private link? Anyone who received it will no longer be able to use it.")) return;
+      const generation = invitationGeneration;
+      const finishFocus = trackInteractionFocus(invitationRevoke);
+      let dispatched = false;
+      invitationPending = true; renderInvitation();
+      try {
+        finishInvitationCleanup();
+        const result = await invitationRequest(invitationPath("/revoke"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proofId: invitationMetadata.proofId }) }, () => { dispatched = true; });
+        if (generation !== invitationGeneration) return;
+        if (result.revoked !== true) throw new Error("revoke_unconfirmed");
+        invitationMetadata.state = "revoked"; invitationLink.value = "";
+        invitationRevokeUnconfirmed = false;
+        invitationCleanup = { proofId: invitationMetadata.proofId, playerId: invitationTarget.playerId };
+        try { finishInvitationCleanup(); invitationMessage("Private link revoked."); }
+        catch { invitationMessage("Private link revoked. Your browser couldn’t clear its saved copy. Allow site storage before creating another link.", true); }
+      } catch (error) {
+        if (generation === invitationGeneration) {
+          if (!dispatched) {
+            invitationMessage(invitationRevokeUnconfirmed
+              ? "This retry was not sent. The earlier revocation is still unconfirmed. Reload before continuing."
+              : "Revocation was not sent. Reload to check the earlier game change before trying again.", true);
+          } else if (error.statusCode === 409) {
+            invitationRevokeUnconfirmed = false; invitationLoaded = false;
+            invitationMetadata = null; invitationLink.value = "";
+            invitationMessage("The private link changed. Close this panel and check the current link before revoking it.", true);
+          } else {
+            invitationRevokeUnconfirmed = true;
+            invitationMessage("Revocation could not be confirmed. Try again to revoke the same link.", true);
+          }
+        }
+      }
+      finally {
+        const owned = finishFocus();
+        if (generation === invitationGeneration) {
+          invitationPending = false; renderInvitation();
+          if (owned && invitationRevoke.hidden && !invitationPanel.hidden) { invitationStatus.tabIndex = -1; invitationStatus.focus(); }
+        }
+      }
+    });
+    invitationCopy?.addEventListener("click", async () => {
+      if (!invitationLink.value || invitationPending || isLocked() || !canManage()) return;
+      const generation = invitationGeneration;
+      try { await navigator.clipboard.writeText(invitationLink.value); if (generation === invitationGeneration) invitationMessage("Private link copied."); }
+      catch { if (generation === invitationGeneration) { invitationLink.focus(); invitationLink.select(); invitationMessage("Copy failed. Select and copy the link above.", true); } }
+    });
+    function closePlayerInvitation() {
+      if (invitationPending) return;
+      invitationPanel.hidden = true;
+      const card = [...root.querySelectorAll('[data-player-id]')].find((node) => node.getAttribute("data-player-id") === invitationPlayerId);
+      (card?.querySelector('[data-action="toggle-action-menu"]') ?? card?.querySelector('[data-action="invite-player-profile"]'))?.focus();
+    }
+    invitationClose?.addEventListener("click", closePlayerInvitation);
+    invitationPanel?.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closePlayerInvitation(); } });
+    root.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest('[data-action="invite-player-profile"]') : null;
+      if (target) void openPlayerInvitation(target.getAttribute("data-player-id"));
+    });
+    return {
+      discard: discardPlayerInvitation,
+      hasPending: () => Boolean(invitationPending || invitationAttempt || invitationRevokeUnconfirmed),
+      ownsRequest: requestPath => invitationPending && [invitationPath(), invitationPath("/revoke")].includes(requestPath),
+    };
+
+  }
+
+  function attachPlayerNameSuggestions({ input, panel, leagueId, canRead, useExisting }) {
+    let version = 0, timer = null;
+    function clear() { ++version; window.clearTimeout(timer); panel.replaceChildren(); panel.hidden = true; }
+    async function check() {
+      clear();
+      const nickname = input.value.trim(), current = version;
+      if (!nickname || !canRead()) return;
+      const message = document.createElement("p");
+      message.setAttribute("role", "status"); message.textContent = "Checking for existing players…";
+      panel.append(message); panel.hidden = false;
+      try {
+        // Suggestions are bounded and advisory, never identity matching or an
+        // assertion that no duplicates exist beyond this page of results.
+        const result = await requestJsonOrThrow(`/v1/league-players?${new URLSearchParams({ leagueId: leagueId(), query: nickname, limit: "10" })}`);
+        if (current !== version || input.value.trim() !== nickname || !canRead()) return;
+        if (!Array.isArray(result.players) || result.players.some(player => !usableEntityId(player.playerId) ||
+            typeof player.nickname !== "string" || !Array.isArray(player.seasons) || player.seasons.some(season => typeof season.name !== "string"))) throw new Error("Invalid player suggestions");
+        panel.replaceChildren();
+        if (!result.players.length && !result.cursor) { panel.hidden = true; return; }
+        message.textContent = "Possible existing players. If this is someone else, create a new player below.";
+        panel.append(message);
+        const list = document.createElement("ul");
+        for (const player of result.players) {
+          const row = document.createElement("li");
+          row.textContent = [player.nickname, ...player.seasons.map(season => season.name)].join(" · "); list.append(row);
+        }
+        panel.append(list);
+        const button = document.createElement("button"); button.type = "button";
+        button.setAttribute("data-ui", "button"); button.setAttribute("data-variant", "secondary");
+        button.textContent = "Find existing players";
+        button.addEventListener("click", () => { if (canRead()) useExisting(nickname); }); panel.append(button);
+      } catch {
+        if (current === version && canRead()) message.textContent = "Couldn’t check for existing players. Search the player list before creating another profile.";
+      }
+    }
+    input.addEventListener("input", () => { clear(); timer = window.setTimeout(() => { void check(); }, 180); });
+    window.addEventListener("threefc:player-proof-cleared", clear);
+    window.addEventListener("threefc:player-proof-invalidated", clear);
+    window.addEventListener("pagehide", clear);
+    return { check, clear };
+  }
+
+  function initLeagueDirectory(leagueId, seasons, canManage) {
+    const panel = document.getElementById("league-players-region");
+    if (!panel) return;
+    const list = document.getElementById("league-player-list");
+    const status = document.getElementById("league-player-status");
+    const scope = document.getElementById("league-player-scope");
+    const search = document.getElementById("league-player-search");
+    const more = document.getElementById("league-player-more");
+    const moreAnchor = document.createComment("directory pagination position");
+    more.before(moreAnchor);
+    const createToggle = document.getElementById("league-player-create-toggle");
+    const createPanel = document.getElementById("league-player-create-region");
+    const name = document.getElementById("league-player-name");
+    const createButton = document.getElementById("league-player-create");
+    const cancel = document.getElementById("league-player-create-cancel");
+    const seasonPanel = document.querySelector('[data-testid="panel-league-seasons"]');
+    let generation = 0, cursor = null, loaded = false, pending = false, creating = false, attempt = null;
+    let submittedQuery = "", submittedScope = "", filterRevision = 0;
+    const seen = new Set();
+    const directoryPlayers = new Map();
+    let combineActive = false;
+    const consolidation = window.ThreeFcConsolidation?.initializeLeague({ leagueId, canManage,
+      getPlayer: playerId => directoryPlayers.get(playerId), getPlayers: () => [...directoryPlayers.values()],
+      onCommitted: async () => { if (!await load()) throw new Error("directory_refresh_failed"); },
+      onTaskState: ({ active, phase }) => {
+        const opened = active && !combineActive;
+        combineActive = active;
+        panel.dataset.combinePhase = active ? phase : "";
+        list.hidden = active;
+        document.getElementById("league-player-search-form").hidden = active && phase !== "select";
+        if (active && phase === "select") panel.querySelector('[data-ui="consolidation-selection-table"]')?.after(more);
+        else if (!active) moreAnchor.after(more);
+        if (active) setDisclosureState(createToggle, createPanel, false, { restoreFocus: false });
+        if (opened) queueMicrotask(() => { if (combineActive) void load(); });
+      } });
+    const say = (message, error = false) => {
+      status.textContent = message; status.hidden = !message;
+      status.setAttribute("data-state", error ? "error" : "default");
+    };
+    for (const season of seasons) {
+      const option = document.createElement("option");
+      option.value = season.seasonId; option.textContent = season.name;
+      scope.append(option);
+    }
+    const requestedSeason = new URLSearchParams(window.location.search).get("seasonId");
+    if (requestedSeason && seasons.some(season => season.seasonId === requestedSeason)) scope.value = requestedSeason;
+    attachDisclosure(createToggle, createPanel);
+    const canWrite = () => canManage() && hasAuthenticatedAccount && !signOutPending && !signOutUnconfirmed && !accountRevalidating;
+    const nameSuggestions = attachPlayerNameSuggestions({ input: name, panel: document.getElementById("league-player-name-matches"),
+      leagueId: () => leagueId, canRead: () => canWrite() && !creating && !attempt,
+      useExisting: nickname => {
+        setDisclosureState(createToggle, createPanel, false, { restoreFocus: false });
+        scope.value = ""; search.value = nickname; filterRevision += 1; search.focus(); void load();
+      } });
+    const invitations = initPlayerInvitation({
+      path: (suffix, playerId) => {
+        try {
+          return usableEntityId(playerId) ? `/v1/player-proofs/league-invitation${suffix}?${new URLSearchParams({ leagueId, playerId })}` : null;
+        } catch { return null; }
+      },
+      canManage: canWrite,
+      canOpen: playerId => directoryPlayers.has(playerId) && !directoryPlayers.get(playerId).claimed,
+      isLocked: () => !canWrite(),
+      playerName: playerId => directoryPlayers.get(playerId)?.nickname ?? "Player",
+    });
+    function renderRows(players, append) {
+      if (!append) { list.replaceChildren(); seen.clear(); directoryPlayers.clear(); }
+      for (const player of players) {
+        if (!usableEntityId(player.playerId) || typeof player.nickname !== "string" || seen.has(player.playerId)) continue;
+        seen.add(player.playerId);
+        directoryPlayers.set(player.playerId, player);
+        const row = document.createElement("li");
+        row.setAttribute("data-player-id", player.playerId);
+        const label = document.createElement("strong"); label.textContent = player.nickname;
+        const badge = document.createElement("span");
+        badge.setAttribute("data-ui", "claim-badge");
+        badge.setAttribute("data-state", player.claimed ? "claimed" : "unclaimed");
+        badge.title = player.claimed ? "Linked to an account" : "Not linked to an account";
+        badge.innerHTML = renderClientIcon(player.claimed ? "user-round-check" : "circle-user-round");
+        const accessible = document.createElement("span"); accessible.className = "sr-only"; accessible.textContent = badge.title;
+        badge.append(accessible);
+        const heading = document.createElement("div"); heading.setAttribute("data-ui", "directory-player-heading"); heading.append(label, badge);
+        if (canManage() && !player.claimed) {
+          const actions = document.createElement("div");
+          actions.innerHTML = renderClientActionMenu(`directory-player-${encodeURIComponent(player.playerId)}`, player.nickname,
+            renderClientIconButton({ icon: "user-round-plus", label: `Invite ${player.nickname} to link their profile`, text: "Invite to link profile",
+              attributes: { "data-action": "invite-player-profile", "data-player-id": player.playerId } }));
+          heading.append(actions);
+        }
+        row.append(heading);
+        const names = (Array.isArray(player.seasons) ? player.seasons : []).filter(season => typeof season.name === "string").map(season => season.name);
+        if (names.length) {
+          const context = document.createElement("p"); context.textContent = names.join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "");
+          row.append(context);
+        }
+        list.append(row);
+      }
+      consolidation?.refreshRows();
+    }
+    async function load(append = false) {
+      if (append && (pending || !cursor)) return;
+      const finishFocus = append ? trackInteractionFocus(more) : null;
+      const version = ++generation;
+      pending = true; more.disabled = true;
+      if (!append) { cursor = null; more.hidden = true; }
+      say("Loading players…");
+      if (!append) { submittedQuery = search.value.trim(); submittedScope = scope.value; }
+      const query = new URLSearchParams({ leagueId, query: submittedQuery, limit: combineActive ? "10" : "25" });
+      if (combineActive) query.set("includeGames", "true");
+      if (submittedScope) query.set("seasonId", submittedScope);
+      if (append) query.set("cursor", cursor);
+      try {
+        let result, continuing = append;
+        const visited = new Set();
+        // A typed search covers the complete authorised scope. Physical storage
+        // pages must not require repeated user clicks to discover one name.
+        do {
+          result = await requestJsonOrThrow(`/v1/league-players?${query}`, { method: "GET", cache: "no-store" });
+          if (version !== generation) return;
+          if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string")) throw new Error("Invalid player list");
+          renderRows(result.players, continuing); continuing = true;
+          cursor = result.cursor;
+          if (cursor) {
+            if (visited.has(cursor)) throw new Error("Repeated player cursor");
+            visited.add(cursor); query.set("cursor", cursor);
+          }
+          if (cursor && submittedQuery) say("Searching all matching players…");
+        } while (cursor && submittedQuery && visited.size < 100);
+        loaded = true;
+        more.hidden = !cursor;
+        more.textContent = result.searchIncomplete ? "Continue loading players" : "Load more players";
+        say(cursor && submittedQuery ? "Search paused after a large result set. Continue loading to finish searching."
+          : seen.size ? "" : cursor ? "More players are being searched. Continue loading to see them." : "No players found.");
+        return true;
+      } catch (error) {
+        if (version !== generation) return;
+        // Never label an unavailable/migrating directory an empty player list.
+        if (!append || error.statusCode === 403 || error.statusCode === 401) { list.replaceChildren(); seen.clear(); directoryPlayers.clear(); }
+        if (error.statusCode === 403 || error.statusCode === 401) invitations.discard();
+        if (error.statusCode === 409) { cursor = null; more.hidden = true; }
+        say(error.statusCode === 503 ? "The player list is temporarily unavailable. Try again later."
+          : error.statusCode === 409 ? "The player list changed. Search again to refresh it."
+          : "Could not load players. Search again to retry.", true);
+        return false;
+      } finally {
+        const owned = finishFocus?.();
+        if (version === generation) {
+          pending = false; more.disabled = false;
+          if (owned && more.hidden && !panel.hidden) {
+            if (status.hidden) say("All matching players loaded.");
+            status.tabIndex = -1; status.focus();
+          }
+        }
+      }
+    }
+    document.getElementById("league-player-search-form").addEventListener("submit", event => { event.preventDefault(); void load(); });
+    search.addEventListener("input", () => { filterRevision += 1; });
+    scope.addEventListener("change", () => { filterRevision += 1; void load(); });
+    more.addEventListener("click", () => { void load(true); });
+    cancel.addEventListener("click", () => { if (!creating) setDisclosureState(createToggle, createPanel, false); });
+    document.getElementById("league-player-create-form").addEventListener("submit", async event => {
+      event.preventDefault();
+      if (creating || !canWrite()) return;
+      const nickname = name.value.trim();
+      if (!nickname) { name.reportValidity(); name.focus(); return; }
+      if (!attempt) attempt = { playerId: `player-${randomSuffix(24)}`, nickname, uncertain: false };
+      const filtersAtDispatch = filterRevision;
+      const finishFocus = trackInteractionFocus(document.getElementById("league-player-create-form"));
+      creating = true; createButton.disabled = true; cancel.disabled = true; name.readOnly = true;
+      say("Creating player…");
+      try {
+        const result = await requestJsonOrThrow(`/v1/league-players?${new URLSearchParams({ leagueId })}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playerId: attempt.playerId, nickname: attempt.nickname }),
+        });
+        if (result.player?.playerId !== attempt.playerId) throw new Error("Unconfirmed creation");
+        const savedName = attempt.nickname;
+        attempt = null; name.value = ""; name.readOnly = false; nameSuggestions.clear();
+        // A standalone player has no season membership until added to a game.
+        if (filtersAtDispatch === filterRevision) {
+          scope.value = ""; search.value = "";
+          const refreshed = await load();
+          if (filtersAtDispatch === filterRevision) say(refreshed ? `${savedName} created.` : `${savedName} created. The player list could not be refreshed. Search again to retry.`, !refreshed);
+        } else say(`${savedName} created. Find them in All league players.`);
+      } catch (error) {
+        if (attempt && !attempt.uncertain && isDefinitiveRequestRejection(error) && ![408, 429].includes(error.statusCode)) {
+          attempt = null; name.readOnly = false;
+        } else if (attempt) attempt.uncertain = true;
+        say(attempt ? "Player creation could not be confirmed. Retry sends the same player entry."
+          : "Could not create this player. Check the name and try again.", true);
+      } finally {
+        creating = false; createButton.disabled = !canWrite(); cancel.disabled = false;
+        if (finishFocus() && !panel.hidden && !createPanel.hidden) name.focus();
+      }
+    });
+    function showDestination(focus = false) {
+      const players = window.location.hash === "#players";
+      panel.hidden = !players; if (seasonPanel) seasonPanel.hidden = players;
+      for (const anchor of root.querySelectorAll("[data-league-destination]")) {
+        const active = (anchor.dataset.leagueDestination === "players") === players;
+        anchor.setAttribute("data-state", active ? "active" : "inactive");
+        if (active) anchor.setAttribute("aria-current", "page"); else anchor.removeAttribute("aria-current");
+      }
+      if (players && !loaded && !pending) void load();
+      if (players && focus) document.getElementById("league-players-title").focus();
+    }
+    window.addEventListener("hashchange", () => showDestination(true));
+    showDestination();
+    return { updateSeasons(nextSeasons) {
+      const selected = scope.value;
+      const all = document.createElement("option"); all.value = ""; all.textContent = "All league players";
+      scope.replaceChildren(all);
+      for (const season of nextSeasons) {
+        const option = document.createElement("option"); option.value = season.seasonId; option.textContent = season.name; scope.append(option);
+      }
+      scope.value = nextSeasons.some(season => season.seasonId === selected) ? selected : "";
+      generation += 1; filterRevision += 1; loaded = false; pending = false; cursor = null; more.hidden = true;
+      list.replaceChildren(); seen.clear(); directoryPlayers.clear();
+      if (!panel.hidden) void load();
+    } };
+  }
+
   async function initLeaguePage() {
     const leagueId = resolveRouteEntityId("data-league-id", "leagues");
     if (!leagueId) {
@@ -1858,6 +2454,8 @@
     const seasonsEmpty = document.getElementById("league-seasons-empty");
     let canManage = false;
     let leagueName = "League";
+    let directorySeasons = [];
+    let directoryController = null;
     const confirmedDeletedSeasonIds = new Set();
     const pendingDeletedSeasonIds = new Set();
     let seasonsRenderVersion = 0;
@@ -2025,6 +2623,8 @@
 
       const seasons = (Array.isArray(payload?.seasons) ? payload.seasons : [])
         .filter((season) => !confirmedDeletedSeasonIds.has(season.seasonId));
+      directorySeasons = seasons;
+      directoryController?.updateSeasons(seasons);
       if (seasons.length === 0) {
         seasonsBody.innerHTML = "";
         if (seasonsTableWrap instanceof HTMLElement) {
@@ -2202,6 +2802,8 @@
         await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}/seasons/${encodeURIComponent(seasonId)}`);
         committed = true;
         confirmedDeletedSeasonIds.add(seasonId);
+        directorySeasons = directorySeasons.filter(season => season.seasonId !== seasonId);
+        directoryController?.updateSeasons(directorySeasons);
         for (const action of seasonsBody.querySelectorAll('[data-season-id]')) {
           if (action.getAttribute("data-season-id") === seasonId) action.closest("tr")?.remove();
         }
@@ -2234,11 +2836,12 @@
 
         deleteLeagueButton.disabled = true;
         clearError();
-        setStatus(`Deleting league ${leagueId}…`, "default");
+        // The recoverable action owns its pending/error feedback; do not leave
+        // an unrelated global progress message behind after a failed attempt.
+        setStatus("");
 
         try {
-          await deleteManagementEntity(`/v1/leagues/${encodeURIComponent(leagueId)}`);
-          navigateTo("/setup");
+          if (await leagueDeletionRecovery?.start(leagueId)) navigateTo("/setup");
         } catch (error) {
           const message = error instanceof Error ? error.message : "Could not delete league.";
           showError(message);
@@ -2251,6 +2854,7 @@
 
     await loadLeague();
     await renderSeasons();
+    directoryController = initLeagueDirectory(leagueId, directorySeasons, () => canManage);
     setStatus("");
   }
 
@@ -2372,6 +2976,16 @@
         if (league.leagueId === leagueId) {
           if (seasonLeagueLink instanceof HTMLAnchorElement) seasonLeagueLink.textContent = league.name;
           canManage = league.access?.role === "admin";
+          if (["admin", "scorekeeper"].includes(league.access?.role)) {
+            let playersLink = document.getElementById("season-players-link");
+            if (!playersLink) {
+              playersLink = document.createElement("a"); playersLink.id = "season-players-link";
+              playersLink.setAttribute("data-ui", "button"); playersLink.setAttribute("data-variant", "secondary");
+              playersLink.innerHTML = `${renderClientIcon("users")}<span>Players</span>`;
+              document.querySelector('[data-ui="header-actions"]')?.prepend(playersLink);
+            }
+            playersLink.href = `/leagues/${encodeURIComponent(leagueId)}?${new URLSearchParams({ seasonId })}#players`;
+          }
         }
       } catch {
         // Existing season/game reads can still be useful. Unknown authority
@@ -2691,6 +3305,7 @@
     let rosterUnassignedPlayers = null;
     let rosterAssignments = [];
     let rosterSearchTimer = 0;
+    let existingPlayerAttempt = null;
     let openTransferPlayerId = null;
     let scoreboardTeams = [];
     let scoreboardState = "loading";
@@ -2763,7 +3378,7 @@
     }
 
     function finishedRosterControlsLocked() {
-      return refreshWriteLocked || !canManageRoster();
+      return refreshWriteLocked || Boolean(existingPlayerAttempt?.uncertain) || !canManageRoster();
     }
 
     function isLeagueOperator() {
@@ -2775,11 +3390,11 @@
     }
 
     function canScoreGame() {
-      return !refreshWriteLocked && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
+      return !refreshWriteLocked && !existingPlayerAttempt?.uncertain && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
     }
 
     function canEditGame() {
-      return !refreshAccountLocked && !refreshWriteLocked && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
+      return !refreshAccountLocked && !refreshWriteLocked && !existingPlayerAttempt?.uncertain && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
     }
 
     function syncGameCapabilities() {
@@ -4752,10 +5367,14 @@
 
       const access = verifiedAdminPlayers.get(player.playerId)?.access;
       if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
+        const invitePath = invitationPath("", player.playerId);
         return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
           <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
             "circle-user-round",
           )}</span>
+          ${invitePath ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
+            `<button data-ui="row-action" type="button" data-action="invite-player-profile" ${playerIdentityAttribute(player.playerId)}>Invite to link profile</button>`,
+            { "data-player-management": "" }) : '<small>Profile linking is unavailable for this player. Ask for help.</small>'}
         </div>`;
       }
 
@@ -4916,26 +5535,6 @@
       const target = focus.surface ? management?.querySelector('[data-ui="action-menu-surface"]') : [...player.querySelectorAll("button[data-action]")]
         .find((button) => button.getAttribute("data-action") === focus.action && button.getAttribute("data-team-id") === focus.teamId && button.getAttribute("data-role") === focus.role);
       if (target instanceof HTMLElement) target.focus({ preventScroll: true });
-    }
-
-    function trackInteractionFocus(scope) {
-      if (!(scope instanceof HTMLElement)) return () => false;
-      let ownsFocus = scope instanceof HTMLElement && scope.contains(document.activeElement);
-      const playerId = scope.getAttribute("data-player-id");
-      const isInside = (target) => scope.contains(target) || (playerId && target.closest("[data-player-id]")?.getAttribute("data-player-id") === playerId);
-      const focusChanged = (event) => {
-        if (event.target !== document.body && event.target instanceof Element && !isInside(event.target)) ownsFocus = false;
-      };
-      const pointerChanged = (event) => {
-        if (event.target instanceof Element && !isInside(event.target)) ownsFocus = false;
-      };
-      document.addEventListener("focusin", focusChanged, true);
-      document.addEventListener("pointerdown", pointerChanged, true);
-      return () => {
-        document.removeEventListener("focusin", focusChanged, true);
-        document.removeEventListener("pointerdown", pointerChanged, true);
-        return ownsFocus;
-      };
     }
 
     function applyRosterPayload(rosterPayload, confirmedBeforeRead) {
@@ -5180,8 +5779,176 @@
     const gameEditRegion = document.getElementById("game-edit-region");
     const playerCreateToggle = root.querySelector('[data-action="toggle-player-create"]');
     const playerCreateRegion = document.getElementById("player-create-region");
+    const pickerSearch = document.getElementById("game-player-picker-search");
+    const pickerScope = document.getElementById("game-player-picker-scope");
+    const pickerTeam = document.getElementById("game-player-picker-team");
+    const pickerList = document.getElementById("game-player-picker-list");
+    const pickerStatus = document.getElementById("game-player-picker-status");
+    const pickerMore = document.getElementById("game-player-picker-more");
+    const newPlayerToggle = document.getElementById("game-player-new-toggle");
+    const nameSuggestions = attachPlayerNameSuggestions({ input: playerNicknameInput, panel: document.getElementById("game-player-name-matches"),
+      leagueId: () => currentLeagueId, canRead: () => canManageRoster() && !refreshAccountLocked && !playerCreatePending && !playerCreateAttempt && !existingPlayerAttempt && !signOutPending && !signOutUnconfirmed,
+      useExisting: nickname => {
+        document.getElementById("player-create-form").hidden = true; newPlayerToggle.setAttribute("aria-expanded", "false");
+        pickerScope.value = "league"; pickerSearch.value = nickname; pickerSearch.focus(); void loadPicker();
+      } });
+    let pickerCursor = null, pickerVersion = 0, pickerQuery = "", pickerSeason = "", pickerLoading = false;
+    const pickerPlayers = new Map();
+    function pickerMessage(message, error = false) {
+      pickerStatus.textContent = message; pickerStatus.hidden = !message;
+      pickerStatus.setAttribute("data-state", error ? "error" : "default");
+    }
+    function renderPicker() {
+      const focusedPlayerId = pickerList.contains(document.activeElement) ? document.activeElement.getAttribute("data-player-id") : null;
+      const locked = !canManageRoster() || refreshWriteLocked || rosterMutationPending || playerCreatePending || Boolean(playerCreateAttempt);
+      pickerList.replaceChildren();
+      for (const player of pickerPlayers.values()) {
+        const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
+        const heading = document.createElement("div"); heading.setAttribute("data-ui", "directory-player-heading");
+        const name = document.createElement("strong"); name.textContent = player.nickname; heading.append(name);
+        const button = document.createElement("button"); button.type = "button"; button.setAttribute("data-ui", "button");
+        button.setAttribute("data-variant", "secondary"); button.setAttribute("data-action", "add-existing-player");
+        button.setAttribute("data-player-id", player.playerId);
+        button.disabled = locked || pickerLoading || player.inGame || Boolean(existingPlayerAttempt && existingPlayerAttempt.playerId !== player.playerId);
+        button.textContent = player.inGame ? "Already in game" : existingPlayerAttempt?.playerId === player.playerId ? "Retry adding" : "Add";
+        button.setAttribute("aria-label", `${button.textContent} ${player.nickname}`); heading.append(button); row.append(heading);
+        const context = document.createElement("p");
+        context.id = `game-player-picker-context-${pickerList.children.length}`;
+        button.setAttribute("aria-describedby", context.id);
+        context.textContent = [...(player.seasons ?? []).map(season => season.name), player.claimed ? "Linked to an account" : "Not linked to an account"].join(" · ");
+        row.append(context); pickerList.append(row);
+      }
+      pickerTeam.disabled = locked || Boolean(existingPlayerAttempt);
+      pickerSearch.disabled = locked || Boolean(existingPlayerAttempt);
+      pickerScope.disabled = locked || Boolean(existingPlayerAttempt);
+      pickerMore.disabled = locked || pickerLoading || Boolean(existingPlayerAttempt);
+      newPlayerToggle.disabled = locked || Boolean(existingPlayerAttempt);
+      if (focusedPlayerId) [...pickerList.querySelectorAll("button")].find(button => button.getAttribute("data-player-id") === focusedPlayerId && !button.disabled)?.focus({ preventScroll: true });
+    }
+    async function loadPicker(append = false) {
+      if (!currentLeagueId || !canManageRoster() || existingPlayerAttempt || playerCreateAttempt || (append && (!pickerCursor || pickerLoading))) return;
+      const version = ++pickerVersion, role = currentLeagueRole;
+      const finishFocus = append ? trackInteractionFocus(pickerMore) : null;
+      pickerLoading = true;
+      if (!append) { pickerCursor = null; pickerMore.hidden = true; pickerQuery = pickerSearch.value.trim(); pickerSeason = pickerScope.value === "season" ? currentSeasonId : ""; }
+      renderPicker(); pickerMessage("Loading players…");
+      const params = new URLSearchParams({ leagueId: currentLeagueId, gameId, query: pickerQuery, limit: "25" });
+      if (pickerSeason) params.set("seasonId", pickerSeason);
+      if (append) params.set("cursor", pickerCursor);
+      try {
+        let result, continuing = append;
+        const visited = new Set();
+        do {
+          result = await requestJsonOrThrow(`/v1/league-players?${params}`, { method: "GET", cache: "no-store" });
+          if (version !== pickerVersion || role !== currentLeagueRole || refreshAccountLocked) return;
+          if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string") || result.players.some(player => typeof player.inGame !== "boolean")) throw new Error("Invalid player page");
+          if (!continuing) pickerPlayers.clear();
+          for (const player of result.players) pickerPlayers.set(player.playerId, player);
+          continuing = true; pickerCursor = result.cursor;
+          if (pickerCursor) {
+            if (visited.has(pickerCursor)) throw new Error("Repeated player cursor");
+            visited.add(pickerCursor); params.set("cursor", pickerCursor);
+          }
+        } while (pickerCursor && pickerQuery && visited.size < 100);
+        pickerMore.hidden = !pickerCursor;
+        pickerMessage(pickerCursor && pickerQuery ? "Search paused after a large result set. Continue loading to finish searching."
+          : pickerPlayers.size ? "" : pickerCursor ? "Continue loading to see more players." : "No players found. Try All league players or create a new player.");
+      } catch (error) {
+        if (version !== pickerVersion) return;
+        if (!append || [401, 403].includes(error.statusCode)) pickerPlayers.clear();
+        if (error.statusCode === 409 || error.statusCode === 400) { pickerCursor = null; pickerMore.hidden = true; }
+        pickerMessage(error.statusCode === 503 ? "The player list is temporarily unavailable. Try again later."
+          : "Could not load players. Search again to refresh the list.", true);
+      } finally {
+        const owned = finishFocus?.();
+        if (version === pickerVersion) {
+          pickerLoading = false; renderPicker();
+          if (owned && pickerMore.hidden && !playerCreateRegion.hidden) {
+            if (pickerStatus.hidden) pickerMessage("All matching players loaded.");
+            pickerStatus.tabIndex = -1; pickerStatus.focus();
+          }
+        }
+      }
+    }
+    document.getElementById("game-player-picker-form")?.addEventListener("submit", event => { event.preventDefault(); void loadPicker(); });
+    pickerScope?.addEventListener("change", () => { void loadPicker(); });
+    pickerMore?.addEventListener("click", () => { void loadPicker(true); });
+    newPlayerToggle?.addEventListener("click", () => {
+      if (newPlayerToggle.disabled || existingPlayerAttempt) return;
+      const form = document.getElementById("player-create-form");
+      const open = form.hidden; form.hidden = !open; newPlayerToggle.setAttribute("aria-expanded", String(open));
+      if (open) {
+        if (!playerNicknameInput.value) playerNicknameInput.value = pickerSearch.value.trim();
+        playerNicknameInput.focus();
+        void nameSuggestions.check();
+      }
+    });
+    pickerList?.addEventListener("click", async event => {
+      const button = event.target instanceof Element ? event.target.closest('[data-action="add-existing-player"]') : null;
+      if (!(button instanceof HTMLButtonElement) || button.disabled || rosterMutationPending || playerCreatePending || playerCreateAttempt || !canManageRoster() || refreshWriteLocked) return;
+      const selected = pickerPlayers.get(button.getAttribute("data-player-id"));
+      if (!selected || selected.inGame) return;
+      if (!existingPlayerAttempt) existingPlayerAttempt = { playerId: selected.playerId, nickname: selected.nickname, uncertain: false,
+        path: `/v1/game-player-registrations?${new URLSearchParams({ gameId })}`,
+        body: JSON.stringify({ playerId: selected.playerId, teamId: pickerTeam.value || null, allowFinished: isGameFinished() }) };
+      if (existingPlayerAttempt.playerId !== selected.playerId) return;
+      // A read started before dispatch cannot replace the frozen retry's row.
+      pickerVersion += 1; pickerLoading = false; pickerCursor = null; pickerMore.hidden = true;
+      const authorityAtDispatch = authorityRevision;
+      const finishFocus = trackInteractionFocus(button.closest("li"));
+      rosterMutationPending = true; renderRosterSetup(); renderPicker(); pickerMessage("Adding player…");
+      let committed = false;
+      try {
+        const response = await requestJsonOrThrow(existingPlayerAttempt.path, { method: "POST", headers: { "Content-Type": "application/json" }, body: existingPlayerAttempt.body });
+        if (!usableEntityId(response.registration?.playerId) || typeof response.registration.alreadyInGame !== "boolean") throw new Error("Unconfirmed registration");
+        committed = true;
+        const player = { playerId: response.registration.playerId, nickname: existingPlayerAttempt.nickname };
+        existingPlayerAttempt = null; selected.inGame = true;
+        if (refreshAccountLocked || authorityAtDispatch !== authorityRevision) return;
+        pendingCreatedPlayers.set(player.playerId, player); knownRosterPlayers.set(player.playerId, player);
+        ++playersReadVersion;
+        await loadRosterSetup({ updateStatus: false }); await loadPlayerSearch();
+        pickerMessage(response.registration.alreadyInGame ? `${player.nickname} is already in this game.` : `${player.nickname} added.`);
+      } catch (error) {
+        if (committed) pickerMessage("Player added. The latest teams couldn’t be loaded. Reload to check them.", true);
+        else {
+          if (existingPlayerAttempt && !existingPlayerAttempt.uncertain && isDefinitiveRequestRejection(error) && ![408, 429].includes(error.statusCode)) existingPlayerAttempt = null;
+          else if (existingPlayerAttempt) existingPlayerAttempt.uncertain = true;
+          pickerMessage(existingPlayerAttempt ? "Player addition could not be confirmed. Retry adding sends the same request."
+            : "This player could not be added. Search again to refresh the list.", true);
+        }
+      } finally {
+        rosterMutationPending = false; renderRosterSetup(); renderPicker();
+        if (finishFocus() && !playerCreateRegion.hidden) { pickerStatus.tabIndex = -1; pickerStatus.focus(); }
+      }
+    });
+    const playerInvitation = initPlayerInvitation({
+      path: (suffix, playerId) => invitationPath(suffix, playerId),
+      proofPlayerId: playerId => {
+        const canonicalPlayerId = verifiedAdminPlayers.get(playerId)?.canonicalPlayerId;
+        return usableEntityId(canonicalPlayerId) && usableEntityId(currentLeagueId) ? canonicalPlayerId : playerId;
+      },
+      canManage: () => currentLeagueRole === "admin",
+      canOpen: playerId => verifiedAdminPlayers.has(playerId),
+      isLocked: () => refreshAccountLocked,
+      playerName: playerNickname,
+    });
+    function invitationPath(suffix = "", playerId) {
+      try {
+        const canonicalPlayerId = verifiedAdminPlayers.get(playerId)?.canonicalPlayerId;
+        if (usableEntityId(canonicalPlayerId) && canonicalPlayerId !== playerId && usableEntityId(currentLeagueId)) {
+          return `/v1/player-proofs/league-invitation${suffix}?${new URLSearchParams({ leagueId: currentLeagueId, playerId: canonicalPlayerId })}`;
+        }
+        if (!usableEntityId(playerId) || new TextEncoder().encode(`PLAYER#${playerId}`).length > 2048 ||
+            !usableEntityId(gameId) || new TextEncoder().encode(`GAME#${gameId}`).length > 2048) return null;
+        return `/v1/player-proofs/invitation${suffix}?gameId=${encodeURIComponent(gameId)}&playerId=${encodeURIComponent(playerId)}`;
+      } catch { return null; }
+    }
     attachDisclosure(gameEditToggle, gameEditRegion);
-    attachDisclosure(playerCreateToggle, playerCreateRegion);
+    attachDisclosure(playerCreateToggle, playerCreateRegion, { onOpen: () => {
+      void loadPicker();
+      if (!document.getElementById("player-create-form").hidden) playerNicknameInput.focus();
+    } });
     for (const panel of [gameEditRegion, playerCreateRegion]) panel?.addEventListener("keydown", (event) => {
       // The disclosure's Escape handler already closed it. Its original trigger
       // may now be disabled; keep deliberate keyboard recovery visible.
@@ -5571,6 +6338,7 @@
           if (playerNicknameGeneration === playerCreateAttempt.nicknameGeneration && playerNicknameInput.value.trim() === playerCreateAttempt.nickname) playerNicknameInput.value = "";
           if (playerSearchGeneration === playerCreateAttempt.searchGeneration && playerSearchInput.value === playerCreateAttempt.search) playerSearchInput.value = "";
           playerCreateAttempt = null;
+          nameSuggestions.clear();
           ++playersReadVersion;
           rosterPlayers = [player, ...rosterPlayers.filter((entry) => entry.playerId !== player.playerId)];
           renderRosterSetup();
@@ -5952,6 +6720,7 @@
     }
 
     beforeGameWrite = (path, method) => {
+      if (existingPlayerAttempt?.uncertain && path !== existingPlayerAttempt.path && path !== "/v1/auth/logout") throw new Error("Retry the unconfirmed player addition before making another change.");
       if (refreshAccountLocked && path !== "/v1/auth/logout") throw new Error("Your account changed. Reload before making changes.");
       if (refreshWriteLocked && path !== "/v1/auth/logout") throw new Error("An earlier change is unconfirmed. Reload before making changes.");
       // Synchronous and before fetch, including writes made outside this root.
@@ -5961,7 +6730,9 @@
       const owner = `${method}:${path}`;
       const dedicatedOwner = (goalOperation?.path === path && goalOperation.request.method === method) ||
         (clockOperation?.path === path && clockOperation.request.method === method) ||
-        (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method);
+        (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method) ||
+        (existingPlayerAttempt?.path === path && method === "POST") ||
+        playerInvitation.ownsRequest(path);
       return (result) => {
         // These writes already have an explicit recovery owner. A clock GET
         // can confirm its operation without replaying the POST; don't strand
@@ -5981,10 +6752,14 @@
 
     function localWriteOwnsState() {
       return Boolean(gameMetadataPending || gameDeletionPending || goalMutationInFlight || timerMutationPending ||
-        rosterMutationPending || playerCreatePending || goalOperation || clockOperation || playerCreateAttempt || uncertainReadBarriers.size);
+        rosterMutationPending || playerCreatePending || goalOperation || clockOperation || playerCreateAttempt ||
+        playerInvitation.hasPending() || existingPlayerAttempt || uncertainReadBarriers.size);
     }
 
     function discardPrivateEnrichment() {
+      playerInvitation.discard();
+      pickerVersion += 1; pickerPlayers.clear(); pickerList.replaceChildren(); pickerCursor = null; pickerMore.hidden = true;
+      pickerSearch.value = ""; pickerMessage("");
       ++playersReadVersion;
       knownRosterPlayers.clear();
       verifiedAdminPlayers.clear();
@@ -5997,6 +6772,7 @@
     }
 
     function lockRefreshAccount(message) {
+      window.ThreeFcPlayerProof?.clear();
       refreshAccountLocked = true;
       authorityRevision += 1;
       currentLeagueRole = null;
@@ -6055,6 +6831,7 @@
         renderGoalControls({}, true);
         renderGoalTimeline();
         renderRosterSetup();
+        renderPicker();
         for (const button of goalTimelineElement?.querySelectorAll("button[data-event-id]") ?? []) {
           button.disabled = !canScoreGame() || !goalTimeline.some((goal) => goal.eventId === button.getAttribute("data-event-id"));
         }
@@ -6283,6 +7060,12 @@
     let claimPlayerId = usableEntityId(queryPlayerId) ? queryPlayerId : "";
     entryClaimPlayerId = claimPlayerId || null;
     let joinAttempt = null;
+    let unissuedJoinProof = null;
+    let linkingUnavailable = false;
+    let creationAllowed = false;
+    let entryLocked = false;
+    let returningPlayer = null;
+    const createCancel = document.getElementById("join-create-cancel");
     let joinPending = false;
     let joined = false;
     let claimPending = false;
@@ -6337,11 +7120,13 @@
     }
 
     function renderJoinState() {
-      nicknameInput.disabled = joinPending || joinAttempt !== null || joined || Boolean(claimPlayerId);
+      returningPlayer?.setRegistrationPending(joinPending || Boolean(joinAttempt) || joined || entryLocked);
+      nicknameInput.disabled = entryLocked || joinPending || joinAttempt !== null || joined || Boolean(claimPlayerId);
       if (joinAttempt) nicknameInput.value = joinAttempt.nickname;
-      joinButton.disabled = joinPending || joined || Boolean(claimPlayerId);
+      joinButton.disabled = entryLocked || joinPending || joined || Boolean(claimPlayerId);
       joinButton.textContent = joinAttempt?.uncertain ? "Retry join" : "Join game";
-      form.hidden = joined || Boolean(claimPlayerId);
+      form.hidden = entryLocked || !creationAllowed || joined || Boolean(claimPlayerId);
+      if (createCancel) createCancel.disabled = joinPending || Boolean(joinAttempt);
       if (anotherButton instanceof HTMLButtonElement) {
         anotherButton.hidden = !joined && !claimPlayerId;
         anotherButton.disabled = claimPending || joinPending;
@@ -6358,64 +7143,26 @@
     }
 
     async function claimJoinedPlayer(playerId) {
-      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId ||
-        playerId !== verifiedClaimPlayerId || claimButton.disabled) return;
-      const finishFocus = trackEntryFocus(claimButton);
-      const claimPath = encodedRecordPath("/v1/players/", playerId, "/claim");
-      if (!claimPath) {
+      if (claimPending || claimComplete || !usableEntityId(playerId) || playerId !== claimPlayerId || claimButton.disabled) return;
+      const proof = window.ThreeFcPlayerProof?.forPlayer(playerId);
+      if (!proof) {
         claimButton.hidden = true;
-        claimButton.disabled = true;
-        showError((joined ? "Joined game. " : "") + "This player can’t be claimed from this link. Ask the organiser for help.", { includesOutcome: true });
-        if (finishFocus()) focusClaimContinuation();
+        claimMessage("Ask the organiser for a private link to link this player to your account.");
         return;
       }
-      claimPending = true;
-      const revision = ++claimRevision;
-      claimButton.disabled = true;
-      renderJoinState();
-      clearError();
-      claimMessage("");
-      setStatus("Claiming player…", "default");
-      if (signInLink instanceof HTMLAnchorElement) signInLink.hidden = true;
-      try {
-        const result = await requestJsonOrThrow(claimPath, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
-        });
-        if (result?.player?.playerId !== playerId || typeof result.player.nickname !== "string" ||
-          !result.player.nickname.trim() || result?.claim?.claimedByCurrentUser !== true) throw new Error("claim_unconfirmed");
-        if (revision !== claimRevision) return;
-        claimComplete = true;
-        if (resultPlayer) resultPlayer.textContent = result.player.nickname;
-        if (resultElement) resultElement.hidden = false;
-        claimButton.hidden = true;
-        claimMessage("");
-        setStatus("Player claimed.", "success");
-      } catch (error) {
-        if (revision !== claimRevision) return;
-        const definitive = isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
-          (error.statusCode !== 409 || (error.responseError === "conflict" && error.responseCode === "player_already_claimed"));
-        const prefix = joined ? "Joined game. " : "";
-        const message = definitive
-          ? error.statusCode === 409 ? "This player is already claimed by another account. Sign out to use a different account."
-            : error.statusCode === 401 ? "Sign in to claim this player."
-              : "This player could not be claimed. Ask the organiser for help."
-          : "The player claim could not be confirmed. Retry claiming this player.";
-        showError(prefix + message, { includesOutcome: true });
-        claimButton.hidden = false;
-        if (error.statusCode === 401 && signInLink instanceof HTMLAnchorElement) {
-          signInLink.hidden = false;
-          signInLink.href = entrySignInHref(playerId);
-          claimButton.hidden = true;
-        }
-      } finally {
-        claimPending = false;
-        claimButton.disabled = claimComplete;
-        renderJoinState();
-        if (finishFocus() && revision === claimRevision) focusClaimContinuation();
-      }
+      // Navigation only: the recipient page shows the exact player and account
+      // together, then requires an explicit server-bound confirmation.
+      navigateTo(window.ThreeFcPlayerProof.destination(proof.proofId));
     }
 
-    async function refreshClaimActions(playerId, autoClaim = false) {
+    async function refreshClaimActions(playerId) {
+      if (linkingUnavailable) {
+        claimButton.hidden = true;
+        if (signInLink instanceof HTMLElement) signInLink.hidden = true;
+        if (claimActions instanceof HTMLElement) claimActions.hidden = false;
+        claimMessage("You’ve joined the game. Linking your player profile is temporarily unavailable.");
+        return;
+      }
       if (contextLookupPending) return;
       contextLookupPending = true;
       const lookupRevision = ++contextLookupRevision;
@@ -6456,15 +7203,17 @@
             if (resultPlayer) resultPlayer.textContent = context.player.nickname;
             if (resultElement) resultElement.hidden = false;
           }
-          claimMessage("");
-          claimButton.hidden = false;
-          claimButton.disabled = false;
-          // Only a confirmed fresh Join game action retains its existing automatic
-          // claim. Query/sign-in return and context retries are reads, never claims.
-          if (autoClaim) await claimJoinedPlayer(playerId);
+          const proof = window.ThreeFcPlayerProof?.forPlayer(playerId);
+          claimButton.hidden = !proof;
+          claimButton.disabled = !proof;
+          claimButton.textContent = "Link player profile";
+          claimMessage(proof ? "" : "Ask the organiser for a private link to link this player to your account.");
         } else if (signInLink instanceof HTMLAnchorElement) {
-          signInLink.hidden = false;
-          signInLink.href = entrySignInHref(playerId);
+          const proof = window.ThreeFcPlayerProof?.forPlayer(playerId);
+          signInLink.hidden = !proof;
+          signInLink.textContent = "Sign in to link your player profile";
+          if (proof) signInLink.href = `/sign-in?returnTo=${encodeURIComponent(window.ThreeFcPlayerProof.destination(proof.proofId))}`;
+          else claimMessage("Ask the organiser for a private link to link this player to your account.");
         }
       } catch (error) {
         if (revision === claimRevision && playerId === claimPlayerId) throw error;
@@ -6480,27 +7229,41 @@
       if (!claimPlayerId || claimComplete) return;
       claimMessage("");
       const identityKnown = verifiedClaimPlayerId === claimPlayerId;
+      const proof = window.ThreeFcPlayerProof?.forPlayer(claimPlayerId);
       showError((joined ? "Joined game. " : "") + (identityKnown
-        ? "Sign-in could not be checked. Retry claiming this player or sign in again."
+        ? proof ? "Sign-in could not be checked. Open your private player link or sign in again."
+          : "Ask the organiser for a private link to link this player to your account."
         : "The player details couldn’t be loaded. Retry lookup or sign in again."), { includesOutcome: true });
-      claimButton.hidden = !identityKnown;
-      claimButton.disabled = !identityKnown;
+      claimButton.hidden = !identityKnown || !proof;
+      claimButton.disabled = !identityKnown || !proof;
+      claimButton.textContent = "Link player profile";
       if (lookupButton instanceof HTMLButtonElement) lookupButton.hidden = identityKnown;
       if (signInLink instanceof HTMLAnchorElement) {
         signInLink.hidden = false;
-        signInLink.href = entrySignInHref(claimPlayerId);
+        signInLink.href = proof ? `/sign-in?returnTo=${encodeURIComponent(window.ThreeFcPlayerProof.destination(proof.proofId))}` : entrySignInHref(claimPlayerId);
       }
     }
 
     if (claimPlayerId) void refreshClaimActions(claimPlayerId).catch(claimProbeFailed);
     else {
-      const revision = claimRevision;
-      void currentJoinSession().then((session) => {
-        if (revision === claimRevision) setAccountSession(session);
-      }).catch(() => {
-        if (revision === claimRevision) setAccountSession(null);
+      returningPlayer = window.ThreeFcReturningPlayer?.initialize({ joinCode,
+        onSession: setAccountSession,
+        onCreate: (options = {}) => {
+          if (entryLocked || joinAttempt || claimPlayerId || joined) return;
+          creationAllowed = true;
+          if (createCancel) createCancel.hidden = options.anonymous === true;
+          renderJoinState();
+          if (!options.anonymous) nicknameInput.focus();
+        },
+        onLock: () => { entryLocked = true; creationAllowed = false; ++entryFlowRevision; ++claimRevision; renderJoinState(); },
       });
+      if (returningPlayer) returningPlayer.start();
+      else showError("The join form couldn’t load. Reload this page to try again.", { includesOutcome: true });
     }
+    createCancel?.addEventListener("click", () => {
+      if (joinPending || joinAttempt || entryLocked) return;
+      creationAllowed = false; renderJoinState(); returningPlayer?.start();
+    });
     renderJoinState();
     nicknameInput.addEventListener("input", () => {
       if (joinAttempt) { nicknameInput.value = joinAttempt.nickname; return; }
@@ -6527,6 +7290,9 @@
       entryClaimPlayerId = null;
       joined = false;
       claimComplete = false;
+      linkingUnavailable = false;
+      creationAllowed = true;
+      returningPlayer?.hide();
       claimMessage("");
       if (resultElement) resultElement.hidden = true;
       if (claimActions instanceof HTMLElement) claimActions.hidden = true;
@@ -6540,7 +7306,15 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (joinPending || joined || claimPlayerId) return;
+      if (entryLocked || !creationAllowed || joinPending || joined || claimPlayerId) return;
+      const flowAtDispatch = entryFlowRevision;
+      if (unissuedJoinProof) {
+        try { window.ThreeFcPlayerProof.discardDraft(unissuedJoinProof); unissuedJoinProof = null; }
+        catch {
+          showError("Your browser couldn’t clear the saved private link. Allow site storage, then retry.", { includesOutcome: true });
+          return;
+        }
+      }
       if (!joinAttempt) {
         const nickname = nicknameInput.value.trim();
         if (!nickname) {
@@ -6548,13 +7322,27 @@
           nicknameInput.focus();
           return;
         }
-        joinAttempt = {
-          nickname, uncertain: false,
-          path: "/v1/join/" + encodeURIComponent(joinCode),
-          request: Object.freeze({ method: "POST", headers: Object.freeze({
-            "Content-Type": "application/json", "Idempotency-Key": idempotencyKeyForPublicJoin(joinCode, nickname),
-          }), body: JSON.stringify({ nickname }) }),
-        };
+        joinPending = true;
+        renderJoinState();
+        try {
+          const key = idempotencyKeyForPublicJoin(joinCode, nickname);
+          const proof = await window.ThreeFcPlayerProof.create(`${joinCode}:${key}`);
+          if (flowAtDispatch !== entryFlowRevision || entryLocked) return;
+          joinAttempt = {
+            nickname, proof, uncertain: false,
+            path: "/v1/join/" + encodeURIComponent(joinCode),
+            request: Object.freeze({ method: "POST", headers: Object.freeze({
+              "Content-Type": "application/json", "Idempotency-Key": key,
+            }), body: JSON.stringify({ nickname, claimProof: { proofId: proof.proofId, verifier: proof.verifier } }) }),
+          };
+        } catch (error) {
+          joinPending = false;
+          renderJoinState();
+          showError(error.message === "proof_storage_full"
+            ? "This tab is holding too many private links. Save any links you need. Copy this join link, open a fresh tab, and paste it into the address bar."
+            : "Your browser could not keep the private profile link. Allow site storage or try another browser before joining.", { includesOutcome: true });
+          return;
+        }
       }
       const attempt = joinAttempt;
       const finishFocus = trackEntryFocus(form);
@@ -6564,16 +7352,27 @@
       setStatus("Joining game…", "default");
       try {
         const result = await requestJsonOrThrow(attempt.path, attempt.request);
+        if (flowAtDispatch !== entryFlowRevision || entryLocked) return;
         if (!usableEntityId(result?.gameId) || !usableEntityId(result?.player?.playerId) ||
           typeof result.player.nickname !== "string" || result.player.nickname.trim() !== attempt.nickname ||
           (result.joinCode !== undefined && result.joinCode !== joinCode) ||
           (result.link !== undefined && (result.link?.gameId !== result.gameId || result.link?.playerId !== result.player.playerId))) throw new Error("join_unconfirmed");
         joined = true;
+        linkingUnavailable = result.linkingUnavailable === true;
+        returningPlayer?.hide();
         joinAttempt = null;
         clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
         claimPlayerId = result.player.playerId;
         verifiedClaimPlayerId = claimPlayerId;
         entryClaimPlayerId = claimPlayerId;
+        try {
+          if (linkingUnavailable) {
+            unissuedJoinProof = attempt.proof;
+            window.ThreeFcPlayerProof.discardDraft(unissuedJoinProof);
+            unissuedJoinProof = null;
+          } else window.ThreeFcPlayerProof.attach(attempt.proof, result.claimProof, claimPlayerId);
+        }
+        catch { /* Registration committed; missing proof metadata must not repeat it or trigger a proofless claim. */ }
         if (resultPlayer) resultPlayer.textContent = result.player.nickname;
         if (resultElement) resultElement.hidden = false;
         setFieldMessage("join-player-nickname");
@@ -6582,6 +7381,11 @@
         const definitive = !attempt.uncertain && isDefinitiveRequestRejection(error) && error.statusCode !== 408 &&
           (error.statusCode !== 409 || (error.responseError === "conflict" && ["game_finished", "join_state_changed"].includes(error.responseCode)));
         if (definitive) {
+          try { window.ThreeFcPlayerProof.discardDraft(attempt.proof); }
+          catch {
+            showError("Your browser couldn’t clear the saved private link. Allow site storage, then retry. The same player name will be used.", { includesOutcome: true });
+            return;
+          }
           joinAttempt = null;
           clearIdempotencyKeyForPublicJoin(joinCode, attempt.nickname);
           showError(error.statusCode === 404 ? "This join link is unavailable. Ask the organiser for a new link."
@@ -6596,7 +7400,7 @@
         renderJoinState();
       }
       if (joined) {
-        try { await refreshClaimActions(claimPlayerId, true); } catch { claimProbeFailed(); }
+        try { await refreshClaimActions(claimPlayerId); } catch { claimProbeFailed(); }
       }
       if (finishFocus()) {
         if (joined) focusClaimContinuation();
@@ -6765,6 +7569,7 @@
     try {
       authenticatedSession = await ensureAuthenticatedSession();
       setAccountSession(authenticatedSession);
+      leagueDeletionRecovery = initializeLeagueDeletionRecovery(authenticatedSession);
     } catch (error) {
       if (error instanceof Error && error.message === "redirecting_to_sign_in") {
         return;

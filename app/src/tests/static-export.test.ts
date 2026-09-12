@@ -47,6 +47,18 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(existsSync(resolve(outputDir, "ui/icons.css")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/setup-flow.js")), true);
     assert.equal(existsSync(resolve(outputDir, "ui/auth-flow.js")), true);
+    assert.equal(existsSync(resolve(outputDir, "ui/player-proof.js")), true);
+    assert.equal(existsSync(resolve(outputDir, "link-player/index.html")), true);
+    assert.equal(existsSync(resolve(outputDir, "ui/player-consolidation.js")), true);
+    assert.equal(existsSync(resolve(outputDir, "ui/returning-player.js")), true);
+    const consolidationHtml = readFileSync(resolve(outputDir, "combine-players/index.html"), "utf8");
+    assert.match(consolidationHtml, /name="referrer" content="no-referrer"/);
+    assert.match(consolidationHtml, /Review profiles to combine/);
+    assert.equal((consolidationHtml.match(/src="\/ui\/player-consolidation\.js"/g) ?? []).length, 1);
+    const playerLinkHtml = readFileSync(resolve(outputDir, "link-player/index.html"), "utf8");
+    assert.match(playerLinkHtml, /name="referrer" content="no-referrer"/);
+    assert.match(playerLinkHtml, /id="player-link-confirm"/);
+    assert.equal((playerLinkHtml.match(/src="\/ui\/player-proof\.js"/g) ?? []).length, 1);
 
     const rootHtml = readFileSync(resolve(outputDir, "index.html"), "utf8");
     assert.match(rootHtml, /data-page="dashboard"/);
@@ -77,6 +89,10 @@ test("buildStaticSite exports static route shells and ui assets", () => {
       assert.equal((entryHtml.match(/src="\/ui\/auth-flow\.js"/g) ?? []).length, 1);
       assert(entryHtml.indexOf('/ui/auth-flow.js') < entryHtml.indexOf('/ui/setup-flow.js'));
     }
+    for (const entryHtml of [joinHtml, signInHtml, callbackHtml]) {
+      assert.equal((entryHtml.match(/src="\/ui\/player-proof\.js"/g) ?? []).length, 1);
+      assert(entryHtml.indexOf('/ui/player-proof.js') < entryHtml.indexOf('/ui/auth-flow.js'));
+    }
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }
@@ -89,4 +105,9 @@ test("CloudFront router maps deployed join deep links to exported shells", () =>
   assert.equal(runCloudFrontRouter("/invites/ABCD2345"), "/invites/index.html");
   assert.equal(runCloudFrontRouter("/leagues/league-1/seasons/season-1"), "/seasons/index.html");
   assert.equal(runCloudFrontRouter("/ui/setup-flow.js"), "/ui/setup-flow.js");
+  // These exact object keys are uploaded by deploy-site.sh; no TF change.
+  for (const path of ["/link-player", "/link-player/"]) assert.equal(runCloudFrontRouter(path), path);
+  const deploy = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
+  assert.match(deploy, /upload_html_alias "\$\{STATIC_SITE_OUTPUT_DIR\}\/link-player\/index.html" "link-player"/);
+  assert.match(deploy, /upload_html_alias "\$\{STATIC_SITE_OUTPUT_DIR\}\/link-player\/index.html" "link-player\/"/);
 });

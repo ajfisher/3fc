@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { webcrypto } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -27,6 +27,7 @@ import {
 
 interface MockSession {
   sessionId: string;
+  subject?: string;
   email: string;
   createdAt: string;
   expiresAt: string;
@@ -689,6 +690,13 @@ function createMockFetch(state: MockApiState) {
       );
     }
 
+    const linkedJoin = path.match(/^\/v1\/join\/([^/]+)\/linked-players$/);
+    if (method === "GET" && linkedJoin) {
+      if (!isAuthenticated(state) || !state.session) return createJsonResponse(401, { error: "unauthorized" });
+      const game = [...state.games.values()].find(candidate => candidate.joinCode === decodeURIComponent(linkedJoin[1]));
+      if (!game) return createJsonResponse(404, { error: "not_found" });
+      return createJsonResponse(200, { accountId: state.session.email, gameId: game.gameId, leagueId: game.leagueId, players: [], cursor: null, complete: true });
+    }
     if (method === "GET" && path === "/v1/auth/session") {
       if (!isAuthenticated(state) || !state.session) {
         return createJsonResponse(401, {
@@ -762,6 +770,8 @@ function createMockFetch(state: MockApiState) {
         gameId: game.gameId,
         joinCode: game.joinCode,
         player,
+        ...(body.claimProof ? { claimProof: { proofId: (body.claimProof as { proofId: string }).proofId,
+          expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() } } : {}),
         link,
       });
     }
@@ -1925,9 +1935,20 @@ async function bootPage(input: {
   const navigations: Array<{ url: string; mode: string }> = [];
 
   Object.defineProperty(window, "crypto", {
-    value: webcrypto,
+    // UI scheduling fixtures drain microtasks, not the native crypto thread
+    // pool. Keep the actual SHA-256 result but make its completion deterministic.
+    // player-proof.test.ts and browser acceptance use native WebCrypto.
+    value: {
+      getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+      randomUUID: webcrypto.randomUUID.bind(webcrypto),
+      subtle: { async digest(algorithm: string, bytes: Uint8Array) {
+        assert.equal(algorithm, "SHA-256");
+        return Uint8Array.from(createHash("sha256").update(bytes).digest()).buffer;
+      } },
+    },
     configurable: true,
   });
+  Object.defineProperty(window, "TextEncoder", { value: TextEncoder, configurable: true });
   Object.defineProperty(window, "__THREEFC_NAVIGATE__", {
     value: (url: string, mode: string) => {
       navigations.push({ url, mode });
@@ -1949,6 +1970,8 @@ async function bootPage(input: {
   if (input.sessionStorage) {
     Object.defineProperty(window, "sessionStorage", {
       value: {
+        get length() { return input.sessionStorage!.size; },
+        key(index: number) { return [...input.sessionStorage!.keys()][index] ?? null; },
         getItem: (key: string) => input.sessionStorage?.get(key) ?? null,
         setItem: (key: string, value: string) => {
           input.sessionStorage?.set(key, value);
@@ -1993,6 +2016,8 @@ async function bootPage(input: {
     });
   }
 
+  window.eval(readUiScript("player-proof.js"));
+  window.eval(readUiScript("returning-player.js"));
   if (input.scriptFile === "setup-flow.js" && ["join", "invite"].includes(window.document.getElementById("setup-flow-root")?.getAttribute("data-page") ?? "")) {
     window.eval(readUiScript("auth-flow.js"));
   }
@@ -2408,8 +2433,8 @@ for (const failure of ["network", "lost-response", 503, 401, 200] as const) {
 }
 
 for (const failure of ["lost-response", "upstream-503"] as const) {
-  for (const ordering of ["session-first", "logout-first", "join-last"] as const) {
-    test(`sign out recovery stays visible after a join session probe: ${failure}, ${ordering}`, async () => {
+  for (const ordering of ["before-failure", "after-failure", "after-retry"] as const) {
+    test(`sign out recovery rejects a late join response: ${failure}, ${ordering}`, async () => {
       const apiState = createMockApiState();
       seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "viewer" });
       const game = apiState.games.get("logout-fixture");
@@ -2465,24 +2490,24 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
             assert.notEqual(page.window.getComputedStyle(ancestor).display, "none", ancestor.id || ancestor.tagName);
           }
         };
+        await chooseNewJoinPlayer(page);
         nickname.value = "New player";
         dispatchSubmit(form);
+        // WebCrypto runs on a worker, so microtask draining alone cannot prove
+        // that this request started before the separate sign-out action.
+        for (let tick = 0; tick < 100 && !completeJoin; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
+        assert(completeJoin);
         dispatchClick(button);
         await flushAsync();
         assert(completeJoin);
         assert(completeLogoutFailure);
-        if (ordering !== "join-last") {
+        if (ordering === "before-failure") {
           completeJoin();
           await flushAsync();
-          assert(completeSessionProbe);
-        }
-        if (ordering === "session-first") {
-          assert(completeSessionProbe);
-          completeSessionProbe();
-          await flushAsync();
+          assert.equal(completeSessionProbe, undefined, "late registration must not start a post-logout claim session probe");
           assertVisible(feedback);
           assertVisible(button);
-          assert.equal(button.disabled, true, "a 401 cannot release the pending logout latch");
+          assert.equal(button.disabled, true, "a late registration cannot release the pending logout latch");
           assert.equal(feedback.textContent, "Signing out…");
         }
         completeLogoutFailure();
@@ -2490,29 +2515,30 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
         assertVisible(feedback);
         assertVisible(button);
         assert.equal(button.disabled, false);
-        if (ordering === "join-last") {
+        if (ordering === "after-failure") {
           completeJoin();
           await flushAsync();
-          assert(completeSessionProbe);
         }
-        if (ordering !== "session-first") {
-          assert(completeSessionProbe);
-          completeSessionProbe();
-          await flushAsync();
-        }
+        assert.equal(completeSessionProbe, undefined);
+        assert.equal(sessionRequests, 1, "only initial account discovery is permitted after the entry flow is invalidated");
         assertVisible(feedback);
         assertVisible(button);
         assert.equal(feedback.textContent, "Sign out could not be confirmed. Please try again.");
         assert.equal(button.disabled, false);
         assert.equal(page.navigations.length, 0);
-        assert.equal(page.document.getElementById("join-result-player")?.textContent, "New player");
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "");
+        assert.equal(page.document.getElementById("join-result")?.hidden, true, "late response cannot restore private player context");
         assert.doesNotMatch(page.document.getElementById("join-claim-status")?.textContent ?? "", /signed in as/i);
         dispatchClick(button);
         await flushAsync();
         assert.equal(logoutRequests, 2);
+        if (ordering === "after-retry") { completeJoin(); await flushAsync(); }
+        assert.equal(completeSessionProbe, undefined);
+        assert.equal(sessionRequests, 1);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "");
         const playerId = [...apiState.players.values()].find((player) => player.nickname === "New player")?.playerId;
-        assert(playerId);
-        assert.deepEqual(page.navigations, [{ url: "/sign-in?returnTo=" + encodeURIComponent("/join?code=ABCD2345&playerId=" + encodeURIComponent(playerId)), mode: "replace" }]);
+        assert(playerId, "the independent public registration may commit without restoring its old browser flow");
+        assert.deepEqual(page.navigations, [{ url: "/sign-in?returnTo=" + encodeURIComponent("/join?code=ABCD2345"), mode: "replace" }]);
       } finally {
         page.dom.window.close();
       }
@@ -2520,7 +2546,7 @@ for (const failure of ["lost-response", "upstream-503"] as const) {
   }
 }
 
-test("sign out continues to sign in even when optional browser storage is unavailable", async () => {
+test("sign out continues when optional auth storage fails but proof cleanup is verified", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "logout-fixture", role: "admin" });
   const page = await bootPage({
@@ -2530,9 +2556,12 @@ test("sign out continues to sign in even when optional browser storage is unavai
     apiState,
   });
   try {
-    for (const property of ["localStorage", "sessionStorage"]) {
-      Object.defineProperty(page.window, property, { get: () => { throw new Error("storage blocked"); }, configurable: true });
-    }
+    Object.defineProperty(page.window, "localStorage", { get: () => { throw new Error("storage blocked"); }, configurable: true });
+    const storage = page.window.sessionStorage;
+    Object.defineProperty(page.window, "sessionStorage", { value: {
+      getItem: storage.getItem.bind(storage), setItem: storage.setItem.bind(storage),
+      removeItem(key: string) { if (key === "threefc.auth.callback") throw new Error("auth storage blocked"); storage.removeItem(key); },
+    }, configurable: true });
     const button = page.document.getElementById("sign-out");
     assert(button instanceof page.window.HTMLButtonElement);
     dispatchClick(button);
@@ -2697,7 +2726,8 @@ test("sign out is offered before a signed-in player submits the initial join for
     assert(button instanceof page.window.HTMLButtonElement);
     assert.equal(button.disabled, false);
     assert.equal(page.document.getElementById("account-actions")?.hasAttribute("hidden"), false);
-    assert.deepEqual(requests, [{ path: "/v1/auth/session", method: "GET" }], "do not join or claim while checking the account");
+    assert.deepEqual(requests, [{ path: "/v1/auth/session", method: "GET" },
+      { path: "/v1/join/ABCD2345/linked-players", method: "GET" }], "account and owned-player discovery never join or claim");
     dispatchClick(button);
     await flushAsync();
     assert.deepEqual(page.navigations, [{ url: "/sign-in?returnTo=" + encodeURIComponent("/join?code=ABCD2345"), mode: "replace" }]);
@@ -2748,7 +2778,7 @@ test("sign out session protection hides stale account data on BFCache restoratio
   }
 });
 
-test("sign out BFCache protection leaves anonymous join forms usable", async () => {
+test("anonymous join BFCache restoration reloads before reusing the form", async () => {
   const page = await bootPage({
     html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
     scriptFile: "setup-flow.js", apiState: createMockApiState(),
@@ -2758,7 +2788,7 @@ test("sign out BFCache protection leaves anonymous join forms usable", async () 
     Object.defineProperty(restored, "persisted", { value: true });
     page.window.dispatchEvent(restored);
     assert.equal(page.document.querySelector('[data-ui="app-shell"]')?.hasAttribute("hidden"), false);
-    assert.equal(page.navigations.length, 0);
+    assert.deepEqual(page.navigations, [{ url: "http://localhost:3000/join/ABCD2345", mode: "reload" }]);
   } finally {
     page.dom.window.close();
   }
@@ -2940,6 +2970,46 @@ for (const validEmail of [true, false]) {
         assert.equal(email.getAttribute("aria-invalid"), "true");
         assert.equal(page.document.getElementById("auth-email-notice")?.textContent, "Enter a valid email address.");
       }
+    } finally { page.window.close(); }
+  });
+}
+
+for (const stage of ["organiser-signout", "callback-timer", "callback-response"] as const) {
+  test(`failed proof purge blocks authentication navigation: ${stage}`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "purge-fixture", role: "admin" });
+    apiState.pendingEmail = "organizer@3fc.football"; apiState.pendingToken = "token-1";
+    const timers = createManualTimers();
+    const storage = new Map<string, string>();
+    const baseFetch = createMockFetch(apiState);
+    let requests = 0; let release: (() => void) | undefined;
+    const organiser = stage === "organiser-signout";
+    const page = await bootPage({
+      html: organiser ? renderSetupHomePage("http://localhost:3001") : renderMagicLinkCallbackPage("http://localhost:3001"),
+      url: organiser ? "http://localhost:3000/setup" : "http://localhost:3000/auth/callback?token=token-1",
+      scriptFile: organiser ? "setup-flow.js" : "auth-flow.js", apiState, timers, sessionStorage: storage,
+      fetch: async (input, init) => {
+        if (["/v1/auth/logout", "/v1/auth/magic/complete"].includes(new URL(String(input)).pathname)) {
+          requests++;
+          if (stage === "callback-response") await new Promise<void>(resolve => { release = resolve; });
+        }
+        return baseFetch(input, init);
+      },
+    });
+    try {
+      const proofs = (page.window as any).ThreeFcPlayerProof;
+      const retained = await proofs.create("purge-test");
+      if (stage === "callback-response") { timers.advanceBy(3000); await flushAsync(); assert(release); }
+      page.window.sessionStorage.removeItem = () => { throw new Error("blocked"); };
+      page.window.sessionStorage.setItem = () => { throw new Error("blocked"); };
+      if (organiser) (page.document.getElementById("sign-out") as HTMLButtonElement).click();
+      else { assert.equal(proofs.clear(), false); if (release) release(); else timers.advanceBy(3000); }
+      await flushAsync();
+      assert.equal(requests, stage === "callback-response" ? 1 : 0);
+      assert.deepEqual(page.navigations, []);
+      assert.equal(proofs.isBlocked(), true);
+      assert.ok(storage.get("threefc.player-proof.v1")!.includes(retained.secret));
+      assert.ok(page.document.getElementById("player-proof-purge-recovery"));
     } finally { page.window.close(); }
   });
 }
@@ -3263,6 +3333,28 @@ test("auth flow canonicalizes trailing slashes on safe return targets", async ()
     url: "/games/game-1?mode=run#latest",
     mode: "replace",
   });
+});
+
+test("auth flow never retains secret-bearing profile-link return targets after failed sign-in", async () => {
+  const id = "proof-id-for-test-123456";
+  for (const target of [`/link-player#proofId=${id}&secret=private-proof-secret`,
+    `/link-player/?proofId=${id}&secret=private-proof-secret`, `/link-player?proofId=${id}#secret=private-proof-secret`]) {
+    const apiState = createMockApiState();
+    apiState.storage.set("threefc.auth.return_to", target);
+    const base = createMockFetch(apiState);
+    const page = await bootPage({ html: renderSignInPage("http://localhost:3001", "/setup"),
+      url: `http://localhost:3000/sign-in?returnTo=${encodeURIComponent(target)}`, scriptFile: "auth-flow.js", apiState,
+      fetch: (input, init) => String(input).includes("/auth/magic/start") ? Promise.resolve(createJsonResponse(503, {})) : base(input, init),
+    });
+    const normalizer = (page.window as unknown as { __THREEFC_NORMALIZE_RETURN_TO__: (value: string) => string | null }).__THREEFC_NORMALIZE_RETURN_TO__;
+    assert.equal(normalizer(target), null);
+    assert.equal(normalizer(`/link-player/?proofId=${id}`), `/link-player?proofId=${id}`);
+    assert.equal(apiState.storage.has("threefc.auth.return_to"), false, "abandoned sign-in must not retain an old secret target");
+    (page.document.getElementById("auth-email") as HTMLInputElement).value = "organiser@example.invalid";
+    dispatchSubmit(page.document.querySelector("form") as HTMLFormElement); await flushAsync();
+    assert.equal(apiState.storage.get("threefc.auth.return_to"), "/setup");
+    assert.ok(![...apiState.storage.values()].some(value => value.includes("private-proof-secret")));
+  }
 });
 
 test("auth callback redacts the URL while retaining recoverable state for transport retries", async () => {
@@ -3868,6 +3960,250 @@ test("organiser shell keeps authority hidden while the parent request is pending
     assert.equal(toggle.hidden, false);
     assert.equal(toggle.disabled, false);
     assert.equal(page.document.getElementById("season-create-game-region")?.hidden, false);
+  } finally { page.dom.window.close(); }
+});
+
+test("league player creation suggests verified possible matches without merging or blocking a different person", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const queries: URLSearchParams[] = [];
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      assert.notEqual(init?.method, "POST", "suggestions do not create or combine identities");
+      queries.push(url.searchParams);
+      return createJsonResponse(200, { players: [{ playerId: "existing", nickname: "Kesh <script>", claimed: false,
+        seasons: [{ seasonId: "autumn-cup", name: "Autumn Cup" }], hasMoreSeasons: false }], cursor: null });
+    } });
+  try {
+    dispatchClick(page.document.getElementById("league-player-create-toggle")!);
+    const input = page.document.getElementById("league-player-name") as HTMLInputElement;
+    input.value = "Kesh"; input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 220)); await flushAsync();
+    const suggestions = page.document.getElementById("league-player-name-matches")!;
+    assert.equal(suggestions.hidden, false);
+    assert.match(suggestions.textContent ?? "", /Kesh <script> · Autumn Cup/);
+    assert.equal(suggestions.querySelector("script"), null);
+    assert.equal(queries.at(-1)?.get("query"), "Kesh");
+    assert.equal(queries.at(-1)?.get("limit"), "10");
+    assert.equal(queries.at(-1)?.has("seasonId"), false);
+    assert.equal((page.document.getElementById("league-player-create") as HTMLButtonElement).disabled, false);
+    dispatchClick(suggestions.querySelector("button")!); await flushAsync();
+    assert.equal(page.document.getElementById("league-player-create-region")!.hidden, true);
+    assert.equal(page.document.activeElement?.id, "league-player-search");
+    assert.equal(input.value, "Kesh", "checking an existing identity preserves the creation draft");
+  } finally { page.dom.window.close(); }
+});
+
+for (const refreshFails of [false, true]) test(`league directory removes deleted season scope after commit, refresh failure=${refreshFails}`, async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const season = apiState.seasons.get("autumn-cup")!;
+  const baseFetch = createMockFetch(apiState), queries: URLSearchParams[] = [];
+  let reads = 0, release: ((response: Response) => void) | undefined;
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club?seasonId=autumn-cup#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/league-players") {
+        queries.push(url.searchParams);
+        if (queries.length === 1) return new Promise<Response>(resolve => { release = resolve; });
+        return createJsonResponse(200, { players: [{ playerId: "remaining", nickname: "Remaining", claimed: false, seasons: [], hasMoreSeasons: false }], cursor: null });
+      }
+      if (url.pathname === "/v1/leagues/three-sided-football-club/seasons") {
+        if (++reads > 1 && refreshFails) throw new Error("refresh failed");
+        return createJsonResponse(200, { seasons: reads === 1 ? [season] : [] });
+      }
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return baseFetch(input, init);
+    } });
+  try {
+    const scope = page.document.getElementById("league-player-scope") as HTMLSelectElement;
+    assert.equal(scope.value, "autumn-cup");
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    dispatchClick(page.document.querySelector('#league-seasons-body [data-action="delete-season"]')!);
+    await flushAsync();
+    assert.equal(scope.value, "");
+    assert.deepEqual([...scope.options].map(option => option.textContent), ["All league players"]);
+    assert.equal(queries.at(-1)?.has("seasonId"), false);
+    assert(release); release(createJsonResponse(200, { players: [{ playerId: "obsolete", nickname: "Obsolete", claimed: false, seasons: [], hasMoreSeasons: false }], cursor: "obsolete-cursor" }));
+    await flushAsync();
+    assert.doesNotMatch(page.document.getElementById("league-player-list")!.textContent ?? "", /Obsolete/);
+    assert.match(page.document.getElementById("league-player-list")!.textContent ?? "", /Remaining/);
+    assert.equal(page.document.getElementById("league-player-more")!.hidden, true);
+  } finally { page.dom.window.close(); }
+});
+
+test("league directory paginates submitted search, keeps equal names distinct and moves owned exhausted-page focus", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const queries: URLSearchParams[] = [];
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club?seasonId=autumn-cup#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      queries.push(url.searchParams);
+      const second = url.searchParams.has("cursor");
+      return createJsonResponse(200, { players: [{ playerId: second ? "second" : "first", nickname: "Kesh <script>",
+        claimed: second, seasons: [{ seasonId: "autumn-cup", name: "Autumn Cup" }], hasMoreSeasons: false }], cursor: second ? null : "page-two" });
+    },
+  });
+  try {
+    const list = page.document.getElementById("league-player-list")!;
+    const search = page.document.getElementById("league-player-search") as HTMLInputElement;
+    const more = page.document.getElementById("league-player-more") as HTMLButtonElement;
+    assert.equal(queries[0].get("seasonId"), "autumn-cup");
+    assert.equal(list.children.length, 1);
+    assert.equal(list.querySelector("script"), null);
+    search.value = "not yet submitted";
+    search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    more.focus(); dispatchClick(more); await flushAsync();
+    assert.equal(queries[1].get("query"), "", "cursor stays bound to submitted query, not edited text");
+    assert.equal(queries[1].get("cursor"), "page-two");
+    assert.equal(list.children.length, 2, "equal nicknames are not merged");
+    assert.equal(more.hidden, true);
+    assert.equal(page.document.activeElement, page.document.getElementById("league-player-status"));
+    assert.match(list.textContent ?? "", /Linked to an account/);
+    assert.match(list.textContent ?? "", /Not linked to an account/);
+    page.window.location.hash = "#seasons";
+    page.window.dispatchEvent(new page.window.HashChangeEvent("hashchange"));
+    assert.equal(page.document.getElementById("league-players-region")!.hidden, true);
+    assert.equal(page.document.querySelector<HTMLElement>('[data-testid="panel-league-seasons"]')!.hidden, false);
+  } finally { page.dom.window.close(); }
+});
+
+test("league directory search automatically follows physical pages to every matching player", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const queries: URLSearchParams[] = [];
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club?seasonId=autumn-cup#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      if (!url.searchParams.get("query")) return createJsonResponse(200, { players: [], cursor: null });
+      queries.push(url.searchParams);
+      const cursor = url.searchParams.get("cursor");
+      const players = cursor ? [{ playerId: cursor, nickname: "Gavin", claimed: false, seasons: [], hasMoreSeasons: false }] : [];
+      return createJsonResponse(200, { players, cursor: cursor === "last" ? null : cursor ? "last" : "middle", searchIncomplete: !cursor });
+    } });
+  try {
+    (page.document.getElementById("league-player-search") as HTMLInputElement).value = "Gavin";
+    page.document.getElementById("league-player-search-form")!.dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await flushAsync(); await flushAsync();
+    assert.equal(queries.length, 3);
+    assert.ok(queries.every(query => query.get("query") === "Gavin" && query.get("seasonId") === "autumn-cup"));
+    assert.deepEqual([...page.document.querySelectorAll("#league-player-list > li")].map(row => row.getAttribute("data-player-id")), ["middle", "last"]);
+    assert.equal((page.document.getElementById("league-player-more") as HTMLElement).hidden, true);
+    assert.doesNotMatch(page.document.getElementById("league-player-status")!.textContent || "", /No players|No matches/);
+  } finally { page.dom.window.close(); }
+});
+
+test("league directory creation retains original identity after ambiguous commit and later rejection", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const attempts: Array<{ playerId: string; nickname: string }> = [];
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname !== "/v1/league-players") return baseFetch(input, init);
+      if (init?.method !== "POST") return createJsonResponse(200, { players: [], cursor: null });
+      const body = JSON.parse(String(init.body)); attempts.push(body);
+      if (attempts.length === 1) throw new Error("committed response lost");
+      if (attempts.length === 2) return createJsonResponse(403, { error: "forbidden", message: "private raw detail" });
+      return createJsonResponse(201, { player: body });
+    },
+  });
+  try {
+    dispatchClick(page.document.getElementById("league-player-create-toggle")!);
+    const name = page.document.getElementById("league-player-name") as HTMLInputElement;
+    const form = page.document.getElementById("league-player-create-form")!;
+    name.value = "Xavier";
+    for (let index = 0; index < 3; index += 1) {
+      form.dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true })); await flushAsync();
+      if (index < 2) {
+        assert.equal(name.readOnly, true);
+        assert.match(page.document.getElementById("league-player-status")!.textContent ?? "", /Retry sends the same player entry/);
+      }
+    }
+    assert.equal(attempts.length, 3);
+    assert.deepEqual(attempts[1], attempts[0]); assert.deepEqual(attempts[2], attempts[0]);
+    assert.deepEqual(Object.keys(attempts[0]).sort(), ["nickname", "playerId"]);
+    assert.equal(name.readOnly, false); assert.equal(name.value, "");
+    assert.doesNotMatch(page.document.body.textContent ?? "", /private raw detail/);
+  } finally { page.dom.window.close(); }
+});
+
+test("league directory private invitation works without a game and reuses revocation and sign-out cleanup", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const paths: string[] = [];
+  const bodies: Array<Record<string, unknown>> = [];
+  let metadata: { proofId: string; expiresAt: string; state: string } | null = null;
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/league-players") return createJsonResponse(200, { players: [
+        { playerId: "standalone/player", nickname: "Xavier", claimed: false, seasons: [], hasMoreSeasons: false },
+      ], cursor: null });
+      if (!url.pathname.startsWith("/v1/player-proofs/league-invitation")) return baseFetch(input, init);
+      paths.push(url.pathname); assert.equal(url.searchParams.get("leagueId"), "three-sided-football-club");
+      assert.equal(url.searchParams.get("playerId"), "standalone/player"); assert.equal(url.searchParams.has("gameId"), false);
+      if (init.method === "GET") return createJsonResponse(200, { invitation: metadata });
+      const body = JSON.parse(String(init.body)); bodies.push(body);
+      if (url.pathname.endsWith("/revoke")) return createJsonResponse(200, { revoked: true });
+      metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), state: "pending" };
+      return createJsonResponse(201, { invitation: metadata });
+    },
+  });
+  try {
+    const action = page.document.querySelector<HTMLElement>('[data-action="invite-player-profile"]')!;
+    const menu = openActionMenuFor(action);
+    dispatchClick(action.querySelector('[data-icon="user-round-plus"]')!); await flushAsync();
+    assert.equal(bodies.length, 0, "opening is read-only");
+    assert.match(page.document.getElementById("player-invitation-title")!.textContent ?? "", /Xavier/);
+    const create = page.document.getElementById("player-invitation-create")!;
+    dispatchClick(create); dispatchClick(create);
+    for (let tick = 0; tick < 100 && bodies.length === 0; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
+    await flushAsync(); assert.equal(bodies.length, 1);
+    assert.deepEqual(Object.keys(bodies[0]).sort(), ["proofId", "replacesProofId", "verifier"]);
+    const link = page.document.getElementById("player-invitation-link") as HTMLInputElement;
+    assert.equal(new URL(link.value).pathname, "/link-player");
+    assert.equal(new URL(link.value).search, "");
+    assert.equal(Boolean(new URL(link.value).hash), true);
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    dispatchClick(page.document.getElementById("player-invitation-revoke")!); await flushAsync();
+    assert.equal(paths.at(-1), "/v1/player-proofs/league-invitation/revoke");
+    assert.equal(link.value, "");
+    dispatchClick(page.document.getElementById("player-invitation-close")!);
+    assert.equal(page.document.activeElement, menu.trigger);
+    page.window.dispatchEvent(new page.window.Event("threefc:player-proof-cleared"));
+    assert.equal(page.document.getElementById("player-invitation-panel")!.hidden, true);
+  } finally { page.dom.window.close(); }
+});
+
+test("league directory unavailable is not an empty result and never grants scorer creation", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "scorekeeper" });
+  const baseFetch = createMockFetch(apiState);
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => new URL(String(input)).pathname === "/v1/league-players"
+      ? createJsonResponse(503, { error: "unavailable" }) : baseFetch(input, init),
+  });
+  try {
+    assert.match(page.document.getElementById("league-player-status")!.textContent ?? "", /temporarily unavailable/);
+    assert.doesNotMatch(page.document.getElementById("league-players-region")!.textContent ?? "", /No players found/);
+    assert.equal((page.document.getElementById("league-player-create-toggle") as HTMLButtonElement).disabled, true);
   } finally { page.dom.window.close(); }
 });
 
@@ -5824,6 +6160,109 @@ test("season page does not fall back to legacy create routes when scoped writes 
   assert.equal(seasonPage.document.getElementById("setup-status")?.textContent, "Game could not be created.");
 });
 
+test("league deletion persists its target before a committed cleanup failure", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "delete-pending-fixture", role: "admin" });
+  const owner = apiState.session!.email;
+  apiState.leagues.set("empty-delete", { leagueId: "empty-delete", name: "Private league name", slug: null,
+    createdByUserId: owner, createdAt: "2026-03-28T11:00:00.000Z", updatedAt: "2026-03-28T11:00:00.000Z" });
+  grantMockLeagueAccess(apiState, "empty-delete", owner, "admin");
+  const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+  const storage = new Map<string, string>(); const base = createMockFetch(apiState);
+  let deletes = 0;
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "empty-delete"),
+    url: "http://localhost:3000/leagues/empty-delete", scriptFile: "setup-flow.js", apiState, sessionStorage: storage,
+    fetch: async (input, init = {}) => {
+      if (init.method === "DELETE") {
+        deletes += 1;
+        assert.deepEqual(JSON.parse(String(init.body)), { expectedAccountId: owner });
+        assert.deepEqual(JSON.parse(storage.get(key)!), { owner, leagueId: "empty-delete", uncertain: true });
+        apiState.leagues.delete("empty-delete");
+        return createJsonResponse(503, { error: "unavailable", code: "league_cleanup_pending" });
+      }
+      return base(input, init);
+    },
+  });
+  try {
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    dispatchClick(page.document.querySelector('[data-testid="delete-league"]')!); await flushAsync();
+    assert.equal(deletes, 1);
+    assert.equal(JSON.parse(storage.get(key)!).uncertain, true);
+    assert.equal(storage.get(key)?.includes("Private league name"), false);
+    const recovery = page.document.getElementById("league-deletion-recovery")!;
+    assert.equal(recovery.hidden, false);
+    assert.match(recovery.textContent ?? "", /not yet confirmed/);
+    assert.equal(page.document.getElementById("setup-status")?.textContent, "");
+    assert.equal(page.navigations.length, 0);
+  } finally { page.dom.window.close(); }
+});
+
+for (const destination of ["home", "missing-league", "other-account", "same-subject", "same-email-other-subject"] as const) {
+  test(`league deletion recovery survives committed cleanup failure on ${destination}`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "deletion-recovery-fixture", role: "admin" });
+    const owner = destination === "same-email-other-subject" || destination === "same-subject" ? "original-account-subject" : apiState.session!.email;
+    const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+    const storage = new Map([[key, JSON.stringify({ owner, leagueId: "deleted-league", uncertain: true })]]);
+    if (destination === "other-account") apiState.session!.email = "someone-else@example.com";
+    if (destination === "same-email-other-subject") apiState.session!.subject = "different-account-subject";
+    if (destination === "same-subject") apiState.session!.subject = owner;
+    const otherAccount = destination === "other-account" || destination === "same-email-other-subject";
+    const base = createMockFetch(apiState);
+    let deletes = 0;
+    const page = await bootPage({
+      html: destination === "missing-league" ? renderLeaguePage("http://localhost:3001", "deleted-league") : renderSetupHomePage("http://localhost:3001"),
+      url: destination === "missing-league" ? "http://localhost:3000/leagues/deleted-league" : "http://localhost:3000/setup",
+      scriptFile: "setup-flow.js", apiState, sessionStorage: storage,
+      fetch: async (input, init = {}) => {
+        if (init.method === "DELETE") {
+          deletes += 1;
+          assert.deepEqual(JSON.parse(String(init.body)), { expectedAccountId: owner });
+          return new Response(null, { status: 204 });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const recovery = page.document.getElementById("league-deletion-recovery")!;
+      assert.equal(recovery.hidden, otherAccount);
+      assert.equal(recovery.textContent?.includes("deleted-league"), false, "no target identifier or private league name is displayed");
+      if (!otherAccount) {
+        dispatchClick(recovery.querySelector("button")!); await flushAsync();
+        assert.equal(deletes, 1); assert.equal(storage.has(key), false);
+        assert.match(recovery.textContent ?? "", /League deleted/);
+      } else { assert.equal(deletes, 0); assert.equal(storage.has(key), true); }
+    } finally { page.dom.window.close(); }
+  });
+}
+
+test("league deletion recovery retains uncertainty after another rejection and hides on logout purge", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "deletion-recovery-fixture", role: "admin" });
+  const owner = apiState.session!.email;
+  const key = `threefc.league-deletion.v1:${encodeURIComponent(owner)}`;
+  const storage = new Map([[key, JSON.stringify({ owner, leagueId: "deleted-league", uncertain: true })]]);
+  const base = createMockFetch(apiState);
+  let deletes = 0;
+  const page = await bootPage({ html: renderSetupHomePage("http://localhost:3001"), url: "http://localhost:3000/setup",
+    scriptFile: "setup-flow.js", apiState, sessionStorage: storage,
+    fetch: async (input, init = {}) => {
+      if (init.method === "DELETE") { deletes += 1; return createJsonResponse(409, { error: "conflict" }); }
+      return base(input, init);
+    },
+  });
+  try {
+    const panel = page.document.getElementById("league-deletion-recovery")!;
+    dispatchClick(panel.querySelector("button")!); await flushAsync();
+    assert.equal(JSON.parse(storage.get(key)!).uncertain, true);
+    assert.match(panel.textContent ?? "", /not yet confirmed/);
+    page.window.dispatchEvent(new page.window.Event("threefc:player-proof-cleared"));
+    assert.equal(panel.hidden, true);
+    dispatchClick(panel.querySelector("button")!); await flushAsync();
+    assert.equal(deletes, 1);
+  } finally { page.dom.window.close(); }
+});
+
 test("league page header delete button deletes an empty league", async () => {
   const apiState = createMockApiState();
   apiState.session = {
@@ -6103,6 +6542,7 @@ test("match player native submit latches SVG clicks and retries the frozen origi
   assert(input instanceof page.window.HTMLInputElement);
   assert(add instanceof page.window.HTMLButtonElement);
   dispatchClick(toggle);
+  dispatchClick(page.document.getElementById("game-player-new-toggle")!);
   assert.equal(interactionVisible(toggle), false);
   input.value = "New player";
   input.focus();
@@ -6295,6 +6735,7 @@ test("match player committed addition survives refresh failure and cancellation 
   assert(form instanceof page.window.HTMLFormElement);
   assert(input instanceof page.window.HTMLInputElement);
   dispatchClick(toggle);
+  dispatchClick(page.document.getElementById("game-player-new-toggle")!);
   assert.equal(interactionVisible(toggle), false);
   input.value = "Nico";
   dispatchSubmit(form);
@@ -6444,6 +6885,121 @@ test("match roster ignores stale search responses and filters assigned names loc
   assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 1);
   assert.equal(page.document.querySelector('[data-ui="roster-member"]')?.getAttribute("data-player-id"), "player-bea");
   assert.doesNotMatch(page.document.getElementById("player-pool")?.textContent ?? "", /Ari/);
+});
+
+test("game possible-name search visibly selects the wider league scope and preserves the draft", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "picker-game", role: "admin" });
+  const baseFetch = createMockFetch(apiState), queries: URLSearchParams[] = [];
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-game" }),
+    url: "http://localhost:3000/games/picker-game#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      queries.push(url.searchParams);
+      return createJsonResponse(200, { players: [{ playerId: "kesh", nickname: "Kesh", claimed: false, inGame: false, seasons: [], hasMoreSeasons: false }], cursor: null });
+    } });
+  try {
+    dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!); await flushAsync();
+    dispatchClick(page.document.getElementById("game-player-new-toggle")!);
+    const name = page.document.getElementById("player-nickname") as HTMLInputElement;
+    name.value = "Kesh"; name.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 220)); await flushAsync();
+    dispatchClick(page.document.querySelector("#game-player-name-matches button")!); await flushAsync();
+    const scope = page.document.getElementById("game-player-picker-scope") as HTMLSelectElement;
+    assert.equal(scope.value, "league"); assert.equal(scope.selectedOptions[0]?.textContent, "All league players");
+    assert.equal(queries.at(-1)?.has("seasonId"), false);
+    assert.equal(page.document.activeElement?.id, "game-player-picker-search");
+    assert.equal(name.value, "Kesh"); assert.equal(page.document.getElementById("player-create-form")!.hidden, true);
+  } finally { page.dom.window.close(); }
+});
+
+test("game reusable player picker starts with this season and retries the original assignment after response loss", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "picker-game", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const queries: URLSearchParams[] = [], writes: string[] = [];
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-game" }),
+    url: "http://localhost:3000/games/picker-game#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/league-players") {
+        queries.push(url.searchParams);
+        return createJsonResponse(200, { players: [
+          { playerId: "player-ari", nickname: "Ari", claimed: false, inGame: true, seasons: [], hasMoreSeasons: false },
+          { playerId: "reuse-kesh", nickname: "Kesh", claimed: false, inGame: false, seasons: [{ seasonId: "autumn-cup", name: "Autumn Cup" }], hasMoreSeasons: false },
+        ], cursor: null });
+      }
+      if (url.pathname === "/v1/game-player-registrations") {
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body));
+        const stamp = "2026-03-28T11:00:00.000Z";
+        apiState.players.set(body.playerId, { playerId: body.playerId, nickname: "Kesh", claimedByUserId: null, createdAt: stamp, updatedAt: stamp });
+        apiState.gamePlayers.set(`picker-game:${body.playerId}`, { gameId: "picker-game", playerId: body.playerId, createdAt: stamp, updatedAt: stamp });
+        apiState.roster.set(`picker-game:${body.playerId}`, { gameId: "picker-game", playerId: body.playerId, teamId: body.teamId, createdAt: stamp, updatedAt: stamp });
+        if (writes.length === 1) throw new Error("committed response lost");
+        return createJsonResponse(200, { registration: { playerId: body.playerId, alreadyInGame: true } });
+      }
+      return baseFetch(input, init);
+    },
+  });
+  try {
+    assert.equal(queries.length, 0, "directory loading is intentional, not a background scan");
+    dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!); await flushAsync();
+    assert.equal(page.document.activeElement?.id, "game-player-picker-search");
+    assert.equal(queries[0].get("seasonId"), "autumn-cup"); assert.equal(queries[0].get("gameId"), "picker-game");
+    assert.equal(page.document.getElementById("player-create-form")!.hidden, true);
+    const list = page.document.getElementById("game-player-picker-list")!;
+    assert.equal((list.querySelector('[data-player-id="player-ari"] button') as HTMLButtonElement).disabled, true);
+    const team = page.document.getElementById("game-player-picker-team") as HTMLSelectElement;
+    const add = list.querySelector('[data-player-id="reuse-kesh"] button')!;
+    assert.match(page.document.getElementById(add.getAttribute("aria-describedby")!)!.textContent ?? "", /Autumn Cup/);
+    team.value = "red";
+    dispatchClick(list.querySelector('[data-player-id="reuse-kesh"] button')!); await flushAsync();
+    assert.equal(writes.length, 1); assert.equal(team.disabled, true);
+    assert.match(page.document.getElementById("game-player-picker-status")!.textContent ?? "", /Retry adding sends the same request/);
+    team.value = "blue";
+    dispatchClick(list.querySelector('[data-player-id="reuse-kesh"] button')!); await flushAsync();
+    assert.equal(writes.length, 2); assert.equal(writes[0], writes[1]);
+    assert.equal(JSON.parse(writes[1]).teamId, "red");
+    assert.equal((list.querySelector('[data-player-id="reuse-kesh"] button') as HTMLButtonElement).disabled, true);
+    assert.equal([...apiState.gamePlayers.values()].filter(row => row.playerId === "reuse-kesh").length, 1);
+    assert.equal(page.document.querySelector('label[for="player-search"]')?.textContent, "Search this game");
+    const scope = page.document.getElementById("game-player-picker-scope") as HTMLSelectElement;
+    scope.value = "league"; scope.dispatchEvent(new page.window.Event("change", { bubbles: true })); await flushAsync();
+    assert.equal(queries.at(-1)?.has("seasonId"), false);
+    dispatchClick(page.document.getElementById("game-player-new-toggle")!);
+    assert.equal(page.document.getElementById("player-create-form")!.hidden, false);
+    assert.equal(page.document.activeElement?.id, "player-nickname");
+  } finally { page.dom.window.close(); }
+});
+
+test("game reusable player picker cannot dispatch an old result during a newer search", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "picker-race", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  let reads = 0, writes = 0, release: ((response: Response) => void) | undefined;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "picker-race" }),
+    url: "http://localhost:3000/games/picker-race#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/game-player-registrations") { writes += 1; throw new Error("response lost"); }
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      reads += 1;
+      if (reads === 2) return new Promise<Response>(resolve => { release = resolve; });
+      return createJsonResponse(200, { players: [{ playerId: "old-result", nickname: "Kesh", claimed: false, inGame: false, seasons: [], hasMoreSeasons: false }], cursor: null });
+    },
+  });
+  try {
+    dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!); await flushAsync();
+    const form = page.document.getElementById("game-player-picker-form")!;
+    form.dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true })); await flushAsync();
+    const old = page.document.querySelector<HTMLButtonElement>('#game-player-picker-list [data-action="add-existing-player"]')!;
+    assert.equal(old.disabled, true);
+    dispatchClick(old); await flushAsync(); assert.equal(writes, 0);
+    release!(createJsonResponse(200, { players: [], cursor: null })); await flushAsync();
+    assert.equal(page.document.getElementById("game-player-picker-list")!.children.length, 0);
+    assert.equal(writes, 0);
+  } finally { page.dom.window.close(); }
 });
 
 test("game page quick-creates and assigns roster players", async () => {
@@ -6874,6 +7430,372 @@ test("game roster reconciles a committed transfer when refresh fails", async () 
     /Assignment was saved.*Roster refresh unavailable/,
   );
 });
+
+for (const mode of ["replace", "revoke", "replace-storage", "revoke-storage", "replace-loss", "revoke-loss"] as const) {
+  test(`confirmed invitation rotations retire only obsolete records: ${mode}`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "rotation", role: "admin" });
+    const base = createMockFetch(apiState); let metadata: any = null; let posts = 0; let revokes = 0;
+    let fail = false; let failed = false; const bodies: string[] = [];
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "rotation" }), url: "http://localhost:3000/games/rotation#teams",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/v1/player-proofs/invitation/revoke") {
+          revokes++; metadata.state = "revoked";
+          if (fail && mode === "revoke-loss" && !failed) { failed = true; throw new Error("lost reply"); }
+          return createJsonResponse(200, { revoked: true });
+        }
+        if (path !== "/v1/player-proofs/invitation") return base(input, init);
+        if (init.method === "GET") return createJsonResponse(200, { invitation: metadata });
+        posts++; bodies.push(String(init.body));
+        const body = JSON.parse(String(init.body));
+        metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+        if (fail && mode === "replace-loss" && !failed) { failed = true; throw new Error("lost reply"); }
+        return createJsonResponse(201, { invitation: metadata });
+      },
+    });
+    try {
+      Object.defineProperty(page.window, "confirm", { value: () => true });
+      await page.window.eval('(async()=>{const p=await ThreeFcPlayerProof.create("other");ThreeFcPlayerProof.attach(p,{proofId:p.proofId,expiresAt:new Date(Date.now()+86400000).toISOString()},"other");})()');
+      const originalSet = page.window.Storage.prototype.setItem;
+      Object.defineProperty(page.window.Storage.prototype, "setItem", { configurable: true,
+        value: function(this: Storage, key: string, value: string) {
+          if (fail && mode.endsWith("storage") && key === "threefc.player-proof.v1") {
+            const rows = JSON.parse(value);
+            if (mode === "revoke-storage" ? rows.length === 1 : rows.length === 2) throw new Error("cleanup blocked");
+          }
+          return originalSet.call(this, key, value);
+        },
+      });
+      dispatchClick(page.document.querySelector('[data-action="invite-player-profile"][data-player-id="player-ari"]')!); await flushAsync();
+      const create = page.document.getElementById("player-invitation-create") as HTMLButtonElement;
+      const revoke = page.document.getElementById("player-invitation-revoke") as HTMLButtonElement;
+      dispatchClick(create); await flushAsync();
+      const first = metadata.proofId;
+      const records = () => JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]") as any[];
+      fail = true;
+      if (mode.startsWith("revoke")) {
+        dispatchClick(revoke); await flushAsync();
+        if (mode === "revoke-storage") {
+          assert.equal(revokes, 1); assert.equal(revoke.hidden, true);
+          assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /revoked.*couldn’t clear/);
+          dispatchClick(create); await flushAsync(); assert.equal(posts, 1);
+        } else if (mode === "revoke-loss") {
+          assert.equal(records().some(row => row.proofId === first), true);
+          dispatchClick(revoke); await flushAsync(); assert.equal(revokes, 2);
+        }
+      } else {
+        dispatchClick(create); await flushAsync();
+        if (mode.endsWith("storage") || mode.endsWith("loss")) {
+          assert.equal(records().some(row => row.proofId === first), true);
+          assert.equal(create.textContent, "Retry link creation");
+          fail = false; dispatchClick(create); await flushAsync();
+          assert.equal(bodies[1], bodies[2]);
+        }
+      }
+      fail = false;
+      for (let rotation = 0; rotation < 25; rotation++) {
+        dispatchClick(create); await flushAsync();
+        assert.equal(create.disabled, false);
+        assert.deepEqual(records().map(row => row.playerId).sort(), ["other", "player-ari"]);
+        if (mode.startsWith("revoke")) {
+          dispatchClick(revoke); await flushAsync();
+          assert.deepEqual(records().map(row => row.playerId), ["other"]);
+        }
+      }
+      assert.equal(records().some(row => row.proofId === first), false);
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const operation of ["replace", "revoke"] as const) test(`historical player alias invitations ${operation} the canonical stored proof without changing roster IDs`, async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "alias-invitation", role: "admin" });
+  const base = createMockFetch(apiState);
+  const invitationReads: URL[] = [];
+  const writes: Array<{ path: string; body: string }> = [];
+  let metadata: { proofId: string; expiresAt: string; state: string } | null = null;
+  const page = await bootPage({
+    html: renderGamePage("http://localhost:3001", { gameId: "alias-invitation" }),
+    url: "http://localhost:3000/games/alias-invitation#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname.startsWith("/v1/player-proofs/league-invitation")) {
+        invitationReads.push(url);
+        if ((init.method ?? "GET") === "GET") return createJsonResponse(200, { invitation: metadata });
+        writes.push({ path: url.href, body: String(init.body) });
+        if (url.pathname.endsWith("/revoke")) return createJsonResponse(200, { revoked: true });
+        const body = JSON.parse(String(init.body));
+        metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+        if (writes.length === 1) throw new Error("committed replacement response lost");
+        return createJsonResponse(201, { invitation: metadata });
+      }
+      const result = await base(input, init);
+      if (url.pathname === "/v1/games/alias-invitation/players" && (init.method ?? "GET") === "GET") {
+        const body = await result.json() as { players: Array<{ playerId: string }> };
+        return createJsonResponse(result.status, { ...body, players: body.players.map(player => player.playerId === "player-ari"
+          ? { ...player, canonicalPlayerId: "retained-ari" } : player) });
+      }
+      return result;
+    },
+  });
+  try {
+    const proofApi = (page.window as unknown as { ThreeFcPlayerProof: {
+      create(key: string): Promise<{ proofId: string }>;
+      attach(record: unknown, metadata: unknown, playerId: string): unknown;
+    } }).ThreeFcPlayerProof;
+    const previous = await proofApi.create("existing-league-directory-proof");
+    metadata = { proofId: previous.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+    proofApi.attach(previous, metadata, "retained-ari");
+    Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+    const open = page.document.querySelector('[data-action="invite-player-profile"][data-player-id="player-ari"]');
+    assert(open instanceof page.window.HTMLButtonElement);
+    dispatchClick(open); await flushAsync();
+    assert.equal(invitationReads.length, 1);
+    assert.equal(invitationReads[0].searchParams.get("playerId"), "retained-ari");
+    assert.equal(invitationReads[0].searchParams.get("leagueId"), "three-sided-football-club");
+    const control = page.document.getElementById(operation === "replace" ? "player-invitation-create" : "player-invitation-revoke")!;
+    dispatchClick(control);
+    for (let tick = 0; tick < 100 && writes.length === 0; tick++) await new Promise(resolve => setTimeout(resolve, 2));
+    await flushAsync();
+    if (operation === "replace") {
+      assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /could not be confirmed/);
+      dispatchClick(control); await flushAsync();
+      assert.equal(writes.length, 2); assert.deepEqual(writes[0], writes[1], "lost response retries preserve exact canonical path and body");
+      assert.equal(JSON.parse(writes[0].body).replacesProofId, previous.proofId);
+      assert.notEqual((page.document.getElementById("player-invitation-link") as HTMLInputElement).value, "");
+    } else {
+      assert.equal(writes.length, 1); assert.equal(JSON.parse(writes[0].body).proofId, previous.proofId);
+      assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /^Private link revoked\.$/);
+    }
+    for (const call of invitationReads) assert.equal(call.searchParams.get("playerId"), "retained-ari");
+    const stored = JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]") as Array<{ proofId: string; playerId?: string }>;
+    assert.equal(stored.some(record => record.proofId === previous.proofId), false, "confirmed operation retires prior root proof");
+    if (operation === "replace") assert.equal(stored.find(record => record.proofId === metadata?.proofId)?.playerId, "retained-ari");
+    assert(page.document.querySelector('[data-player-id="player-ari"]'));
+    assert.equal(page.document.querySelector('[data-player-id="retained-ari"]'), null);
+  } finally { page.dom.window.close(); }
+});
+
+for (const disposition of ["confirmed", "lost-response", "changed-after-loss", "replacement-loss", "replacement-disabled", "replacement-loss-then-disabled", "replacement-storage-failure", "replacement-write-barrier", "purged"] as const) {
+  test(`private profile invitation panel preserves ${disposition} request ownership`, async () => {
+    const apiState = createMockApiState();
+    seedGoalScoringGame(apiState, { gameId: "profile-invitation", role: "admin" });
+    const base = createMockFetch(apiState);
+    const writes: string[] = [];
+    let release: ((response: Response) => void) | undefined;
+    let metadata: { proofId: string; expiresAt: string; state: string } | null = null;
+    let reads = 0;
+    let revokeRequests = 0;
+    const page = await bootPage({
+      html: renderGamePage("http://localhost:3001", { gameId: "profile-invitation" }),
+      url: "http://localhost:3000/games/profile-invitation#teams", scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (disposition === "replacement-write-barrier" && init.method === "PATCH" && String(input).endsWith("/v1/games/profile-invitation")) {
+          return createJsonResponse(503, { error: "unavailable" });
+        }
+        if (new URL(String(input)).pathname === "/v1/player-proofs/invitation/revoke") revokeRequests += 1;
+        if (new URL(String(input)).pathname !== "/v1/player-proofs/invitation") return base(input, init);
+        if (init.method === "GET") { reads += 1; return createJsonResponse(200, { invitation: metadata }); }
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body));
+        if ((disposition === "replacement-disabled" && writes.length >= 2) || (disposition === "replacement-loss-then-disabled" && writes.length > 2)) return createJsonResponse(503, { error: "unavailable", code: "claims_unavailable" });
+        if (metadata?.proofId !== body.proofId) metadata = { proofId: body.proofId, expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending" };
+        if (disposition === "purged") return new Promise<Response>(resolve => { release = resolve; });
+        if (["lost-response", "changed-after-loss"].includes(disposition) && writes.length === 1) throw new Error("response lost");
+        if (disposition === "changed-after-loss") return createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" });
+        if (disposition === "replacement-loss" && writes.length === 2) throw new Error("replacement committed; response lost");
+        if (disposition === "replacement-loss" && writes.length > 2) return createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" });
+        if (disposition === "replacement-loss-then-disabled" && writes.length === 2) throw new Error("replacement committed; response lost");
+        return createJsonResponse(201, { invitation: metadata });
+      },
+    });
+    try {
+      const open = page.document.querySelector('[data-action="invite-player-profile"][data-player-id="player-ari"]');
+      assert(open instanceof page.window.HTMLButtonElement, page.document.getElementById("roster-teams")?.outerHTML ?? page.document.getElementById("setup-error")?.textContent ?? "no roster");
+      const panel = page.document.getElementById("player-invitation-panel") as HTMLElement;
+      const create = page.document.getElementById("player-invitation-create") as HTMLButtonElement;
+      const link = page.document.getElementById("player-invitation-link") as HTMLInputElement;
+      dispatchClick(open); await flushAsync();
+      assert.equal(reads, 1); assert.equal(writes.length, 0, "opening does not issue a bearer invitation");
+      assert.equal(panel.hidden, false);
+      assert.equal(page.document.activeElement?.id, "player-invitation-title");
+      assert.match(panel.textContent ?? "", /Anyone with this link can link this player to their account\. Share it privately\./);
+      dispatchClick(create); dispatchClick(create);
+      for (let tick = 0; tick < 100 && writes.length === 0; tick += 1) await new Promise(resolve => setTimeout(resolve, 2));
+      await flushAsync(); assert.equal(writes.length, 1);
+      if (disposition === "replacement-disabled" || disposition === "replacement-loss-then-disabled") {
+        const originalLink = link.value;
+        assert.notEqual(originalLink, "");
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 2);
+        const copy = page.document.getElementById("player-invitation-copy") as HTMLButtonElement;
+        if (disposition === "replacement-loss-then-disabled") {
+          dispatchClick(create); await flushAsync();
+          assert.equal(writes.length, 3); assert.equal(writes[1], writes[2]);
+          assert.equal(link.value, ""); assert.equal(copy.hidden, true);
+          assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /could not be confirmed/);
+          assert.equal(create.textContent, "Retry link creation");
+        } else {
+          assert.equal(link.value, originalLink); assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
+          assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /existing link was not replaced/);
+          assert.equal(create.textContent, "Replace private link");
+          for (let repeat = 0; repeat < 24; repeat += 1) {
+            dispatchClick(create); await flushAsync();
+            assert.equal(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1")!).length, 1,
+              "definitively rejected drafts must not accumulate or evict the live proof");
+            assert.equal(link.value, originalLink);
+          }
+          dispatchClick(page.document.getElementById("player-invitation-close")!);
+          dispatchClick(open); await flushAsync();
+          assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        }
+        return;
+      }
+      if (disposition === "replacement-write-barrier") {
+        const originalLink = link.value;
+        assert.notEqual(originalLink, "");
+        const field = page.document.getElementById("game-edit-kickoff") as HTMLInputElement;
+        field.value = "2030-04-01T10:30";
+        field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+        dispatchSubmit(page.document.getElementById("game-edit-form") as HTMLFormElement); await flushAsync();
+        assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /earlier change is unconfirmed/);
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 1, "the write barrier prevents replacement fetch");
+        assert.equal(link.value, originalLink);
+        const copy = page.document.getElementById("player-invitation-copy") as HTMLButtonElement;
+        assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /not replaced.*Reload/);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        dispatchClick(page.document.getElementById("player-invitation-revoke")!); await flushAsync();
+        assert.equal(revokeRequests, 0);
+        assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /Revocation was not sent/);
+        return;
+      }
+      if (disposition === "replacement-storage-failure") {
+        const originalLink = link.value;
+        assert.notEqual(originalLink, "");
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        Object.defineProperty(page.window.Storage.prototype, "setItem", { value: () => { throw new Error("storage unavailable"); }, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 1, "failed local proof retention never dispatches replacement");
+        assert.equal(link.value, originalLink, "undispatched replacement preserves the still-active link");
+        const copy = page.document.getElementById("player-invitation-copy") as HTMLButtonElement;
+        assert.equal(copy.hidden, false); assert.equal(copy.disabled, false);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(link.value, originalLink); assert.equal(copy.disabled, false);
+        assert.equal(writes.length, 1);
+        return;
+      }
+      if (disposition === "replacement-loss") {
+        assert.notEqual(link.value, "");
+        Object.defineProperty(page.window, "confirm", { value: () => true, configurable: true });
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 2);
+        assert.equal(link.value, "", "old link is hidden once replacement dispatches");
+        assert.equal((page.document.getElementById("player-invitation-copy") as HTMLButtonElement).hidden, true);
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 3); assert.equal(writes[1], writes[2]);
+        assert.equal(link.value, "");
+        assert.equal((page.document.getElementById("player-invitation-copy") as HTMLButtonElement).hidden, true);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /private link changed/);
+        return;
+      }
+      if (disposition === "lost-response" || disposition === "changed-after-loss") {
+        assert.equal(create.textContent, "Retry link creation");
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /same request/);
+        dispatchClick(create); await flushAsync();
+        assert.equal(writes.length, 2); assert.equal(writes[0], writes[1]);
+      }
+      if (disposition === "changed-after-loss") {
+        assert.equal(link.value, "");
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /private link changed/);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(reads, 2); assert.equal(create.disabled, false);
+        return;
+      }
+      if (disposition === "purged") {
+        assert(release);
+        (page.window as unknown as { ThreeFcPlayerProof: { clear(): void } }).ThreeFcPlayerProof.clear();
+        release(createJsonResponse(201, { invitation: metadata })); await flushAsync();
+        assert.equal(panel.hidden, true); assert.equal(link.value, "");
+        assert.equal(page.document.getElementById("player-invitation-status")?.textContent, "");
+      } else {
+        assert.match(link.value, /\/link-player#proofId=[^&]+&secret=/);
+        assert.doesNotMatch(writes[0], /"secret"/);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /expires on/);
+        panel.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        assert.equal(panel.hidden, true);
+        assert.equal(page.document.activeElement?.getAttribute("data-action"), "toggle-action-menu");
+        dispatchClick(open); await flushAsync();
+        assert.equal(reads, 1, "reopening retains the link without another issuance/read");
+        assert.equal(panel.hidden, false);
+      }
+    } finally { page.dom.window.close(); }
+  });
+}
+
+for (const ownership of ["retained", "outside", "changed", "lost-then-barrier"] as const) {
+  test(`private profile invitation revoke preserves ${ownership} focus`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "invite-revoke", role: "admin" });
+    const base = createMockFetch(apiState); let release: (() => void) | undefined; let revokeWrites = 0;
+    const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "invite-revoke" }),
+      url: "http://localhost:3000/games/invite-revoke#teams", scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init) => {
+        if (ownership === "lost-then-barrier" && init?.method === "PATCH" && String(input).endsWith("/v1/games/invite-revoke")) return createJsonResponse(503, { error: "unavailable" });
+        if (new URL(String(input)).pathname === "/v1/player-proofs/invitation") return createJsonResponse(200, { invitation: {
+          proofId: "existing-profile-proof-123", expiresAt: new Date(Date.now() + 86400_000).toISOString(), state: "pending",
+        } });
+        if (new URL(String(input)).pathname === "/v1/player-proofs/invitation/revoke") { revokeWrites += 1; return new Promise<Response>(resolve => { release = () => resolve(ownership === "lost-then-barrier"
+          ? createJsonResponse(503, { error: "unavailable" }) : ownership === "changed"
+          ? createJsonResponse(409, { error: "conflict", code: "claim_invite_changed" })
+          : createJsonResponse(200, { revoked: true })); }); }
+        return base(input, init);
+      },
+    });
+    try {
+      const open = page.document.querySelector('[data-action="invite-player-profile"][data-player-id="player-ari"]');
+      assert(open instanceof page.window.HTMLButtonElement); dispatchClick(open); await flushAsync();
+      const button = page.document.getElementById("player-invitation-revoke") as HTMLButtonElement;
+      Object.defineProperty(page.window, "confirm", { value: (copy: string) => {
+        assert.match(copy, /Anyone who received it will no longer be able to use it/); return true;
+      }, configurable: true });
+      button.focus(); dispatchClick(button); await flushAsync(); assert(release);
+      const outside = page.document.createElement("button"); page.document.body.append(outside);
+      if (ownership === "outside") outside.focus();
+      release(); await flushAsync();
+      if (ownership === "lost-then-barrier") {
+        assert.equal(revokeWrites, 1); assert.equal(button.hidden, false);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /Revocation could not be confirmed/);
+        const field = page.document.getElementById("game-edit-kickoff") as HTMLInputElement;
+        field.value = "2030-04-01T10:30"; field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+        dispatchSubmit(page.document.getElementById("game-edit-form") as HTMLFormElement); await flushAsync();
+        assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /earlier change is unconfirmed/);
+        dispatchClick(button); await flushAsync();
+        assert.equal(revokeWrites, 1);
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /retry was not sent.*earlier revocation is still unconfirmed/);
+        return;
+      }
+      assert.equal(button.hidden, true);
+      assert.equal(page.document.activeElement, ownership === "outside" ? outside : page.document.getElementById("player-invitation-status"));
+      if (ownership === "changed") {
+        assert.match(page.document.getElementById("player-invitation-status")?.textContent ?? "", /private link changed/);
+        dispatchClick(page.document.getElementById("player-invitation-close")!);
+        dispatchClick(open); await flushAsync();
+        assert.equal(button.hidden, false, "reopening refreshes the active link instead of retrying a stale revocation forever");
+        assert.equal(button.disabled, false);
+      } else assert.equal(page.document.getElementById("player-invitation-status")?.textContent, "Private link revoked.");
+    } finally { page.dom.window.close(); }
+  });
+}
 
 test("game page lets league admins promote claimed players to scorers", async () => {
   const apiState = createMockApiState();
@@ -11530,7 +12452,7 @@ test("join page registers a player without organizer authentication", async () =
   assert.match(signInHref, /^\/sign-in\?returnTo=/);
   assert.equal(
     new URL(signInHref, "http://localhost:3000").searchParams.get("returnTo"),
-    `/join?code=ABCD2345&playerId=${player.playerId}`,
+    `/link-player?proofId=${(apiState.lastPublicJoinRequest?.body.claimProof as { proofId: string }).proofId}`,
   );
 
   const secondJoinPage = await bootPage({
@@ -11556,7 +12478,7 @@ test("join page registers a player without organizer authentication", async () =
   assert.equal(apiState.storage.has("threefc-idempotency:join-player:ABCD2345-Cy"), false);
 });
 
-test("join page lets a signed-in participant claim their joined player", async () => {
+test("join page requires explicit profile linking after a signed-in participant joins", async () => {
   const apiState = createMockApiState();
   apiState.session = {
     sessionId: "session-player",
@@ -11593,6 +12515,7 @@ test("join page lets a signed-in participant claim their joined player", async (
   assert(nicknameInput instanceof joinPage.window.HTMLInputElement);
   assert(form instanceof joinPage.window.HTMLFormElement);
 
+  await chooseNewJoinPlayer(joinPage);
   nicknameInput.value = "Dee";
   nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
   dispatchSubmit(form);
@@ -11600,15 +12523,19 @@ test("join page lets a signed-in participant claim their joined player", async (
 
   const player = [...apiState.players.values()][0];
   assert(player);
-  assert.equal(player.claimedByUserId, "delegate@3fc.football");
-  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "Player claimed.");
+  assert.equal(player.claimedByUserId, null);
+  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "Joined game.");
   assert.equal(joinPage.document.getElementById("join-claim-status")?.hidden, true);
   const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
   assert(claimButton instanceof joinPage.window.HTMLButtonElement);
-  assert.equal(claimButton.disabled, true);
+  assert.equal(claimButton.disabled, false);
+  dispatchClick(claimButton);
+  await flushAsync();
+  assert.match(joinPage.navigations.at(-1)?.url ?? "", /^\/link-player\?proofId=/);
+  assert.equal(player.claimedByUserId, null, "navigation cannot claim before account confirmation");
 });
 
-test("join page claims a joined player after returning from sign-in", async () => {
+test("join page offers organiser recovery for legacy sign-in returns without proof", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "returned-game", role: "viewer", sessionEmail: "delegate@3fc.football" });
   apiState.games.get("returned-game")!.joinCode = "BCDE2345";
@@ -11641,23 +12568,22 @@ test("join page claims a joined player after returning from sign-in", async () =
   await flushAsync();
 
   assert.equal(apiState.players.get("player-returned")?.claimedByUserId, null);
-  assert.equal(joinPage.document.getElementById("join-claim-status")?.hidden, true);
+  assert.match(joinPage.document.getElementById("join-claim-status")?.textContent ?? "", /Ask the organiser for a private link/);
   assert.equal(joinPage.document.getElementById("join-result")?.hidden, false, "the authenticated exact-game context read verifies its display identity");
   assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Dee");
   const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
   assert(claimButton instanceof joinPage.window.HTMLButtonElement);
-  assert.equal(claimButton.hidden, false);
-  assert.equal(claimButton.disabled, false);
+  assert.equal(claimButton.hidden, true);
+  assert.equal(claimButton.disabled, true);
 
   dispatchClick(claimButton);
   await flushAsync();
 
-  assert.equal(apiState.players.get("player-returned")?.claimedByUserId, "delegate@3fc.football");
-  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "Player claimed.");
-  assert.equal(joinPage.document.getElementById("join-claim-status")?.hidden, true);
+  assert.equal(apiState.players.get("player-returned")?.claimedByUserId, null);
+  assert.equal(joinPage.navigations.length, 0);
 });
 
-test("join page keeps successful join state when signed-in claim fails", async () => {
+test("join page keeps committed registration when an API response omits proof metadata", async () => {
   const apiState = createMockApiState();
   apiState.session = {
     sessionId: "session-player",
@@ -11690,11 +12616,11 @@ test("join page keeps successful join state when signed-in claim fails", async (
         : new URL(input.url);
     const method = (init.method ?? "GET").toUpperCase();
 
-    if (method === "POST" && target.pathname.startsWith("/v1/players/") && target.pathname.endsWith("/claim")) {
-      return createJsonResponse(503, {
-        error: "temporary_failure",
-        message: "Claim service unavailable.",
-      });
+    if (method === "POST" && target.pathname.startsWith("/v1/join/")) {
+      const result = await defaultFetch(input, init);
+      const body = await result.json() as Record<string, unknown>;
+      delete body.claimProof;
+      return createJsonResponse(result.status, body);
     }
 
     return defaultFetch(input, init);
@@ -11715,6 +12641,7 @@ test("join page keeps successful join state when signed-in claim fails", async (
   assert(form instanceof joinPage.window.HTMLFormElement);
   assert(joinButton instanceof joinPage.window.HTMLButtonElement);
 
+  await chooseNewJoinPlayer(joinPage);
   nicknameInput.value = "Ez";
   nicknameInput.dispatchEvent(new joinPage.window.Event("input", { bubbles: true }));
   dispatchSubmit(form);
@@ -11728,15 +12655,15 @@ test("join page keeps successful join state when signed-in claim fails", async (
   assert.equal(apiState.gamePlayers.has(`game-join-claim-fail:${player.playerId}`), true);
   assert.equal(joinPage.document.getElementById("join-result")?.hidden, false);
   assert.equal(joinPage.document.getElementById("join-result-player")?.textContent, "Ez");
-  assert.equal(joinPage.document.getElementById("setup-status")?.hidden, true);
-  assert.equal(joinPage.document.getElementById("setup-error")?.textContent, "Joined game. The player claim could not be confirmed. Retry claiming this player.");
+  assert.equal(joinPage.document.getElementById("setup-status")?.textContent, "Joined game.");
+  assert.match(joinPage.document.getElementById("join-claim-status")?.textContent ?? "", /Ask the organiser for a private link/);
   assert.equal(nicknameInput.disabled, true);
   assert.equal(joinButton.disabled, true);
 
   const claimButton = joinPage.document.querySelector('[data-testid="claim-player"]');
   assert(claimButton instanceof joinPage.window.HTMLButtonElement);
-  assert.equal(claimButton.hidden, false);
-  assert.equal(claimButton.disabled, false);
+  assert.equal(claimButton.hidden, true);
+  assert.equal(claimButton.disabled, true);
 });
 
 test("join page preserves distinct retry keys for similar public nicknames", async () => {
@@ -11984,6 +12911,16 @@ test("results entry confirmed malformed goal response still clears draft and ret
   } finally { page.dom.window.close(); }
 });
 
+async function chooseNewJoinPlayer(page: Awaited<ReturnType<typeof bootPage>>) {
+  await flushAsync();
+  const control = [...page.document.querySelectorAll("#returning-player button")].find(button => button.textContent === "Create new player");
+  assert(control instanceof page.window.HTMLButtonElement, "completed signed-in discovery offers an explicit new-player action");
+  assert.equal(control.disabled, false);
+  assert.equal(page.document.getElementById("join-game-form")?.hidden, true, "new-player form is not the default signed-in path");
+  dispatchClick(control); await flushAsync();
+  assert.equal(page.document.getElementById("join-game-form")?.hidden, false);
+}
+
 function joinEntryControls(page: Awaited<ReturnType<typeof bootPage>>) {
   const form = page.document.getElementById("join-game-form");
   const nickname = page.document.getElementById("join-player-nickname");
@@ -12032,12 +12969,14 @@ for (const lost of ["503", "network", "malformed"] as const) {
       dispatchSubmit(controls.form); dispatchSubmit(controls.form);
       await flushAsync();
       assert.equal(requests.length, 1);
+      assert.equal(page.document.getElementById("returning-player")?.hidden, true, "do not abandon a pending anonymous registration via generic sign-in");
       assert.equal(controls.nickname.disabled, true);
       controls.nickname.value = "Different player";
       controls.nickname.dispatchEvent(new page.window.Event("input", { bubbles: true }));
       assert.equal(controls.nickname.value, "First player");
       assert(release); release(); await flushAsync();
       assert.equal(controls.button.textContent, "Retry join");
+      assert.equal(page.document.getElementById("returning-player")?.hidden, true, "uncertain registration retains only its proof-bound recovery");
       assert.equal(page.document.getElementById("join-result")?.hidden, true);
       assert.equal(apiState.players.size, before + 1);
       dispatchSubmit(controls.form); await flushAsync();
@@ -12060,43 +12999,129 @@ for (const lost of ["503", "network", "malformed"] as const) {
   });
 }
 
-test("results entry claim retries only confirmed registration and latches nested activation", async () => {
+test("disabled linking joins once and retains the exact request after a lost reply", async () => {
   const apiState = createMockApiState();
-  seedGoalScoringGame(apiState, { gameId: "claim-recovery" });
-  apiState.games.get("claim-recovery")!.joinCode = "ABCD2345";
+  seedGoalScoringGame(apiState, { gameId: "disabled-join" });
+  apiState.games.get("disabled-join")!.joinCode = "ABCD2345";
   const base = createMockFetch(apiState);
-  let joins = 0; let claims = 0;
-  let release: (() => void) | undefined;
+  const requests: string[] = [];
+  let committed: Record<string, unknown> | null = null;
   const page = await bootPage({
     html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
     scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
-      if (String(input).includes("/v1/join/")) joins += 1;
-      if (String(input).endsWith("/claim")) {
-        claims += 1;
-        if (claims === 1) return createJsonResponse(503, { error: "unavailable" });
-        return new Promise<Response>((resolve) => { release = () => { void base(input, init).then(resolve); }; });
+      if (String(input).includes("/v1/join/") && init.method === "POST") {
+        requests.push(JSON.stringify([init.headers, init.body]));
+        if (!committed) {
+          committed = await (await base(input, init)).json() as Record<string, unknown>;
+          delete committed.claimProof;
+          committed.linkingUnavailable = true;
+          throw new Error("lost committed reply");
+        }
+        return new Response(JSON.stringify(committed), { status: 201 });
       }
       return base(input, init);
     },
   });
   try {
     const controls = joinEntryControls(page);
+    await chooseNewJoinPlayer(page);
+    controls.nickname.value = "Still playing";
+    dispatchSubmit(controls.form); await flushAsync();
+    dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0], requests[1]);
+    assert.equal(page.document.getElementById("join-result-player")?.textContent, "Still playing");
+    assert.equal(controls.claim.hidden, true);
+    assert.match(page.document.getElementById("join-claim-status")?.textContent ?? "", /temporarily unavailable/);
+    dispatchSubmit(controls.form); await flushAsync();
+    assert.equal(requests.length, 2);
+  } finally { page.dom.window.close(); }
+});
+
+for (const cleanupFailure of [false, true]) {
+  test(`disabled linking retires unissued join proofs without repeating committed registration: ${cleanupFailure}`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "containment-many" });
+    apiState.games.get("containment-many")!.joinCode = "ABCD2345";
+    const base = createMockFetch(apiState); let joins = 0; let blockCleanup = cleanupFailure;
+    const page = await bootPage({
+      html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (String(input).includes("/v1/join/") && init.method === "POST") {
+          joins += 1;
+          const result = await (await base(input, init)).json() as Record<string, unknown>;
+          delete result.claimProof; result.linkingUnavailable = true;
+          return createJsonResponse(201, result);
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const originalSet = page.window.Storage.prototype.setItem;
+      Object.defineProperty(page.window.Storage.prototype, "setItem", { configurable: true,
+        value: function(this: Storage, key: string, value: string) {
+          if (blockCleanup && key === "threefc.player-proof.v1" && value === "[]") throw new Error("cleanup blocked");
+          return originalSet.call(this, key, value);
+        },
+      });
+      const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
+      controls.nickname.value = "Player 0"; dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(joins, 1); assert.equal(controls.form.hidden, true);
+      if (cleanupFailure) {
+        dispatchClick(controls.another); controls.nickname.value = "Player 1";
+        dispatchSubmit(controls.form); await flushAsync();
+        assert.equal(joins, 1, "failed local cleanup must never repeat or start a registration");
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /couldn’t clear/);
+        blockCleanup = false;
+      } else dispatchClick(controls.another);
+      for (let index = 1; index < 25; index++) {
+        controls.nickname.value = `Player ${index}`; dispatchSubmit(controls.form); await flushAsync();
+        assert.equal(joins, index + 1);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, `Player ${index}`);
+        assert.deepEqual(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]"), []);
+        dispatchClick(controls.another);
+      }
+    } finally { page.dom.window.close(); }
+  });
+}
+
+test("results entry linking navigation never repeats a confirmed registration or auto-claims", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "claim-recovery" });
+  apiState.games.get("claim-recovery")!.joinCode = "ABCD2345";
+  const base = createMockFetch(apiState);
+  let joins = 0; let claims = 0;
+  const page = await bootPage({
+    html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join/ABCD2345",
+    scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      if (String(input).includes("/v1/join/") && init.method === "POST") joins += 1;
+      if (String(input).endsWith("/claim")) {
+        claims += 1;
+        throw new Error("Joining must not make a claim request");
+      }
+      return base(input, init);
+    },
+  });
+  try {
+    const controls = joinEntryControls(page);
+    await chooseNewJoinPlayer(page);
     controls.nickname.value = "Joined player";
     dispatchSubmit(controls.form); await flushAsync();
-    assert.equal(joins, 1); assert.equal(claims, 1);
+    assert.equal(joins, 1); assert.equal(claims, 0);
     assert.equal(page.document.getElementById("join-result-player")?.textContent, "Joined player");
-    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Joined game\./);
+    assert.equal(page.document.getElementById("setup-error")?.hidden, true);
     const child = page.document.createElement("span"); controls.claim.append(child);
     dispatchClick(child); dispatchClick(controls.claim); dispatchSubmit(controls.form);
     await flushAsync();
-    assert.equal(claims, 2); assert.equal(joins, 1);
-    assert.equal(controls.another.disabled, true);
-    assert(release); release(); await flushAsync();
-    assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+    assert.equal(claims, 0); assert.equal(joins, 1);
+    assert.match(page.navigations.at(-1)?.url ?? "", /^\/link-player\?proofId=/);
+    assert.equal(page.document.getElementById("setup-status")?.textContent, "Joined game.");
     assert.equal(page.document.getElementById("setup-error")?.hidden, true);
     assert.equal(page.document.getElementById("join-claim-status")?.hidden, true);
-    assert.equal(apiState.leagueAccess.size, 1, "claiming does not grant a new role");
+    assert.equal(apiState.leagueAccess.size, 1, "link navigation does not grant a new role");
     assert.equal(joins, 1);
   } finally { page.dom.window.close(); }
 });
@@ -12114,23 +13139,25 @@ for (const probe of ["503", "408", "malformed"] as const) {
       fetch: async (input, init = {}) => {
         const path = new URL(String(input)).pathname;
         if (path === "/v1/auth/session" && ++sessionReads > 1) return createJsonResponse(probe === "malformed" ? 200 : Number(probe), {});
-        if (path.startsWith("/v1/join/")) joins += 1;
+        if (path.startsWith("/v1/join/") && init.method === "POST") joins += 1;
         if (path.endsWith("/claim")) claims += 1;
         return base(input, init);
       },
     });
     try {
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Known registration";
       dispatchSubmit(controls.form); await flushAsync();
+      for (let wait = 0; wait < 20 && !page.document.getElementById("setup-error")?.textContent?.includes("Sign-in could not be checked"); wait += 1) await flushAsync();
       assert.equal(joins, 1); assert.equal(claims, 0);
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Known registration");
-      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Joined game\. Sign-in could not be checked/);
+      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /Sign-in could not be checked/);
       assert.equal(controls.claim.hidden, false);
       assert.equal(controls.claim.disabled, false);
       dispatchClick(controls.claim); await flushAsync();
-      assert.equal(joins, 1); assert.equal(claims, 1);
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+      assert.equal(joins, 1); assert.equal(claims, 0);
+      assert.match(page.navigations.at(-1)?.url ?? "", /^\/link-player\?proofId=/);
     } finally { page.dom.window.close(); }
   });
 }
@@ -12301,7 +13328,7 @@ for (const normalizer of ["missing", "throwing"] as const) {
 }
 
 for (const malformed of ["wrong-player", "not-claimed"] as const) {
-  test("results entry malformed claim success never invents identity ownership: " + malformed, async () => {
+  test("results entry proofless legacy link cannot reach a claim response: " + malformed, async () => {
     const apiState = createMockApiState(); seedEntryInvite(apiState);
     const base = createMockFetch(apiState);
     let claims = 0;
@@ -12322,12 +13349,12 @@ for (const malformed of ["wrong-player", "not-claimed"] as const) {
       dispatchClick(controls.claim); await flushAsync();
       assert.equal(page.document.getElementById("join-result")?.hidden, false, "known display identity is not a claim of ownership");
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Ari");
-      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /claim could not be confirmed/);
-      assert.equal(controls.claim.disabled, false);
+      assert.match(page.document.getElementById("join-claim-status")?.textContent ?? "", /Ask the organiser for a private link/);
+      assert.equal(controls.claim.disabled, true);
       dispatchClick(controls.claim); await flushAsync();
-      assert.equal(claims, 2);
+      assert.equal(claims, 0);
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Ari");
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+      assert.equal(apiState.players.get("player-ari")?.claimedByUserId, null);
       assert.equal(apiState.lastPublicJoinRequest, null);
     } finally { page.dom.window.close(); }
   });
@@ -12360,7 +13387,7 @@ test("results entry first definitive join rejection preserves editable name with
     fetch: async (input, init = {}) => {
       if (String(input).includes("/v1/join/")) {
         keys.push(readInitHeader(init, "idempotency-key"));
-        if (keys.length === 1) return createJsonResponse(400, { error: "bad_request" });
+        if (keys.length <= 24) return createJsonResponse(404, { error: "not_found" });
       }
       return base(input, init);
     },
@@ -12370,11 +13397,67 @@ test("results entry first definitive join rejection preserves editable name with
     controls.nickname.value = "Retained name"; dispatchSubmit(controls.form); await flushAsync();
     assert.equal(controls.nickname.value, "Retained name");
     assert.equal(controls.nickname.disabled, false); assert.equal(controls.button.textContent, "Join game");
+    assert.deepEqual(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]"), []);
+    for (let repeat = 1; repeat < 24; repeat++) {
+      dispatchSubmit(controls.form); await flushAsync();
+      assert.equal(controls.nickname.disabled, false);
+      assert.deepEqual(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]"), []);
+    }
     dispatchSubmit(controls.form); await flushAsync();
-    assert.equal(keys.length, 2); assert(keys[0] && keys[1]); assert.notEqual(keys[1], keys[0]);
+    assert.equal(keys.length, 25); assert(keys.every(Boolean)); assert.equal(new Set(keys).size, 25);
     assert.equal(page.document.getElementById("join-result-player")?.textContent, "Retained name");
   } finally { page.dom.window.close(); }
 });
+
+for (const condition of ["cleanup-failure", "capacity"] as const) {
+  test(`public join draft recovery preserves private records: ${condition}`, async () => {
+    const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "draft-join" });
+    apiState.games.get("draft-join")!.joinCode = "ABCD2345";
+    apiState.session = null; apiState.cookieJar = "";
+    const base = createMockFetch(apiState);
+    const requests: Array<{ key: string | null; body: string }> = [];
+    let blockCleanup = condition === "cleanup-failure";
+    const page = await bootPage({
+      html: renderJoinPage("http://localhost:3001", "ABCD2345"), url: "http://localhost:3000/join?code=ABCD2345",
+      scriptFile: "setup-flow.js", apiState,
+      fetch: async (input, init = {}) => {
+        if (String(input).includes("/v1/join/")) {
+          requests.push({ key: readInitHeader(init, "idempotency-key"), body: String(init.body) });
+          if (requests.length === 1) return createJsonResponse(404, { error: "not_found" });
+        }
+        return base(input, init);
+      },
+    });
+    try {
+      const originalSet = page.window.Storage.prototype.setItem;
+      Object.defineProperty(page.window.Storage.prototype, "setItem", { configurable: true,
+        value: function(this: Storage, key: string, value: string) {
+          if (blockCleanup && key === "threefc.player-proof.v1" && value === "[]") throw new Error("cleanup blocked");
+          return originalSet.call(this, key, value);
+        },
+      });
+      if (condition === "capacity") await page.window.eval('(async()=>{for(let i=0;i<20;i++) await ThreeFcPlayerProof.create("capacity-"+i);})()');
+      const before = page.window.sessionStorage.getItem("threefc.player-proof.v1");
+      const controls = joinEntryControls(page);
+      controls.nickname.value = "Retained player"; dispatchSubmit(controls.form); await flushAsync();
+      if (condition === "capacity") {
+        assert.equal(requests.length, 0);
+        assert.equal(page.window.sessionStorage.getItem("threefc.player-proof.v1"), before);
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /too many private links.*fresh tab.*address bar/);
+        assert.equal(controls.nickname.disabled, false);
+      } else {
+        assert.equal(requests.length, 1);
+        assert.equal(controls.nickname.disabled, true);
+        assert.equal(JSON.parse(page.window.sessionStorage.getItem("threefc.player-proof.v1") ?? "[]").length, 1);
+        assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /couldn’t clear.*same player name/);
+        blockCleanup = false;
+        dispatchSubmit(controls.form); await flushAsync();
+        assert.equal(requests.length, 2); assert.deepEqual(requests[1], requests[0]);
+        assert.equal(page.document.getElementById("join-result-player")?.textContent, "Retained player");
+      }
+    } finally { page.dom.window.close(); }
+  });
+}
 
 for (const outcome of ["missing", "used", "wrong-account"] as const) {
   test("results entry invite contract rejection provides actionable recovery: " + outcome, async () => {
@@ -12404,7 +13487,8 @@ for (const outcome of ["missing", "used", "wrong-account"] as const) {
   });
 }
 
-for (const operation of ["join", "claim"] as const) {
+// Explicit claim confirmation focus/race coverage lives in player-proof.test.ts.
+for (const operation of ["join"] as readonly string[]) {
   for (const ownership of ["retained", "outside", "navigation"] as const) {
     test(`results entry ${operation} settles focus only while ownership is ${ownership}`, async () => {
       const apiState = createMockApiState(); seedEntryInvite(apiState);
@@ -12449,7 +13533,7 @@ for (const operation of ["join", "claim"] as const) {
 }
 
 for (const staleStatus of [401, 503]) {
-  test("results entry stale initial session probe cannot replace a later claimed account: " + staleStatus, async () => {
+  test("results entry blocks creation until the initial session probe is known: " + staleStatus, async () => {
     const apiState = createMockApiState(); seedEntryInvite(apiState);
     apiState.games.get("invite-entry")!.joinCode = "ABCD2345";
     const base = createMockFetch(apiState);
@@ -12468,14 +13552,23 @@ for (const staleStatus of [401, 503]) {
     try {
       const controls = joinEntryControls(page);
       controls.nickname.value = "Later account"; dispatchSubmit(controls.form); await flushAsync();
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
-      assert.equal(page.document.getElementById("account-actions")?.hidden, false);
-      assert.equal(reads, 2);
+      assert.equal(controls.form.hidden, true);
+      assert.equal(apiState.lastPublicJoinRequest, null, "an unresolved session cannot bypass discovery by submitting the hidden form");
+      assert.equal(page.document.getElementById("account-actions")?.hidden, true);
+      assert.equal(reads, 1);
       assert(release); release(); await flushAsync();
-      assert.equal(page.document.getElementById("account-actions")?.hidden, false);
-      assert.equal(page.document.getElementById("sign-out")?.hasAttribute("disabled"), false);
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
-      assert.equal(page.document.getElementById("setup-error")?.hidden, true);
+      if (staleStatus === 401) {
+        assert.equal(controls.form.hidden, false, "a confirmed visitor can explicitly enter a new player");
+        assert.equal(page.document.getElementById("account-actions")?.hidden, true);
+      } else {
+        assert.equal(controls.form.hidden, true, "an unavailable session is not an anonymous result");
+        const retry = [...page.document.querySelectorAll("#returning-player button")].find(button => button.textContent === "Retry");
+        assert(retry instanceof page.window.HTMLButtonElement); dispatchClick(retry); await flushAsync();
+        assert.equal(reads, 2);
+        await chooseNewJoinPlayer(page);
+        assert.equal(page.document.getElementById("account-actions")?.hidden, false);
+      }
+      assert.equal(apiState.lastPublicJoinRequest, null, "session resolution and explicit creation disclosure never register automatically");
     } finally { page.dom.window.close(); }
   });
 }
@@ -12614,7 +13707,7 @@ for (const item of [
 for (const item of [
   { name: "backslash", playerId: "player\\joined" }, { name: "long", playerId: "player-" + "x".repeat(600) },
 ]) {
-  test("results entry joined identity can be claimed with contract-valid " + item.name, async () => {
+  test("results entry keeps contract-valid identity without proofless claiming: " + item.name, async () => {
     const apiState = createMockApiState(); seedEntryInvite(apiState);
     apiState.games.get("invite-entry")!.joinCode = "ABCD2345";
     const base = createMockFetch(apiState);
@@ -12637,16 +13730,17 @@ for (const item of [
     });
     try {
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Joined scorer"; dispatchSubmit(controls.form); await flushAsync();
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Joined scorer");
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+      assert.equal(page.document.getElementById("setup-status")?.textContent, "Joined game.");
       assert.equal(page.document.getElementById("setup-error")?.hidden, true);
       assert.equal(joins, 1);
-      assert.deepEqual(claimPaths, ["/v1/players/" + encodeURIComponent(item.playerId) + "/claim"]);
-      assert.equal(apiState.players.get(item.playerId)?.claimedByUserId, "invitee@example.com");
+      assert.deepEqual(claimPaths, []);
+      assert.equal(apiState.players.get(item.playerId)?.claimedByUserId, null);
       assert.equal(controls.form.hidden, true); assert.equal(controls.claim.hidden, true);
       dispatchSubmit(controls.form); dispatchClick(controls.claim); await flushAsync();
-      assert.equal(joins, 1); assert.equal(claimPaths.length, 1);
+      assert.equal(joins, 1); assert.equal(claimPaths.length, 0);
     } finally { page.dom.window.close(); }
   });
 }
@@ -12727,12 +13821,13 @@ for (const item of [
     });
     try {
       const controls = joinEntryControls(page);
+      await chooseNewJoinPlayer(page);
       controls.nickname.value = "Registered player"; controls.nickname.focus(); dispatchSubmit(controls.form); await flushAsync();
       assert.deepEqual(writes, ["/v1/join/ABCD2345"], "never send a claim POST to a different normalized endpoint");
       assert.equal(apiState.gamePlayers.has("invite-entry:" + item.id), true);
       assert.equal(page.document.getElementById("join-result")?.hidden, false);
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Registered player");
-      assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /^Joined game\. This player can’t be claimed from this link/);
+      assert.match(page.document.getElementById("join-claim-status")?.textContent ?? "", /Ask the organiser for a private link/);
       assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed/);
       assert.equal(controls.claim.disabled, true); assert.equal(controls.claim.hidden, true);
       assert.equal(controls.another.disabled, false); assert.equal(controls.another.hidden, false);
@@ -13058,7 +14153,10 @@ for (const close of ["Cancel", "Escape"] as const) {
       const form = page.document.getElementById("player-create-form");
       assert(toggle instanceof page.window.HTMLButtonElement && cancel instanceof page.window.HTMLButtonElement);
       assert(input instanceof page.window.HTMLInputElement && form instanceof page.window.HTMLFormElement);
-      dispatchClick(toggle); assert.equal(interactionVisible(toggle), false); assert.equal(page.document.activeElement, input);
+      dispatchClick(toggle); assert.equal(interactionVisible(toggle), false);
+      assert.equal(page.document.activeElement?.id, "game-player-picker-search");
+      dispatchClick(page.document.getElementById("game-player-new-toggle")!);
+      assert.equal(page.document.activeElement, input);
       input.value = "Consecutive player"; dispatchSubmit(form); await flushAsync();
       assert.equal(input.value, ""); assert.equal(interactionVisible(toggle), false, "a capability redraw cannot reveal a duplicate entry action");
       input.value = "Next draft"; input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
@@ -13070,6 +14168,7 @@ for (const close of ["Cancel", "Escape"] as const) {
       dispatchClick(toggle); assert.equal(interactionVisible(toggle), false); assert.equal(input.value, "Next draft"); assert.equal(page.document.activeElement, input);
       assert.equal([...apiState.players.values()].filter((player) => player.nickname === "Consecutive player").length, 1);
       assert.equal([...apiState.players.values()].filter((player) => player.nickname === "Next draft").length, 0);
+      await flushAsync(); // Reopening the picker starts a fresh directory read.
     } finally { page.dom.window.close(); }
   });
 }
@@ -13241,13 +14340,13 @@ for (const identity of ["duplicate-name", "backslash", "long", "reserved", "lite
       assert.equal(writes.length, 0, "a verified display name is not authorization to claim automatically");
       assert.equal(page.document.getElementById("join-result")?.hidden, false);
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "Ari");
-      assert.equal(controls.claim.hidden, false); assert.equal(controls.claim.disabled, false);
+      assert.equal(controls.claim.hidden, true); assert.equal(controls.claim.disabled, true);
       assert.equal(controls.form.hidden, true);
       dispatchClick(controls.claim); dispatchClick(controls.claim); await flushAsync();
-      assert.deepEqual(writes, ["/v1/players/" + encodeURIComponent(playerId) + "/claim"]);
-      assert.equal(apiState.players.get(playerId)?.claimedByUserId, apiState.session!.email);
+      assert.deepEqual(writes, []);
+      assert.equal(apiState.players.get(playerId)?.claimedByUserId, null);
       assert.equal(apiState.players.get("player-ari")?.claimedByUserId, null, "a same-name registration is never substituted");
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+      assert.match(page.document.getElementById("join-claim-status")?.textContent ?? "", /Ask the organiser for a private link/);
     } finally { page.dom.window.close(); }
   });
 }
@@ -13343,15 +14442,15 @@ test("ux09 failed context lookup retries one GET and never joins or claims autom
     assert.equal(reads, 2); assert.equal(writes, 0);
     assert.equal(page.document.getElementById("join-result-player")?.textContent, "Ari");
     assert.equal(page.document.getElementById("join-result")?.hidden, false);
-    assert.equal(interactionVisible(controls.claim), true); assert.equal(controls.claim.disabled, false);
-    assert.equal(page.document.activeElement, controls.claim);
+    assert.equal(interactionVisible(controls.claim), false); assert.equal(controls.claim.disabled, true);
+    assert.equal(page.document.activeElement, controls.another);
     assert.equal(interactionVisible(retry), false);
     assert.equal(page.document.getElementById("setup-error")?.hidden, true);
   } finally { page.dom.window.close(); }
 });
 
 for (const outcome of ["success", "failure"] as const) {
-  test(`ux09 late ${outcome} lookup cannot replace a newer joined and claimed player`, async () => {
+  test(`ux09 late ${outcome} lookup cannot replace a newer registration awaiting explicit linking`, async () => {
     const apiState = createMockApiState(); seedEntryInvite(apiState);
     const base = createMockFetch(apiState); const writes: string[] = []; let release: (() => void) | undefined;
     const page = await bootPage({
@@ -13375,14 +14474,14 @@ for (const outcome of ["success", "failure"] as const) {
       dispatchClick(controls.another); assert.equal(page.document.activeElement, controls.nickname);
       controls.nickname.value = "New registration"; dispatchSubmit(controls.form); await flushAsync();
       const created = [...apiState.players.values()].find(player => player.nickname === "New registration"); assert(created);
-      assert.equal(created.claimedByUserId, apiState.session!.email, "fresh confirmed joins preserve the existing authenticated auto-claim");
-      assert.deepEqual(writes, ["/v1/join/ABCD2345", "/v1/players/" + encodeURIComponent(created.playerId) + "/claim"]);
+      assert.equal(created.claimedByUserId, null, "joining cannot claim without explicit account confirmation");
+      assert.deepEqual(writes, ["/v1/join/ABCD2345"]);
       release(); await flushAsync();
       assert.equal(page.document.getElementById("join-result-player")?.textContent, "New registration");
-      assert.equal(page.document.getElementById("setup-status")?.textContent, "Player claimed.");
+      assert.equal(page.document.getElementById("setup-status")?.textContent, "Joined game.");
       assert.equal(page.document.getElementById("setup-error")?.hidden, true);
-      assert.equal(controls.form.hidden, true); assert.equal(controls.claim.hidden, true);
-      assert.equal(apiState.players.get("player-ari")?.claimedByUserId, null); assert.equal(writes.length, 2);
+      assert.equal(controls.form.hidden, true); assert.equal(controls.claim.hidden, false);
+      assert.equal(apiState.players.get("player-ari")?.claimedByUserId, null); assert.equal(writes.length, 1);
     } finally { page.dom.window.close(); }
   });
 }
@@ -14706,6 +15805,9 @@ for (const heldAt of ["full-game", "full-roster", "short-goals"] as const) {
       const controls = liveGoalControls(page); controls.draft(); controls.scorer.focus();
       const beforeTitle = page.document.getElementById("game-title")?.textContent;
       const beforeScores = ux10Scores(page);
+      const proofStore = (page.window as unknown as { ThreeFcPlayerProof: { create(operation: string): Promise<{ proofId: string; secret: string }> } }).ThreeFcPlayerProof;
+      const retainedProof = await proofStore.create(`account-switch-${heldAt}`);
+      assert(page.window.sessionStorage.getItem("threefc.player-proof.v1")?.includes(retainedProof.secret));
       assert(page.document.querySelector('[data-action="grant-player-access"]'));
       const appliedIds: string[] = []; const appliedTitles: Array<string | null> = [];
       observer = new page.window.MutationObserver(() => {
@@ -14726,6 +15828,7 @@ for (const heldAt of ["full-game", "full-roster", "short-goals"] as const) {
       apiState.cookieJar = "threefc_session=new-admin-session";
       grantMockLeagueAccess(apiState, "three-sided-football-club", "new-admin@example.com", "admin");
       release(); await flushAsync();
+      assert.equal(page.window.sessionStorage.getItem("threefc.player-proof.v1"), null, "detected cookie switch purges retained bearer proofs");
       assert.equal(reads.filter(path => path === "/v1/auth/session").length, heldAt === "short-goals" ? 1 : 2);
       assert.equal(reads.at(-1), "/v1/auth/session", "the final session response fences all already-staged match and authority reads");
       assert.equal(appliedIds.includes("must-not-apply-after-account-switch"), false, "the invalid batch must not render even transiently");

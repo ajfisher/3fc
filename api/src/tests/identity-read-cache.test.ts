@@ -1,0 +1,206 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { BatchGetItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { IdentityReadCache } from "../data/identity-read-cache.js";
+
+const key = (id: number) => ({ pk: `PLAYER#${id}`, sk: "IDENTITY" });
+const physical = (id: number) => ({ pk: { S: key(id).pk }, sk: { S: key(id).sk } });
+const get = (cache: IdentityReadCache, id: number) => cache.send(new GetItemCommand({ TableName: "fixture", Key: physical(id), ConsistentRead: true }));
+
+test("unprocessed retries back off50/100ms and never resend processed keys", async () => {
+  let now = 1000; const sleeps: number[] = [], dispatches: Array<{ at: number; keys: unknown }> = [];
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    dispatches.push({ at: now, keys: command.input.RequestItems!.fixture!.Keys });
+    return dispatches.length === 1
+      ? { Responses: { fixture: [physical(0)] }, UnprocessedKeys: { fixture: { Keys: [physical(1)] } } }
+      : dispatches.length === 2 ? { UnprocessedKeys: { fixture: { Keys: [physical(1)] } } }
+        : { Responses: { fixture: [physical(1)] } };
+  } }, "fixture", { now: () => now, sleep: async milliseconds => { sleeps.push(milliseconds); now += milliseconds; }, deadlineMs: 2000 });
+  await cache.prefetch([key(0), key(1)]);
+  assert.deepEqual(sleeps, [50, 100]);
+  assert.deepEqual(dispatches, [{ at: 1000, keys: [physical(0), physical(1)] }, { at: 1050, keys: [physical(1)] }, { at: 1150, keys: [physical(1)] }]);
+});
+
+test("deadline prevents first send, insufficient-budget retry and overslept retry", async () => {
+  for (const scenario of ["expired", "insufficient", "overslept"] as const) {
+    let now = 1000, calls = 0; const sleeps: number[] = [];
+    const cache = new IdentityReadCache({ async send() {
+      calls++; return { UnprocessedKeys: { fixture: { Keys: [physical(1)] } } };
+    } }, "fixture", { now: () => now, deadlineMs: scenario === "expired" ? 1000 : scenario === "insufficient" ? 1050 : 1100,
+      sleep: async milliseconds => { sleeps.push(milliseconds); now += 150; } });
+    await assert.rejects(cache.prefetch([key(1)]), /could not be checked/);
+    assert.equal(calls, scenario === "expired" ? 0 : 1);
+    assert.deepEqual(sleeps, scenario === "overslept" ? [50] : []);
+    await assert.rejects(get(cache, 1), /could not be checked/);
+  }
+});
+
+test("request cache deduplicates keys, bounds batches/concurrency and caches processed absence", async () => {
+  let calls = 0, active = 0, maximum = 0;
+  const client = { async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand); calls++;
+    const request = command.input.RequestItems!.fixture!;
+    assert.equal(request.ConsistentRead, true); assert(request.Keys!.length <= 100);
+    active++; maximum = Math.max(maximum, active); await Promise.resolve(); active--;
+    return { Responses: { fixture: request.Keys!.filter(item => item.pk!.S !== "PLAYER#2").reverse() } };
+  } };
+  const cache = new IdentityReadCache(client, "fixture");
+  await cache.prefetch([...Array.from({ length: 450 }, (_, index) => key(index)), key(0)]);
+  assert.equal(calls, 5); assert.equal(maximum, 4); assert.equal(active, 0);
+  assert.deepEqual(await get(cache, 0), { Item: physical(0) });
+  assert.deepEqual(await get(cache, 2), { Item: undefined });
+  await cache.prefetch([key(0), key(2)]); assert.equal(calls, 5);
+  await assert.rejects(get(cache, 999), /could not be checked/);
+  await new IdentityReadCache(client, "fixture").prefetch([key(0)]);
+  assert.equal(calls, 6, "new requests never reuse earlier snapshots");
+});
+
+test("unprocessed keys retry strongly and are never cached as absent", async () => {
+  let calls = 0;
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand); calls++;
+    const request = command.input.RequestItems!.fixture!; assert.equal(request.ConsistentRead, true);
+    if (calls === 1) return { Responses: { fixture: [physical(0)] }, UnprocessedKeys: { fixture: { Keys: [physical(1)] } } };
+    assert.deepEqual(request.Keys, [physical(1)]);
+    return { Responses: { fixture: [physical(1)] } };
+  } }, "fixture");
+  await cache.prefetch([key(0), key(1)]);
+  assert.equal(calls, 2); assert.deepEqual(await get(cache, 1), { Item: physical(1) });
+  let rejectedCalls = 0;
+  const stuck = new IdentityReadCache({ async send() {
+    rejectedCalls++; return { UnprocessedKeys: { fixture: { Keys: [physical(1)] } } };
+  } }, "fixture");
+  await assert.rejects(stuck.prefetch([key(1)]), /could not be checked/);
+  assert.equal(rejectedCalls, 3); await assert.rejects(get(stuck, 1), /could not be checked/);
+});
+
+for (const [name, output] of Object.entries({
+  foreignTable: { Responses: { other: [] } },
+  unexpected: { Responses: { fixture: [physical(9)] } },
+  duplicate: { Responses: { fixture: [physical(0), physical(0)] } },
+  contradictory: { Responses: { fixture: [physical(0)] }, UnprocessedKeys: { fixture: { Keys: [physical(0)] } } },
+  duplicateRetry: { UnprocessedKeys: { fixture: { Keys: [physical(0), physical(0)] } } },
+  foreignRetry: { UnprocessedKeys: { other: { Keys: [] } } },
+  nullRows: { Responses: { fixture: null } },
+  nullRow: { Responses: { fixture: [null] } },
+  missingRetryKeys: { UnprocessedKeys: { fixture: {} } },
+  nullRetryKeys: { UnprocessedKeys: { fixture: { Keys: null } } },
+  nullRetryTable: { UnprocessedKeys: { fixture: null } },
+  nullResponses: { Responses: null },
+  arrayResponses: { Responses: [] },
+  nullUnprocessed: { UnprocessedKeys: null },
+  arrayUnprocessed: { UnprocessedKeys: [] },
+})) test(`batch response ${name} fails closed`, async () => {
+  const cache = new IdentityReadCache({ async send() { return output; } }, "fixture");
+  await assert.rejects(cache.prefetch([key(0)]), /could not be checked/);
+  await assert.rejects(get(cache, 0), /could not be checked/);
+});
+
+test("partial unprocessed exhaustion keeps unresolved keys unknown and preserves first processed snapshot", async () => {
+  let calls = 0;
+  const original = { ...physical(0), data: { S: "original" } };
+  const cache = new IdentityReadCache({ async send() {
+    calls++;
+    return { Responses: { fixture: calls === 1 ? [original] : [] }, UnprocessedKeys: { fixture: { Keys: [physical(1)] } } };
+  } }, "fixture");
+  await assert.rejects(cache.prefetch([key(0), key(1)]), /could not be checked/);
+  assert.equal(calls, 3); await assert.rejects(get(cache, 1), /could not be checked/);
+  const result = await get(cache, 0) as { Item: typeof original };
+  assert.equal(result.Item.data.S, "original");
+  result.Item.data.S = "mutated caller clone";
+  original.data.S = "mutated upstream object";
+  await cache.prefetch([key(0)]); assert.equal(calls, 3, "later prefetch does not replace a prior snapshot");
+  assert.equal((await get(cache, 0) as { Item: typeof original }).Item.data.S, "original");
+});
+
+test("batch rejection waits for already started siblings before returning failure", async () => {
+  let release!: () => void, began!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { began = resolve; });
+  let calls = 0, finished = false, settled = false;
+  const failure = new Error("controlled batch failure");
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    const current = ++calls;
+    if (current === 1) throw failure;
+    began(); await blocked; finished = true;
+    return { Responses: { fixture: command.input.RequestItems!.fixture!.Keys! } };
+  } }, "fixture");
+  const outcome = cache.prefetch(Array.from({ length: 101 }, (_, index) => key(index))).then(
+    () => { settled = true; return null; }, error => { settled = true; return error; },
+  );
+  try {
+    await started; await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false); assert.equal(finished, false);
+  } finally { release(); }
+  assert.equal(await outcome, failure); assert.equal(finished, true); assert.equal(calls, 2);
+});
+
+test("late response is not cached and pending siblings drain without another wave", async () => {
+  let now = 1000, calls = 0, settled = false;
+  let releaseLate!: () => void, releaseOthers!: () => void, allStarted!: () => void;
+  const late = new Promise<void>(resolve => { releaseLate = resolve; });
+  const others = new Promise<void>(resolve => { releaseOthers = resolve; });
+  const started = new Promise<void>(resolve => { allStarted = resolve; });
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    const index = ++calls;
+    if (calls === 4) allStarted();
+    await (index === 1 ? late : others);
+    return { Responses: { fixture: command.input.RequestItems!.fixture!.Keys! } };
+  } }, "fixture", { now: () => now, deadlineMs: 1100, sleep: async () => { assert.fail("No retry sleep expected"); } });
+  const result = cache.prefetch(Array.from({ length: 401 }, (_, index) => key(index))).then(
+    () => { settled = true; return null; }, error => { settled = true; return error; },
+  );
+  try {
+    await started; now = 1100; releaseLate();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, "deadline failure still awaits held sibling batches");
+    assert.equal(calls, 4, "fifth batch is not dispatched");
+    await assert.rejects(get(cache, 0), /could not be checked/, "late first response must not be cached");
+  } finally { releaseLate(); releaseOthers(); }
+  assert(await result instanceof Error);
+  assert.equal(calls, 4); assert.equal(settled, true);
+  await assert.rejects(get(cache, 100), /could not be checked/, "late sibling response must not be cached");
+});
+
+for (const kind of ["rejected", "malformed"] as const) test(`known ${kind} batch failure suppresses sibling retries while draining`, async () => {
+  let calls = 0, settled = false, signalStarted!: () => void, signalSleep!: () => void;
+  let releaseFailure!: () => void, releaseSleep!: () => void, releasePending!: () => void;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  const sleeping = new Promise<void>(resolve => { signalSleep = resolve; });
+  const failureGate = new Promise<void>(resolve => { releaseFailure = resolve; });
+  const sleepGate = new Promise<void>(resolve => { releaseSleep = resolve; });
+  const pendingGate = new Promise<void>(resolve => { releasePending = resolve; });
+  const delays: number[] = [];
+  const cache = new IdentityReadCache({ async send(command: unknown) {
+    assert(command instanceof BatchGetItemCommand);
+    const index = ++calls, keys = command.input.RequestItems!.fixture!.Keys!;
+    if (calls === 4) signalStarted();
+    if (index === 1) {
+      await failureGate;
+      if (kind === "rejected") throw new Error("controlled transport failure");
+      return { Responses: { fixture: null } };
+    }
+    if (index > 2) await pendingGate;
+    return { UnprocessedKeys: { fixture: { Keys: keys } } };
+  } }, "fixture", { now: () => 1000, deadlineMs: 10000, sleep: async delay => {
+    delays.push(delay); signalSleep(); await sleepGate;
+  } });
+  const outcome = cache.prefetch(Array.from({ length: 401 }, (_, index) => key(index))).then(
+    () => { settled = true; return null; }, error => { settled = true; return error; },
+  );
+  try {
+    await Promise.all([started, sleeping]); releaseFailure();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    releaseSleep(); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(calls, 4, "sleeping sibling must not retry after known failure with ample deadline remaining");
+    assert.equal(settled, false, "already-started SDK calls must still drain");
+    assert.deepEqual(delays, [50]);
+  } finally { releaseFailure(); releaseSleep(); releasePending(); }
+  assert(await outcome instanceof Error);
+  assert.equal(calls, 4, "neither newly unprocessed siblings nor the fifth batch dispatch");
+  assert.deepEqual(delays, [50], "no new backoff after known failure");
+  await assert.rejects(get(cache, 100), /could not be checked/);
+});

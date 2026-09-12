@@ -3,6 +3,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
+import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
+import { handlePlayerConsolidationRoute, isPlayerConsolidationRoute, type PlayerConsolidationRepository } from "./player-consolidation-routes.js";
+import { handleOwnedPlayerJoinRoute, isOwnedPlayerJoinRoute, type OwnedPlayerJoinRepository } from "./owned-player-join-routes.js";
+import { PlayerProofError, parsePlayerClaimMode } from "./auth/player-proof.js";
+import { PlayerIdentityError } from "./data/player-identity.js";
 import {
   buildGameTimerState,
   DEFAULT_TEAMS,
@@ -184,7 +190,8 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract {
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository,
+  Pick<ThreeFcRepository, "getPlayerView"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
       leagueId: string;
@@ -364,8 +371,11 @@ interface RepositoryContract {
     joinCode: string;
     playerId: string;
     nickname: string;
+    claimProof?: { proofId: string; verifier: string };
   }): Promise<{
     game: RepositoryGameRecord;
+    claimProof?: { proofId: string; expiresAt: string };
+    linkingUnavailable?: true;
     player: {
       playerId: string;
       nickname: string;
@@ -385,7 +395,8 @@ interface RepositoryContract {
   finishGame(input: { gameId: string }): Promise<RepositoryGameRecord | null>;
   deleteGame(gameId: string): Promise<boolean>;
   deleteSeason(seasonId: string, options?: { leagueId?: string }): Promise<boolean>;
-  deleteLeague(leagueId: string): Promise<boolean>;
+  deleteLeague(leagueId: string, userIds?: readonly string[]): Promise<boolean>;
+  canResumeLeagueDeletion?(leagueId: string, userIds: readonly string[]): Promise<boolean>;
   createPlayer(input: {
     playerId: string;
     nickname: string;
@@ -1229,6 +1240,7 @@ function toPublicPlayer(player: {
 }
 
 async function toGamePlayerForLeagueRole(input: {
+  canonicalPlayerId?: string;
   repository: RepositoryContract;
   player: {
     playerId: string;
@@ -1240,7 +1252,9 @@ async function toGamePlayerForLeagueRole(input: {
   leagueId: string;
   callerRole: "admin" | "scorekeeper" | "viewer" | null;
 }) {
-  const publicPlayer = toPublicPlayer(input.player);
+  const publicPlayer = { ...toPublicPlayer(input.player),
+    ...(input.callerRole === "admin" && input.canonicalPlayerId && input.canonicalPlayerId !== input.player.playerId
+      ? { canonicalPlayerId: input.canonicalPlayerId } : {}) };
   if (input.callerRole !== "admin" || !input.player.claimedByUserId) {
     return publicPlayer;
   }
@@ -2625,6 +2639,7 @@ function createDefaultDependencies(): CoreHandlerDependencies {
 }
 
 export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
+  parsePlayerClaimMode(process.env.PLAYER_CLAIM_MODE);
   return async (event: ApiGatewayHttpEvent): Promise<ApiGatewayHttpResponse> => {
     const details = getRequestDetails(event);
     const route = details.route;
@@ -2914,6 +2929,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
         const parsedIdempotencyKey = parseOptionalIdempotencyKey(idempotencyKey);
         const executeJoin = async () => {
+          if (parsedBody.data.claimProof && !parsedIdempotencyKey) {
+            return badRequest(origin, dependencies.corsAllowedOrigins, "Idempotency-Key is required when requesting player claim proof.");
+          }
           let joinResult: Awaited<ReturnType<RepositoryContract["joinGameByCode"]>>;
           try {
             joinResult = await dependencies.repository.joinGameByCode({
@@ -2922,8 +2940,11 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
                 : `player-${randomUUID()}`,
               nickname: parsedBody.data.nickname,
+              claimProof: parsedBody.data.claimProof,
             });
           } catch (error) {
+            if (error instanceof PlayerProofError) return createJsonResponse(error.statusCode,
+              { error: error.statusCode === 400 ? "bad_request" : "conflict", code: error.code, message: error.message }, buildCorsHeaders(origin, dependencies.corsAllowedOrigins));
             if (error instanceof GameJoinRegistrationError) {
               if (error.code === "game_finished") {
                 return finishedGameJoinConflictResponse(
@@ -2949,6 +2970,8 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               gameId: joinResult.game.gameId,
               joinCode: joinResult.game.joinCode,
               player: toPublicPlayer(joinResult.player),
+              ...(joinResult.claimProof ? { claimProof: joinResult.claimProof } : {}),
+              ...(joinResult.linkingUnavailable ? { linkingUnavailable: true } : {}),
             },
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
@@ -3475,7 +3498,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
                 startsOn: parsedBody.data.startsOn ?? null,
                 endsOn: parsedBody.data.endsOn ?? null,
               });
-              await ensureSeasonDefaultTeams(dependencies.repository, createdSeason.seasonId);
+              await ensureSeasonDefaultTeams(dependencies.repository, createdSeason.seasonId, { leagueId: createdSeason.leagueId });
 
               return createJsonResponse(
                 201,
@@ -3601,8 +3624,21 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         const deleteLeagueMatch = route.match(/^\/v1\/leagues\/([^/]+)$/);
         if (method === "DELETE" && deleteLeagueMatch) {
           const leagueId = decodeRouteParam(deleteLeagueMatch[1]);
+          let deletionBody: Record<string, unknown>;
+          try { deletionBody = parseJsonBody(event); } catch {
+            status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
+          }
+          if (!deletionBody || Array.isArray(deletionBody) || typeof deletionBody !== "object") {
+            status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be an object.");
+          }
+          // Bind recovery to the account on this actual request, not a racy
+          // browser preflight. Omitted for backwards-compatible old clients.
+          if (deletionBody.expectedAccountId !== undefined && deletionBody.expectedAccountId !== sessionSubject(session)) {
+            status = 403; return forbidden(origin, dependencies.corsAllowedOrigins, "account_changed", "Your sign-in changed. Reload before retrying.");
+          }
           const isAdmin = await ensureLeagueAdmin(dependencies.repository, leagueId, sessionUserIds(session));
-          if (!isAdmin) {
+          const canResume = await dependencies.repository.canResumeLeagueDeletion?.(leagueId, sessionUserIds(session)) ?? false;
+          if (!isAdmin && !canResume) {
             status = 403;
             return forbidden(
               origin,
@@ -3613,7 +3649,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           }
 
           try {
-            const deleted = await dependencies.repository.deleteLeague(leagueId);
+            const deleted = await dependencies.repository.deleteLeague(leagueId, sessionUserIds(session));
             if (!deleted) {
               status = 404;
               return notFound(
@@ -5173,66 +5209,49 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
-        const claimPlayerMatch = route.match(/^\/v1\/players\/([^/]+)\/claim$/);
-        if (method === "POST" && claimPlayerMatch) {
-          let rawBody: Record<string, unknown>;
-          try {
-            rawBody = parseJsonBody(event);
-          } catch {
-            status = 400;
-            return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON.");
-          }
+        if (isOwnedPlayerJoinRoute(method, route)) {
+          const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" };
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return createJsonResponse(status, { error: "bad_request", message: "Request body must be valid JSON." }, headers); }
+          const result = await handleOwnedPlayerJoinRoute({ method, route, body, idempotencyKey: getHeader(event, "idempotency-key"),
+            rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, headers);
+        }
+        if (isPlayerConsolidationRoute(method, route)) {
+          const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" };
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return createJsonResponse(status, { error: "bad_request", message: "Request body must be valid JSON." }, headers); }
+          const result = await handlePlayerConsolidationRoute({ method, route, body,
+            rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, headers);
+        }
+        if (isPlayerDirectoryRoute(method, route)) {
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON."); }
+          const result = await handlePlayerDirectoryRoute({ method, route, body,
+            rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" });
+        }
 
-          const parsedBody = claimPlayerRequestSchema.safeParse(rawBody);
-          if (!parsedBody.success) {
-            status = 400;
-            return badRequest(
-              origin,
-              dependencies.corsAllowedOrigins,
-              formatSchemaValidationError(parsedBody.error),
-            );
-          }
-
-          const playerId = decodeRouteParam(claimPlayerMatch[1]);
-          let player;
-          try {
-            player = await dependencies.repository.claimPlayer({
-              playerId,
-              userId: sessionSubject(session),
-            });
-          } catch (error) {
-            if (error instanceof PlayerClaimError) {
-              status = 409;
-              return createJsonResponse(
-                status,
-                {
-                  error: "conflict",
-                  code: error.code,
-                  message: error.message,
-                },
-                buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-              );
-            }
-
-            throw error;
-          }
-
-          if (!player) {
-            status = 404;
-            return notFound(origin, dependencies.corsAllowedOrigins, `Player ${playerId} was not found.`);
-          }
-
-          status = 200;
-          return createJsonResponse(
-            status,
-            {
-              player: toPublicPlayer(player),
-              claim: {
-                claimedByCurrentUser: true,
-              },
-            },
-            buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
-          );
+        if (isPlayerProofRoute(method, route)) {
+          let body: unknown = {};
+          try { if (method !== "GET") body = parseJsonBody(event); }
+          catch { status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON."); }
+          const result = await handlePlayerProofRoute({ method, route, body, rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, {
+            ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer",
+          });
         }
 
         const listGamePlayersMatch = route.match(/^\/v1\/games\/([^/]+)\/players$/);
@@ -5259,13 +5278,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const playerLinks = await dependencies.repository.listGamePlayers(gameId);
           const playerEntries = (
             await Promise.all(
-              playerLinks.map(async (link) => ({
-                link,
-                player: await dependencies.repository.getPlayer(link.playerId),
-              })),
+              playerLinks.map(async (link) => {
+                const view = await dependencies.repository.getPlayerView(link.playerId);
+                return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
+              }),
             )
           )
-            .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player }] : []))
+            .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player, canonicalPlayerId: entry.canonicalPlayerId }] : []))
             .filter((entry) =>
               search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
             )
@@ -5281,6 +5300,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           const players = await Promise.all(
             playerEntries.map((entry) =>
               toGamePlayerForLeagueRole({
+                canonicalPlayerId: entry.canonicalPlayerId,
                 repository: dependencies.repository,
                 player: entry.player,
                 leagueId: game.leagueId,
@@ -5717,6 +5737,11 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         return createJsonResponse(status, result.payload, {
           ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store",
         });
+      }
+      if (error instanceof PlayerIdentityError) {
+        status = error.status;
+        return createJsonResponse(status, { error: error.category,
+          code: error.code, message: error.message }, { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" });
       }
       status = 500;
 

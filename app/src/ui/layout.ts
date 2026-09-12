@@ -36,7 +36,9 @@ function renderAssetPath(path: string): string {
 
 function renderStylesheetLink(): string {
   return `<link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/styles.css"))}" />
-  <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />`;
+  <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />
+  <script src="${escapeHtml(renderAssetPath("/ui/player-proof.js"))}" defer></script>
+  <script src="${escapeHtml(renderAssetPath("/ui/player-consolidation.js"))}" defer></script>`;
 }
 
 function renderAuthReturnTargetPatterns(): string {
@@ -238,6 +240,24 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
 </html>`;
 }
 
+function renderPlayerInvitationPanel(): string {
+  return `    <section id="player-invitation-panel" data-ui="disclosure-panel" aria-labelledby="player-invitation-title" hidden>
+      <h3 id="player-invitation-title" tabindex="-1">Invite to link profile</h3>
+      <p>Anyone with this link can link this player to their account. Share it privately.</p>
+      <p id="player-invitation-status" role="status" aria-live="polite" hidden></p>
+      <div data-ui="field" id="player-invitation-link-field" hidden>
+        <label for="player-invitation-link">Private profile link</label>
+        <input data-ui="input" id="player-invitation-link" type="text" readonly autocomplete="off" />
+      </div>
+      <div data-ui="button-row">
+        <button data-ui="button-primary" type="button" id="player-invitation-create">Create private link</button>
+        <button data-ui="button-secondary" type="button" id="player-invitation-copy" hidden>Copy link</button>
+        <button data-ui="button-secondary" type="button" id="player-invitation-revoke" hidden>Revoke link</button>
+        <button data-ui="button-ghost" type="button" id="player-invitation-close">Close</button>
+      </div>
+    </section>`;
+}
+
 export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
   const safeLeagueId = escapeHtml(leagueId);
   const createSeasonPanel = renderPanel(
@@ -380,6 +400,33 @@ export function renderLeaguePage(apiBaseUrl: string, leagueId: string): string {
       <section data-ui="setup-flow" id="setup-flow-root" data-testid="setup-flow-root" data-page="league" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-league-id="${safeLeagueId}">
         ${renderActivityStatus("Loading league data…")}
         <p data-ui="status-note" data-state="error" id="setup-error" role="status" aria-live="polite" hidden></p>
+        <nav data-ui="game-mode-nav" aria-label="League">
+          <div data-ui="game-mode-tabs">
+            <a href="#seasons" data-ui="game-mode-tab" data-league-destination="seasons" aria-current="page">Seasons</a>
+            <a href="#players" data-ui="game-mode-tab" data-league-destination="players">Players</a>
+          </div>
+        </nav>
+        <section id="league-players-region" data-ui="panel" aria-labelledby="league-players-title" hidden>
+          <h2 id="league-players-title" tabindex="-1">Players</h2>
+          <form id="league-player-search-form" data-ui="management-form" aria-label="Find league players">
+            <div data-ui="field"><label for="league-player-scope">Player list</label><select id="league-player-scope" data-ui="input"><option value="">All league players</option></select></div>
+            <div data-ui="field"><label for="league-player-search">Search players</label><input id="league-player-search" data-ui="input" type="search" autocomplete="off" maxlength="100" /></div>
+            <div data-ui="button-row">${renderButton("Search", "secondary", { type: "submit" })}</div>
+          </form>
+          <p id="league-player-status" data-ui="status-note" role="status" aria-live="polite" hidden></p>
+          <div id="league-player-combine-host"></div>
+          <ul id="league-player-list" data-ui="directory-list" aria-label="League players"></ul>
+          ${renderPlayerInvitationPanel()}
+          ${renderButton("Load more players", "secondary", { type: "button", id: "league-player-more", hidden: "" })}
+          <div data-ui="button-row">${renderButton("Create new player", "secondary", { type: "button", id: "league-player-create-toggle", "data-management-only": "", hidden: "", disabled: "", "aria-expanded": "false", "aria-controls": "league-player-create-region" })}</div>
+          <section id="league-player-create-region" data-ui="disclosure-panel" hidden>
+            <form id="league-player-create-form" data-ui="management-form" aria-label="Create league player">
+              <div data-ui="field"><label for="league-player-name">Player name</label><input id="league-player-name" data-ui="input" type="text" autocomplete="off" maxlength="80" required /></div>
+              <section id="league-player-name-matches" aria-label="Possible existing players" hidden></section>
+              <div data-ui="button-row">${renderButton("Create player", "primary", { type: "submit", id: "league-player-create" })}${renderButton("Cancel", "ghost", { type: "button", id: "league-player-create-cancel" })}</div>
+            </form>
+          </section>
+        </section>
         <section data-ui="panel-stack" data-testid="league-grid">
           ${seasonsPanel}
           <section id="league-create-season-region" data-ui="disclosure-panel" hidden>
@@ -884,6 +931,46 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
 </html>`;
 }
 
+export function renderPlayerConsolidationPage(apiBaseUrl: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" /><title>3FC Review profiles</title>${renderStylesheetLink()}</head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <main data-ui="app-shell"><section data-ui="panel" id="consolidation-approval"><h1>Review profiles to combine</h1></section></main>
+  ${renderAuthScriptTag()}</body></html>`;
+}
+
+export function renderPlayerLinkPage(apiBaseUrl: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>3FC Link player</title>
+    ${renderStylesheetLink()}
+  </head>
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}">
+    <main data-ui="app-shell">
+      <section data-ui="hero" data-layout="auth" id="player-link-panel">
+        ${renderAccountActions()}
+        <h1>Link your player profile</h1>
+        <div id="player-link-details" hidden>
+          <h2 id="player-link-name"></h2>
+          <p id="player-link-league"></p>
+          <p>Link to <strong id="player-link-account"></strong></p>
+        </div>
+        <p id="player-link-status" role="status" aria-live="polite" hidden></p>
+        <div data-ui="button-row">
+          <button type="button" data-ui="button-primary" id="player-link-confirm" hidden>Link this player to my account</button>
+          <button type="button" data-ui="button-secondary" id="player-link-retry" hidden>Check link again</button>
+          <a data-ui="button-primary" id="player-link-signin" href="/sign-in" hidden>Sign in to continue</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
 export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
   const safeJoinCode = escapeHtml(joinCode);
 
@@ -907,7 +994,8 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
             <dl data-ui="id-preview" data-testid="join-context-details">
               <div><dt>Join code</dt><dd id="join-code-value" data-testid="join-code-value">${safeJoinCode}</dd></div>
             </dl>
-            <form data-ui="auth-form" id="join-game-form" novalidate>
+            <section id="returning-player" aria-label="Join with your player" hidden></section>
+            <form data-ui="auth-form" id="join-game-form" novalidate hidden>
               ${renderValidatedField({
                 id: "join-player-nickname",
                 label: "Player name",
@@ -920,6 +1008,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
                 "data-action": "join-game",
                 "data-testid": "join-game",
               })}</div>
+              ${renderButton("Cancel", "secondary", { type: "button", id: "join-create-cancel", hidden: "" })}
             </form>
             <dl data-ui="join-receipt" data-testid="join-result" id="join-result" hidden>
               <div><dt>Player</dt><dd id="join-result-player"></dd></div>
@@ -950,6 +1039,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
       </section>
     </main>
     ${renderAuthScriptTag()}
+    <script src="${escapeHtml(renderAssetPath("/ui/returning-player.js"))}" defer></script>
     ${renderSetupScriptTag()}
   </body>
 </html>`;
@@ -1111,7 +1201,17 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       })}
     </div>
     <div id="player-create-region" data-ui="disclosure-panel" hidden>
-      <form id="player-create-form" data-ui="management-form" aria-label="Add player" novalidate>
+      <form id="game-player-picker-form" data-ui="management-form" aria-label="Find a player to add">
+        <div data-ui="field"><label for="game-player-picker-search">Find an existing player</label><input id="game-player-picker-search" data-ui="input" type="search" maxlength="100" autocomplete="off" /></div>
+        <div data-ui="field"><label for="game-player-picker-scope">Player list</label><select id="game-player-picker-scope" data-ui="input"><option value="season">This season</option><option value="league">All league players</option></select></div>
+        <div data-ui="field"><label for="game-player-picker-team">Add to</label><select id="game-player-picker-team" data-ui="input"><option value="">Unassigned</option><option value="red">Red</option><option value="blue">Blue</option><option value="yellow">Yellow</option></select></div>
+        <div data-ui="button-row">${renderButton("Search", "secondary", { type: "submit" })}${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-player-create" })}</div>
+      </form>
+      <p id="game-player-picker-status" data-ui="status-note" role="status" aria-live="polite" hidden></p>
+      <ul id="game-player-picker-list" data-ui="directory-list" aria-label="Players available to add"></ul>
+      ${renderButton("Load more players", "secondary", { type: "button", id: "game-player-picker-more", hidden: "" })}
+      <div data-ui="button-row">${renderButton("Create new player", "secondary", { type: "button", id: "game-player-new-toggle", "aria-expanded": "false", "aria-controls": "player-create-form" })}</div>
+      <form id="player-create-form" data-ui="management-form" aria-label="Create new player" novalidate hidden>
         <div data-ui="inline-create" data-testid="player-create-row">
           <div data-ui="field" data-validated="true">
             <label for="player-nickname">Player name</label>
@@ -1119,14 +1219,16 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
             <div data-ui="field-message"><p data-ui="field-hint" id="player-nickname-notice" data-default-message="" data-default-kind="empty"></p></div>
           </div>
         </div>
+        <section id="game-player-name-matches" aria-label="Possible existing players" hidden></section>
         <div data-ui="game-details-actions">
           <button type="submit" data-ui="icon-button" data-variant="primary" aria-label="Add player" data-action="quick-create-player" data-testid="quick-create-player">${renderIcon("circle-plus")}<span data-ui="button-text">Add player</span></button>
           ${renderButton("Cancel", "ghost", { type: "button", "data-action": "cancel-player-create" })}
         </div>
       </form>
     </div>
+    ${renderPlayerInvitationPanel()}
     <div data-ui="field">
-      <label for="player-search">Search players</label>
+      <label for="player-search">Search this game</label>
       <input data-ui="input" id="player-search" name="player-search" type="search" autocomplete="off" />
     </div>
     <div data-ui="roster-workspace" data-testid="roster-workspace">

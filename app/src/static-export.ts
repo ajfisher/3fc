@@ -7,6 +7,8 @@ import {
   renderGamePage,
   renderInvitePage,
   renderJoinPage,
+  renderPlayerLinkPage,
+  renderPlayerConsolidationPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
   renderSeasonPage,
@@ -30,6 +32,30 @@ interface StaticAsset {
 }
 
 const STATIC_ASSETS: StaticAsset[] = [
+  {
+    outputPath: "ui/returning-player.js",
+    candidateSources: [
+      fileURLToPath(new URL("./ui/returning-player.js", import.meta.url)),
+      resolve(process.cwd(), "dist/ui/returning-player.js"), resolve(process.cwd(), "app/dist/ui/returning-player.js"),
+      resolve(process.cwd(), "src/ui/returning-player.js"), resolve(process.cwd(), "app/src/ui/returning-player.js"),
+    ],
+  },
+  {
+    outputPath: "ui/player-consolidation.js",
+    candidateSources: [
+      fileURLToPath(new URL("./ui/player-consolidation.js", import.meta.url)),
+      resolve(process.cwd(), "dist/ui/player-consolidation.js"), resolve(process.cwd(), "app/dist/ui/player-consolidation.js"),
+      resolve(process.cwd(), "src/ui/player-consolidation.js"), resolve(process.cwd(), "app/src/ui/player-consolidation.js"),
+    ],
+  },
+  {
+    outputPath: "ui/player-proof.js",
+    candidateSources: [
+      fileURLToPath(new URL("./ui/player-proof.js", import.meta.url)),
+      resolve(process.cwd(), "dist/ui/player-proof.js"), resolve(process.cwd(), "app/dist/ui/player-proof.js"),
+      resolve(process.cwd(), "src/ui/player-proof.js"), resolve(process.cwd(), "app/src/ui/player-proof.js"),
+    ],
+  },
   {
     outputPath: "ui/icons.css",
     candidateSources: [
@@ -97,6 +123,8 @@ export function buildStaticSite(options: StaticSiteBuildOptions): string {
     { path: "/", html: renderSetupHomePage(options.apiBaseUrl) },
     { path: "/setup", html: renderSetupHomePage(options.apiBaseUrl) },
     { path: "/sign-in", html: renderSignInPage(options.apiBaseUrl, "/setup") },
+    { path: "/link-player", html: renderPlayerLinkPage(options.apiBaseUrl) },
+    { path: "/combine-players", html: renderPlayerConsolidationPage(options.apiBaseUrl) },
     { path: "/auth/callback", html: renderMagicLinkCallbackPage(options.apiBaseUrl) },
     { path: "/ui/components", html: renderComponentShowcasePage(options.apiBaseUrl) },
     { path: "/leagues", html: renderLeaguePage(options.apiBaseUrl, "") },

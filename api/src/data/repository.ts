@@ -14,6 +14,19 @@ import {
   type TransactWriteItem,
 } from "@aws-sdk/client-dynamodb";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { LeagueDeletionCleanup } from "./league-deletion.js";
+import { PlayerConsolidationService } from "./player-consolidation.js";
+import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
+import { OwnedPlayerJoinService } from "./owned-player-join.js";
+import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
+  identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
+import { directoryGameSamples, type DirectoryGameSample } from "./player-directory-games.js";
+import {
+  createPlayerConfirmation, hashPlayerProofSecret, parsePlayerClaimMode,
+  PlayerProofError, PLAYER_PROOF_TTL_MS, PROOF_ID_PATTERN, PROOF_VERIFIER_PATTERN,
+  requirePlayerClaimEnabled, secureEqual, verifyPlayerConfirmation,
+  type PlayerClaimMode,
+} from "../auth/player-proof.js";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
@@ -99,6 +112,11 @@ import type {
   ListPlayersInput,
   LinkGamePlayerInput,
   PlayerRecord,
+  PlayerProofCreation,
+  PlayerProofCredential,
+  PlayerProofMetadata,
+  PlayerProofPreview,
+  PlayerProofRecord,
   RosterAssignmentRecord,
   SeasonRecord,
   SessionGameRecord,
@@ -125,7 +143,12 @@ const ENTITY_TYPE = {
   sessionGame: "sessionGame",
   player: "player",
   playerClaim: "playerClaim",
+  playerProof: "playerProof",
+  playerProofPointer: "playerProofPointer",
+  gameJoinReceipt: "gameJoinReceipt",
   acl: "acl",
+  leaguePlayer: "leaguePlayer",
+  leaguePlayerCreation: "leaguePlayerCreation",
   leagueInvite: "leagueInvite",
   leagueInvitePointer: "leagueInvitePointer",
   roster: "roster",
@@ -140,6 +163,8 @@ const ENTITY_TYPE = {
 type EntityType = (typeof ENTITY_TYPE)[keyof typeof ENTITY_TYPE];
 
 type Item = Record<string, AttributeValue>;
+type PlayerInvitationTarget = { playerId: string; userIds: readonly string[] } &
+  ({ scope?: "game"; gameId: string; leagueId?: never } | { scope: "league"; leagueId: string; gameId?: never });
 
 interface Clock {
   now(): string;
@@ -952,11 +977,55 @@ function withTimestamps<T extends object>(
 }
 
 export class ThreeFcRepository {
+  private ownedJoinService(): OwnedPlayerJoinService {
+    return new OwnedPlayerJoinService(this.client, this.tableName, () => this.clock.now(),
+      (game, id, nickname, now) => this.planPlayerMembership(game, id, nickname, now), process.env.PLAYER_RETURNING_JOIN_ENABLED === "true");
+  }
+  listOwnedJoinPlayers(input: Parameters<OwnedPlayerJoinService["list"]>[0]) { return this.ownedJoinService().list(input); }
+  joinOwnedPlayer(input: Parameters<OwnedPlayerJoinService["join"]>[0]) { return this.ownedJoinService().join(input); }
+  private consolidationService(): PlayerConsolidationService {
+    return new PlayerConsolidationService(this.client, this.tableName, () => this.clock.now(),
+      process.env.PLAYER_CONSOLIDATION_ENABLED === "true");
+  }
+
+  previewPlayerConsolidation(input: Parameters<PlayerConsolidationService["preview"]>[0]) {
+    return this.consolidationService().preview(input);
+  }
+  getPlayerConsolidation(input: Parameters<PlayerConsolidationService["get"]>[0]) {
+    return this.consolidationService().get(input);
+  }
+  decidePlayerConsolidation(input: Parameters<PlayerConsolidationService["decide"]>[0]) {
+    return this.consolidationService().decide(input);
+  }
+  commitPlayerConsolidation(input: Parameters<PlayerConsolidationService["commit"]>[0]) {
+    return this.consolidationService().commit(input);
+  }
+  private readonly identities: PlayerIdentityPlanner;
   constructor(
     private readonly client: DynamoCommandClient,
     private readonly tableName: string,
     private readonly clock: Clock = new DefaultClock(),
-  ) {}
+    private readonly playerClaimMode: PlayerClaimMode = parsePlayerClaimMode(process.env.PLAYER_CLAIM_MODE),
+  ) { this.identities = new PlayerIdentityPlanner(client, tableName); }
+
+  private async planPlayerMembership(game: Pick<GameRecord, "gameId" | "leagueId" | "seasonId" | "gameStartTs">,
+    requestedPlayerId: string, nickname: string, now: string): Promise<{
+      playerId: string; identity: ResolvedPlayerIdentity; actions: TransactWriteItem[];
+    }> {
+    const control = await this.identities.readControl();
+    const fence = this.identities.writableControl(control);
+    const identity = await this.identities.resolve(requestedPlayerId, nickname);
+    const original = await this.identities.registeredOriginal(identity, game.gameId);
+    const playerId = original ?? identity.root.value.playerId;
+    if (Buffer.byteLength(gamePlayerSk(playerId)) > 1024) throw new PlayerIdentityError("player_registration_key_too_large", 400,
+      "This legacy player profile cannot be added to a game. Ask the organiser for help.");
+    const requireExisting = control.value.mode === "fenced" && original === null &&
+      await this.getPlayer(identity.root.value.playerId, { consistentRead: true }) !== null;
+    return { playerId, identity, actions: [fence, ...this.identities.planRevision(identity, now),
+      await this.identities.liveScope("game", [game.gameId]), await this.identities.liveScope("league", [game.leagueId]),
+      await this.identities.liveScope("season", [game.leagueId, game.seasonId]),
+      ...await this.identities.planDirectory(identity, game.leagueId, now, { ...game, registeredPlayerId: playerId }, requireExisting)] };
+  }
 
   async createLeague(input: CreateLeagueInput): Promise<LeagueRecord> {
     requireNonEmpty("leagueId", input.leagueId);
@@ -971,19 +1040,35 @@ export class ThreeFcRepository {
       createdByUserId: input.createdByUserId,
     };
 
-    await this.putEntity(leaguePk(input.leagueId), metadataSk(), ENTITY_TYPE.league, payload, now);
-    await this.putEntity(
-      leaguePk(input.leagueId),
-      aclSk(input.createdByUserId),
-      ENTITY_TYPE.acl,
-      {
-        leagueId: input.leagueId,
-        userId: input.createdByUserId,
-        role: "admin",
-        grantedByUserId: input.createdByUserId,
-      },
-      now,
-    );
+    const control = await this.identities.readControl();
+    const fence = this.identities.writableControl(control);
+    const existing = await this.getEntity(leaguePk(input.leagueId), metadataSk(), { consistentRead: true });
+    const conflict = () => new PlayerIdentityError("league_exists", 409, "This league already exists. Choose a different league ID.");
+    if (existing) {
+      const data = existing.data as typeof payload;
+      const acl = await this.getEntity(leaguePk(input.leagueId), aclSk(input.createdByUserId), { consistentRead: true });
+      const access = acl?.data as LeagueAclRecord | undefined;
+      if (existing.entityType !== ENTITY_TYPE.league || !data || Object.entries(payload).some(([key, value]) => data[key as keyof typeof payload] !== value) ||
+          acl?.entityType !== ENTITY_TYPE.acl || access?.leagueId !== input.leagueId || access?.userId !== input.createdByUserId || access?.role !== "admin") throw conflict();
+      // A lost-response retry may read the original result, never recreate a
+      // revoked ACL or overwrite an existing league owned by someone else.
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [fence,
+        this.buildConditionalCheckFromStoredEntity(existing), this.buildConditionalCheckFromStoredEntity(acl)] }));
+      return withTimestamps(data, existing.createdAt, existing.updatedAt);
+    }
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        this.identities.planStructureChange(control, now), await this.identities.liveScope("league", [input.leagueId]),
+        { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), metadataSk(), ENTITY_TYPE.league, payload, now),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+        { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), aclSk(input.createdByUserId), ENTITY_TYPE.acl,
+          { leagueId: input.leagueId, userId: input.createdByUserId, role: "admin", grantedByUserId: input.createdByUserId }, now),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+      ]) }));
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) throw conflict();
+      throw error;
+    }
     return withTimestamps(payload, now, now);
   }
 
@@ -1001,40 +1086,53 @@ export class ThreeFcRepository {
   async listLeaguesForUser(userId: string): Promise<LeagueRecord[]> {
     requireNonEmpty("userId", userId);
 
-    const scanResult = (await this.client.send(
-      new ScanCommand({
-        TableName: this.tableName,
-      }),
-    )) as ScanCommandOutput;
-
     const leagueIds = new Set<string>();
-    for (const item of scanResult.Items ?? []) {
-      if (item.entityType?.S !== ENTITY_TYPE.acl) {
-        continue;
-      }
+    const seenCursors = new Set<string>();
+    let cursor: ScanCommandOutput["LastEvaluatedKey"];
+    do {
+      const scanResult = (await this.client.send(new ScanCommand({
+        TableName: this.tableName,
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }))) as ScanCommandOutput;
+      for (const item of scanResult.Items ?? []) {
+        if (item.entityType?.S !== ENTITY_TYPE.acl) {
+          continue;
+        }
 
-      if (!item.data || item.data.S === undefined) {
-        // Skip non-repository ACL-shaped items that do not store JSON payloads.
-        continue;
-      }
+        if (!item.data || item.data.S === undefined) {
+          // Skip non-repository ACL-shaped items that do not store JSON payloads.
+          continue;
+        }
 
-      let data: unknown;
-      try {
-        data = JSON.parse(item.data.S);
-      } catch {
-        continue;
-      }
+        let data: unknown;
+        try {
+          data = JSON.parse(item.data.S);
+        } catch {
+          continue;
+        }
 
-      if (
-        typeof data === "object" &&
-        data !== null &&
-        typeof (data as { leagueId?: unknown }).leagueId === "string" &&
-        typeof (data as { userId?: unknown }).userId === "string" &&
-        (data as { userId: string }).userId === userId
-      ) {
-        leagueIds.add((data as { leagueId: string }).leagueId);
+        if (
+          typeof data === "object" &&
+          data !== null &&
+          typeof (data as { leagueId?: unknown }).leagueId === "string" &&
+          typeof (data as { userId?: unknown }).userId === "string" &&
+          (data as { userId: string }).userId === userId
+        ) {
+          leagueIds.add((data as { leagueId: string }).leagueId);
+        }
       }
-    }
+      const next = scanResult.LastEvaluatedKey;
+      if (!next || Object.keys(next).length === 0) break;
+      if (typeof next.pk?.S !== "string" || !next.pk.S || typeof next.sk?.S !== "string" || !next.sk.S) {
+        throw new Error("League discovery returned an invalid cursor.");
+      }
+      // Scan order is not lexical; detect repeated physical keys without
+      // assuming ordering or depending on the SDK object's property order.
+      const cursorId = JSON.stringify([next.pk.S, next.sk.S]);
+      if (seenCursors.has(cursorId)) throw new Error("League discovery cursor did not advance.");
+      seenCursors.add(cursorId);
+      cursor = next;
+    } while (cursor);
 
     const leagues = await Promise.all([...leagueIds].map((leagueId) => this.getLeague(leagueId)));
     return leagues
@@ -1057,8 +1155,41 @@ export class ThreeFcRepository {
       endsOn: input.endsOn ?? null,
     };
 
-    await this.putEntity(leaguePk(input.leagueId), seasonSk(input.seasonId), ENTITY_TYPE.season, payload, now);
-    await this.putEntity(seasonPk(input.seasonId), metadataSk(), ENTITY_TYPE.season, payload, now);
+    const control = await this.identities.readControl();
+    const structure = this.identities.planStructureChange(control, now);
+    const existing = await this.getEntity(leaguePk(input.leagueId), seasonSk(input.seasonId), { consistentRead: true });
+    if (existing) {
+      const data = existing.data as typeof payload;
+      if (existing.entityType !== ENTITY_TYPE.season || !data ||
+          Object.entries(payload).some(([key, value]) => data[key as keyof typeof payload] !== value)) {
+        throw new PlayerIdentityError("season_exists", 409, "The season list changed. Refresh before trying again.");
+      }
+      // Default-team setup happens after metadata creation. An exact retry must
+      // be able to complete it without replacing the original season or dates.
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        this.identities.writableControl(control), this.buildConditionalCheckFromStoredEntity(existing),
+        await this.identities.liveScope("league", [input.leagueId]),
+        await this.identities.liveScope("season", [input.leagueId, input.seasonId]),
+      ] }));
+      return withTimestamps(data, existing.createdAt, existing.updatedAt);
+    }
+    const legacy = await this.getEntity(seasonPk(input.seasonId), metadataSk(), { consistentRead: true });
+    // Season IDs are league-scoped. Keep the first legacy route owner rather
+    // than retargeting its metadata when another league uses the same season ID.
+    const legacyAction: TransactWriteItem = legacy ? this.buildConditionalCheckFromStoredEntity(legacy) :
+      { Put: { TableName: this.tableName, Item: buildItem(seasonPk(input.seasonId), metadataSk(), ENTITY_TYPE.season, payload, now),
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } };
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        structure, await this.identities.liveScope("league", [input.leagueId]),
+        await this.identities.liveScope("season", [input.leagueId, input.seasonId]),
+        { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), seasonSk(input.seasonId), ENTITY_TYPE.season, payload, now),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } }, legacyAction,
+      ]) }));
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) throw new PlayerIdentityError("season_exists", 409, "The season list changed. Refresh before trying again.");
+      throw error;
+    }
     return withTimestamps(payload, now, now);
   }
 
@@ -1564,6 +1695,9 @@ export class ThreeFcRepository {
       sessionId: input.sessionId,
       sessionDate: input.sessionDate,
     };
+    const identityChecks = [this.identities.planStructureChange(await this.identities.readControl(), now),
+      ...(payload.leagueId ? [await this.identities.liveScope("league", [payload.leagueId]),
+        await this.identities.liveScope("season", [payload.leagueId, input.seasonId])] : [])];
 
     if (input.leagueId) {
       const [seasonItem, globalSeasonItem, legacySeasonSessionItem, legacySessionMetadataItem] =
@@ -1646,6 +1780,7 @@ export class ThreeFcRepository {
                 },
               },
               ...legacyCompatibilityWrites,
+              ...identityChecks,
               {
                 Put: {
                   TableName: this.tableName,
@@ -1684,14 +1819,11 @@ export class ThreeFcRepository {
       return withTimestamps(payload, now, now);
     }
 
-    await this.putEntity(
-      seasonPk(input.seasonId),
-      sessionSk(input.sessionId),
-      ENTITY_TYPE.session,
-      payload,
-      now,
-    );
-    await this.putEntity(sessionPk(input.sessionId), metadataSk(), ENTITY_TYPE.session, payload, now);
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      ...identityChecks,
+      { Put: { TableName: this.tableName, Item: buildItem(seasonPk(input.seasonId), sessionSk(input.sessionId), ENTITY_TYPE.session, payload, now) } },
+      { Put: { TableName: this.tableName, Item: buildItem(sessionPk(input.sessionId), metadataSk(), ENTITY_TYPE.session, payload, now) } },
+    ]) }));
     return withTimestamps(payload, now, now);
   }
 
@@ -1791,6 +1923,9 @@ export class ThreeFcRepository {
     const linkSession = input.linkSession === true;
 
     for (let attempt = 0; attempt < (customJoinCode ? 1 : JOIN_CODE_GENERATION_ATTEMPTS); attempt += 1) {
+      const identityChecks = [this.identities.planStructureChange(await this.identities.readControl(), now),
+        await this.identities.liveScope("game", [input.gameId]), await this.identities.liveScope("league", [input.leagueId]),
+        await this.identities.liveScope("season", [input.leagueId, input.seasonId])];
       const joinCode = customJoinCode ?? generateJoinCode();
       const createRequestHash = input.createRequestHash?.trim() || null;
       const sessionTargets = linkSession
@@ -1868,6 +2003,7 @@ export class ThreeFcRepository {
           ...sessionTargets.map((target) => this.buildConditionalPutFromStoredEntity(target, now)),
         );
       }
+      transactionItems.push(...identityChecks);
 
       try {
         await this.client.send(
@@ -1995,6 +2131,9 @@ export class ThreeFcRepository {
     requireNonEmpty("joinCode", normalizedJoinCode);
     requireNonEmpty("playerId", input.playerId);
     requireNonEmpty("nickname", input.nickname);
+    if (input.claimProof) {
+      this.validateProofCreation(input.claimProof);
+    }
 
     const joinCodeItem = await this.getEntity(joinCodePk(normalizedJoinCode), metadataSk(), {
       consistentRead: true,
@@ -2028,6 +2167,7 @@ export class ThreeFcRepository {
       game,
       playerId: input.playerId,
       nickname: input.nickname,
+      claimProof: input.claimProof,
     });
     if (existingReplay) {
       return existingReplay;
@@ -2039,15 +2179,44 @@ export class ThreeFcRepository {
       nickname: input.nickname,
       claimedByUserId: null,
     };
+    const membership = await this.planPlayerMembership(game, input.playerId, input.nickname, now);
+    if (membership.playerId !== input.playerId) throw new PlayerIdentityError("player_identity_changed", 409,
+      "This player already exists. Use their profile link instead.");
     const linkPayload = {
       gameId: game.gameId,
       playerId: input.playerId,
     };
+    const linkingUnavailable = Boolean(input.claimProof && this.playerClaimMode === "disabled");
+    const issueProof = input.claimProof && !linkingUnavailable;
+    const leagueItem = issueProof
+      ? await this.getEntity(leaguePk(game.leagueId), metadataSk(), { consistentRead: true }) : null;
+    if (issueProof && (!leagueItem || leagueItem.entityType !== ENTITY_TYPE.league)) {
+      throw new PlayerProofError("claim_context_unavailable", 409, "This game is no longer available to join.");
+    }
+    const claimProof: PlayerProofRecord | undefined = issueProof ? {
+      proofId: input.claimProof!.proofId, verifier: input.claimProof!.verifier,
+      kind: "registration", playerId: input.playerId, gameId: game.gameId,
+      leagueId: game.leagueId, leagueName: (leagueItem!.data as LeagueRecord).name,
+      playerRevision: createHash("sha256").update(JSON.stringify([JSON.stringify(playerPayload), now, now])).digest("hex"),
+      identityRootId: membership.identity.root.value.playerId, identityVersion: membership.identity.root.value.identityVersion,
+      expiresAt: new Date(Date.parse(now) + PLAYER_PROOF_TTL_MS).toISOString(),
+      issuerAclUserId: null, replacesProofId: null, state: "pending", consumedByUserId: null, committedPlayer: null,
+    } : undefined;
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
+          TransactItems: boundedIdentityTransaction([
+            ...membership.actions,
+            ...(claimProof ? [this.proofWrite(claimProof, now), this.buildConditionalCheckFromStoredEntity(leagueItem!)] : []),
+            ...(linkingUnavailable ? [{ Put: {
+              TableName: this.tableName,
+              Item: buildItem(gamePk(game.gameId), `JOIN_RECEIPT#${input.playerId}`, "gameJoinReceipt", {
+                requestHash: createHash("sha256").update(JSON.stringify([input.nickname, input.claimProof!.proofId, input.claimProof!.verifier])).digest("hex"),
+                linkingUnavailable: true,
+              }, now),
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            } }] : []),
             {
               ConditionCheck: {
                 TableName: this.tableName,
@@ -2104,7 +2273,7 @@ export class ThreeFcRepository {
                 ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
               },
             },
-          ],
+          ]),
         }),
       );
     } catch (error) {
@@ -2113,6 +2282,7 @@ export class ThreeFcRepository {
           game,
           playerId: input.playerId,
           nickname: input.nickname,
+          claimProof: input.claimProof,
         });
         if (replayedJoin) {
           return replayedJoin;
@@ -2132,6 +2302,8 @@ export class ThreeFcRepository {
       game,
       player: withTimestamps(playerPayload, now, now),
       link: withTimestamps(linkPayload, now, now),
+      ...(claimProof ? { claimProof: this.proofMetadata(claimProof) } : {}),
+      ...(linkingUnavailable ? { linkingUnavailable: true as const } : {}),
     };
   }
 
@@ -2139,6 +2311,7 @@ export class ThreeFcRepository {
     game: GameRecord;
     playerId: string;
     nickname: string;
+    claimProof?: PlayerProofCreation;
   }): Promise<JoinGameByCodeResult | null> {
     const [playerItem, linkItem] = await Promise.all([
       this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
@@ -2164,17 +2337,38 @@ export class ThreeFcRepository {
     if (
       player.playerId !== input.playerId ||
       player.nickname !== input.nickname ||
-      player.claimedByUserId !== null ||
+      (!input.claimProof && player.claimedByUserId !== null) ||
       link.gameId !== input.game.gameId ||
       link.playerId !== input.playerId
     ) {
       return null;
     }
 
+    let proof: PlayerProofRecord | undefined;
+    const disabledReceipt = await this.getEntity(gamePk(input.game.gameId), `JOIN_RECEIPT#${input.playerId}`, { consistentRead: true });
+    const disabledHash = disabledReceipt?.entityType === "gameJoinReceipt"
+      ? (disabledReceipt.data as { requestHash: string }).requestHash : undefined;
+    if (disabledHash) {
+      if (!input.claimProof || !secureEqual(disabledHash, createHash("sha256").update(JSON.stringify([
+        input.nickname, input.claimProof.proofId, input.claimProof.verifier,
+      ])).digest("hex"))) return null;
+      // The original no-proof outcome survives mode changes and lost replies.
+      // Never mint a capability retroactively onto this registration.
+      return { game: input.game, player, link: { gameId: link.gameId, playerId: link.playerId,
+        createdAt: link.createdAt, updatedAt: link.updatedAt }, linkingUnavailable: true };
+    }
+    if (input.claimProof) {
+      const item = await this.getEntity(this.playerProofKey(input.claimProof.proofId), metadataSk(), { consistentRead: true });
+      if (!item || item.entityType !== ENTITY_TYPE.playerProof) return null;
+      proof = this.storedPlayerProof(item);
+      if (proof.kind !== "registration" || proof.playerId !== input.playerId || proof.gameId !== input.game.gameId ||
+          !secureEqual(proof.verifier, input.claimProof.verifier)) return null;
+    }
     return {
       game: input.game,
       player,
       link,
+      ...(proof ? { claimProof: this.proofMetadata(proof) } : {}),
     };
   }
 
@@ -2455,7 +2649,22 @@ export class ThreeFcRepository {
 
     const now = this.clock.now();
 
-    const gameUpdated = await this.putEntityWithTimestampsIfUnchanged(
+    let gameUpdated: boolean;
+    if (nextGameStartTs !== existing.gameStartTs) {
+      const control = await this.identities.readControl();
+      const update = this.buildConditionalPutFromStoredEntity(gameItem, now);
+      update.Put!.Item = buildItemWithTimestamps(gamePk(existing.gameId), metadataSk(), ENTITY_TYPE.game,
+        updatedPayload, gameItem.createdAt, now);
+      try {
+        await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+          this.identities.planCoverageInvalidation(control, now), update,
+        ]) }));
+        gameUpdated = true;
+      } catch (error) {
+        if (!isConditionalWriteFailure(error)) throw error;
+        gameUpdated = false;
+      }
+    } else gameUpdated = await this.putEntityWithTimestampsIfUnchanged(
       gamePk(existing.gameId),
       metadataSk(),
       ENTITY_TYPE.game,
@@ -2766,6 +2975,8 @@ export class ThreeFcRepository {
   async deleteGame(gameId: string): Promise<boolean> {
     requireNonEmpty("gameId", gameId);
 
+    const identityControl = await this.identities.readControl();
+
     const gameItem = await this.readMutableGameEntity(gameId);
     if (!gameItem || gameItem.entityType !== ENTITY_TYPE.game) {
       return false;
@@ -2793,6 +3004,9 @@ export class ThreeFcRepository {
       normalizeJoinCode(joinCodeRecord.joinCode) === normalizeJoinCode(game.joinCode);
     const sessionCleanupTargets = await this.readSessionMutationTargets(game);
     const transactionItems: TransactWriteItem[] = [
+      ...await this.identities.planDeletion("game", [gameId], this.clock.now(), {
+        gameId, leagueId: game.leagueId, seasonId: game.seasonId, gameStartTs: game.gameStartTs,
+      }, identityControl),
       {
         Delete: {
           TableName: this.tableName,
@@ -2894,6 +3108,8 @@ export class ThreeFcRepository {
       requireNonEmpty("leagueId", options.leagueId);
     }
 
+    const identityControl = await this.identities.readControl();
+
     const globalSeasonItem = await this.getEntity(seasonPk(seasonId), metadataSk(), {
       consistentRead: true,
     });
@@ -2973,6 +3189,7 @@ export class ThreeFcRepository {
       );
 
       const deleteItems: TransactWriteItem[] = [
+        ...await this.identities.planDeletion("season", [options.leagueId, seasonId], this.clock.now(), undefined, identityControl),
         {
           Delete: {
             TableName: this.tableName,
@@ -3038,37 +3255,50 @@ export class ThreeFcRepository {
       return true;
     }
 
-    await this.deleteEntity(seasonPk(seasonId), metadataSk());
-    await this.deleteEntity(leaguePk(resolvedSeason.leagueId), seasonSk(seasonId));
+    const scoped = await this.getEntity(leaguePk(resolvedSeason.leagueId), seasonSk(seasonId), { consistentRead: true });
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      ...await this.identities.planDeletion("season", [resolvedSeason.leagueId, seasonId], this.clock.now(), undefined, identityControl),
+      this.buildConditionalDeleteFromStoredEntity(globalSeasonItem!),
+      ...(scoped ? [this.buildConditionalDeleteFromStoredEntity(scoped)] : []),
+    ]) }));
     return true;
   }
 
-  async deleteLeague(leagueId: string): Promise<boolean> {
-    requireNonEmpty("leagueId", leagueId);
+  async canResumeLeagueDeletion(leagueId: string, userIds: readonly string[]): Promise<boolean> {
+    const cleanup = new LeagueDeletionCleanup(this.client, this.tableName, () => this.clock.now());
+    const receipt = await cleanup.read(leagueId);
+    return Boolean(receipt && cleanup.owns(receipt, userIds));
+  }
 
-    const league = await this.getLeague(leagueId);
-    if (!league) {
+  async deleteLeague(leagueId: string, userIds?: readonly string[]): Promise<boolean> {
+    requireNonEmpty("leagueId", leagueId);
+    const cleanup = new LeagueDeletionCleanup(this.client, this.tableName, () => this.clock.now());
+    if (await cleanup.read(leagueId)) return cleanup.resume(leagueId, userIds);
+    const identityControl = await this.identities.readControl();
+
+    const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
+    if (!league || league.entityType !== ENTITY_TYPE.league) {
       return false;
     }
 
-    const seasons = await this.listSeasonsForLeague(leagueId);
+    const seasons = await this.listSeasonsForLeague(leagueId, { consistentRead: true });
     if (seasons.length > 0) {
       throw new Error("Cannot delete league with existing seasons.");
     }
 
-    const [aclEntries, inviteEntries] = await Promise.all([
-      this.listLeagueAccess(leagueId),
-      this.listLeagueOrganiserInviteEntities(leagueId),
-    ]);
-    await Promise.all(
-      [
-        ...inviteEntries.map((entry) => this.deleteEntity(entry.pk, entry.sk)),
-        this.deleteEntity(leaguePk(leagueId), leagueOrganiserShareInviteSk()),
-        ...aclEntries.map((entry) => this.deleteEntity(leaguePk(leagueId), aclSk(entry.userId))),
-      ],
-    );
-    await this.deleteEntity(leaguePk(leagueId), metadataSk());
-    return true;
+    let authority: StoredEntity<unknown> | null = null;
+    if (userIds) {
+      for (const userId of userIds) {
+        const acl = await this.getEntity(leaguePk(leagueId), aclSk(userId), { consistentRead: true });
+        if (acl?.entityType === ENTITY_TYPE.acl && (acl.data as LeagueAclRecord).role === "admin") { authority = acl; break; }
+      }
+      if (!authority) throw new PlayerIdentityError("league_cleanup_forbidden", 403, "Only a league organiser can remove this league.");
+    }
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      ...await this.identities.planDeletion("league", [leagueId], this.clock.now(), undefined, identityControl), this.buildConditionalDeleteFromStoredEntity(league),
+      cleanup.start(leagueId, userIds), ...(authority ? [this.buildConditionalCheckFromStoredEntity(authority)!] : []),
+    ]) }));
+    return cleanup.resume(leagueId, userIds);
   }
 
   async createPlayer(input: CreatePlayerInput): Promise<PlayerRecord> {
@@ -3082,7 +3312,21 @@ export class ThreeFcRepository {
       claimedByUserId: input.claimedByUserId ?? null,
     };
 
-    await this.putEntity(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, payload, now);
+    const existing = await this.getPlayer(input.playerId, { consistentRead: true });
+    if (existing) {
+      if (existing.nickname !== payload.nickname || existing.claimedByUserId !== payload.claimedByUserId) {
+        throw new PlayerIdentityError("player_already_exists", 409, "This player already exists. Choose the existing player.");
+      }
+      return existing;
+    }
+    const control = await this.identities.readControl();
+    const identity = await this.identities.resolve(input.playerId, input.nickname);
+    if (identity.root.item) throw new PlayerIdentityError("player_identity_unavailable", 503, "This player record needs organiser support.");
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      this.identities.writableControl(control), ...this.identities.planRevision(identity, now, payload.claimedByUserId !== null),
+      { Put: { TableName: this.tableName, Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, payload, now),
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+    ]) }));
     return withTimestamps(payload, now, now);
   }
 
@@ -3097,9 +3341,584 @@ export class ThreeFcRepository {
     return withTimestamps(item.data as Omit<PlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
   }
 
+  /** Presentation-only identity resolution. Ownership proofs and event writes
+   * must keep using raw records and the original registered player ID. */
+  async getPlayerView(playerId: string): Promise<{
+    originalPlayerId: string; canonicalPlayerId: string; player: PlayerRecord;
+  } | null> {
+    requireNonEmpty("playerId", playerId);
+    const original = await this.getEntity(playerPk(playerId), profileSk(), { consistentRead: true });
+    if (!original || original.entityType !== ENTITY_TYPE.player) return null;
+    const source = original.data as Omit<PlayerRecord, "createdAt" | "updatedAt">;
+    if (!source || source.playerId !== playerId || typeof source.nickname !== "string") {
+      throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
+    }
+    const identity = await this.identities.resolve(playerId, source.nickname);
+    const canonicalId = identity.root.value.playerId;
+    const canonical = canonicalId === playerId ? original : await this.getEntity(playerPk(canonicalId), profileSk(), { consistentRead: true });
+    const owner = canonical?.data as Omit<PlayerRecord, "createdAt" | "updatedAt"> | undefined;
+    if (!canonical || canonical.entityType !== ENTITY_TYPE.player || !owner || owner.playerId !== canonicalId ||
+        typeof owner.nickname !== "string" || (owner.claimedByUserId !== null && typeof owner.claimedByUserId !== "string")) {
+      throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
+    }
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        identityCondition(this.tableName, identity.root), identityCondition(this.tableName, identity.original),
+        this.buildConditionalCheckFromStoredEntity(original), this.buildConditionalCheckFromStoredEntity(canonical),
+      ]) }));
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) throw new PlayerIdentityError("player_identity_changed", 503, "Player details changed. Try again.");
+      throw error;
+    }
+    return { originalPlayerId: playerId, canonicalPlayerId: canonicalId,
+      player: withTimestamps({ ...source, nickname: identity.root.value.displayName, claimedByUserId: owner.claimedByUserId }, original.createdAt, original.updatedAt) };
+  }
+
+  private async leaguePlayerAuthority(leagueId: string, userIds: readonly string[], adminOnly = false): Promise<{
+    league: StoredEntity<unknown>; acl: StoredEntity<unknown>; admin: boolean;
+  }> {
+    requireNonEmpty("leagueId", leagueId);
+    const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
+    if (!league || league.entityType !== ENTITY_TYPE.league || (league.data as LeagueRecord).leagueId !== leagueId) {
+      throw new PlayerIdentityError("player_directory_unavailable", 403, "You cannot access this player list.");
+    }
+    // Only trusted session identities reach this method. Do not accept an
+    // arbitrary account ID from a request body or a directory cursor.
+    let scorer: StoredEntity<unknown> | null = null;
+    for (const userId of [...new Set(userIds)]) {
+      const acl = await this.getEntity(leaguePk(leagueId), aclSk(userId), { consistentRead: true });
+      if (!acl || acl.entityType !== ENTITY_TYPE.acl) continue;
+      const value = acl.data as LeagueAclRecord;
+      if (value.leagueId !== leagueId || value.userId !== userId) continue;
+      if (value.role === "admin") return { league, acl, admin: true };
+      if (value.role === "scorekeeper") scorer = acl;
+    }
+    if (!adminOnly && scorer) return { league, acl: scorer, admin: false };
+    throw new PlayerIdentityError("player_directory_unavailable", 403, "You cannot access this player list.");
+  }
+
+  async listLeaguePlayers(input: { leagueId: string; userIds: readonly string[]; seasonId?: string; gameId?: string;
+    query?: string; cursor?: string; limit?: number; includeGames?: boolean }): Promise<{
+      players: Array<{ playerId: string; nickname: string; claimed: boolean; seasons: Array<{ seasonId: string; name: string }>; hasMoreSeasons: boolean; inGame?: boolean } & Partial<DirectoryGameSample>>;
+      cursor: string | null; searchIncomplete?: boolean;
+    }> {
+    const deadlineMs = Date.now() + 6000;
+    if (input.includeGames && input.limit !== undefined && input.limit > 10) throw new PlayerIdentityError("invalid_player_search", 400, "Game details support up to ten players per page.");
+    const authority = await this.leaguePlayerAuthority(input.leagueId, input.userIds);
+    const game = input.gameId === undefined ? null : await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
+    if (input.gameId !== undefined && (!game || game.entityType !== ENTITY_TYPE.game ||
+        (game.data as GameRecord)?.gameId !== input.gameId || (game.data as GameRecord)?.leagueId !== input.leagueId)) {
+      throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
+    }
+    if (input.seasonId !== undefined && !await this.getSeasonForLeague(input.leagueId, input.seasonId, { consistentRead: true })) {
+      throw new PlayerIdentityError("player_season_unavailable", 404, "This season is no longer available.");
+    }
+    const page = await this.identities.directoryPage({ ...input, ...(input.includeGames && input.limit === undefined ? { limit: 10 } : {}) }, { deadlineMs });
+    const gameSamples = input.includeGames ? await directoryGameSamples(this.client, this.tableName, {
+      leagueId: input.leagueId, seasonId: input.seasonId, playerIds: page.entries.map(entry => entry.playerId), deadlineMs,
+    }) : null;
+    const players = [];
+    for (const entry of page.entries) {
+      const profile = await this.getPlayer(entry.playerId, { consistentRead: true });
+      if (!profile || profile.playerId !== entry.playerId || typeof profile.nickname !== "string" ||
+          (profile.claimedByUserId !== null && typeof profile.claimedByUserId !== "string")) {
+        throw new PlayerIdentityError("player_identity_unavailable", 503, "The player list is being prepared. Please try again shortly.");
+      }
+      const seasons = [];
+      for (const seasonId of input.seasonId === undefined ? entry.seasonIds ?? [] : [input.seasonId]) {
+        const season = await this.getSeasonForLeague(input.leagueId, seasonId, { consistentRead: true });
+        if (season?.leagueId === input.leagueId && season.seasonId === seasonId && typeof season.name === "string" && season.name.trim()) {
+          seasons.push({ seasonId, name: season.name });
+        }
+      }
+      players.push({ playerId: entry.playerId, nickname: entry.nickname, claimed: profile.claimedByUserId !== null,
+        seasons, hasMoreSeasons: input.seasonId === undefined && entry.hasMoreSeasons === true,
+        ...(gameSamples?.samples.get(entry.playerId) ?? {}),
+        ...(input.gameId === undefined ? {} : { inGame: entry.inGame === true }) });
+    }
+    // Do not disclose a page obtained while the caller's league authority was
+    // revoked. This read-only transaction checks the exact initial ACL snapshot.
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      this.buildConditionalCheckFromStoredEntity(authority.league)!, this.buildConditionalCheckFromStoredEntity(authority.acl)!,
+      ...(gameSamples?.checks ?? []),
+      ...(game ? [this.buildConditionalCheckFromStoredEntity(game)] : []),
+    ] }));
+    return { players, cursor: page.cursor, ...(page.searchIncomplete ? { searchIncomplete: true } : {}) };
+  }
+
+  async createLeaguePlayer(input: { leagueId: string; playerId: string; nickname: string; userIds: readonly string[] }): Promise<{
+    playerId: string; nickname: string;
+  }> {
+    requireNonEmpty("playerId", input.playerId); requireNonEmpty("nickname", input.nickname);
+    const authority = await this.leaguePlayerAuthority(input.leagueId, input.userIds, true);
+    const control = await this.identities.readControl(); this.identities.requireDirectory(control);
+    const now = this.clock.now(), identity = await this.identities.resolve(input.playerId, input.nickname);
+    const receipt = await this.getEntity(playerPk(input.playerId), "LEAGUE_CREATION", { consistentRead: true });
+    const request = { leagueId: input.leagueId, playerId: input.playerId, nickname: input.nickname,
+      actor: (authority.acl.data as LeagueAclRecord).userId };
+    if (receipt) {
+      const committed = receipt.data as typeof request | null;
+      if (receipt.entityType !== "leaguePlayerCreation" || !committed || !input.userIds.includes(committed.actor) ||
+          receipt.rawData !== JSON.stringify({ ...request, actor: committed.actor })) {
+        throw new PlayerIdentityError("player_creation_changed", 409, "Start a new player entry.");
+      }
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        this.identities.writableControl(control), this.buildConditionalCheckFromStoredEntity(authority.league)!,
+        this.buildConditionalCheckFromStoredEntity(authority.acl)!, this.buildConditionalCheckFromStoredEntity(receipt)!,
+      ]) }));
+      // Return the immutable creation outcome. A later merge or rename cannot
+      // change the meaning of a lost-response retry; readers resolve aliases.
+      return { playerId: committed.playerId, nickname: committed.nickname };
+    }
+    if (identity.root.item || await this.getPlayer(input.playerId, { consistentRead: true })) {
+      throw new PlayerIdentityError("player_already_exists", 409, "Choose the existing player or start a new player entry.");
+    }
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      this.identities.writableControl(control), ...this.identities.planRevision(identity, now),
+      ...await this.identities.planDirectory(identity, input.leagueId, now),
+      await this.identities.liveScope("league", [input.leagueId]),
+      this.buildConditionalCheckFromStoredEntity(authority.league)!, this.buildConditionalCheckFromStoredEntity(authority.acl)!,
+      { Put: { TableName: this.tableName, Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player,
+        { playerId: input.playerId, nickname: input.nickname, claimedByUserId: null }, now),
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+      { Put: { TableName: this.tableName, Item: buildItem(playerPk(input.playerId), "LEAGUE_CREATION", "leaguePlayerCreation", request, now),
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+    ]) }));
+    return { playerId: input.playerId, nickname: input.nickname };
+  }
+
+  async addExistingLeaguePlayer(input: { gameId: string; playerId: string; userIds: readonly string[]; teamId?: TeamId | null;
+    allowFinished?: boolean }): Promise<{ playerId: string; alreadyInGame: boolean }> {
+    if (input.teamId != null && !TEAM_IDS.includes(input.teamId)) throw new PlayerIdentityError("invalid_team", 400, "Choose a team.");
+    const initialGame = await this.readMutableGameEntity(input.gameId);
+    if (!initialGame || initialGame.entityType !== ENTITY_TYPE.game) throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
+    const game = normalizeGamePayload(initialGame.data);
+    const authority = await this.leaguePlayerAuthority(game.leagueId, input.userIds);
+    const { item: gameItem } = await this.readGameForMutation({ gameId: input.gameId,
+      allowFinished: authority.admin && input.allowFinished === true,
+      finishedMessage: "This game is finished. Open result correction to change players.", changedMessage: "This game changed. Try again." });
+    if (gameItem.rawData !== initialGame.rawData) throw new PlayerIdentityError("game_changed", 409, "This game changed. Try again.");
+    const control = await this.identities.readControl(); this.identities.requireDirectory(control);
+    const profile = await this.getPlayer(input.playerId, { consistentRead: true });
+    if (!profile) throw new PlayerIdentityError("player_unavailable", 409, "Choose a player from this league.");
+    const now = this.clock.now(), membership = await this.planPlayerMembership(game, input.playerId, profile.nickname, now);
+    const rootId = membership.identity.root.value.playerId;
+    const directory = await this.getEntity(leaguePk(game.leagueId), identityDirectorySk(rootId), { consistentRead: true });
+    const entry = directory?.data as { playerId?: unknown; active?: unknown } | undefined;
+    if (!directory || directory.entityType !== "leaguePlayer" || entry?.playerId !== rootId || entry.active !== true) {
+      throw new PlayerIdentityError("player_unavailable", 409, "Choose a player from this league.");
+    }
+    const alreadyInGame = await this.identities.registeredOriginal(membership.identity, input.gameId) !== null;
+    // The directory projection is updated by membership.actions itself. Its CAS
+    // snapshot is taken before this read; do not add a duplicate ConditionCheck.
+    const actions = [...membership.actions, this.identities.writableControl(control),
+      this.buildGameConditionCheck(input.gameId, gameItem), this.buildConditionalCheckFromStoredEntity(authority.acl)!,
+      this.buildConditionalCheckFromStoredEntity(authority.league)!];
+    if (!alreadyInGame) {
+      if (input.teamId && Buffer.byteLength(rosterSk(input.teamId, rootId)) > 1024) throw new PlayerIdentityError("player_roster_key_too_large", 400,
+        "This legacy player profile cannot be assigned to this team. Ask the organiser for help.");
+      actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), gamePlayerSk(rootId), ENTITY_TYPE.gamePlayer,
+        { gameId: input.gameId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
+      if (input.teamId) actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), rosterSk(input.teamId, rootId), ENTITY_TYPE.roster,
+        { gameId: input.gameId, teamId: input.teamId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
+    }
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }));
+    return { playerId: membership.playerId, alreadyInGame };
+  }
+
+  private playerProofKey(proofId: string): string {
+    if (!PROOF_ID_PATTERN.test(proofId)) throw new PlayerProofError("invalid_claim_proof", 400, "This profile link is invalid or no longer available.");
+    return `PLAYER_PROOF#${proofId}`;
+  }
+
+  private validateProofCreation(proof: PlayerProofCreation): void {
+    this.playerProofKey(proof.proofId);
+    if (!PROOF_VERIFIER_PATTERN.test(proof.verifier)) throw new PlayerProofError("invalid_claim_proof", 400, "Invalid profile-link request.");
+  }
+
+  private playerRevision(stored: StoredEntity<unknown>): string {
+    return createHash("sha256").update(JSON.stringify([stored.rawData, stored.createdAt, stored.updatedAt])).digest("hex");
+  }
+
+  private proofMetadata(proof: PlayerProofRecord): PlayerProofMetadata {
+    return { proofId: proof.proofId, expiresAt: proof.expiresAt };
+  }
+
+  private storedPlayerProof(stored: StoredEntity<unknown>): PlayerProofRecord {
+    const proof = stored.data as Partial<PlayerProofRecord> | null;
+    const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+    const date = (value: unknown): boolean => text(value) && Number.isFinite(Date.parse(value));
+    const invalid = (): never => { throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available."); };
+    if (stored.entityType !== ENTITY_TYPE.playerProof || !proof || typeof proof !== "object" ||
+        !text(proof.proofId) || !PROOF_ID_PATTERN.test(proof.proofId) ||
+        stored.pk !== `PLAYER_PROOF#${proof.proofId}` || stored.sk !== metadataSk() ||
+        !text(proof.verifier) || !PROOF_VERIFIER_PATTERN.test(proof.verifier) ||
+        !text(proof.playerRevision) || !PROOF_VERIFIER_PATTERN.test(proof.playerRevision) ||
+        !text(proof.playerId) || !text(proof.leagueId) || !text(proof.leagueName) ||
+        !date(proof.expiresAt) || !["registration", "invitation"].includes(proof.kind ?? "") ||
+        !["pending", "revoked", "consumed"].includes(proof.state ?? "")) return invalid();
+    if (proof.scope === "league" ? proof.kind !== "invitation" || proof.gameId !== null :
+        (proof.scope !== undefined && proof.scope !== "game") || !text(proof.gameId)) return invalid();
+    if (proof.kind === "registration") {
+      if (proof.issuerAclUserId !== null || proof.replacesProofId !== null) return invalid();
+    } else if (!text(proof.issuerAclUserId) ||
+        (proof.replacesProofId !== null && (!text(proof.replacesProofId) || !PROOF_ID_PATTERN.test(proof.replacesProofId)))) return invalid();
+    if (proof.identityRootId !== undefined || proof.identityVersion !== undefined) {
+      if (!text(proof.identityRootId) || !Number.isSafeInteger(proof.identityVersion) || proof.identityVersion! < 0) return invalid();
+    }
+    if (proof.state === "consumed") {
+      const player = proof.committedPlayer;
+      // Receipt recovery ignores elapsed expiry, not malformed identity data.
+      if (!text(proof.consumedByUserId) || !player || typeof player !== "object" ||
+          player.playerId !== proof.playerId || player.claimedByUserId !== proof.consumedByUserId ||
+          !text(player.nickname) || !date(player.createdAt) || !date(player.updatedAt)) return invalid();
+    } else if (proof.consumedByUserId !== null || proof.committedPlayer !== null) return invalid();
+    return proof as PlayerProofRecord;
+  }
+
+  private proofWrite(proof: PlayerProofRecord, now: string, existing?: StoredEntity<unknown>): TransactWriteItem {
+    const item = buildItemWithTimestamps(this.playerProofKey(proof.proofId), metadataSk(), ENTITY_TYPE.playerProof,
+      proof, existing?.createdAt ?? now, now);
+    // Replacing the complete item on consumption removes the unused-proof TTL
+    // atomically with ownership. Durable receipts contain no bearer secret.
+    if (proof.state !== "consumed") item.ttlEpoch = { N: String(Math.ceil(Date.parse(proof.expiresAt) / 1000)) };
+    const write = existing ? this.buildConditionalPutFromStoredEntity(existing, now) : {
+      Put: { TableName: this.tableName, Item: item, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" },
+    };
+    write.Put!.Item = item;
+    return write;
+  }
+
+  private async readProof(credential: PlayerProofCredential): Promise<{ stored: StoredEntity<unknown>; proof: PlayerProofRecord }> {
+    const verifier = hashPlayerProofSecret(credential.secret);
+    const stored = await this.getEntity(this.playerProofKey(credential.proofId), metadataSk(), { consistentRead: true });
+    if (!stored) {
+      throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available.");
+    }
+    const proof = this.storedPlayerProof(stored);
+    if (!secureEqual(proof.verifier, verifier)) throw new PlayerProofError("invalid_claim_proof", 404, "This profile link is invalid or no longer available.");
+    return { stored, proof };
+  }
+
+  private async readProofContext(proof: PlayerProofRecord): Promise<{
+    player: StoredEntity<unknown>; checks: TransactWriteItem[];
+    identity: ResolvedPlayerIdentity; control: IdentitySnapshot<IdentityControl>;
+  }> {
+    requirePlayerClaimEnabled(this.playerClaimMode);
+    if (proof.state !== "pending" || Date.parse(proof.expiresAt) <= Date.parse(this.clock.now())) {
+      throw new PlayerProofError("claim_proof_unavailable", 409, "This profile link has expired or is no longer available. Ask the organiser for a new link.");
+    }
+    const [player, game, league, registration] = await Promise.all([
+      this.getEntity(playerPk(proof.playerId), profileSk(), { consistentRead: true }),
+      proof.scope === "league" ? Promise.resolve(null) : this.getEntity(gamePk(proof.gameId!), metadataSk(), { consistentRead: true }),
+      this.getEntity(leaguePk(proof.leagueId), metadataSk(), { consistentRead: true }),
+      proof.scope === "league" ? this.getEntity(leaguePk(proof.leagueId), identityDirectorySk(proof.playerId), { consistentRead: true }) :
+        this.getEntity(gamePk(proof.gameId!), gamePlayerSk(proof.playerId), { consistentRead: true }),
+    ]);
+    const associationValid = proof.scope === "league" ? registration?.entityType === ENTITY_TYPE.leaguePlayer &&
+      (registration.data as { playerId: string; active: boolean }).playerId === proof.playerId && (registration.data as { active: boolean }).active === true :
+      game?.entityType === ENTITY_TYPE.game && (game.data as GameRecord).leagueId === proof.leagueId &&
+      registration?.entityType === ENTITY_TYPE.gamePlayer && (registration.data as GamePlayerRecord).playerId === proof.playerId &&
+      (registration.data as GamePlayerRecord).gameId === proof.gameId;
+    if (!player || player.entityType !== ENTITY_TYPE.player || !associationValid ||
+        !league || league.entityType !== ENTITY_TYPE.league || !registration || this.playerRevision(player) !== proof.playerRevision ||
+        (player.data as PlayerRecord).claimedByUserId !== null) {
+      throw new PlayerProofError("claim_profile_changed", 409, "This player is no longer available to link. Ask the organiser for help.");
+    }
+    const identity = await this.identities.resolve(proof.playerId, (player.data as PlayerRecord).nickname);
+    const control = await this.identities.readControl();
+    if (identity.root.value.playerId !== (proof.identityRootId ?? proof.playerId) ||
+        identity.root.value.identityVersion !== (proof.identityVersion ?? 0) || identity.root.value.playerId !== proof.playerId) {
+      throw new PlayerProofError("claim_profile_changed", 409, "This player profile changed. Ask the organiser for a new link.");
+    }
+    if (proof.scope === "league") this.identities.requireDirectory(control);
+    const checks = [...(game ? [game] : []), league, registration].map((item) => this.buildConditionalCheckFromStoredEntity(item));
+    if (proof.kind === "invitation") {
+      const [acl, pointer] = await Promise.all([
+        this.getEntity(leaguePk(proof.leagueId), aclSk(proof.issuerAclUserId!), { consistentRead: true }),
+        this.getEntity(playerPk(proof.playerId), "CLAIM_INVITATION", { consistentRead: true }),
+      ]);
+      if (!acl || acl.entityType !== ENTITY_TYPE.acl || (acl.data as LeagueAclRecord).role !== "admin" ||
+          !pointer || (pointer.data as { proofId: string | null }).proofId !== proof.proofId) {
+        throw new PlayerProofError("claim_proof_unavailable", 409, "This profile link is no longer available. Ask the organiser for a new link.");
+      }
+      checks.push(this.buildConditionalCheckFromStoredEntity(acl), this.buildConditionalCheckFromStoredEntity(pointer));
+    }
+    if (Date.parse(proof.expiresAt) <= Date.parse(this.clock.now())) {
+      throw new PlayerProofError("claim_proof_unavailable", 409, "This profile link has expired. Ask the organiser for a new link.");
+    }
+    return { player, checks, identity, control };
+  }
+
+  private async invitationAuthority(input: PlayerInvitationTarget): Promise<{
+    game?: StoredEntity<unknown>; league: StoredEntity<unknown>; player: StoredEntity<unknown>;
+    registration: StoredEntity<unknown>; acl: StoredEntity<unknown>;
+  }> {
+    if (input.scope === "league") {
+      const authority = await this.leaguePlayerAuthority(input.leagueId, input.userIds, true);
+      this.identities.requireDirectory(await this.identities.readControl());
+      const [player, registration] = await Promise.all([
+        this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
+        this.getEntity(leaguePk(input.leagueId), identityDirectorySk(input.playerId), { consistentRead: true }),
+      ]);
+      if (!player || player.entityType !== ENTITY_TYPE.player || !registration || registration.entityType !== ENTITY_TYPE.leaguePlayer ||
+          (registration.data as { playerId: string; active: boolean }).playerId !== input.playerId || (registration.data as { active: boolean }).active !== true) {
+        throw new PlayerProofError("claim_context_unavailable", 404, "This player is not available in this league.");
+      }
+      return { league: authority.league, acl: authority.acl, player, registration };
+    }
+    if (Buffer.byteLength(gamePlayerSk(input.playerId)) > 1024) {
+      throw new PlayerProofError("claim_context_unavailable", 404, "This player is not available in this game.");
+    }
+    const [game, player, registration] = await Promise.all([
+      this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true }),
+      this.getEntity(playerPk(input.playerId), profileSk(), { consistentRead: true }),
+      this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId), { consistentRead: true }),
+    ]);
+    if (!game || game.entityType !== ENTITY_TYPE.game || !player || player.entityType !== ENTITY_TYPE.player ||
+        !registration || registration.entityType !== ENTITY_TYPE.gamePlayer) {
+      throw new PlayerProofError("claim_context_unavailable", 404, "This player is not available in this game.");
+    }
+    const leagueId = (game.data as GameRecord).leagueId;
+    const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
+    if (!league || league.entityType !== ENTITY_TYPE.league) throw new PlayerProofError("claim_context_unavailable", 404, "This league is no longer available.");
+    // Preserve the exact legacy-email or subject ACL key that authorised this
+    // operation; redemption cannot substitute a different account's ACL.
+    for (const userId of [...new Set(input.userIds)]) {
+      const acl = await this.getEntity(leaguePk(leagueId), aclSk(userId), { consistentRead: true });
+      if (acl?.entityType === ENTITY_TYPE.acl && (acl.data as LeagueAclRecord).role === "admin") {
+        return { game, league, player, registration, acl };
+      }
+    }
+    throw new PlayerProofError("claim_invite_forbidden", 403, "Only a league organiser can manage profile links.");
+  }
+
+  private async replayPlayerInvitation(stored: StoredEntity<unknown>): Promise<PlayerProofMetadata> {
+    const proof = this.storedPlayerProof(stored);
+    try {
+      const context = await this.readProofContext(proof);
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...context.checks, this.buildConditionalCheckFromStoredEntity(context.player),
+        identityCondition(this.tableName, context.control), identityCondition(this.tableName, context.identity.root),
+        this.buildConditionalCheckFromStoredEntity(stored),
+      ] }));
+      if (Date.parse(proof.expiresAt) <= Date.parse(this.clock.now())) {
+        throw new PlayerProofError("claim_invite_changed", 409, "This profile link has expired. Check it before trying again.");
+      }
+      return this.proofMetadata(proof);
+    } catch (error) {
+      if (error instanceof PlayerProofError || isConditionalWriteFailure(error)) {
+        throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
+      }
+      throw error;
+    }
+  }
+
+  async createPlayerInvitation(input: PlayerProofCreation & PlayerInvitationTarget & {
+    replacesProofId?: string | null;
+  }): Promise<PlayerProofMetadata> {
+    requirePlayerClaimEnabled(this.playerClaimMode);
+    this.validateProofCreation(input);
+    const context = await this.invitationAuthority(input);
+    const league = context.league.data as LeagueRecord;
+    const issuerAclUserId = (context.acl.data as LeagueAclRecord).userId;
+    const existing = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
+    if (existing) {
+      const proof = this.storedPlayerProof(existing);
+      if (existing.entityType === ENTITY_TYPE.playerProof && proof.kind === "invitation" &&
+          proof.playerId === input.playerId && proof.gameId === (input.gameId ?? null) && (proof.scope ?? "game") === (input.scope ?? "game") && proof.leagueId === league.leagueId &&
+          proof.issuerAclUserId !== null && input.userIds.includes(proof.issuerAclUserId) &&
+          proof.replacesProofId === (input.replacesProofId ?? null) &&
+          secureEqual(proof.verifier, input.verifier)) return this.replayPlayerInvitation(existing);
+      throw new PlayerProofError("claim_request_changed", 409, "This profile-link request changed. Start a new request.");
+    }
+    if ((context.player.data as PlayerRecord).claimedByUserId !== null) {
+      throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account.");
+    }
+    const pointer = await this.getEntity(playerPk(input.playerId), "CLAIM_INVITATION", { consistentRead: true });
+    const priorPointer = pointer?.data as { proofId?: string; leagueId?: string } | undefined;
+    if (priorPointer?.leagueId !== undefined && priorPointer.leagueId !== league.leagueId) {
+      throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available here.");
+    }
+    if (priorPointer?.proofId) {
+      const prior = await this.getEntity(this.playerProofKey(priorPointer.proofId), metadataSk(), { consistentRead: true });
+      if (prior && this.storedPlayerProof(prior).leagueId !== league.leagueId) {
+        throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available here.");
+      }
+    }
+    if (((pointer?.data as { proofId: string | null } | undefined)?.proofId ?? null) !== (input.replacesProofId ?? null)) {
+      throw new PlayerProofError("claim_invite_changed", 409, "Another profile link exists. Check it before replacing it.");
+    }
+    const now = this.clock.now();
+    const proof: PlayerProofRecord = {
+      proofId: input.proofId, verifier: input.verifier, kind: "invitation", playerId: input.playerId,
+      ...(input.scope === "league" ? { scope: "league" as const } : {}),
+      gameId: input.gameId ?? null, leagueId: league.leagueId, leagueName: league.name,
+      playerRevision: this.playerRevision(context.player), issuerAclUserId,
+      replacesProofId: input.replacesProofId ?? null,
+      expiresAt: new Date(Date.parse(now) + PLAYER_PROOF_TTL_MS).toISOString(),
+      state: "pending", consumedByUserId: null, committedPlayer: null,
+    };
+    const identity = await this.identities.resolve(input.playerId, (context.player.data as PlayerRecord).nickname);
+    const control = await this.identities.readControl();
+    if (identity.root.value.playerId !== input.playerId) throw new PlayerProofError("claim_profile_changed", 409, "Use the retained player's profile link.");
+    proof.identityRootId = identity.root.value.playerId; proof.identityVersion = identity.root.value.identityVersion;
+    const pointerItem = buildItemWithTimestamps(playerPk(input.playerId), "CLAIM_INVITATION", ENTITY_TYPE.playerProofPointer,
+      { proofId: proof.proofId, expiresAt: proof.expiresAt, leagueId: league.leagueId }, pointer?.createdAt ?? now, now);
+    const pointerWrite: TransactWriteItem = pointer ? this.buildConditionalPutFromStoredEntity(pointer, now) : {
+      Put: { TableName: this.tableName, Item: pointerItem, ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" },
+    };
+    pointerWrite.Put!.Item = pointerItem;
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...Object.values(context).filter((item): item is StoredEntity<unknown> => Boolean(item)).map((item) => this.buildConditionalCheckFromStoredEntity(item)),
+        this.identities.writableControl(control), ...this.identities.planRevision(identity, now),
+        this.proofWrite(proof, now), pointerWrite,
+      ] }));
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) throw error;
+      const replay = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
+      const data = replay ? this.storedPlayerProof(replay) : undefined;
+      // ACL preference can change between attempts (legacy email -> subject).
+      // The persisted issuer must still belong to this caller; replay then
+      // transactionally rechecks that exact issuer's current admin grant.
+      if (replay?.entityType === ENTITY_TYPE.playerProof && data?.kind === "invitation" && data.playerId === input.playerId && data.gameId === (input.gameId ?? null) &&
+          (data.scope ?? "game") === (input.scope ?? "game") && data.leagueId === league.leagueId &&
+          data.issuerAclUserId !== null && input.userIds.includes(data.issuerAclUserId) &&
+          data.replacesProofId === (input.replacesProofId ?? null) &&
+          secureEqual(data.verifier, input.verifier)) return this.replayPlayerInvitation(replay);
+      throw new PlayerProofError("claim_invite_changed", 409, "The player or organiser access changed. Check the player before trying again.");
+    }
+    return this.proofMetadata(proof);
+  }
+
+  async getPlayerInvitation(input: PlayerInvitationTarget): Promise<(PlayerProofMetadata & { state: string }) | null> {
+    const context = await this.invitationAuthority(input);
+    const pointer = await this.getEntity(playerPk(input.playerId), "CLAIM_INVITATION", { consistentRead: true });
+    const pointerLeagueId = (pointer?.data as { leagueId?: string } | undefined)?.leagueId;
+    if (pointerLeagueId !== undefined && pointerLeagueId !== (context.league.data as LeagueRecord).leagueId) {
+      throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available here.");
+    }
+    const proofId = (pointer?.data as { proofId: string | null } | undefined)?.proofId;
+    if (!proofId) return null;
+    const item = await this.getEntity(this.playerProofKey(proofId), metadataSk(), { consistentRead: true });
+    if (!item || item.entityType !== ENTITY_TYPE.playerProof) {
+      // TTL may have removed the old proof, but its pointer still fences a
+      // replacement. Return that ID rather than trapping creation on a hidden
+      // predecessor the organiser cannot acknowledge.
+      return { proofId, expiresAt: (pointer!.data as { expiresAt: string }).expiresAt, state: "expired" };
+    }
+    const proof = this.storedPlayerProof(item);
+    if (proof.leagueId !== (context.league.data as LeagueRecord).leagueId || proof.playerId !== input.playerId || proof.kind !== "invitation") {
+      throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available here.");
+    }
+    return { ...this.proofMetadata(proof), state: proof.state === "pending" && Date.parse(proof.expiresAt) <= Date.parse(this.clock.now()) ? "expired" : proof.state };
+  }
+
+  async revokePlayerInvitation(input: PlayerInvitationTarget & { proofId: string }): Promise<void> {
+    const context = await this.invitationAuthority(input);
+    const control = await this.identities.readControl();
+    const identity = await this.identities.resolve(input.playerId, (context.player.data as PlayerRecord).nickname);
+    const pointer = await this.getEntity(playerPk(input.playerId), "CLAIM_INVITATION", { consistentRead: true });
+    const pointerLeagueId = (pointer?.data as { leagueId?: string } | undefined)?.leagueId;
+    if (pointerLeagueId !== undefined && pointerLeagueId !== (context.league.data as LeagueRecord).leagueId) {
+      throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available here.");
+    }
+    if ((pointer?.data as { proofId?: string } | undefined)?.proofId !== input.proofId) {
+      throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
+    }
+    const item = await this.getEntity(this.playerProofKey(input.proofId), metadataSk(), { consistentRead: true });
+    const proof = item ? this.storedPlayerProof(item) : undefined;
+    if (proof && (proof.kind !== "invitation" || proof.playerId !== input.playerId || proof.leagueId !== (context.league.data as LeagueRecord).leagueId)) {
+      throw new PlayerProofError("claim_invite_unavailable", 404, "This profile link is not available.");
+    }
+    const now = this.clock.now();
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...Object.values(context).filter((value): value is StoredEntity<unknown> => Boolean(value)).map((value) => this.buildConditionalCheckFromStoredEntity(value)),
+        this.identities.writableControl(control), ...this.identities.planRevision(identity, now),
+        this.buildConditionalCheckFromStoredEntity(pointer!),
+        proof?.state === "pending" ? this.proofWrite({ ...proof, state: "revoked" }, now, item!)
+          : item ? this.buildConditionalCheckFromStoredEntity(item)
+            : { ConditionCheck: { TableName: this.tableName,
+              Key: { pk: { S: this.playerProofKey(input.proofId) }, sk: { S: metadataSk() } },
+              ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            } },
+      ] }));
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) throw error;
+      throw new PlayerProofError("claim_invite_changed", 409, "This profile link changed. Check it before trying again.");
+    }
+  }
+
+  async previewPlayerProof(input: PlayerProofCredential & { userId: string; sessionId: string }): Promise<PlayerProofPreview> {
+    requireNonEmpty("userId", input.userId);
+    requireNonEmpty("sessionId", input.sessionId);
+    const { proof } = await this.readProof(input);
+    let player: Pick<PlayerRecord, "playerId" | "nickname">;
+    if (proof.state === "consumed") {
+      if (proof.consumedByUserId !== input.userId || !proof.committedPlayer) {
+        throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account. Ask the organiser for help.");
+      }
+      player = proof.committedPlayer;
+    } else {
+      player = (await this.readProofContext(proof)).player.data as PlayerRecord;
+    }
+    return {
+      ...this.proofMetadata(proof),
+      player: { playerId: player.playerId, nickname: player.nickname },
+      league: { leagueId: proof.leagueId, name: proof.leagueName },
+      alreadyLinked: proof.state === "consumed",
+      confirmation: createPlayerConfirmation({ ...input, revision: proof.playerRevision }, Date.parse(this.clock.now())),
+    };
+  }
+
+  private async claimPlayerWithProof(input: ClaimPlayerInput): Promise<PlayerRecord> {
+    requireNonEmpty("sessionId", input.sessionId ?? "");
+    const credential = input.proof!;
+    const { stored, proof } = await this.readProof(credential);
+    if (proof.playerId !== input.playerId) throw new PlayerProofError("invalid_claim_proof", 400, "This link is for a different player.");
+    verifyPlayerConfirmation({ sessionId: input.sessionId!, userId: input.userId, proofId: proof.proofId,
+      revision: proof.playerRevision }, credential.confirmation, Date.parse(this.clock.now()));
+    if (proof.state === "consumed") {
+      if (proof.consumedByUserId === input.userId && proof.committedPlayer) return proof.committedPlayer;
+      throw new PlayerProofError("player_already_claimed", 409, "This player is already linked to an account. Ask the organiser for help.");
+    }
+    const context = await this.readProofContext(proof);
+    const claimsRevision = await readPlayerClaimsRevision(this.client, this.tableName, input.userId);
+    const now = this.clock.now();
+    verifyPlayerConfirmation({ sessionId: input.sessionId!, userId: input.userId, proofId: proof.proofId,
+      revision: proof.playerRevision }, credential.confirmation, Date.parse(now));
+    const payload = { ...(context.player.data as Omit<PlayerRecord, "createdAt" | "updatedAt">), claimedByUserId: input.userId };
+    const committedPlayer = withTimestamps(payload, context.player.createdAt, now);
+    const playerWrite = this.buildConditionalPutFromStoredEntity(context.player, now);
+    playerWrite.Put!.Item = buildItemWithTimestamps(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player,
+      payload, context.player.createdAt, now);
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        this.identities.writableControl(context.control), ...this.identities.planRevision(context.identity, now, true),
+        advancePlayerClaimsRevision(this.tableName, claimsRevision, now),
+        ...context.checks, playerWrite,
+        this.proofWrite({ ...proof, state: "consumed", consumedByUserId: input.userId, committedPlayer }, now, stored),
+        { Put: { TableName: this.tableName, Item: buildItem(userPk(input.userId), playerClaimSk(input.playerId),
+          ENTITY_TYPE.playerClaim, { userId: input.userId, playerId: input.playerId }, now),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+      ] }));
+    } catch (error) {
+      if (!isConditionalWriteFailure(error)) throw error;
+      const latest = await this.readProof(credential);
+      if (latest.proof.state === "consumed" && latest.proof.consumedByUserId === input.userId && latest.proof.committedPlayer) {
+        return latest.proof.committedPlayer;
+      }
+      throw new PlayerProofError("claim_state_changed", 409, "This profile link changed. Please check it again before continuing.");
+    }
+    return committedPlayer;
+  }
+
   async claimPlayer(input: ClaimPlayerInput): Promise<PlayerRecord | null> {
     requireNonEmpty("playerId", input.playerId);
     requireNonEmpty("userId", input.userId);
+    if (input.proof) return this.claimPlayerWithProof(input);
 
     const playerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
       consistentRead: true,
@@ -3116,86 +3935,7 @@ export class ThreeFcRepository {
     if (player.claimedByUserId === input.userId) {
       return player;
     }
-    if (player.claimedByUserId !== null) {
-      throw new PlayerClaimError(
-        "player_already_claimed",
-        409,
-        `Player ${input.playerId} has already been claimed.`,
-      );
-    }
-
-    const now = this.clock.now();
-    const payload = {
-      playerId: player.playerId,
-      nickname: player.nickname,
-      claimedByUserId: input.userId,
-    };
-
-    try {
-      await this.client.send(
-        new TransactWriteItemsCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItemWithTimestamps(
-                  playerPk(input.playerId),
-                  profileSk(),
-                  ENTITY_TYPE.player,
-                  payload,
-                  player.createdAt,
-                  now,
-                ),
-                ConditionExpression: "#updatedAt = :expectedPlayerUpdatedAt AND #data = :expectedPlayerData",
-                ExpressionAttributeNames: {
-                  "#updatedAt": "updatedAt",
-                  "#data": "data",
-                },
-                ExpressionAttributeValues: {
-                  ":expectedPlayerUpdatedAt": { S: playerItem.updatedAt },
-                  ":expectedPlayerData": { S: playerItem.rawData },
-                },
-              },
-            },
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: buildItem(
-                  userPk(input.userId),
-                  playerClaimSk(input.playerId),
-                  ENTITY_TYPE.playerClaim,
-                  {
-                    userId: input.userId,
-                    playerId: input.playerId,
-                  },
-                  now,
-                ),
-                ConditionExpression: "attribute_not_exists(pk)",
-              },
-            },
-          ],
-        }),
-      );
-    } catch (error) {
-      if (isConditionalWriteFailure(error)) {
-        const latest = await this.getPlayer(input.playerId);
-        if (latest?.claimedByUserId === input.userId) {
-          return latest;
-        }
-
-        throw new PlayerClaimError(
-          latest?.claimedByUserId ? "player_already_claimed" : "claim_state_changed",
-          409,
-          latest?.claimedByUserId
-            ? `Player ${input.playerId} has already been claimed.`
-            : `Player ${input.playerId} changed before it could be claimed. Reload and try again.`,
-        );
-      }
-
-      throw error;
-    }
-
-    return withTimestamps(payload, player.createdAt, now);
+    throw new PlayerProofError("claim_proof_required", 403, "Use a private profile link to link this player. Ask the organiser for help.");
   }
 
   async listPlayers(input: ListPlayersInput = {}): Promise<PlayerRecord[]> {
@@ -3234,6 +3974,10 @@ export class ThreeFcRepository {
       changedMessage: `Game ${input.gameId} changed before the player link could be saved. Reload and try again.`,
     });
     const now = this.clock.now();
+    const requestedPlayer = await this.getPlayer(input.playerId, { consistentRead: true });
+    if (!requestedPlayer) throw new PlayerIdentityError("player_not_found", 409, "This player is no longer available.");
+    const membership = await this.planPlayerMembership(normalizeGamePayload(gameItem.data), input.playerId, requestedPlayer.nickname, now);
+    input = { ...input, playerId: membership.playerId };
     const existing = await this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId));
     const payload = {
       gameId: input.gameId,
@@ -3243,7 +3987,8 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
+          TransactItems: boundedIdentityTransaction([
+            ...membership.actions,
             this.buildGameConditionCheck(input.gameId, gameItem),
             {
               Put: {
@@ -3258,7 +4003,7 @@ export class ThreeFcRepository {
                 ),
               },
             },
-          ],
+          ]),
         }),
       );
     } catch (error) {
@@ -3287,6 +4032,9 @@ export class ThreeFcRepository {
       changedMessage: `Game ${input.gameId} changed before the player could be saved. Reload and try again.`,
     });
     const now = this.clock.now();
+    const requestedPlayer = await this.getPlayer(input.playerId, { consistentRead: true });
+    const membership = await this.planPlayerMembership(normalizeGamePayload(gameItem.data), input.playerId, requestedPlayer?.nickname ?? input.nickname, now);
+    input = { ...input, playerId: membership.playerId };
     const existingPlayerItem = await this.getEntity(playerPk(input.playerId), profileSk(), {
       consistentRead: true,
     });
@@ -3321,6 +4069,7 @@ export class ThreeFcRepository {
 
     try {
       const transactionItems: TransactWriteItem[] = [
+        ...membership.actions,
         this.buildGameConditionCheck(input.gameId, gameItem),
         {
           Put: {
@@ -3349,7 +4098,7 @@ export class ThreeFcRepository {
 
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: transactionItems,
+          TransactItems: boundedIdentityTransaction(transactionItems),
         }),
       );
     } catch (error) {
@@ -3396,6 +4145,12 @@ export class ThreeFcRepository {
       );
   }
 
+  private async liveLeagueForAuthority(leagueId: string): Promise<StoredEntity<unknown>> {
+    const league = await this.getEntity(leaguePk(leagueId), metadataSk(), { consistentRead: true });
+    if (!league || league.entityType !== ENTITY_TYPE.league) throw new PlayerIdentityError("league_unavailable", 404, "This league is no longer available.");
+    return league;
+  }
+
   async grantLeagueAccess(input: GrantLeagueAccessInput): Promise<LeagueAclRecord> {
     requireNonEmpty("leagueId", input.leagueId);
     requireNonEmpty("userId", input.userId);
@@ -3406,6 +4161,7 @@ export class ThreeFcRepository {
     const sk = aclSk(input.userId);
 
     for (;;) {
+      const league = await this.liveLeagueForAuthority(input.leagueId);
       const existingItem = await this.getEntity(pk, sk, { consistentRead: true });
       const existing =
         existingItem?.entityType === ENTITY_TYPE.acl
@@ -3431,7 +4187,7 @@ export class ThreeFcRepository {
 
       try {
         await this.client.send(
-          new PutItemCommand({
+          new TransactWriteItemsCommand({ TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!, { Put: {
             TableName: this.tableName,
             Item: buildItemWithTimestamps(
               pk,
@@ -3456,7 +4212,7 @@ export class ThreeFcRepository {
               : {
                   ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
                 }),
-          }),
+          } }] }),
         );
         return withTimestamps(payload, existing?.createdAt ?? now, now);
       } catch (error) {
@@ -3518,6 +4274,7 @@ export class ThreeFcRepository {
     const customInviteCode = input.inviteCode ? normalizeCustomJoinCode(input.inviteCode) : null;
 
     for (let attempt = 0; attempt < JOIN_CODE_GENERATION_ATTEMPTS; attempt += 1) {
+      const league = await this.liveLeagueForAuthority(input.leagueId);
       const inviteCode = customInviteCode ?? generateJoinCode();
       const now = this.clock.now();
       const payload: Omit<LeagueInviteRecord, "createdAt" | "updatedAt"> = {
@@ -3533,11 +4290,11 @@ export class ThreeFcRepository {
 
       try {
         await this.client.send(
-          new PutItemCommand({
+          new TransactWriteItemsCommand({ TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!, { Put: {
             TableName: this.tableName,
             Item: buildItem(leagueInvitePk(inviteCode), metadataSk(), ENTITY_TYPE.leagueInvite, payload, now),
             ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-          }),
+          } }] }),
         );
         return withTimestamps(payload, now, now);
       } catch (error) {
@@ -3588,6 +4345,7 @@ export class ThreeFcRepository {
     createdByUserId: string;
   }): Promise<LeagueInviteRecord> {
     for (let attempt = 0; attempt < JOIN_CODE_GENERATION_ATTEMPTS; attempt += 1) {
+      const league = await this.liveLeagueForAuthority(input.leagueId);
       const existingInvite = await this.getExistingLeagueOrganiserShareInvite(input.leagueId);
       if (existingInvite) {
         return existingInvite;
@@ -3609,7 +4367,7 @@ export class ThreeFcRepository {
       try {
         await this.client.send(
           new TransactWriteItemsCommand({
-            TransactItems: [
+            TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!,
               {
                 Put: {
                   TableName: this.tableName,
@@ -3649,6 +4407,7 @@ export class ThreeFcRepository {
       }
     }
 
+    await this.liveLeagueForAuthority(input.leagueId);
     const existingInvite = await this.getExistingLeagueOrganiserShareInvite(input.leagueId);
     if (existingInvite) {
       return existingInvite;
@@ -3673,25 +4432,6 @@ export class ThreeFcRepository {
       item.createdAt,
       item.updatedAt,
     );
-  }
-
-  private async listLeagueOrganiserInviteEntities(
-    leagueId: string,
-  ): Promise<Array<StoredEntity<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>>> {
-    const scanResult = (await this.client.send(
-      new ScanCommand({
-        TableName: this.tableName,
-      }),
-    )) as ScanCommandOutput;
-
-    return (scanResult.Items ?? [])
-      .filter((item) => item.entityType?.S === ENTITY_TYPE.leagueInvite)
-      .map((item) => parseStoredEntity<Omit<LeagueInviteRecord, "createdAt" | "updatedAt">>(item))
-      .map((item) => ({
-        ...item,
-        data: normalizeLeagueInvitePayload(item.data),
-      }))
-      .filter((item) => item.data.leagueId === leagueId);
   }
 
   async acceptLeagueOrganiserInvite(
@@ -3924,19 +4664,23 @@ export class ThreeFcRepository {
         `Game ${input.gameId} is finished. Admin role is required to mutate finished games.`,
       );
     }
-
-    const existingAssignments = await this.listGameRoster(input.gameId);
+    const now = this.clock.now();
+    const requestedPlayer = await this.getPlayer(input.playerId, { consistentRead: true });
+    if (!requestedPlayer) throw new PlayerIdentityError("player_not_found", 409, "This player is no longer available.");
+    const membership = await this.planPlayerMembership(game, input.playerId, requestedPlayer.nickname, now);
+    input = { ...input, playerId: membership.playerId };
+    if (Buffer.byteLength(rosterSk(input.teamId, input.playerId)) > 1024) throw new PlayerIdentityError("player_roster_key_too_large", 400,
+      "This legacy player profile cannot be assigned to this team. Ask the organiser for help.");
+    const existingAssignments = await this.listGameRoster(input.gameId, { complete: true, consistentRead: true });
     const currentAssignmentsForPlayer = existingAssignments.filter(
       (assignment) => assignment.playerId === input.playerId,
     );
     const existingAssignment = currentAssignmentsForPlayer.find(
       (assignment) => assignment.teamId === input.teamId,
     );
-    if (existingAssignment) {
+    if (existingAssignment && await this.getGamePlayer(input.gameId, input.playerId)) {
       return existingAssignment;
     }
-
-    const now = this.clock.now();
     const payload = {
       gameId: input.gameId,
       teamId: input.teamId,
@@ -3952,8 +4696,9 @@ export class ThreeFcRepository {
       playerId: input.playerId,
     };
     const transactionItems: TransactWriteItem[] = [
+      ...membership.actions,
       this.buildGameConditionCheck(input.gameId, gameItem),
-      ...currentAssignmentsForPlayer.map((assignment) => ({
+      ...currentAssignmentsForPlayer.filter(assignment => assignment.teamId !== input.teamId).map((assignment) => ({
         Delete: {
           TableName: this.tableName,
           Key: {
@@ -3992,7 +4737,7 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: transactionItems,
+          TransactItems: boundedIdentityTransaction(transactionItems),
         }),
       );
     } catch (error) {
@@ -4655,12 +5400,32 @@ export class ThreeFcRepository {
     return existingOperation.result as T;
   }
 
+  private async originalGoalPlayerIds(gameId: string, scorerPlayerId: string, assistPlayerIds: string[]): Promise<{
+    scorerPlayerId: string; assistPlayerIds: string[];
+  }> {
+    const roster = await this.listGameRoster(gameId, { complete: true, consistentRead: true });
+    const originalIds = new Set(roster.map(entry => entry.playerId));
+    const mapped = new Map<string, string>();
+    for (const id of new Set([scorerPlayerId, ...assistPlayerIds])) {
+      // Historical IDs already in this game remain exact targets. A canonical
+      // picker value may instead refer to a different underlying registration.
+      if (originalIds.has(id)) { mapped.set(id, id); continue; }
+      const profile = await this.getPlayer(id, { consistentRead: true });
+      if (!profile) { mapped.set(id, id); continue; } // Existing validation owns unknown-player errors.
+      const identity = await this.identities.resolve(id, profile.nickname);
+      const original = await this.identities.registeredOriginal(identity, gameId);
+      mapped.set(id, original ?? id);
+    }
+    return { scorerPlayerId: mapped.get(scorerPlayerId)!, assistPlayerIds: assistPlayerIds.map(id => mapped.get(id)!) };
+  }
+
   async createGoal(input: CreateGoalInput): Promise<CreateGoalResult | null> {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
     requireNonEmpty("actorUserId", input.actorUserId);
     requireNonEmpty("concedingTeamId", input.concedingTeamId);
     requireNonEmpty("scorerPlayerId", input.scorerPlayerId);
+    input = { ...input, ...await this.originalGoalPlayerIds(input.gameId, input.scorerPlayerId, input.assistPlayerIds) };
     requireTeamId(input.concedingTeamId, "concedingTeamId");
     if (input.scoringTeamId !== null) {
       requireTeamId(input.scoringTeamId, "scoringTeamId");
@@ -5082,7 +5847,7 @@ export class ThreeFcRepository {
     }
 
     const previousGoal = existing.goal;
-    const goal = {
+    const requestedGoal = {
       ...previousGoal,
       scoringTeamId:
         input.scoringTeamId === undefined ? previousGoal.scoringTeamId : input.scoringTeamId,
@@ -5091,6 +5856,10 @@ export class ThreeFcRepository {
       assistPlayerIds: input.assistPlayerIds ?? previousGoal.assistPlayerIds,
       ownGoal: input.ownGoal ?? previousGoal.ownGoal,
     };
+    // The immutable correction request fingerprint above is intentionally taken
+    // before mapping; retries retain the request the caller actually submitted.
+    const goal = { ...requestedGoal, ...await this.originalGoalPlayerIds(input.gameId,
+      requestedGoal.scorerPlayerId, requestedGoal.assistPlayerIds) };
     const { teams, teamStatesById } = await this.readGoalTeamStates(
       input.gameId,
       { consistentRead: true },

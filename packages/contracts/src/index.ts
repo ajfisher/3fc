@@ -16,6 +16,9 @@ export const APP_RETURN_TARGET_PATTERN_SOURCES = [
   "^/seasons/[^/]+/?$",
   "^/games/[^/]+/?$",
   "^/join(?:/[^/]+)?/?$",
+  // Authentication may retain only a nonsecret proof identifier, never a link fragment.
+  "^/link-player/?\\?proofId=[A-Za-z0-9_-]{20,64}$",
+  "^/combine-players/?\\?proposalId=[A-Za-z0-9_-]{20,64}$",
   "^/invites(?:/[^/]+)?/?$",
 ] as const;
 
@@ -59,7 +62,9 @@ export function normalizeAppReturnTarget(value: unknown): string | null {
   try {
     const base = "https://return-target.invalid";
     const target = new URL(value, base);
-    if (target.origin !== base || !APP_RETURN_TARGET_PATHS.some((pattern) => pattern.test(target.pathname))) {
+    const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
+      ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
+    if (target.origin !== base || !APP_RETURN_TARGET_PATHS.some((pattern) => pattern.test(candidate))) {
       return null;
     }
 

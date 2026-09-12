@@ -45,6 +45,7 @@
   const RETURN_TARGET_PATHS = resolveReturnTargetPatterns();
 
   function navigateTo(url, mode = "assign") {
+    if (window.ThreeFcPlayerProof?.isBlocked?.()) return;
     if (typeof window.__THREEFC_NAVIGATE__ === "function") {
       window.__THREEFC_NAVIGATE__(url, mode);
       return;
@@ -95,9 +96,11 @@
 
     try {
       const target = new URL(value, window.location.origin);
+      const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
+        ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
       if (
         target.origin !== window.location.origin ||
-        !RETURN_TARGET_PATHS.some((pattern) => pattern.test(target.pathname))
+        !RETURN_TARGET_PATHS.some((pattern) => pattern.test(candidate))
       ) {
         return null;
       }
@@ -269,6 +272,9 @@
       // Ignore storage failures.
     }
   }
+
+  // Retire invalid values saved by older clients even if sign-in is abandoned.
+  readStoredReturnTo();
 
   async function initSignInPage() {
     const form = document.getElementById("auth-magic-form");
@@ -543,7 +549,7 @@
       completeButton.hidden = false;
       completeButton.disabled = false;
       const completeMagicLink = async () => {
-        if (completionStarted) {
+        if (completionStarted || window.ThreeFcPlayerProof?.isBlocked?.()) {
           return;
         }
 

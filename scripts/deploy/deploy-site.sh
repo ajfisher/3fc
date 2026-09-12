@@ -94,7 +94,9 @@ upload_html_alias() {
   fi
 
   echo "[deploy] Uploading HTML alias /${object_key}"
-  aws s3 cp "$source_path" "s3://${SITE_BUCKET_NAME}/${object_key}" \
+  # s3 cp treats a trailing slash as a prefix and appends the source filename.
+  # put-object preserves the exact route key, including /link-player/.
+  aws s3api put-object --bucket "$SITE_BUCKET_NAME" --key "$object_key" --body "$source_path" \
     --cache-control "no-cache, no-store, must-revalidate" \
     --content-type "text/html; charset=utf-8"
 }
@@ -102,6 +104,10 @@ upload_html_alias() {
 echo "[deploy] Uploading extensionless route aliases"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/setup/index.html" "setup"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/sign-in/index.html" "sign-in"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/link-player/index.html" "link-player"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/link-player/index.html" "link-player/"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/combine-players/index.html" "combine-players"
+upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/combine-players/index.html" "combine-players/"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/auth/callback/index.html" "auth/callback"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/leagues/index.html" "leagues"
 upload_html_alias "${STATIC_SITE_OUTPUT_DIR}/seasons/index.html" "seasons"

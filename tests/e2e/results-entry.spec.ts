@@ -1,9 +1,11 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { hashPlayerProofSecret } from "../../api/dist/auth/player-proof.js";
 import {
   renderGamePage, renderInvitePage, renderJoinPage, renderMagicLinkCallbackPage,
-  renderSetupHomePage, renderSignInPage,
+  renderSetupHomePage, renderSignInPage, renderPlayerLinkPage,
 } from "../../app/dist/ui/layout.js";
 
 // Production-built pages, CSS and controllers; only transport is fictional.
@@ -34,13 +36,13 @@ type Goal = {
   scoringTeamId: TeamId | null; concedingTeamId: TeamId; scorerPlayerId: string;
   assistPlayerIds: string[]; ownGoal: boolean; createdAt: string; updatedAt: string;
 };
-type RequestRecord = { method: string; path: string; query: string; body: Record<string, unknown> | null; serialized: string | null; key?: string };
-type Operation = "join" | "claim" | "invite" | "magic" | "complete" | "logout";
+type RequestRecord = { method: string; path: string; query: string; body: Record<string, unknown> | null; serialized: string | null; privateBodyFingerprint?: string; key?: string };
+type Operation = "join" | "claim" | "preview" | "invite" | "magic" | "complete" | "logout";
 type Plan = { kind: Operation; gate?: ReturnType<typeof deferred>; status?: number; commit?: boolean; malformed?: boolean; message?: string; code?: string };
 type LookupPlan = { gate?: ReturnType<typeof deferred>; status?: number; payload?: unknown };
 type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred>; inviteLeagueId?: string;
   contextPlayers?: Array<{ playerId: string; nickname: string }> };
-const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
+const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js", "player-proof.js", "player-consolidation.js", "returning-player.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
 
@@ -130,6 +132,7 @@ async function installFixture(page: Page, options: Options = {}) {
   joinIdentities.set("fictional-existing-player", { playerId: "fictional-existing-player", nickname, createdAt: now, updatedAt: now });
   for (const player of options.contextPlayers ?? []) joinIdentities.set(player.playerId, { ...player, createdAt: now, updatedAt: now });
   const joinReplays = new Map<string, { serialized: string | null; payload: unknown }>();
+  const proofs = new Map<string, { playerId: string; verifier: string; expiresAt: string; linked: boolean }>();
   let sessionGate = options.sessionGate;
   page.on("pageerror", error => { errors.push(error.message); });
   await page.route("**/*", async route => {
@@ -148,11 +151,16 @@ async function installFixture(page: Page, options: Options = {}) {
       if (url.pathname === "/sign-in") html = renderSignInPage(origin, url.searchParams.get("returnTo") ?? "/setup");
       if (url.pathname === "/auth/callback") html = renderMagicLinkCallbackPage(origin);
       if (url.pathname === "/setup") html = renderSetupHomePage(origin);
+      if (url.pathname === "/link-player") html = renderPlayerLinkPage(origin);
       if (html !== undefined) return route.fulfill({ contentType: "text/html", body: html });
     }
     const serialized = request.postData();
     const body = serialized ? request.postDataJSON() as Record<string, unknown> : null;
-    const record: RequestRecord = { method, path: url.pathname, query: url.search, body, serialized, key: request.headers()["idempotency-key"] };
+    // Keep proof secrets out of test assertion output and captured request lists.
+    const privateRequest = url.pathname.startsWith("/v1/player-proofs/");
+    const record: RequestRecord = { method, path: url.pathname, query: url.search, body: privateRequest ? null : body, serialized: privateRequest ? null : serialized,
+      ...(privateRequest && serialized !== null ? { privateBodyFingerprint: createHash("sha256").update(serialized).digest("hex") } : {}),
+      key: request.headers()["idempotency-key"] };
     requests.push(record);
     const reject = (status: number, message: string, code?: string) => route.fulfill({ status, json: {
       error: status === 503 ? "unavailable" : status === 409 ? "conflict" : status === 403 ? "forbidden" : status === 404 ? "not_found" : "rejected",
@@ -188,6 +196,10 @@ async function installFixture(page: Page, options: Options = {}) {
         if (!player) return reject(404, "Player not found for this join code.");
         return route.fulfill({ headers: { "cache-control": "no-store" }, json: plan?.payload ?? { gameId, joinCode, player } });
       }
+      if (url.pathname === `/v1/join/${joinCode}/linked-players`) {
+        if (!state.authenticated) return reject(401, "Sign in to continue.");
+        return route.fulfill({ json: { accountId: recipient, gameId, leagueId, players: [], cursor: null, complete: true } });
+      }
       if (url.pathname === "/v1/leagues") return route.fulfill({ json: { leagues: [] } });
       if (url.pathname === `/v1/leagues/${leagueId}`) return route.fulfill({ json: { leagueId, name: "Fictional Community Football League", access: { role: state.role } } });
       if (url.pathname === `/v1/leagues/${leagueId}/seasons/${seasonId}`) return route.fulfill({ json: { leagueId, seasonId, name: "Fictional Spring Season", startsOn: "2026-09-01", endsOn: "2027-02-28" } });
@@ -206,12 +218,21 @@ async function installFixture(page: Page, options: Options = {}) {
     }
     const kind: Operation | null = method !== "POST" ? null
       : url.pathname === `/v1/join/${joinCode}` ? "join"
-        : /^\/v1\/players\/[^/]+\/claim$/.test(url.pathname) ? "claim"
+        : url.pathname === "/v1/player-proofs/claim" ? "claim"
+          : url.pathname === "/v1/player-proofs/preview" ? "preview"
           : url.pathname === `/v1/invites/${inviteCode}/accept` ? "invite"
             : url.pathname === "/v1/auth/magic/start" ? "magic"
               : url.pathname === "/v1/auth/magic/complete" ? "complete"
                 : url.pathname === "/v1/auth/logout" ? "logout" : null;
     if (!kind) { unexpected.push(`${method} ${url.pathname}`); return route.abort(); }
+    let proof: { playerId: string; verifier: string; expiresAt: string; linked: boolean } | undefined;
+    if (kind === "preview" || kind === "claim") {
+      if (!state.authenticated) return reject(401, "Sign in to continue.");
+      const supplied = (kind === "claim" ? body?.proof : body) as { proofId?: string; secret?: string; confirmation?: string } | undefined;
+      proof = proofs.get(String(supplied?.proofId));
+      if (!proof || typeof supplied?.secret !== "string" || hashPlayerProofSecret(supplied.secret) !== proof.verifier || Date.parse(proof.expiresAt) <= Date.now()) return reject(400, "This private link is invalid or expired.", "invalid_claim_proof");
+      if (kind === "claim" && (url.searchParams.get("playerId") !== proof.playerId || supplied.confirmation !== `bound-${recipient}-${supplied.proofId}`)) return reject(403, "Review this player again.", "account_changed");
+    }
     if (kind === "join" && !record.key) return reject(400, "An idempotency key is required.");
     if (kind === "join" && record.key && joinReplays.has(record.key)) {
       const replay = joinReplays.get(record.key)!;
@@ -223,17 +244,23 @@ async function installFixture(page: Page, options: Options = {}) {
     if (plan?.status && !plan.commit) return reject(plan.status, plan.message ?? "The operation could not be confirmed.", plan.code);
     let payload: unknown = {};
     if (kind === "join") {
+      const claimProof = body?.claimProof as { proofId?: string; verifier?: string } | undefined;
+      if (!claimProof?.proofId || !claimProof.verifier) return reject(400, "Private proof required.");
       state.joined += 1;
       const player = { playerId: `fictional-joined-player-${state.joined}`, nickname: String(body?.nickname ?? ""), createdAt: now, updatedAt: now };
       joinIdentities.set(player.playerId, player);
-      payload = { gameId, player };
+      const expiresAt = new Date(Date.now() + 86400_000).toISOString();
+      proofs.set(claimProof.proofId, { playerId: player.playerId, verifier: claimProof.verifier, expiresAt, linked: false });
+      payload = { gameId, joinCode, player, link: { gameId, playerId: player.playerId }, claimProof: { proofId: claimProof.proofId, expiresAt } };
       joinReplays.set(record.key!, { serialized, payload: snapshot(payload) });
     }
     if (kind === "claim") {
       state.claimed += 1;
-      const playerId = decodeURIComponent(url.pathname.split("/")[3]);
+      const playerId = proof!.playerId; proof!.linked = true;
       payload = { player: joinIdentities.get(playerId) ?? { playerId, nickname, createdAt: now, updatedAt: now }, claim: { claimedByCurrentUser: true } };
     }
+    if (kind === "preview") payload = { preview: { proofId: body!.proofId, expiresAt: proof!.expiresAt, player: joinIdentities.get(proof!.playerId),
+      league: { leagueId, name: "Fictional Community Football League" }, confirmation: `bound-${recipient}-${body!.proofId}`, alreadyLinked: proof!.linked }, account: { id: recipient, email: recipient } };
     if (kind === "invite") {
       state.accepted = 1;
       const acceptedLeagueId = options.inviteLeagueId ?? leagueId;
@@ -251,7 +278,7 @@ async function installFixture(page: Page, options: Options = {}) {
   return { state, players, goals, game, requests, plans, lookupPlans, unexpected, errors,
     writes: (kind?: Operation) => requests.filter(request => request.method === "POST" && (!kind || (
       kind === "join" ? request.path.startsWith("/v1/join/") : kind === "claim" ? request.path.endsWith("/claim")
-        : kind === "invite" ? request.path.endsWith("/accept") : kind === "logout" ? request.path.endsWith("/logout")
+        : kind === "preview" ? request.path.endsWith("/preview") : kind === "invite" ? request.path.endsWith("/accept") : kind === "logout" ? request.path.endsWith("/logout")
           : request.path.endsWith(kind === "magic" ? "/magic/start" : "/magic/complete")
     ))),
   };
@@ -610,10 +637,7 @@ test("missing join context offers recovery without a functioning blank-code subm
 });
 
 for (const malformed of [false, true]) {
-  test(`join ${malformed ? "malformed successful response" : "lost response"} retries original identity with blocked storage`, async ({ page }) => {
-    await page.addInitScript(() => {
-      for (const method of ["getItem", "setItem", "removeItem"] as const) Object.defineProperty(Storage.prototype, method, { configurable: true, value() { throw new DOMException("Fictional blocked storage", "SecurityError"); } });
-    });
+  test(`join ${malformed ? "malformed successful response" : "lost response"} retries original proof-bound identity`, async ({ page }) => {
     const fixture = await installFixture(page, { authenticated: false });
     const gate = deferred();
     fixture.plans.push({ kind: "join", gate, commit: true, ...(malformed ? { malformed: true } : { status: 503 }) });
@@ -646,21 +670,119 @@ test("confirmed join survives claim failure and retry only claims that player", 
   const fixture = await installFixture(page);
   fixture.plans.push({ kind: "claim", status: 503 });
   await page.goto(`${origin}/join?code=${joinCode}`);
+  await page.getByRole("button", { name: "Create new player", exact: true }).click();
   await page.getByLabel("Player name", { exact: true }).fill(nickname);
   await page.getByLabel("Player name", { exact: true }).press("Enter");
   await expect(page.locator("#join-result-player")).toHaveText(nickname);
-  await expect(page.locator("#setup-error")).toContainText(/claim.*could not be confirmed/i);
   await expect(page.locator('[data-action="join-game"]')).toBeDisabled();
+  expect(fixture.writes("claim")).toHaveLength(0);
   const claim = page.locator('[data-action="claim-player"]');
   await expect(claim).toBeEnabled();
   await claim.focus();
   await page.keyboard.press("Enter");
-  await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
-  await expect(page.locator("#join-claim-status")).toBeHidden();
+  await expect(page.locator("#player-link-name")).toHaveText(nickname);
+  await expect(page.locator("#player-link-account")).toHaveText(recipient);
+  expect(fixture.writes("claim")).toHaveLength(0);
+  const confirm = page.locator("#player-link-confirm");
+  await confirm.click();
+  await expect(page.locator("#player-link-status")).toContainText("Linking could not be confirmed.");
+  await expect(confirm).toBeEnabled();
+  await confirm.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#player-link-status")).toHaveText(`Player linked to ${recipient}.`);
   expect(fixture.writes("join")).toHaveLength(1);
   expect(fixture.writes("claim")).toHaveLength(2);
   expect(fixture.writes("claim")[1].path).toBe(fixture.writes("claim")[0].path);
+  expect(fixture.writes("claim")[0].query).toBe("?playerId=fictional-joined-player-1");
+  expect(fixture.writes("claim")[1].query).toBe(fixture.writes("claim")[0].query);
+  expect(fixture.writes("claim")[0].privateBodyFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  expect(fixture.writes("claim")[1].privateBodyFingerprint).toBe(fixture.writes("claim")[0].privateBodyFingerprint);
+  expect(fixture.writes("claim").every(request => request.body === null && request.serialized === null)).toBe(true);
   await expectNoFiller(page);
+  expectClean(fixture);
+});
+
+test("blocked proof storage prevents a new anonymous registration", async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const method of ["getItem", "setItem", "removeItem"] as const) Object.defineProperty(Storage.prototype, method, {
+      configurable: true, value() { throw new DOMException("Fictional blocked storage", "SecurityError"); },
+    });
+  });
+  const fixture = await installFixture(page, { authenticated: false });
+  await page.goto(`${origin}/join?code=${joinCode}`);
+  await page.getByLabel("Player name", { exact: true }).fill(nickname);
+  await page.getByLabel("Player name", { exact: true }).press("Enter");
+  await expect(page.locator("#setup-error")).toContainText(/storage|save|browser/i);
+  expect(fixture.writes("join")).toHaveLength(0);
+  expect(fixture.writes("claim")).toHaveLength(0);
+  expectClean(fixture);
+});
+
+test("unknown sign-in state does not expose an anonymous join form", async ({ page }) => {
+  const fixture = await installFixture(page);
+  await page.route(`${origin}/v1/auth/session`, route => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+  await page.goto(`${origin}/join?code=${joinCode}`);
+  await expect(page.getByLabel("Player name", { exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  expect(fixture.writes()).toHaveLength(0);
+  expectClean(fixture);
+});
+
+for (const { status, code } of [
+  { status: 400, code: "invalid_claim_proof" },
+  { status: 403, code: "account_changed" },
+  { status: 404, code: "claim_proof_unavailable" },
+  { status: 409, code: "claim_profile_changed" },
+]) {
+  test(`private proof preview rejection ${status} never enables account linking`, async ({ page }) => {
+    const fixture = await installFixture(page);
+    await page.goto(`${origin}/join?code=${joinCode}`);
+    await page.getByRole("button", { name: "Create new player", exact: true }).click();
+    await page.getByLabel("Player name", { exact: true }).fill(nickname);
+    await page.getByLabel("Player name", { exact: true }).press("Enter");
+    await expect(page.getByTestId("claim-player")).toBeEnabled();
+    fixture.plans.push({ kind: "preview", status, code });
+    await page.getByTestId("claim-player").click();
+    await expect(page.locator("#player-link-status")).toHaveAttribute("role", "alert");
+    await expect(page.locator("#player-link-confirm")).toBeHidden();
+    await expect(page.locator("#player-link-details")).toBeHidden();
+    if (status !== 403) {
+      await expect(page.locator("#player-link-status")).toHaveText("This player link is no longer available. Ask the organiser for a new link.");
+      await expect(page.locator("#player-link-retry")).toBeHidden();
+    }
+    expect(fixture.writes("claim")).toHaveLength(0);
+    expect(fixture.writes("preview")).toHaveLength(1);
+    expect(fixture.writes("preview")[0].body).toBeNull();
+    expectClean(fixture);
+  });
+}
+
+test("anonymous proof survives same-tab sign-in and still requires named account confirmation", async ({ page }) => {
+  const fixture = await installFixture(page, { authenticated: false });
+  await page.goto(`${origin}/join?code=${joinCode}`);
+  await page.getByLabel("Player name", { exact: true }).fill(nickname);
+  await page.getByLabel("Player name", { exact: true }).press("Enter");
+  const signIn = page.getByTestId("join-signin-link");
+  await expect(signIn).toBeVisible();
+  const signInUrl = new URL(await signIn.getAttribute("href") ?? "", origin);
+  const returnPath = signInUrl.searchParams.get("returnTo")!;
+  expect(new URL(returnPath, origin).pathname).toBe("/link-player");
+  expect([...new URL(returnPath, origin).searchParams.keys()]).toEqual(["proofId"]);
+  await signIn.click();
+  await page.getByLabel("Email address", { exact: true }).fill(recipient);
+  await page.getByRole("button", { name: "Send sign-in link", exact: true }).click();
+  await expect(page.locator("#auth-status")).toContainText(recipient);
+  await page.goto(`${origin}/auth/callback?token=fictional-unusable-proof-handoff&returnTo=${encodeURIComponent(returnPath)}`);
+  await page.getByTestId("complete-magic-link").click();
+  await expect(page.locator("#player-link-name")).toHaveText(nickname);
+  await expect(page.locator("#player-link-account")).toHaveText(recipient);
+  expect(fixture.writes("claim")).toHaveLength(0);
+  const confirm = page.locator("#player-link-confirm");
+  await confirm.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#player-link-status")).toHaveText(`Player linked to ${recipient}.`);
+  expect(fixture.writes("join")).toHaveLength(1);
+  expect(fixture.writes("claim")).toHaveLength(1);
   expectClean(fixture);
 });
 
@@ -685,29 +807,20 @@ test("an explicit new join after confirmation creates a distinct player even wit
 });
 
 for (const width of [320, 390]) {
-  test(`claim-return names the verified player before explicit activation ${width}`, async ({ page }, testInfo) => {
+  test(`proofless claim-return names the verified player and requires private recovery ${width}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: width === 320 ? "light" : "dark" });
     const fixture = await installFixture(page);
     await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
-    const claim = page.getByRole("button", { name: "Claim player", exact: true });
-    await expect(claim).toBeEnabled();
+    const claim = page.getByTestId("claim-player");
+    await expect(claim).toBeHidden();
     await expect(page.locator("#join-result-player")).toHaveText(nickname);
-    await expect(page.locator("#join-result")).toBeVisible();
-    await expect(claim).toHaveAttribute("aria-describedby", "join-result-player");
-    await expect(claim).toHaveAccessibleDescription(nickname);
+    await expect(page.locator("#join-claim-status")).toContainText("Ask the organiser for a private link");
     await expectJoinReceipt(page);
     await expectGeometry(page);
     expect(fixture.requests.filter(request => request.path === joinContextPath && request.query === "?playerId=fictional-existing-player")).toHaveLength(1);
     expect(fixture.writes()).toHaveLength(0);
-    await claim.focus();
-    await capture(page, testInfo, `claim-verified-name-${width}`);
-    await page.keyboard.press("Enter");
-    await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
-    await expect(page.locator("#join-claim-status")).toBeHidden();
-    await expect(page.locator("#join-result-player")).toHaveText(nickname);
-    expect(fixture.writes("join")).toHaveLength(0);
-    expect(fixture.writes("claim")).toHaveLength(1);
+    await capture(page, testInfo, `claim-proofless-recovery-${width}`);
     expectClean(fixture);
   });
 }
@@ -726,12 +839,11 @@ for (const identity of [
     ] });
     const entryQuery = new URLSearchParams({ code: joinCode, playerId: identity.playerId });
     await page.goto(`${origin}/join?${entryQuery.toString()}`);
-    const claim = page.getByRole("button", { name: "Claim player", exact: true });
-    await expect(claim).toBeVisible();
-    await expect(claim).toBeEnabled();
+    const claim = page.getByTestId("claim-player");
+    await expect(claim).toBeHidden();
     await expect(page.locator("#join-result-player")).toBeVisible();
     await expect(page.locator("#join-result-player")).toHaveText(nickname);
-    await expect(claim).toHaveAccessibleDescription(nickname);
+    await expect(page.locator("#join-claim-status")).toContainText("Ask the organiser for a private link");
     await expect(page.locator("body")).not.toContainText("Different existing player");
     await expect(page.getByRole("button", { name: "Retry lookup", exact: true })).toBeHidden();
     const reads = fixture.requests.filter(request => request.method === "GET" && request.path.startsWith(`/v1/join/${joinCode}/`));
@@ -742,10 +854,8 @@ for (const identity of [
     expect(fixture.writes()).toHaveLength(0);
     await expectJoinReceipt(page);
     await expectGeometry(page);
-    await claim.focus();
-    await expect(claim).toBeFocused();
+    await page.getByRole("button", { name: "Join another player", exact: true }).focus();
     await capture(page, testInfo, `claim-query-identity-${identity.label.replaceAll(" ", "-")}-${identity.width}`);
-    await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Join another player", exact: true })).toBeFocused();
     expect(fixture.writes()).toHaveLength(0);
     expectClean(fixture);
@@ -757,16 +867,13 @@ test("duplicate nicknames and a forged query name do not change the exact claim 
   const duplicate = fixture.players[7];
   expect(duplicate.nickname).toBe(fixture.players[1].nickname);
   await page.goto(`${origin}/join?code=${joinCode}&playerId=${duplicate.playerId}&nickname=Forged%20name`);
-  const claim = page.getByRole("button", { name: "Claim player", exact: true });
-  await expect(claim).toBeEnabled();
+  const claim = page.getByTestId("claim-player");
+  await expect(claim).toBeHidden();
   await expect(page.locator("#join-result-player")).toHaveText("Sam");
   await expect(page.locator("body")).not.toContainText("Forged name");
+  await expect(page.locator("#join-claim-status")).toContainText("Ask the organiser for a private link");
+  await claim.dispatchEvent("click");
   expect(fixture.writes()).toHaveLength(0);
-  await claim.click();
-  await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
-  await expect(page.locator("#join-result-player")).toHaveText("Sam");
-  expect(fixture.writes("claim")).toMatchObject([{ path: `/v1/players/${duplicate.playerId}/claim` }]);
-  expect(fixture.writes("join")).toHaveLength(0);
   expectClean(fixture);
 });
 
@@ -775,7 +882,7 @@ test("sign-in return resolves the named claim context without automatically clai
   const returnPath = `/join?code=${joinCode}&playerId=fictional-existing-player`;
   await page.goto(`${origin}${returnPath}`);
   await expect(page.locator("#join-result")).toBeHidden();
-  await page.getByTestId("join-signin-link").click();
+  await page.goto(`${origin}/sign-in?returnTo=${encodeURIComponent(returnPath)}`);
   await expect(page.getByRole("heading", { name: "Sign in to 3FC", exact: true })).toBeVisible();
   await page.getByLabel("Email address", { exact: true }).fill(recipient);
   await page.getByRole("button", { name: "Send sign-in link", exact: true }).click();
@@ -784,7 +891,8 @@ test("sign-in return resolves the named claim context without automatically clai
   await page.getByTestId("complete-magic-link").click();
   await expect(page).toHaveURL(`${origin}${returnPath}`);
   await expect(page.locator("#join-result-player")).toHaveText(nickname);
-  await expect(page.getByTestId("claim-player")).toBeEnabled();
+  await expect(page.getByTestId("claim-player")).toBeHidden();
+  await expect(page.locator("#join-claim-status")).toContainText("Ask the organiser for a private link");
   expect(fixture.writes("magic")).toHaveLength(1);
   expect(fixture.writes("complete")).toHaveLength(1);
   expect(fixture.writes("claim")).toHaveLength(0);
@@ -792,7 +900,7 @@ test("sign-in return resolves the named claim context without automatically clai
   expectClean(fixture);
 });
 
-test("a failed identity lookup retries only the read before enabling a named claim", async ({ page }, testInfo) => {
+test("a failed identity lookup retries only the read before showing named proof recovery", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 900 });
   await page.emulateMedia({ colorScheme: "dark" });
   const fixture = await installFixture(page);
@@ -815,9 +923,9 @@ test("a failed identity lookup retries only the read before enabling a named cla
   expect(fixture.writes()).toHaveLength(0);
   await page.keyboard.press("Enter");
   await expect(page.locator("#join-result-player")).toHaveText(nickname);
-  await expect(page.getByTestId("claim-player")).toBeEnabled();
+  await expect(page.getByTestId("claim-player")).toBeHidden();
   await expect(retry).toBeHidden();
-  await expect(page.getByTestId("claim-player")).toBeFocused();
+  await expect(page.getByRole("button", { name: "Join another player", exact: true })).toBeFocused();
   await expect(page.locator("#setup-error")).toBeHidden();
   expect(fixture.requests.filter(request => request.path === joinContextPath && request.query === "?playerId=fictional-existing-player")).toHaveLength(3);
   expect(fixture.writes()).toHaveLength(0);
@@ -876,38 +984,27 @@ test("Join another player cancels a delayed lookup without replacing its new dra
   } finally { gate.release(); }
 });
 
-test("an old lookup cannot settle or replace a new confirmed join and pending claim", async ({ page }) => {
+test("an old lookup cannot replace a new confirmed join awaiting explicit linking", async ({ page }) => {
   const fixture = await installFixture(page);
   const lookupGate = deferred();
-  const claimGate = deferred();
   fixture.lookupPlans.push({ gate: lookupGate });
-  fixture.plans.push({ kind: "claim", gate: claimGate });
   try {
-    const lookupPath = joinContextPath;
     await page.goto(`${origin}/join?code=${joinCode}&playerId=fictional-existing-player`);
-    await expect.poll(() => fixture.requests.filter(request => request.path === lookupPath && request.query === "?playerId=fictional-existing-player").length).toBe(1);
+    await expect.poll(() => fixture.requests.filter(request => request.path === joinContextPath).length).toBe(1);
     await page.getByRole("button", { name: "Join another player", exact: true }).click();
     await page.getByLabel("Player name", { exact: true }).fill("A different new player");
     await page.getByLabel("Player name", { exact: true }).press("Enter");
-    await expect.poll(() => fixture.writes("claim").length).toBe(1);
     await expect(page.locator("#join-result-player")).toHaveText("A different new player");
-    await expect(page.getByTestId("claim-player")).toBeDisabled();
-    const response = page.waitForResponse(candidate => {
-      const url = new URL(candidate.url());
-      return url.pathname === lookupPath && url.search === "?playerId=fictional-existing-player";
-    });
+    const response = page.waitForResponse(candidate => new URL(candidate.url()).pathname === joinContextPath);
     lookupGate.release();
     await (await response).finished();
     await expect(page.locator("#join-result-player")).toHaveText("A different new player");
-    await expect(page.getByTestId("claim-player")).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Join another player", exact: true })).toBeDisabled();
-    claimGate.release();
-    await expect(page.locator("#setup-status")).toHaveText("Player claimed.");
-    await expect(page.locator("#join-result-player")).toHaveText("A different new player");
+    await expect(page.getByTestId("claim-player")).toBeEnabled();
+    await expect(page.getByTestId("claim-player")).toHaveText("Link player profile");
     expect(fixture.writes("join")).toHaveLength(1);
-    expect(fixture.writes("claim")).toMatchObject([{ path: "/v1/players/fictional-joined-player-1/claim" }]);
+    expect(fixture.writes("claim")).toHaveLength(0);
     expectClean(fixture);
-  } finally { lookupGate.release(); claimGate.release(); }
+  } finally { lookupGate.release(); }
 });
 
 test("malformed invite reveals and focuses native code correction", async ({ page }) => {

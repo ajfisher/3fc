@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const ENTITY_PK_PREFIX = {
   league: "LEAGUE#",
   season: "SEASON#",
@@ -55,7 +57,10 @@ export function userPk(userId: string): string {
 }
 
 export function playerClaimSk(playerId: string): string {
-  return `PLAYER#${playerId}`;
+  const legacy = `PLAYER#${playerId}`;
+  // Keep every representable legacy key. Oversized standalone profile IDs
+  // need a disjoint bounded index namespace; the original ID stays in data.
+  return Buffer.byteLength(legacy) <= 1024 ? legacy : `PLAYER_HASH#${createHash("sha256").update(playerId).digest("hex")}`;
 }
 
 export function joinCodePk(joinCode: string): string {

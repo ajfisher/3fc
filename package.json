@@ -15,7 +15,8 @@
   "scripts": {
     "build": "npm run build -w @3fc/contracts && npm run build -w @3fc/api && npm run build -w @3fc/app",
     "lint": "npm run typecheck",
-    "test": "npm run build -w @3fc/contracts && npm run test --workspaces && npm run test:review-gate",
+    "test": "npm run build -w @3fc/contracts && npm run test --workspaces && npm run test:ops && npm run test:review-gate",
+    "test:ops": "node --test scripts/tests/*.test.mjs",
     "test:review-gate": "npm run review-policy:check && node --test scripts/review-gate/tests/*.test.mjs",
     "review-policy:check": "node scripts/review-gate/validate-policy.mjs",
     "smoke:m2": "npm run smoke:m2 -w @3fc/app",

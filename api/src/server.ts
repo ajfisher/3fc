@@ -4,6 +4,12 @@ import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { URL, pathToFileURL } from "node:url";
 
+import { handlePlayerProofRoute, isPlayerProofRoute, type PlayerProofRepository } from "./player-proof-routes.js";
+import { handlePlayerDirectoryRoute, isPlayerDirectoryRoute, type PlayerDirectoryRepository } from "./player-directory-routes.js";
+import { handlePlayerConsolidationRoute, isPlayerConsolidationRoute, type PlayerConsolidationRepository } from "./player-consolidation-routes.js";
+import { handleOwnedPlayerJoinRoute, isOwnedPlayerJoinRoute, type OwnedPlayerJoinRepository } from "./owned-player-join-routes.js";
+import { PlayerProofError } from "./auth/player-proof.js";
+import { PlayerIdentityError } from "./data/player-identity.js";
 import {
   CreateTableCommand,
   DynamoDBClient,
@@ -750,6 +756,7 @@ function toPublicPlayer(player: {
 }
 
 async function toGamePlayerForLeagueRole(input: {
+  canonicalPlayerId?: string;
   player: {
     playerId: string;
     nickname: string;
@@ -760,7 +767,9 @@ async function toGamePlayerForLeagueRole(input: {
   leagueId: string;
   callerRole: "admin" | "scorekeeper" | "viewer" | null;
 }) {
-  const publicPlayer = toPublicPlayer(input.player);
+  const publicPlayer = { ...toPublicPlayer(input.player),
+    ...(input.callerRole === "admin" && input.canonicalPlayerId && input.canonicalPlayerId !== input.player.playerId
+      ? { canonicalPlayerId: input.canonicalPlayerId } : {}) };
   if (input.callerRole !== "admin" || !input.player.claimedByUserId) {
     return publicPlayer;
   }
@@ -2454,7 +2463,7 @@ async function handleCreateSeason(
         startsOn: parsedBody.data.startsOn ?? null,
         endsOn: parsedBody.data.endsOn ?? null,
       });
-      await ensureSeasonDefaultTeams(season.seasonId);
+      await ensureSeasonDefaultTeams(season.seasonId, repository, { leagueId: season.leagueId });
 
       return {
         statusCode: 201,
@@ -2978,6 +2987,71 @@ export async function handleLocalJoinPlayerContextRoute(input: {
   return result.statusCode;
 }
 
+export async function handleLocalPlayerProofRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerProofRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handlePlayerProofRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
+export async function handleLocalPlayerDirectoryRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerDirectoryRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handlePlayerDirectoryRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
+export async function handleLocalOwnedPlayerJoinRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: OwnedPlayerJoinRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handleOwnedPlayerJoinRoute({ ...input, body, idempotencyKey: readHeaderValue(input.request, "idempotency-key"),
+    repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
+export async function handleLocalPlayerConsolidationRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerConsolidationRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown = {};
+  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  catch {
+    sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
+    return 400;
+  }
+  const result = await handlePlayerConsolidationRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
 export async function handleLocalLogoutRoute(input: {
   request: IncomingMessage;
   response: ServerResponse;
@@ -3283,6 +3357,9 @@ async function start(): Promise<void> {
           requestPayload: parsedBody.data,
           shouldPersistResponse: shouldPersistPublicJoinMutation,
           execute: async () => {
+            if (parsedBody.data.claimProof && !parsedIdempotencyKey) {
+              return { statusCode: 400, payload: { error: "bad_request", message: "Idempotency-Key is required when requesting player claim proof." } };
+            }
             let joinResult: Awaited<ReturnType<ThreeFcRepository["joinGameByCode"]>>;
             try {
               joinResult = await repository.joinGameByCode({
@@ -3291,8 +3368,11 @@ async function start(): Promise<void> {
                   ? buildPublicJoinPlayerId(joinCode, parsedIdempotencyKey)
                   : `player-${randomUUID()}`,
                 nickname: parsedBody.data.nickname,
+                claimProof: parsedBody.data.claimProof,
               });
             } catch (error) {
+              if (error instanceof PlayerProofError) return { statusCode: error.statusCode,
+                payload: { error: error.statusCode === 400 ? "bad_request" : "conflict", code: error.code, message: error.message } };
               if (error instanceof GameJoinRegistrationError) {
                 if (error.code === "game_finished") {
                   return {
@@ -3335,6 +3415,8 @@ async function start(): Promise<void> {
                 gameId: joinResult.game.gameId,
                 joinCode: joinResult.game.joinCode,
                 player: toPublicPlayer(joinResult.player),
+                ...(joinResult.claimProof ? { claimProof: joinResult.claimProof } : {}),
+                ...(joinResult.linkingUnavailable ? { linkingUnavailable: true } : {}),
               },
             };
           },
@@ -3891,8 +3973,19 @@ async function start(): Promise<void> {
         }
 
         const leagueId = decodeURIComponent(deleteLeagueMatch[1]);
+        let deletionBody: Record<string, unknown>;
+        try { deletionBody = await parseJsonBody(request); } catch {
+          status = badRequest(request, response, "Request body must be valid JSON."); return;
+        }
+        if (!deletionBody || Array.isArray(deletionBody) || typeof deletionBody !== "object") {
+          status = badRequest(request, response, "Request body must be an object."); return;
+        }
+        if (deletionBody.expectedAccountId !== undefined && deletionBody.expectedAccountId !== sessionSubject(authGate.session)) {
+          status = forbidden(request, response, "account_changed", "Your sign-in changed. Reload before retrying."); return;
+        }
         const isAdmin = await ensureLeagueAdmin(leagueId, sessionUserIds(authGate.session));
-        if (!isAdmin) {
+        const canResume = await repository.canResumeLeagueDeletion(leagueId, sessionUserIds(authGate.session));
+        if (!isAdmin && !canResume) {
           status = forbidden(
             request,
             response,
@@ -3903,7 +3996,7 @@ async function start(): Promise<void> {
         }
 
         try {
-          const deleted = await repository.deleteLeague(leagueId);
+          const deleted = await repository.deleteLeague(leagueId, sessionUserIds(authGate.session));
           if (!deleted) {
             status = notFound(request, response, `League ${leagueId} was not found.`);
             return;
@@ -4974,64 +5067,24 @@ async function start(): Promise<void> {
         return;
       }
 
-      const claimPlayerMatch = route.match(/^\/v1\/players\/([^/]+)\/claim$/);
-      if (method === "POST" && claimPlayerMatch) {
-        if (!authGate.session) {
-          status = 500;
-          sendJsonWithCors(request, response, status, {
-            error: "internal_error",
-            message: "Session should be available for authenticated route.",
-          });
-          return;
-        }
+      if (isOwnedPlayerJoinRoute(method, route)) {
+        status = await handleLocalOwnedPlayerJoinRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
+      if (isPlayerConsolidationRoute(method, route)) {
+        status = await handleLocalPlayerConsolidationRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
+      if (isPlayerDirectoryRoute(method, route)) {
+        status = await handleLocalPlayerDirectoryRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
 
-        let rawBody: Record<string, unknown>;
-        try {
-          rawBody = await parseJsonBody(request);
-        } catch {
-          status = badRequest(request, response, "Request body must be valid JSON.");
-          return;
-        }
-
-        const parsedBody = claimPlayerRequestSchema.safeParse(rawBody);
-        if (!parsedBody.success) {
-          status = badRequest(request, response, formatSchemaValidationError(parsedBody.error));
-          return;
-        }
-
-        const playerId = decodeURIComponent(claimPlayerMatch[1]);
-        let player;
-        try {
-          player = await repository.claimPlayer({
-            playerId,
-            userId: sessionSubject(authGate.session),
-          });
-        } catch (error) {
-          if (error instanceof PlayerClaimError) {
-            status = 409;
-            sendJsonWithCors(request, response, status, {
-              error: "conflict",
-              code: error.code,
-              message: error.message,
-            });
-            return;
-          }
-
-          throw error;
-        }
-
-        if (!player) {
-          status = notFound(request, response, `Player ${playerId} was not found.`);
-          return;
-        }
-
-        status = 200;
-        sendJsonWithCors(request, response, status, {
-          player: toPublicPlayer(player),
-          claim: {
-            claimedByCurrentUser: true,
-          },
-        });
+      if (isPlayerProofRoute(method, route)) {
+        status = await handleLocalPlayerProofRoute({ request, response, method, route, rawQueryString: requestUrl.search.slice(1), session: authGate.session });
         return;
       }
 
@@ -5068,13 +5121,13 @@ async function start(): Promise<void> {
         const playerLinks = await repository.listGamePlayers(gameId);
         const playerEntries = (
           await Promise.all(
-            playerLinks.map(async (link) => ({
-              link,
-              player: await repository.getPlayer(link.playerId),
-            })),
+            playerLinks.map(async (link) => {
+              const view = await repository.getPlayerView(link.playerId);
+              return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
+            }),
           )
         )
-          .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player }] : []))
+          .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player, canonicalPlayerId: entry.canonicalPlayerId }] : []))
           .filter((entry) =>
             search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
           )
@@ -5090,6 +5143,7 @@ async function start(): Promise<void> {
         const players = await Promise.all(
           playerEntries.map((entry) =>
             toGamePlayerForLeagueRole({
+              canonicalPlayerId: entry.canonicalPlayerId,
               player: entry.player,
               leagueId: game.leagueId,
               callerRole: access.role,
@@ -5472,6 +5526,12 @@ async function start(): Promise<void> {
         sendJsonWithCors(request, response, status, result.payload, { "Cache-Control": "no-store" });
         return;
       }
+      if (error instanceof PlayerIdentityError) {
+        status = error.status;
+        sendJsonWithCors(request, response, status, { error: error.category,
+          code: error.code, message: error.message }, { "Cache-Control": "no-store" });
+        return;
+      }
       status = 500;
 
       logRequestError({
@@ -5496,12 +5556,13 @@ async function start(): Promise<void> {
     }
   });
 
-  server.listen(PORT, () => {
+  server.listen({ port: PORT, host: process.env.THREEFC_LISTEN_HOST }, () => {
     console.log(
       JSON.stringify({
         level: "info",
         service: "api",
         message: "API local server started",
+        host: server.address(),
         port: PORT,
         tableName: TABLE_NAME,
         dynamodbEndpoint: DYNAMODB_ENDPOINT,

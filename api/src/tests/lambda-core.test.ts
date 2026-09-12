@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { handlePlayerDirectoryRoute, leaguePlayerPageSchema, createLeaguePlayerSchema } from "../player-directory-routes.js";
+import { PlayerIdentityError } from "../data/player-identity.js";
 
 import {
   createLambdaCoreHandler,
@@ -31,6 +33,28 @@ import {
   LeagueInviteError,
   PlayerClaimError,
 } from "../data/repository.js";
+
+test("directory read envelopes preserve valid long ASCII and Unicode historical IDs", async () => {
+  for (const playerId of ["x".repeat(1025), "x".repeat(2041), "é".repeat(1020), "😀".repeat(510)]) {
+    const page = { players: [{ playerId, nickname: "Kesh", claimed: false,
+      seasons: [{ seasonId: "winter", name: "Winter" }], hasMoreSeasons: false }], cursor: null };
+    assert.deepEqual(leaguePlayerPageSchema.parse(page), page);
+    const response = await handlePlayerDirectoryRoute({ method: "GET", route: "/v1/league-players",
+      rawQueryString: new URLSearchParams({ leagueId: playerId }).toString(), body: undefined,
+      session: { email: "owner@example.com", subject: "owner" } as never,
+      repository: { listLeaguePlayers: async (input: { leagueId: string }) => { assert.equal(input.leagueId, playerId); return page; } } as never });
+    assert.equal(response.statusCode, 200); assert.deepEqual(response.payload, page);
+  }
+});
+
+test("directory IDs reject invalid Unicode and constructed keys beyond the byte boundary", () => {
+  for (const playerId of ["x".repeat(2042), "é".repeat(1021), "😀".repeat(511), "bad\ud800", " "]) {
+    assert.equal(createLeaguePlayerSchema.safeParse({ playerId, nickname: "Player" }).success, false);
+  }
+  for (const playerId of ["x".repeat(2041), "é".repeat(1020), "😀".repeat(510)]) {
+    assert.equal(createLeaguePlayerSchema.safeParse({ playerId, nickname: "Player" }).success, true);
+  }
+});
 
 interface MockSessionRecord {
   sessionId: string;
@@ -235,6 +259,9 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  onLeagueAccessRead?: () => void;
+  resumeLeagueDeletion?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
+  deleteLeagueOverride?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
   sessionCookieSecure?: boolean;
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
@@ -993,6 +1020,19 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async listOwnedJoinPlayers() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
+      async joinOwnedPlayer() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
+      async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
+      async previewPlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
+      async getPlayerConsolidation() { throw new PlayerIdentityError("proposal_not_found", 404, "This profile proposal is not available."); },
+      async decidePlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
+      async commitPlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
+      async createLeaguePlayer() { throw new Error("Player directory writes require a real repository fixture."); },
+      async addExistingLeaguePlayer() { throw new Error("Player registration requires a real repository fixture."); },
+      async previewPlayerProof() { throw new Error("Proof preview requires a real repository fixture."); },
+      async createPlayerInvitation() { throw new Error("Invitation writes require a real repository fixture."); },
+      async getPlayerInvitation() { throw new Error("Invitation reads require a real repository fixture."); },
+      async revokePlayerInvitation() { throw new Error("Invitation revocation requires a real repository fixture."); },
       async listLeaguesForUser(userId: string) {
         const accessibleLeagueIds = Object.values(config.leagueAccess ?? {})
           .filter((entry) => entry.userId === userId)
@@ -1579,7 +1619,11 @@ function createHarness(config: HarnessConfig = {}) {
 
         return seasons.delete(seasonId);
       },
-      async deleteLeague(leagueId: string) {
+      async canResumeLeagueDeletion(leagueId: string, userIds: readonly string[]) {
+        return config.resumeLeagueDeletion?.(leagueId, userIds) ?? false;
+      },
+      async deleteLeague(leagueId: string, userIds: readonly string[] = []) {
+        if (config.deleteLeagueOverride) return config.deleteLeagueOverride(leagueId, userIds);
         const deleted = leagues.delete(leagueId);
         if (!deleted) {
           return false;
@@ -1653,6 +1697,10 @@ function createHarness(config: HarnessConfig = {}) {
       },
       async getPlayer(playerId: string) {
         return players.get(playerId) ?? null;
+      },
+      async getPlayerView(playerId: string) {
+        const player = players.get(playerId);
+        return player ? { originalPlayerId: playerId, canonicalPlayerId: playerId, player } : null;
       },
       async claimPlayer(input) {
         const player = players.get(input.playerId);
@@ -1963,6 +2011,7 @@ function createHarness(config: HarnessConfig = {}) {
         };
       },
       async getLeagueAccess(leagueId: string, userId: string) {
+        config.onLeagueAccessRead?.();
         return leagueAccess.get(`${leagueId}:${userId}`) ?? null;
       },
       async grantLeagueAccess(input) {
@@ -2196,6 +2245,113 @@ function createHarness(config: HarnessConfig = {}) {
     leagueInvites,
   };
 }
+
+test("Lambda returning-player routes require a session and retain private disabled responses", async () => {
+  const { handler } = createHarness({ sessions: { player: { sessionId: "player", subject: "owner",
+    email: "owner@example.com", createdAt: "2026-02-23T00:00:00.000Z", expiresAt: "2026-03-03T00:00:00.000Z" } } });
+  for (const method of ["GET", "POST"]) {
+    const event = createEvent({ method, path: `/v1/join/ABCDEFGH/${method === "GET" ? "linked-players" : "linked-player"}`,
+      body: method === "POST" ? { playerId: "one", expectedAccountId: "owner" } : undefined,
+      headers: { Origin: "https://qa.3fc.football", "Idempotency-Key": "owned-join" } });
+    assert.equal((await handler(event)).statusCode, 401);
+    event.cookies = ["threefc_session=player"];
+    const response = await handler(event);
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.headers?.["cache-control"], "no-store");
+    assert.equal(response.headers?.["referrer-policy"], "no-referrer");
+    assert.doesNotMatch(response.body, /owner@example/);
+  }
+});
+
+test("Lambda consolidation routes enter authenticated dispatch and preserve private disabled responses", async () => {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const { handler } = createHarness({ sessions: { organiser: { sessionId: "organiser", subject: "owner",
+    email: "owner@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" } } });
+  const proposalId = "proposal-identifier-12345";
+  for (const [method, path, body] of [
+    ["GET", "/v1/player-consolidations", undefined],
+    ["POST", "/v1/player-consolidations", { proposalId, expectedAccountId: "owner", leagueId: "league", playerIds: ["a", "b"], retainedPlayerId: "a", nickname: "Player" }],
+    ["POST", "/v1/player-consolidations/approve", { proposalId, expectedAccountId: "owner", decision: "approve" }],
+    ["POST", "/v1/player-consolidations/commit", { proposalId, expectedAccountId: "owner" }],
+  ] as const) {
+    const event = createEvent({ method, path, body, headers: { Origin: "https://qa.3fc.football" } });
+    if (method === "GET") event.rawQueryString = `proposalId=${proposalId}`;
+    assert.equal((await handler(event)).statusCode, 401);
+    event.cookies = ["threefc_session=organiser"];
+    const signedIn = await handler(event);
+    assert.equal(signedIn.statusCode, method === "GET" ? 404 : 503);
+    assert.equal(signedIn.headers?.["cache-control"], "no-store");
+    assert.equal(signedIn.headers?.["referrer-policy"], "no-referrer");
+    assert.doesNotMatch(signedIn.body, /owner@example|owner-subject/);
+  }
+});
+
+test("league deletion receipt only resumes the initiating authenticated DELETE after metadata and ACL cleanup", async () => {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const checks: Array<{ leagueId: string; userIds: readonly string[] }> = [];
+  const deletes: Array<{ leagueId: string; userIds: readonly string[] }> = [];
+  let aclReads = 0;
+  let cleanupPending = false;
+  const harness = createHarness({
+    sessions: {
+      owner: { sessionId: "owner", subject: "owner-subject", email: "owner@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" },
+      outsider: { sessionId: "outsider", subject: "outsider-subject", email: "outsider@example.com", createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" },
+    },
+    // Both maps are intentionally empty: receipt recovery must not depend on
+    // metadata or an ACL that the previous committed deletion already removed.
+    leagues: {}, leagueAccess: {},
+    onLeagueAccessRead() { aclReads += 1; },
+    async resumeLeagueDeletion(leagueId, userIds) {
+      checks.push({ leagueId, userIds: [...userIds] });
+      return leagueId === "deleted-league" && userIds.includes("owner-subject");
+    },
+    async deleteLeagueOverride(leagueId, userIds) {
+      deletes.push({ leagueId, userIds: [...userIds] });
+      if (cleanupPending) throw new PlayerIdentityError("league_deletion_pending", 503, "League cleanup is still pending. Retry deletion.");
+      return true;
+    },
+  });
+  const request = (method: string, account?: string, leagueId = "deleted-league", rawBody?: string) => {
+    const event = createEvent({ method, path: `/v1/leagues/${leagueId}`, headers: {
+      Origin: "https://qa.3fc.football", ...(account ? { Cookie: `threefc_session=${account}` } : {}),
+    } });
+    event.body = rawBody;
+    return harness.handler(event);
+  };
+  assert.equal((await request("DELETE")).statusCode, 401);
+  assert.equal(checks.length, 0); assert.equal(deletes.length, 0);
+  harness.leagueAccess.set("deleted-league:owner-subject", {
+    leagueId: "deleted-league", userId: "owner-subject", role: "admin", grantedByUserId: "owner-subject", createdAt: stamp, updatedAt: stamp,
+  });
+  const beforeInvalid = { checks: checks.length, deletes: deletes.length, aclReads };
+  for (const expectedAccountId of ["another-account", "owner@example.com", null, 123]) {
+    const mismatch = await request("DELETE", "owner", "deleted-league", JSON.stringify({ expectedAccountId }));
+    assert.equal(mismatch.statusCode, 403);
+    assert.equal(JSON.parse(mismatch.body).code, "account_changed");
+  }
+  for (const raw of ["{invalid", "[]", "null"]) {
+    assert.equal((await request("DELETE", "owner", "deleted-league", raw)).statusCode, 400);
+  }
+  assert.deepEqual({ checks: checks.length, deletes: deletes.length, aclReads }, beforeInvalid,
+    "account mismatch and malformed bodies are rejected before any ACL, receipt or delete repository call, even for an admin");
+  harness.leagueAccess.clear();
+  assert.equal((await request("DELETE", "outsider")).statusCode, 403);
+  assert.equal((await request("DELETE", "owner", "another-league")).statusCode, 403);
+  assert.equal(deletes.length, 0);
+  const checkedBeforeRead = checks.length;
+  assert.notEqual((await request("GET", "owner")).statusCode, 200);
+  assert.equal(checks.length, checkedBeforeRead, "a deletion receipt never authorises league reads");
+  for (let retry = 0; retry < 2; retry++) {
+    const response = await request("DELETE", "owner", "deleted-league", retry === 0 ? undefined : JSON.stringify({ expectedAccountId: "owner-subject" }));
+    assert.equal(response.statusCode, 204); assert.equal(response.body, "");
+  }
+  assert.deepEqual(deletes, Array.from({ length: 2 }, () => ({ leagueId: "deleted-league", userIds: ["owner-subject", "owner@example.com"] })));
+  cleanupPending = true;
+  const pending = await request("DELETE", "owner");
+  assert.equal(pending.statusCode, 503, "unfinished cleanup must not report successful deletion");
+  assert.equal(JSON.parse(pending.body).code, "league_deletion_pending");
+  assert.equal(JSON.parse(pending.body).error, "unavailable");
+});
 
 function createGoalHarness(input: {
   email?: string;
@@ -3233,7 +3389,7 @@ test("core lambda lets players join an active game by join code and appear in th
   });
 });
 
-test("core lambda lets joined players claim accounts and admins delegate scorer access", async () => {
+test("core lambda preserves same-owner claim retries and separate admin scorer delegation", async () => {
   const harness = createHarness({
     sessions: {
       "session-player": {
@@ -3277,9 +3433,9 @@ test("core lambda lets joined players claim accounts and admins delegate scorer 
       "player-joined": {
         playerId: "player-joined",
         nickname: "Delegate",
-        claimedByUserId: null,
+        claimedByUserId: "cognito-delegate-sub",
         createdAt: "2026-02-23T00:00:00.000Z",
-        updatedAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:01.000Z",
       },
     },
     gamePlayers: {

@@ -11,6 +11,435 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/join/{joinCode}/linked-players:
+    get:
+      operationId: listOwnedJoinPlayers
+      summary: List the signed-in player's linked identities in this game's league
+      description: >-
+        Private session-authenticated read; not a public player or account directory. The server derives the
+        account and legacy ownership aliases from the session. Follow every opaque cursor, including empty
+        filtered pages, before treating the list as complete. Canonical identities can repeat across pages;
+        deduplicate by playerId. A changed ownership, directory or game snapshot rejects continuation rather
+        than certifying a partial list. No nickname matching or cross-league import. All responses use
+        Cache-Control no-store and Referrer-Policy no-referrer. Returning-player joining is disabled by
+        default and returns 503 until its reviewed writer deployment and drain are complete.
+      parameters:
+        - $ref: '#/components/parameters/OwnedJoinCode'
+        - name: cursor
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 8000 }
+          description: Opaque cursor from this account and join scope; duplicate and unknown query fields are rejected.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 20 }
+      responses:
+        '200':
+          description: One private page; complete is true exactly when cursor is null
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            Referrer-Policy: { schema: { type: string, const: no-referrer } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnedJoinPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/OwnedJoinUnavailable' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+  /v1/join/{joinCode}/linked-player:
+    post:
+      operationId: joinOwnedPlayer
+      summary: Join a game using an identity linked to the current account
+      description: >-
+        Requires an authenticated session, exact expectedAccountId and a stable Idempotency-Key. The
+        account identifier must equal the current session subject (or email only when no subject exists);
+        a switched account returns 403 account_changed before repository access. The server rechecks
+        ownership and league scope. New registrations are Unassigned; existing registrations retain their
+        original player ID and team. Joining finished games remains supported, without changing teams,
+        goals or results. A committed receipt is replayed without duplicating registration; reuse with a
+        different selected identity is rejected. Retain the exact body and key after an uncertain response.
+        Deleted or invalid game context is never recreated by retry. All responses use Cache-Control
+        no-store and Referrer-Policy no-referrer. The default-disabled returning-player gate returns 503.
+      parameters:
+        - $ref: '#/components/parameters/OwnedJoinCode'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          description: Stable non-empty request key retained with the exact selected identity for retries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [playerId, expectedAccountId]
+              properties:
+                playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+                expectedAccountId: { type: string, minLength: 1, maxLength: 2048 }
+      responses:
+        '200':
+          description: Registration outcome or original committed receipt; no claim secrets or ownership aliases
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            Referrer-Policy: { schema: { type: string, const: no-referrer } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnedJoinResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/OwnedJoinUnavailable' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+  /v1/player-consolidations:
+    post:
+      operationId: previewPlayerConsolidation
+      summary: Review an exact proposed combination of league player profiles
+      description: >-
+        League organisers only. Requires enabled consolidation and verified complete membership coverage.
+        The client retains proposalId and the exact body for uncertain retries. Preview never combines profiles.
+        Different owners, overlapping games (including Unassigned), outside-league membership, incomplete data
+        and groups larger than 20 are rejected without exposing another league. No automatic nickname matching.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsolidationPreviewRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+    get:
+      operationId: getPlayerConsolidation
+      summary: Read a private combination proposal as its organiser or affected owner
+      description: The proposal ID grants no access. Responses are no-store and no-referrer and omit account identifiers.
+      parameters:
+        - name: proposalId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{20,64}$'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+  /v1/player-consolidations/approve:
+    post:
+      operationId: decidePlayerConsolidation
+      summary: Approve or decline the exact additions to your claimed identity
+      description: >-
+        Only the existing owner can approve; organiser permissions do not confer ownership.
+        Approval binds the immutable proposal and does not commit the combination.
+        Changed ownership, membership or identity invalidates the proposal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId, decision, expectedAccountId]
+              properties:
+                expectedAccountId:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                proposalId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{20,64}$'
+                decision:
+                  type: string
+                  enum: [approve, decline]
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+  /v1/player-consolidations/commit:
+    post:
+      operationId: commitPlayerConsolidation
+      summary: Atomically combine the approved profiles without rewriting historical events
+      description: >-
+        The initiating organiser must still have authority. The exact proposal, owner approval where required,
+        complete alias closure and identity revisions are checked again. Commit stores a durable audit and
+        idempotent outcome. Historical registrations, roster entries, goals, assists and corrections keep original IDs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposalId, expectedAccountId]
+              properties:
+                expectedAccountId:
+                  type: string
+                  minLength: 1
+                  maxLength: 2048
+                proposalId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{20,64}$'
+      responses:
+        '200':
+          $ref: '#/components/responses/ConsolidationProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/PlayerDirectoryUnavailable'
+  /v1/league-players:
+    get:
+      summary: Search reusable players in an authorised league
+      operationId: listLeaguePlayers
+      description: >-
+        Requires league organiser or scorer access. Includes claimed and unclaimed players; no account IDs or emails. Optional season scope never imports another league. Pages contain matching players rather than one physical storage page. A bounded search may return searchIncomplete with a continuation; only a null cursor proves exhaustion. Cursors bind league, season, query and directory revision; a changed list returns 409. Verified season names are historical association, not current game counts. Optional game context is a bounded sample verified against current game metadata; gamesIncomplete means more context may exist, not that the listed games are the most recent. Responses are no-store and no-referrer. Available only after reviewed identity cutover.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryLeagueId"
+        - $ref: "#/components/parameters/DirectorySeasonId"
+        - $ref: "#/components/parameters/DirectoryGameContext"
+        - $ref: "#/components/parameters/DirectorySearch"
+        - $ref: "#/components/parameters/DirectoryCursor"
+        - $ref: "#/components/parameters/DirectoryLimit"
+        - name: includeGames
+          in: query
+          required: false
+          description: Include bounded, verified game dates for profile selection. Results are limited to ten players per page.
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Search reusable players in an authorised league
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaguePlayerPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
+    post:
+      summary: Create an unclaimed league player without game registration
+      operationId: createLeaguePlayer
+      description: >-
+        League organisers only. The caller generates playerId and retains it through uncertain retries; the same account and exact request replay the original creation receipt. An existing global player ID cannot be imported. No claim proof is issued. Metadata, identity and directory association commit atomically. Unknown body or query fields are rejected. Responses are no-store and no-referrer.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryLeagueId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeaguePlayerRequest"
+      responses:
+        "201":
+          description: Create an unclaimed league player without game registration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLeaguePlayerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
+  /v1/game-player-registrations:
+    post:
+      summary: Register an existing league player in a game
+      operationId: addExistingLeaguePlayer
+      description: >-
+        Requires league organiser or scorer access. Defaults to Unassigned; optional teamId assigns in the same transaction. Existing registration returns its original ID and assignment, without duplication or transfer. Finished games require allowFinished true and organiser access. Canonical identities are used for future games; existing historical registration IDs remain unchanged. Unknown fields are rejected. Responses are no-store and no-referrer.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryGameId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddExistingLeaguePlayerRequest"
+      responses:
+        "200":
+          description: Register an existing league player in a game
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddExistingLeaguePlayerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
+  /v1/player-proofs/league-invitation:
+    get:
+      summary: Read private profile invitation metadata for a league player
+      operationId: getLeaguePlayerInvitation
+      description: >-
+        Requires league organiser authority and active canonical directory membership. A game registration is not required. Returns metadata only, never the secret or verifier. Foreign-league invitation metadata is not exposed. Responses are no-store and no-referrer.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryLeagueId"
+        - $ref: "#/components/parameters/DirectoryPlayerId"
+      responses:
+        "200":
+          description: Read private profile invitation metadata for a league player
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaguePlayerInvitationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
+    post:
+      summary: Create or replace a private league player profile invitation
+      operationId: createLeaguePlayerInvitation
+      description: >-
+        Requires league organiser authority. Uses the existing seven-day proof lifecycle, root revision and expected previous proof ID. Receives only a verifier; the browser retains the secret in the private fragment link. Opening and signing in do not consume it; the recipient explicitly confirms linking through the shared preview/claim endpoints. Does not change league permissions. Responses are no-store and no-referrer.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryLeagueId"
+        - $ref: "#/components/parameters/DirectoryPlayerId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlayerInvitationRequest"
+      responses:
+        "201":
+          description: Create or replace a private league player profile invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedLeaguePlayerInvitationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
+  /v1/player-proofs/league-invitation/revoke:
+    post:
+      summary: Revoke the expected private league profile invitation
+      operationId: revokeLeaguePlayerInvitation
+      description: >-
+        Requires league organiser authority. Only the specified current proof may be revoked. A stale replacement returns conflict; no bearer secret is required or returned. Responses are no-store and no-referrer.
+      parameters:
+        - $ref: "#/components/parameters/DirectoryLeagueId"
+        - $ref: "#/components/parameters/DirectoryPlayerId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeLeaguePlayerInvitationRequest"
+      responses:
+        "200":
+          description: Revoke the expected private league profile invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevokeLeaguePlayerInvitationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
   /v1/auth/logout:
     post:
       summary: Sign out the session represented by the current cookie
@@ -62,6 +491,7 @@ paths:
     post:
       summary: Register a nickname player into a game by join code
       operationId: joinGameByCode
+      description: Anonymous nickname registration remains available. When claimProof is supplied, a valid Idempotency-Key is required and proof metadata is committed with the exact new registration. During claim containment, registration still returns 201 with linkingUnavailable true and no proof; retries preserve that outcome. The request contains only a verifier, never the bearer secret. Protected organiser player creation cannot issue registration proof.
       parameters:
         - name: joinCode
           in: path
@@ -91,6 +521,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/JoinGameConflict"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /v1/join/{joinCode}/player-context:
     get:
       summary: Identify a joined player for an authenticated claim screen
@@ -157,6 +591,45 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+  /v1/leagues/{leagueId}:
+    delete:
+      summary: Remove an empty league and finish resumable private-record cleanup
+      operationId: deleteLeague
+      parameters:
+        - name: leagueId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expectedAccountId:
+                  type: string
+                  description: Optional stable account binding, checked against the authenticated request. Prevents a pending browser action running under a different account.
+      responses:
+        "204":
+          description: Removal and private-record cleanup confirmed, including same-initiator retries
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: League still contains seasons; nothing removed
+        "503":
+          description: Cleanup is pending or needs repair; retain the exact target and retry as the initiating account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/leagues/{leagueId}/access:
     post:
       summary: Grant league scoring or co-organiser access
@@ -937,9 +1410,168 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/player-proofs/claim:
+    post:
+      summary: Explicitly link a proof-authorised player to the signed-in account
+      description: Opaque playerId is decoded exactly once from the sole required query field; duplicate, extra or malformed fields are rejected. Every first claim requires a valid private proof and short-lived confirmation returned by preview for this exact server-resolved session/account. A proofless request only preserves an existing same-owner retry. Consumed proofs return their immutable same-owner receipt after binding validation, without granting access or recreating deleted records. Responses are no-store and no-referrer.
+      operationId: claimPlayerByQuery
+      parameters:
+        - name: playerId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1024
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimPlayerRequest"
+      responses:
+        "200":
+          description: Player claimed for the current signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimPlayerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/player-proofs/invitation:
+    parameters:
+      - name: gameId
+        in: query
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 1024 }
+      - name: playerId
+        in: query
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 1024 }
+    get:
+      summary: Check the current private invitation for a registered player
+      operationId: getPlayerInvitationByQuery
+      description: Opaque identifiers are decoded exactly once from the exact required query fields; duplicate, extra or malformed fields are rejected. League organisers only. Returns metadata, never a bearer secret. A TTL-deleted proof retains expired pointer metadata so the organiser can replace it safely.
+      responses:
+        "200":
+          description: Current invitation metadata or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    anyOf:
+                      - $ref: "#/components/schemas/PlayerInvitationMetadata"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      summary: Create or replace a private profile-link invitation
+      operationId: createPlayerInvitationByQuery
+      description: Opaque identifiers are decoded exactly once from the exact required query fields; duplicate, extra or malformed fields are rejected. League organisers only. The client retains the random secret and submits its SHA-256 verifier. Creation is idempotent by proofId and exact inputs. Replacement must name the current predecessor proofId; a stale predecessor conflicts. Invites expire seven days after the persisted creation instant. No email is sent. All responses are no-store and no-referrer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlayerInvitationRequest"
+      responses:
+        "201":
+          description: Persisted invitation metadata, also returned for an exact retry while the invitation remains pending, current and valid. Consumed, revoked, replaced or expired invitation retries return 409.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/PlayerProofMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/player-proofs/invitation/revoke:
+    post:
+      summary: Revoke a player's private invitation
+      operationId: revokePlayerInvitationByQuery
+      description: Opaque identifiers are decoded exactly once from the exact required query fields; duplicate, extra or malformed fields are rejected. League organisers only. Idempotent; revocation does not remove existing ownership or a consumed receipt.
+      parameters:
+        - name: gameId
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 1024 }
+        - name: playerId
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 1024 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proofId]
+              properties:
+                proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+      responses:
+        "200":
+          description: Revocation confirmed, including an already revoked or consumed invitation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean, const: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /v1/players/{playerId}/claim:
     post:
-      summary: Claim a joined player for the signed-in user
+      summary: Explicitly link a proof-authorised player to the signed-in account
+      description: Every first claim requires a valid private proof and short-lived confirmation returned by preview for this exact server-resolved session/account. A proofless request only preserves an existing same-owner retry. Consumed proofs return their immutable same-owner receipt after binding validation, without granting access or recreating deleted records. Responses are no-store and no-referrer.
       operationId: claimPlayer
       parameters:
         - name: playerId
@@ -965,10 +1597,166 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/player-proofs/preview:
+    post:
+      summary: Preview a private player link without consuming it
+      operationId: previewPlayerProof
+      description: Requires a session. Returns the exact player, league and signed-in account together with an opaque session-bound confirmation. Never grants ownership. Responses are no-store and no-referrer; secrets and confirmations must never be logged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlayerProofCredential"
+      responses:
+        "200":
+          description: Account-bound preview, including same-owner consumed receipt recovery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerProofPreviewResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/games/{gameId}/players/{playerId}/profile-invitation:
+    parameters:
+      - name: gameId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+      - name: playerId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+    get:
+      summary: Check the current private invitation for a registered player
+      operationId: getPlayerInvitation
+      description: League organisers only. Returns metadata, never a bearer secret. A TTL-deleted proof retains expired pointer metadata so the organiser can replace it safely.
+      responses:
+        "200":
+          description: Current invitation metadata or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    anyOf:
+                      - $ref: "#/components/schemas/PlayerInvitationMetadata"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      summary: Create or replace a private profile-link invitation
+      operationId: createPlayerInvitation
+      description: League organisers only. The client retains the random secret and submits its SHA-256 verifier. Creation is idempotent by proofId and exact inputs. Replacement must name the current predecessor proofId; a stale predecessor conflicts. Invites expire seven days after the persisted creation instant. No email is sent. All responses are no-store and no-referrer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlayerInvitationRequest"
+      responses:
+        "201":
+          description: Persisted invitation metadata, also returned for an exact retry while the invitation remains pending, current and valid. Consumed, revoked, replaced or expired invitation retries return 409.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/PlayerProofMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerLinkingUnavailable"
+  /v1/games/{gameId}/players/{playerId}/profile-invitation/revoke:
+    post:
+      summary: Revoke a player's private invitation
+      operationId: revokePlayerInvitation
+      description: League organisers only. Idempotent; revocation does not remove existing ownership or a consumed receipt.
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: playerId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proofId]
+              properties:
+                proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+      responses:
+        "200":
+          description: Revocation confirmed, including an already revoked or consumed invitation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean, const: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
   /v1/games/{gameId}/players:
     get:
       summary: List recent/searchable players for a game roster
@@ -1098,6 +1886,64 @@ paths:
           $ref: "#/components/responses/NotFound"
 components:
   parameters:
+    OwnedJoinCode:
+      name: joinCode
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 8
+        pattern: '^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz23456789]{8}$'
+    DirectoryLeagueId:
+      name: leagueId
+      in: query
+      required: true
+      description: Opaque identifier, URL-encoded and decoded exactly once. Duplicate or unknown query parameters are rejected.
+      schema:
+        $ref: "#/components/schemas/DirectoryIdentifier"
+    DirectoryGameId:
+      name: gameId
+      in: query
+      required: true
+      description: Opaque identifier, URL-encoded and decoded exactly once. Duplicate or unknown query parameters are rejected.
+      schema:
+        $ref: "#/components/schemas/DirectoryIdentifier"
+    DirectoryPlayerId:
+      name: playerId
+      in: query
+      required: true
+      description: Opaque identifier, URL-encoded and decoded exactly once. Duplicate or unknown query parameters are rejected.
+      schema:
+        $ref: "#/components/schemas/DirectoryIdentifier"
+    DirectorySeasonId:
+      name: seasonId
+      in: query
+      required: false
+      description: Opaque identifier, URL-encoded and decoded exactly once. Duplicate or unknown query parameters are rejected.
+      schema:
+        $ref: "#/components/schemas/DirectorySeasonIdentifier"
+    DirectorySearch:
+      name: query
+      in: query
+      schema: { type: string, maxLength: 100 }
+      description: Nickname or retained former nickname; not an account search.
+    DirectoryGameContext:
+      name: gameId
+      in: query
+      required: false
+      description: Optional same-league game used to report existing registration, including canonical aliases. Bound into the continuation cursor.
+      schema:
+        $ref: "#/components/schemas/DirectoryIdentifier"
+    DirectoryCursor:
+      name: cursor
+      in: query
+      schema: { type: string, minLength: 1, maxLength: 8000 }
+      description: Opaque continuation returned by the same scope and query.
+    DirectoryLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 50, default: 25 }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1128,6 +1974,52 @@ components:
           - 2
           - 3
   responses:
+    OwnedJoinUnavailable:
+      description: Returning-player feature is disabled, directory cutover is incomplete, or linked identities cannot be safely checked. Retry later; do not automatically create a duplicate player.
+      headers:
+        Cache-Control: { schema: { type: string, const: no-store } }
+        Referrer-Policy: { schema: { type: string, const: no-referrer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ConsolidationProposal:
+      description: Private proposal state; no account identifiers or bearer material
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+        Referrer-Policy:
+          schema:
+            type: string
+            const: no-referrer
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [proposal]
+            properties:
+              proposal:
+                $ref: '#/components/schemas/PlayerConsolidation'
+    PlayerDirectoryUnavailable:
+      description: Identity migration is paused or the reviewed directory cutover is not yet active. No new mutation is committed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: The request could not be completed because of an internal or storage failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PlayerLinkingUnavailable:
+      description: New player linking is temporarily disabled (code claims_unavailable). This response does not commit a new claim or invitation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     BadRequest:
       description: Request body or headers failed validation
       content:
@@ -1183,6 +2075,281 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    OwnedJoinTeam:
+      type: [object, 'null']
+      additionalProperties: false
+      required: [teamId, name, color]
+      properties:
+        teamId: { type: string, enum: [red, blue, yellow] }
+        name: { type: string, minLength: 1 }
+        color: { type: [string, 'null'], minLength: 1 }
+    OwnedJoinPage:
+      type: object
+      additionalProperties: false
+      required: [accountId, gameId, leagueId, players, cursor, complete]
+      description: complete is true if and only if cursor is null. Empty players with a cursor is not an empty account result.
+      properties:
+        accountId: { type: string, minLength: 1, maxLength: 2048 }
+        gameId: { type: string, minLength: 1 }
+        leagueId: { type: string, minLength: 1 }
+        cursor: { type: [string, 'null'], minLength: 1, maxLength: 8000 }
+        complete: { type: boolean }
+        players:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [playerId, nickname, registeredPlayerId, team, seasons]
+            properties:
+              playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+              nickname: { type: string, minLength: 1 }
+              registeredPlayerId:
+                anyOf:
+                  - $ref: '#/components/schemas/DirectoryIdentifier'
+                  - type: 'null'
+                description: Original identity registered in this game, or null when not registered.
+              team: { $ref: '#/components/schemas/OwnedJoinTeam' }
+              seasons:
+                type: array
+                maxItems: 3
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [seasonId, name]
+                  properties:
+                    seasonId: { type: string, minLength: 1 }
+                    name: { type: string, minLength: 1 }
+    OwnedJoinResult:
+      type: object
+      additionalProperties: false
+      required: [accountId, gameId, joinCode, player, link, alreadyRegistered, team]
+      description: link.gameId equals gameId and link.playerId equals player.playerId. Receipt replay retains the original outcome snapshot.
+      properties:
+        accountId: { type: string, minLength: 1, maxLength: 2048 }
+        gameId: { type: string, minLength: 1 }
+        joinCode: { type: string, minLength: 1 }
+        alreadyRegistered: { type: boolean }
+        team: { $ref: '#/components/schemas/OwnedJoinTeam' }
+        player:
+          type: object
+          additionalProperties: false
+          required: [playerId, nickname]
+          properties:
+            playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+            nickname: { type: string, minLength: 1 }
+        link:
+          type: object
+          additionalProperties: false
+          required: [gameId, playerId]
+          properties:
+            gameId: { type: string, minLength: 1 }
+            playerId: { $ref: '#/components/schemas/DirectoryIdentifier' }
+    ConsolidationPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [proposalId, leagueId, playerIds, retainedPlayerId, nickname, expectedAccountId]
+      properties:
+        expectedAccountId:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        proposalId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{20,64}$'
+        leagueId:
+          type: string
+          minLength: 1
+        playerIds:
+          type: array
+          minItems: 2
+          maxItems: 20
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        retainedPlayerId:
+          type: string
+          minLength: 1
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 80
+    PlayerConsolidation:
+      type: object
+      additionalProperties: false
+      required: [proposalId, leagueId, leagueName, retainedPlayerId, nickname, status, profiles, blockers, requiresApproval, canApprove, canCommit]
+      properties:
+        proposalId:
+          type: string
+        leagueId:
+          type: string
+        leagueName:
+          type: string
+        retainedPlayerId:
+          type: string
+        nickname:
+          type: string
+        status:
+          type: string
+          enum: [pending_approval, ready, declined, committed, stale]
+        profiles:
+          type: array
+          minItems: 2
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [playerId, nickname, claimed, games]
+            properties:
+              playerId:
+                type: string
+              nickname:
+                type: string
+              claimed:
+                type: boolean
+              games:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [gameId, kickoffAt]
+                  properties:
+                    gameId:
+                      type: string
+                    kickoffAt:
+                      type: string
+                      format: date-time
+        blockers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+        requiresApproval:
+          type: boolean
+        canApprove:
+          type: boolean
+        canCommit:
+          type: boolean
+    DirectoryIdentifier:
+      type: string
+      minLength: 1
+      description: Non-blank, well-formed Unicode opaque identifier. Its constructed PLAYER#, LEAGUE# or GAME# partition key must fit 2048 UTF-8 bytes. Game registration and team assignment additionally require their constructed sort keys to fit 1024 bytes. No character-count cap narrows historical reads.
+    DirectorySeasonIdentifier:
+      type: string
+      minLength: 1
+      description: Non-blank, well-formed Unicode opaque identifier whose constructed SEASON# sort key fits 1024 UTF-8 bytes.
+    CreateLeaguePlayerRequest:
+      type: object
+      additionalProperties: false
+      required: [playerId, nickname]
+      properties:
+        playerId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+        nickname: { type: string, minLength: 1, maxLength: 80 }
+    CreateLeaguePlayerResponse:
+      type: object
+      additionalProperties: false
+      required: [player]
+      properties:
+        player:
+          type: object
+          additionalProperties: false
+          required: [playerId, nickname]
+          properties:
+            playerId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+            nickname: { type: string, minLength: 1 }
+    LeaguePlayerPage:
+      type: object
+      additionalProperties: false
+      required: [players, cursor]
+      properties:
+        cursor: { type: [string, "null"] }
+        searchIncomplete: { type: boolean, description: The bounded physical search ended before filling a matching page. Follow cursor to continue. }
+        players:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [playerId, nickname, claimed, seasons, hasMoreSeasons]
+            properties:
+              playerId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+              nickname: { type: string, minLength: 1 }
+              claimed: { type: boolean }
+              inGame: { type: boolean, description: Present only when gameId is supplied; registration is checked across the complete canonical alias group. }
+              hasMoreSeasons: { type: boolean }
+              gamesIncomplete: { type: boolean, description: Additional game context may exist outside this bounded sample. }
+              games:
+                type: array
+                maxItems: 20
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [gameId, kickoffAt, seasonId]
+                  properties:
+                    gameId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+                    kickoffAt: { type: string, format: date-time }
+                    seasonId: { $ref: "#/components/schemas/DirectorySeasonIdentifier" }
+                    seasonName: { type: string }
+              seasons:
+                type: array
+                maxItems: 3
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [seasonId, name]
+                  properties:
+                    seasonId: { $ref: "#/components/schemas/DirectorySeasonIdentifier" }
+                    name: { type: string, minLength: 1 }
+    AddExistingLeaguePlayerRequest:
+      type: object
+      additionalProperties: false
+      required: [playerId]
+      properties:
+        playerId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+        teamId: { type: [string, "null"], enum: [red, blue, yellow, null] }
+        allowFinished: { type: boolean }
+    AddExistingLeaguePlayerResponse:
+      type: object
+      additionalProperties: false
+      required: [registration]
+      properties:
+        registration:
+          type: object
+          additionalProperties: false
+          required: [playerId, alreadyInGame]
+          properties:
+            playerId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+            alreadyInGame: { type: boolean }
+    LeaguePlayerInvitationResponse:
+      type: object
+      required: [invitation]
+      properties:
+        invitation:
+          oneOf:
+            - { $ref: "#/components/schemas/PlayerInvitationMetadata" }
+            - { type: "null" }
+    CreatedLeaguePlayerInvitationResponse:
+      type: object
+      required: [invitation]
+      properties:
+        invitation: { $ref: "#/components/schemas/PlayerProofMetadata" }
+    RevokeLeaguePlayerInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [proofId]
+      properties:
+        proofId: { type: string, pattern: "^[a-zA-Z0-9_-]{20,64}$" }
+    RevokeLeaguePlayerInvitationResponse:
+      type: object
+      required: [revoked]
+      properties:
+        revoked: { type: boolean, const: true }
     CreateLeagueRequest:
       type: object
       additionalProperties: false
@@ -1298,9 +2465,91 @@ components:
           type: string
           minLength: 1
           maxLength: 80
+        claimProof:
+          $ref: "#/components/schemas/PlayerProofCreation"
     ClaimPlayerRequest:
       type: object
       additionalProperties: false
+      properties:
+        proof:
+          type: object
+          additionalProperties: false
+          required: [proofId, secret, confirmation]
+          properties:
+            proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+            secret: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+            confirmation: { type: string, maxLength: 100 }
+    PlayerProofCreation:
+      type: object
+      additionalProperties: false
+      required: [proofId, verifier]
+      properties:
+        proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+        verifier: { type: string, pattern: "^[a-f0-9]{64}$" }
+    PlayerProofCredential:
+      type: object
+      additionalProperties: false
+      required: [proofId, secret]
+      properties:
+        proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+        secret: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+    CreatePlayerInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [proofId, verifier]
+      properties:
+        proofId: { type: string, pattern: "^[A-Za-z0-9_-]{20,64}$" }
+        verifier: { type: string, pattern: "^[a-f0-9]{64}$" }
+        replacesProofId:
+          type: [string, "null"]
+          pattern: "^[A-Za-z0-9_-]{20,64}$"
+    PlayerProofMetadata:
+      type: object
+      required: [proofId, expiresAt]
+      properties:
+        proofId: { type: string }
+        expiresAt: { type: string, format: date-time }
+    PlayerInvitationMetadata:
+      allOf:
+        - $ref: "#/components/schemas/PlayerProofMetadata"
+        - type: object
+          required: [state]
+          properties:
+            state: { type: string, enum: [pending, revoked, consumed, expired] }
+    PlayerProofPreviewResponse:
+      type: object
+      required: [preview, account]
+      properties:
+        account:
+          type: object
+          required: [id, email]
+          properties:
+            id:
+              type: string
+              minLength: 1
+              maxLength: 1024
+              description: Current authenticated account identity, used only to detect a changed account in retained browser proof state. Not an ownership proof or permission grant; never render it in the player card.
+            email: { type: string }
+        preview:
+          allOf:
+            - $ref: "#/components/schemas/PlayerProofMetadata"
+            - type: object
+              required: [player, league, alreadyLinked, confirmation]
+              properties:
+                player:
+                  type: object
+                  required: [playerId, nickname]
+                  properties:
+                    playerId: { type: string }
+                    nickname: { type: string }
+                league:
+                  type: object
+                  required: [leagueId, name]
+                  properties:
+                    leagueId: { type: string }
+                    name: { type: string }
+                alreadyLinked: { type: boolean }
+                confirmation: { type: string }
     GrantLeagueAccessRequest:
       type: object
       additionalProperties: false
@@ -1832,6 +3081,9 @@ components:
         - createdAt
         - updatedAt
       properties:
+        canonicalPlayerId:
+          type: string
+          description: Present only in organiser game-player reads for a retained identity different from the historical playerId. Use only for league profile invitations; game actions keep playerId.
         playerId:
           type: string
         nickname:
@@ -1869,7 +3121,7 @@ components:
         - claim
       properties:
         player:
-          $ref: "#/components/schemas/Player"
+          $ref: "#/components/schemas/PublicPlayer"
         claim:
           type: object
           required:
@@ -1877,6 +3129,7 @@ components:
           properties:
             claimedByCurrentUser:
               type: boolean
+              const: true
     LeagueAccessGrant:
       type: object
       required:
@@ -2028,12 +3281,18 @@ components:
         - joinCode
         - player
       properties:
+        linkingUnavailable:
+          type: boolean
+          enum: [true]
+          description: Registration succeeded while profile linking was disabled. Retry preserves this outcome and does not issue proof retrospectively.
         gameId:
           type: string
         joinCode:
           type: string
         player:
-          $ref: "#/components/schemas/Player"
+          $ref: "#/components/schemas/PublicPlayer"
+        claimProof:
+          $ref: "#/components/schemas/PlayerProofMetadata"
     RosterAssignment:
       type: object
       required:
@@ -2347,4 +3606,8 @@ components:
         error:
           type: string
         message:
+          type: string
+        code:
+          type: string
+        detail:
           type: string
