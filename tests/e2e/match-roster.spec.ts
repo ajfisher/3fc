@@ -797,7 +797,7 @@ for (const [width, playersUnavailable] of [[320, false], [390, true]] as const) 
     if (!playersUnavailable) {
       await expect(page.locator("#roster-retry-status")).toContainText("Some player details are still unavailable");
       await page.getByRole("button", { name: "Refresh player details", exact: true }).click();
-      await expect(page.locator("#roster-retry")).toBeHidden();
+      await expect(page.locator("#roster-retry")).toBeVisible();
       await expect(displayedPlayers(page).locator('[data-ui="player-initial"][data-link-state="unknown"]')).toHaveCount(0);
     }
     await expect(targetRow).toBeVisible();

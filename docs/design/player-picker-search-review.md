@@ -27,6 +27,7 @@ is a bot comment; AJ explicitly accepted verified exact-head no-findings outcome
 | Complete roster browser suite and final shared geometry | 46 match-roster tests plus 20 shared-layout cases PASS, group36450 exit0; peak829152KiB; remaining[] | PASS |
 | Final affected app, lint/typecheck and review policy | Group36649 exit0; peak2438800KiB; remaining[] | PASS |
 | Final roster/refresh browser regressions, including bounded multi-batch recovery | All60 cases PASS in group38970; exit0 and remaining[] | PASS |
+| Cached claim refresh, malformed base/targeted responses and same-role polling between batches | Focused group45752 PASS; full interaction file, lint/typecheck, full tests, contracts, build, backlog and all60 roster/refresh browser cases PASS in group45859; exit0, peak2575728KiB, remaining[] | PASS |
 | Exact-head Codex review, CI and deployed QA | Final remote evidence will be recorded in PR body/checks after publication | PENDING |
 
 Included acceptance work also covers in-flight abort and scoped reopen, and
@@ -66,6 +67,18 @@ The private metadata loader is explicitly loadPlayerDetails, no longer coupled t
 an input element or its generation. The public complete roster remains the
 authority for Unassigned. Retry loading players refreshes both independent reads;
 a failed refresh retains available names, not stale permission proof.
+
+Exact-head review findings3995639596/3995639598 also require revalidation of
+already-known identities and malformed-success rejection. Admins retain Refresh
+player details after successful reads. Bounded nickname-batch progress is separate
+from the authority cache, survives ordinary same-role polling, and resets on
+actual authority invalidation or roster/name changes. Completed cycles start
+fresh. Both base and targeted payloads validate their array and identity/name
+entries before publication; any failed or malformed read clears verified data.
+The regression covers a changed claimed player beyond the first20, three51-player
+batch variants (success,503, malformed200), and normal polling between batches.
+Independent engineering review caught and resolved a per-poll progress reset;
+independent UX and QA reviews found no remaining material implementation defect.
 
 Picker reads use AbortController plus generation checks because cancellation alone
 cannot prevent late responses. Query/scope changes clear obsolete results before

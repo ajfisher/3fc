@@ -3324,6 +3324,7 @@
     let playersReadVersion = 0;
     let rosterDataLoaded = false;
     let playerDetailsState = "loading";
+    let playerDetailsRecovery = { key: "", searched: new Set() };
     let playerNicknameGeneration = 0;
     const knownRosterPlayers = new Map();
     const verifiedAdminPlayers = new Map();
@@ -5487,9 +5488,7 @@
         const failed = playerDetailsState === "unavailable" || (playerDetailsState !== "loading" && rosterUnassignedPlayers === null);
         // Public polling can discover a new player without private enrichment.
         // Keep an explicit recovery path without giving other roles admin reads.
-        const missingDetails = currentLeagueRole === "admin" && playerDetailsState === "loaded"
-          && [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].some(player => !verifiedAdminPlayers.has(player.playerId));
-        retry.hidden = !isLeagueOperator() || !(failed || missingDetails);
+        retry.hidden = !isLeagueOperator() || !(failed || currentLeagueRole === "admin");
         retry.textContent = failed ? "Retry loading players" : "Refresh player details";
       }
       const focus = captureRosterFocus();
@@ -5609,25 +5608,47 @@
       try {
         const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players`, { method: "GET" });
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
-        // Explicit recovery extends the same authority-scoped verified cache.
-        // Otherwise each bounded retry would revisit the first missing batch.
-        // Authority invalidation and failed reads still clear this cache below.
+        const readPlayers = value => {
+          if (!value || !Array.isArray(value.players)) throw new Error("Invalid player details");
+          const ids = new Set();
+          for (const player of value.players) {
+            if (!player || typeof player.playerId !== "string" || !player.playerId.trim()
+              || typeof player.nickname !== "string" || !player.nickname.trim() || ids.has(player.playerId)) {
+              throw new Error("Invalid player details");
+            }
+            ids.add(player.playerId);
+          }
+          return value.players;
+        };
+        const fresh = readPlayers(payload);
+        const freshIds = new Set(fresh.map(player => player.playerId));
         const details = new Map(resolveMissing && role === "admin" ? verifiedAdminPlayers : []);
-        for (const player of Array.isArray(payload?.players) ? payload.players : []) details.set(player.playerId, player);
+        for (const player of fresh) details.set(player.playerId, player);
         if (resolveMissing && role === "admin") {
           // The existing private endpoint caps each nickname search at 20.
           // Explicit recovery may target known roster names, never account IDs
           // or a wider directory. Bound the work and keep unresolved rows neutral.
-          const searched = new Set();
-          for (const entry of [...(rosterUnassignedPlayers ?? []), ...rosterAssignments]) {
-            if (details.has(entry.playerId)) continue;
-            const nickname = (entry.nickname ?? entry.player?.nickname ?? knownRosterPlayers.get(entry.playerId)?.nickname ?? "").trim();
-            if (!nickname || searched.has(nickname) || searched.size >= 20) continue;
-            searched.add(nickname);
+          const entries = [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].map(entry => ({
+            playerId: entry.playerId,
+            nickname: (entry.nickname ?? entry.player?.nickname ?? knownRosterPlayers.get(entry.playerId)?.nickname ?? "").trim(),
+          }));
+          const key = JSON.stringify([role, entries.sort((a, b) => a.playerId.localeCompare(b.playerId))]);
+          const names = [...new Set(entries.filter(entry => !freshIds.has(entry.playerId)).map(entry => entry.nickname).filter(Boolean))];
+          const searched = new Set(playerDetailsRecovery.key === key ? playerDetailsRecovery.searched : []);
+          if (names.every(name => searched.has(name))) searched.clear();
+          // Progress is separate from cached authority: later refresh cycles must
+          // revalidate already-known players whose ownership may have changed.
+          for (const nickname of names.filter(name => !searched.has(name)).slice(0, 20)) {
             const extra = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players?${new URLSearchParams({ search: nickname })}`, { method: "GET" });
             if (version !== playersReadVersion || role !== currentLeagueRole) return;
-            for (const player of Array.isArray(extra?.players) ? extra.players : []) details.set(player.playerId, player);
+            const refreshed = readPlayers(extra);
+            for (const entry of entries) {
+              if (entry.nickname === nickname && !freshIds.has(entry.playerId)) details.delete(entry.playerId);
+            }
+            for (const player of refreshed) details.set(player.playerId, player);
+            searched.add(nickname);
           }
+          playerDetailsRecovery = { key, searched };
         }
         rosterPlayers = [...details.values()];
         verifiedAdminPlayers.clear();
@@ -5647,6 +5668,7 @@
       } catch {
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
         playerDetailsState = "unavailable";
+        playerDetailsRecovery = { key: "", searched: new Set() };
         verifiedAdminPlayers.clear();
         // Retain usable names after a refresh fails, but never retain authority.
         const retained = new Map(rosterPlayers.map(player => [player.playerId, player]));
@@ -5772,6 +5794,7 @@
       ++playersReadVersion;
       knownRosterPlayers.clear();
       verifiedAdminPlayers.clear();
+      playerDetailsRecovery = { key: "", searched: new Set() };
       rosterPlayers = [];
       playerDetailsState = "loading";
       finishedRosterEditing = false;
@@ -6348,7 +6371,8 @@
           const [rosterResult] = await Promise.allSettled([loadRosterSetup({ updateStatus: false }), loadPlayerDetails({ resolveMissing: true })]);
           status.textContent = rosterResult.status === "rejected" ? "Players couldn’t be refreshed. The available list is still shown."
             : rosterUnassignedPlayers === null || playerDetailsState === "unavailable"
-            ? "Some player details are still unavailable. Retry loading players." : !button.hidden
+            ? "Some player details are still unavailable. Retry loading players." : currentLeagueRole === "admin"
+              && [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].some(player => !verifiedAdminPlayers.has(player.playerId))
             ? "Some player details are still unavailable. The available list is still shown." : "Players updated.";
           if (rosterResult.status === "rejected") button.hidden = false;
         } catch {
@@ -6838,6 +6862,7 @@
       ++playersReadVersion;
       knownRosterPlayers.clear();
       verifiedAdminPlayers.clear();
+      playerDetailsRecovery = { key: "", searched: new Set() };
       rosterPlayers = [];
       playerDetailsState = "unavailable";
       finishedRosterEditing = false;

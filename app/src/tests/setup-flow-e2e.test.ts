@@ -6519,12 +6519,15 @@ test("match roster keeps assigned identities beyond the candidate cap without in
   assert.equal(refresh.hidden, false);
   dispatchClick(refresh); await flushAsync();
   assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "linked");
-  assert.equal(refresh.hidden, true);
+  assert.equal(refresh.hidden, false, "existing claim status remains refreshable");
+  apiState.players.get("player-extra-22")!.claimedByUserId = null;
+  dispatchClick(refresh); await flushAsync();
+  assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "unlinked", "cached identities beyond the first page are revalidated");
   assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 26);
   assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /claimed@example.com/);
 });
 
-for (const failSecondBatch of [false, true]) test(`metadata recovery advances bounded batches and clears failed authority ${failSecondBatch}`, async () => {
+for (const failSecondBatch of [false, true, "malformed"]) test(`metadata recovery advances bounded batches and clears failed authority ${failSecondBatch}`, async () => {
   const apiState = createMockApiState();
   const gameId = "metadata-batches";
   seedGoalScoringGame(apiState, { gameId, role: "admin" });
@@ -6535,13 +6538,15 @@ for (const failSecondBatch of [false, true]) test(`metadata recovery advances bo
     apiState.roster.set(`${gameId}:${playerId}`, { gameId, playerId, teamId: "yellow", createdAt: timestamp, updatedAt: timestamp });
   }
   const base = createMockFetch(apiState), names: string[] = [];
+  const timers = createManualTimers(); let authorityReads = 0;
   let fail = false;
-  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#teams`, scriptFile: "setup-flow.js", apiState,
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#teams`, scriptFile: "setup-flow.js", apiState, timers,
     fetch: async (input, init = {}) => {
       const url = new URL(String(input));
+      if (/\/v1\/leagues\/[^/]+$/.test(url.pathname)) authorityReads++;
       if (url.pathname === `/v1/games/${gameId}/players` && url.searchParams.has("search")) {
         names.push(url.searchParams.get("search")!);
-        if (fail) return createJsonResponse(503, { error: "unavailable" });
+        if (fail) return failSecondBatch === "malformed" ? createJsonResponse(200, { players: null }) : createJsonResponse(503, { error: "unavailable" });
       }
       return base(input, init);
     } });
@@ -6561,12 +6566,32 @@ for (const failSecondBatch of [false, true]) test(`metadata recovery advances bo
       assert.equal(unknown(), 11);
     }
     const before = names.length;
+    const beforePoll = authorityReads;
+    await advanceUx10({ ...page, timers }, 15000);
+    assert(authorityReads > beforePoll, "same-role authority polling occurs between recovery batches");
     dispatchClick(retry); await flushAsync();
     assert.equal(names.length - before, 11);
     assert(names.slice(before).every(name => !first.has(name)), "later retries advance to the remaining names");
-    assert.equal(unknown(), 0); assert.equal(retry.hidden, true);
+    assert.equal(unknown(), 0); assert.equal(retry.hidden, false);
     assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 51);
     assert.equal(page.document.getElementById("roster-retry-status")!.textContent, "Players updated.");
+  } finally { page.dom.window.close(); }
+});
+
+for (const malformed of [{ players: null }, { players: [{ playerId: "missing-name" }] }]) test(`metadata recovery rejects malformed successful responses ${JSON.stringify(malformed)}`, async () => {
+  const apiState = createMockApiState(), gameId = "metadata-malformed";
+  seedGoalScoringGame(apiState, { gameId, role: "admin" });
+  const base = createMockFetch(apiState); let fail = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#teams`, scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => fail && new URL(String(input)).pathname.endsWith("/players")
+      ? createJsonResponse(200, malformed) : base(input, init) });
+  try {
+    assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 0);
+    fail = true; dispatchClick(page.document.getElementById("roster-retry")!); await flushAsync();
+    assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 3);
+    assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 3);
+    assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+    assert.equal(page.document.getElementById("roster-retry")!.textContent, "Retry loading players");
   } finally { page.dom.window.close(); }
 });
 
@@ -6958,7 +6983,7 @@ test("match roster retry restores private actions without filtering the complete
     assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 3);
     const retry = page.document.getElementById("roster-retry")!; assert.equal(retry.hidden, false);
     fail = false; dispatchClick(retry); await flushAsync();
-    assert.equal(reads, 2); assert.equal(retry.hidden, true);
+    assert.equal(reads, 2); assert.equal(retry.hidden, false);
     assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 3);
     assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 0);
     assert.equal(page.document.getElementById("roster-retry-status")?.textContent, "Players updated.");
@@ -15086,7 +15111,7 @@ test("ux10 a scheduled external join appears at the 15-second public roster refr
     const enriched = ux09PlayerRows(page, '[data-ui="roster-player"]', receipt.player.playerId)[0];
     assert.equal(enriched.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"), "unlinked");
     assert(enriched.querySelector('[data-action="toggle-action-menu"]'), "new player account actions are restored");
-    assert.equal(refreshDetails.hidden, true);
+    assert.equal(refreshDetails.hidden, false);
     assert.equal(search.value, "Cy"); assert.equal(nickname.value, "Keep this local draft");
     assert.deepEqual(observerRequests.filter(request => request.method !== "GET"), [], "a read refresh never joins, claims or assigns for the observing page");
   } finally { closeUx10Page(page); }
