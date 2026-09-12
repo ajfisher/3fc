@@ -2016,6 +2016,7 @@ async function bootPage(input: {
     });
   }
 
+  window.eval(readFileSync(resolve(process.cwd(), "dist/ui/player-presentation-browser.js"), "utf8"));
   window.eval(readUiScript("player-proof.js"));
   window.eval(readUiScript("returning-player.js"));
   if (input.scriptFile === "setup-flow.js" && ["join", "invite"].includes(window.document.getElementById("setup-flow-root")?.getAttribute("data-page") ?? "")) {
@@ -3904,6 +3905,25 @@ for (const surface of ["league", "season"] as const) {
       });
       try {
         assert.equal(parentReads, 1);
+        if (surface === "season") {
+          const link = page.document.getElementById("season-players-link");
+          const permitted = role === "admin" || role === "scorekeeper";
+          assert.equal(Boolean(link), permitted);
+          if (permitted) {
+            assert.equal(link?.textContent?.trim(), "Manage players");
+            assert.equal(link?.getAttribute("href"), "/leagues/three-sided-football-club?seasonId=autumn-cup#players");
+            assert.equal(link?.parentElement?.id, "season-actions");
+            const menu = link?.closest('[data-ui="action-menu"]');
+            assert.equal(menu?.hasAttribute("hidden"), false);
+            const trigger = menu?.querySelector('button[data-action="toggle-action-menu"]');
+            assert(trigger instanceof page.window.HTMLButtonElement);
+            const icon = trigger.querySelector('[data-icon]');
+            assert(icon);
+            icon.dispatchEvent(new page.window.MouseEvent("click", { bubbles: true }));
+            assert.equal(trigger.getAttribute("aria-expanded"), "true");
+            assert.equal(page.document.querySelector('[data-action="delete-season"]')?.hasAttribute("disabled"), role !== "admin");
+          }
+        }
         const toggle = page.document.querySelector(`[data-action="toggle-create-${surface === "league" ? "season" : "game"}"]`);
         assert(toggle instanceof page.window.HTMLButtonElement);
         assert.equal(toggle.disabled, role !== "admin");
@@ -3985,7 +4005,8 @@ test("league player creation suggests verified possible matches without merging 
     await new Promise(resolve => setTimeout(resolve, 220)); await flushAsync();
     const suggestions = page.document.getElementById("league-player-name-matches")!;
     assert.equal(suggestions.hidden, false);
-    assert.match(suggestions.textContent ?? "", /Kesh <script> · Autumn Cup/);
+    assert.equal(suggestions.querySelector('[data-ui="player-identity"] strong')?.textContent, "Kesh <script>");
+    assert.equal(suggestions.querySelector('[data-ui="player-context"]')?.textContent, "Autumn Cup");
     assert.equal(suggestions.querySelector("script"), null);
     assert.equal(queries.at(-1)?.get("query"), "Kesh");
     assert.equal(queries.at(-1)?.get("limit"), "10");
@@ -6441,12 +6462,35 @@ for (const actor of ["admin", "scorekeeper", "viewer", "claimed-viewer", "unknow
     assert.equal(page.document.querySelector('[data-testid="game-mode-run-tab"]')?.hasAttribute("hidden"), !operator);
     assert.equal(page.document.querySelector('[data-action="toggle-game-edit"]')?.hasAttribute("hidden"), actor !== "admin");
     assert.equal(page.document.querySelectorAll('[data-action="toggle-transfer"]').length, operator ? 3 : 0);
-    assert.equal(page.document.querySelectorAll('[data-ui="claim-badge"]').length, actor === "admin" ? 3 : 0);
+    assert.equal(page.document.querySelectorAll('[data-ui="player-initial"]:not([data-link-state="unknown"])').length, actor === "admin" ? 3 : 0);
     assert.equal(page.document.getElementById("game-league-link")?.textContent, "Three Sided Football Club");
     assert.equal(page.document.getElementById("game-season-link")?.textContent, "Autumn Cup");
     assert.equal(page.document.getElementById("game-mode-structure")?.hidden, false);
   });
 }
+
+test("malformed administrator claim metadata stays unknown rather than asserting unlinked", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "game-malformed-claim", role: "admin" });
+  const original = createMockFetch(apiState);
+  const fetch: ReturnType<typeof createMockFetch> = async (input, init = {}) => {
+    const path = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url).pathname;
+    const response = await original(input, init);
+    if (path === "/v1/games/game-malformed-claim/players") {
+      const body = await response.json() as { players: Array<Record<string, unknown>> };
+      body.players.forEach(player => { player.access = {}; });
+      return createJsonResponse(200, body);
+    }
+    return response;
+  };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-malformed-claim" }), url: "http://localhost:3000/games/game-malformed-claim", scriptFile: "setup-flow.js", apiState, fetch });
+  const rows = page.document.querySelectorAll('[data-ui="roster-member"]');
+  assert.equal(rows.length, 3);
+  for (const row of rows) {
+    assert.equal(row.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"), "unknown");
+    assert.doesNotMatch(row.textContent ?? "", /(?:Not linked|Linked) to an account/);
+  }
+});
 
 test("match roster keeps assigned identities beyond the candidate cap without inventing claim state", async () => {
   const apiState = createMockApiState();
@@ -6471,7 +6515,7 @@ test("match roster keeps assigned identities beyond the candidate cap without in
   search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
   await flushAsync();
   assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 1);
-  assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="claim-badge"]')?.getAttribute("aria-label"), "Claimed");
+  assert.equal(page.document.querySelector('[data-player-id="player-extra-22"] [data-ui="player-initial"]')?.getAttribute("data-link-state"), "linked");
   assert.doesNotMatch(page.document.getElementById("roster-teams")?.innerHTML ?? "", /claimed@example.com/);
   search.value = "";
   search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
@@ -7273,7 +7317,7 @@ test("game roster transfer remains open after assignment failure", async () => {
     '[data-ui="roster-team"][data-team-id="red"] [data-action="toggle-transfer"][data-player-id="player-ari"]',
   );
   const unclaimedBadge = page.document.querySelector(
-    '[data-ui="claim-badge"][data-state="unclaimed"]',
+    '[data-ui="player-initial"][data-link-state="unlinked"]',
   );
   const malformedRedRoster = page.document.querySelector(
     '[data-ui="roster-team"][data-team-id="red"]',
@@ -7300,8 +7344,8 @@ test("game roster transfer remains open after assignment failure", async () => {
   assert.match(validBlueRoster.getAttribute("style") ?? "", /--team-color: #2364d2/);
   assert.equal(spacedIdTransfer.getAttribute("aria-controls"), "transfer-options-player%20one");
   assert(page.document.getElementById("transfer-options-player%20one"));
-  assert.equal(unclaimedBadge.getAttribute("aria-label"), "Not claimed");
-  assert(unclaimedBadge.querySelector('[data-icon="circle-user-round"]'));
+  assert.equal(unclaimedBadge.getAttribute("aria-hidden"), "true");
+  assert.equal(unclaimedBadge.querySelector('[data-ui="player-linked-tick"]'), null);
   assert.doesNotMatch(page.document.getElementById("player-pool")?.textContent ?? "", /Not claimed/);
   dispatchClick(transferButton);
   let menu = page.document.getElementById("transfer-options-player-ari");
@@ -7843,8 +7887,8 @@ test("game page lets league admins promote claimed players to scorers", async ()
   assert.doesNotMatch(playerPool.textContent ?? "", /delegate@3fc\.football/);
   assert.doesNotMatch(playerPool.innerHTML, /delegate@3fc\.football|data-user-id/);
   assert.equal(
-    assignedPlayer.querySelector('[data-ui="claim-badge"][data-state="claimed"]')?.getAttribute("aria-label"),
-    "Claimed",
+    assignedPlayer.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"),
+    "linked",
   );
 
   let confirmation = "";
@@ -7923,7 +7967,8 @@ for (const focusDestination of ["surface", "outside"] as const) {
         ["scorekeeper", "Make scorer", false], ["admin", "Make co-organiser", false],
       ], "pending cleanup updates real disabled state in both the open and outside-focus cases");
       const ariRow = page.document.querySelector('[data-ui="roster-member"][data-player-id="player-ari"]'); assert(ariRow);
-      assert.equal(ariRow.querySelector('[data-ui="claim-badge"]')?.getAttribute("aria-label"), "Scorer");
+      assert.equal(ariRow.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"), "linked");
+      assert.match(ariRow.textContent ?? "", /Scorer/);
       assert.equal(ariRow.querySelector('[data-action="grant-player-access"][data-role="scorekeeper"]'), null);
       assert.equal(ariRow.querySelector('[data-action="grant-player-access"][data-role="admin"]')?.textContent?.trim(), "Make co-organiser");
       assert.equal(writes, 1);

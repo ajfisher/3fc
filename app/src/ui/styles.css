@@ -978,6 +978,91 @@ body {
   gap: 0.55rem;
 }
 
+/* Shared identity geometry; containers own borders, never avatar placement. */
+[data-ui="player-row"] {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-rows: minmax(3rem, auto);
+  align-items: center;
+  gap: 0.25rem 8px;
+  min-width: 0;
+  width: 100%;
+  > [data-ui="player-identity"] { display: contents; }
+  > button, > [data-ui="player-actions"] { grid-column: 3; grid-row: 1; }
+  > button { min-height: 44px; max-width: 96px; padding-inline: 8px; white-space: normal; overflow-wrap: anywhere; }
+}
+[data-ui="player-identity"] {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-rows: minmax(3rem, auto);
+  align-items: center;
+  gap: 0.25rem 8px;
+  min-width: 0;
+}
+[data-ui="player-initial"] {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--control-line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-strong);
+  font-weight: 800;
+  line-height: 1;
+  &[data-link-state="linked"] { background: var(--accent-soft); color: var(--accent-strong); }
+}
+[data-ui="player-linked-tick"] {
+  position: absolute;
+  right: -0.125rem;
+  bottom: -0.125rem;
+  display: inline-flex;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent-strong);
+  [data-ui="icon"] { width: 0.875rem; height: 0.875rem; }
+}
+[data-ui="player-identity-copy"] {
+  display: contents;
+  strong { grid-column: 2; grid-row: 1; min-width: 0; overflow-wrap: anywhere; }
+}
+[data-ui="player-context"] { grid-column: 2; font-size: 0.875rem; color: var(--ink-soft); overflow-wrap: anywhere; }
+[data-ui="player-actions"] {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 3rem;
+  &:empty { display: none; }
+  button { min-width: 44px; min-height: 44px; }
+  :is([data-ui="icon-button"], [data-ui="transfer-toggle"]) { width: 44px; height: 44px; padding: 8px; }
+  [data-ui="icon"] { width: 20px; height: 20px; }
+}
+
+:is([data-ui="directory-list"], [data-ui="roster-player"], [data-ui="roster-member"], [data-ui="consolidation-editor"]) {
+  container-type: inline-size;
+}
+/* Preserve readable names when enlarged text leaves too little inline room. */
+@container (max-width: 14em) {
+  [data-ui="player-row"] {
+    grid-template-columns: 40px minmax(0, 1fr);
+    > button, > [data-ui="player-actions"] { grid-column: 2; grid-row: 3; justify-self: end; }
+  }
+  [data-ui="consolidation-selection-table"] {
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    tr { display: grid; grid-template-columns: 44px minmax(0, 1fr); }
+    td:first-child { grid-column: 1; grid-row: 1; }
+    td:nth-child(2) { grid-column: 2; grid-row: 1; }
+    td:nth-child(3) { grid-column: 2; grid-row: 2; }
+    td:nth-child(3)::before { content: "Games"; display: block; font-weight: 700; }
+  }
+}
+
 [data-ui="player-card"] {
   display: flex;
   align-items: center;
@@ -988,26 +1073,6 @@ body {
   padding: 0.5rem 0.6rem;
   margin: 0;
 
-  [data-ui="avatar"] {
-    width: 2.2rem;
-    height: 2.2rem;
-    border-radius: 999px;
-    border: 1px solid var(--team-neutral);
-    background: var(--accent-soft);
-    color: var(--accent-strong);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    margin: 0;
-
-    img {
-      width: 100%;
-      height: 100%;
-      border-radius: 999px;
-      object-fit: cover;
-    }
-  }
 
   h3 {
     margin: 0;
@@ -1245,23 +1310,6 @@ body {
   padding-top: 0;
 }
 
-[data-ui="claim-badge"] {
-  display: inline-flex;
-  width: 1.55rem;
-  height: 1.55rem;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--ink-soft);
-  background: var(--canvas);
-
-  &[data-state="claimed"] {
-    border-color: var(--success-line);
-    color: var(--accent-strong);
-    background: var(--accent-soft);
-  }
-}
 
 [data-ui="access-actions"] {
   display: flex;
@@ -1803,54 +1851,20 @@ body {
 [data-ui="roster-player"] {
   position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.55rem;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  padding: 0.55rem 2.65rem 0.55rem 0.55rem;
+  padding: 0.75rem;
 
-  [data-ui="avatar"] {
-    grid-row: span 2;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 999px;
-    border: 1px solid var(--team-neutral);
-    background: var(--accent-soft);
-    color: var(--accent-strong);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    margin: 0;
-  }
 
-  [data-ui="roster-player-main"] {
-    display: grid;
-    gap: 0.1rem;
-    min-width: 0;
-
-    strong,
-    span {
-      overflow-wrap: anywhere;
-    }
-
-    span {
-      color: var(--ink-soft);
-      font-size: 0.875rem;
-    }
-  }
 
   [data-ui="row-action-buttons"] {
     grid-column: 1 / -1;
   }
 
-  [data-ui="claim-badge"] {
-    position: absolute;
-    top: 0.55rem;
-    right: 0.55rem;
-  }
 }
 
 [data-ui="roster-grid"] {
@@ -1920,7 +1934,7 @@ body {
 
 [data-ui="roster-member"] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 0.35rem;
   padding: 0.45rem;
@@ -2658,15 +2672,6 @@ body {
 
   > li { padding: 1rem 0; border-bottom: 1px solid var(--line); }
   p { margin: 0.3rem 0 0; color: var(--ink-soft); overflow-wrap: anywhere; }
-  [data-ui="claim-badge"] { position: static; flex: 0 0 auto; }
-}
-
-[data-ui="directory-player-heading"] {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  strong { min-width: 0; overflow-wrap: anywhere; }
 }
 
 #league-player-search-form {
@@ -2697,9 +2702,10 @@ body {
   th:first-child, td:first-child { width: 44px; padding-inline: 0; }
   label { display: flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; }
   input[type="checkbox"] { width: 1.25rem; height: 1.25rem; }
-  td:nth-child(2) > span { display: block; margin-top: 0.25rem; color: var(--ink-soft); font-size: 0.875rem; }
   p, ul { margin: 0.25rem 0; }
   ul { padding-left: 1rem; }
+  [data-ui="player-identity"] { grid-template-columns: 32px minmax(0, 1fr); column-gap: 8px; }
+  [data-ui="player-initial"] { width: 32px; height: 32px; }
 }
 @media (min-width: 768px) {
   #league-player-search-form { grid-template-columns: minmax(12rem, 1fr) minmax(14rem, 2fr) auto; }
@@ -2903,18 +2909,7 @@ body {
     border-bottom: 1px solid var(--line);
     border-radius: 0;
 
-    [data-ui="claim-badge"] { position: static; flex: 0 0 auto; }
 
-    [data-ui="avatar"] {
-      width: max-content;
-      min-width: 2rem;
-      height: auto;
-      min-height: 2rem;
-      aspect-ratio: 1;
-      padding: 0.25rem;
-
-      span { white-space: nowrap; overflow-wrap: normal; line-height: 1.2; }
-    }
   }
 
   [data-ui="roster-team"] {
@@ -2934,7 +2929,6 @@ body {
     gap: 0.5rem 0.75rem;
 
     &:last-child { border-bottom: 0; }
-    > [data-ui="roster-member-main"] { min-width: 0; align-self: center; }
     strong { font-weight: 650; overflow-wrap: break-word; }
   }
 

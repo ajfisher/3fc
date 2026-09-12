@@ -544,8 +544,9 @@ test("component showcase covers long names, three teams, match statuses and all 
   assert.match(html, /type="radio" name="fixture-team" value="red" checked/);
   assert.match(html, /type="radio" name="fixture-team" value="blue" \/>/);
   assert.match(html, /type="radio" name="fixture-team" value="yellow" disabled/);
-  assert.match(html, /data-state="unclaimed" role="img" aria-label="Not claimed"/);
-  assert.match(html, /data-state="claimed" role="img" aria-label="Claimed"/);
+  assert.match(html, /data-link-state="unlinked"/);
+  assert.match(html, /data-link-state="linked"/);
+  assert.doesNotMatch(html, /data-ui="claim-badge"/);
   for (const status of ["scheduled", "live", "finished"]) {
     assert.match(html, new RegExp(`data-ui="status-chip" data-status="${status}"`));
   }
@@ -931,7 +932,7 @@ test("entry pages load the same versioned return validator once before their con
       try {
         const document = dom.window.document;
         const scripts = [...document.querySelectorAll('script')].map(script => script.getAttribute('src'));
-        assert.deepEqual(scripts, ["/ui/player-proof.js?v=entry-fixture", "/ui/player-consolidation.js?v=entry-fixture", "/ui/auth-flow.js?v=entry-fixture",
+        assert.deepEqual(scripts, ["/ui/player-presentation-browser.js?v=entry-fixture", "/ui/player-proof.js?v=entry-fixture", "/ui/player-consolidation.js?v=entry-fixture", "/ui/auth-flow.js?v=entry-fixture",
           ...(document.getElementById("returning-player") ? ["/ui/returning-player.js?v=entry-fixture"] : []), "/ui/setup-flow.js?v=entry-fixture"]);
         assert(document.body.getAttribute('data-return-target-patterns'));
         assert.equal(document.querySelectorAll('[data-ui="hero"]').length, 1);

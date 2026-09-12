@@ -69,6 +69,12 @@ const UI_RETURNING_PLAYER_SCRIPT = [
   resolve(process.cwd(), "app/src/ui/returning-player.js"),
 ].map((path) => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find((value) => value !== null);
 if (!UI_RETURNING_PLAYER_SCRIPT) throw new Error("Returning player script is missing.");
+const UI_PLAYER_PRESENTATION_SCRIPT = [
+  fileURLToPath(new URL("./ui/player-presentation-browser.js", import.meta.url)),
+  resolve(process.cwd(), "dist/ui/player-presentation-browser.js"),
+  resolve(process.cwd(), "app/dist/ui/player-presentation-browser.js"),
+].map(path => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find(value => value !== null);
+if (!UI_PLAYER_PRESENTATION_SCRIPT) throw new Error("Player presentation script is missing. Build the app first.");
 
 function loadUiStylesheet(): string {
   for (const stylesheetPath of UI_STYLESHEET_PATHS) {
@@ -215,6 +221,10 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     }
     if (method === "GET" && route === "/ui/player-proof.js") {
       sendJavascript(response, securityHeaders, 200, UI_PLAYER_PROOF_SCRIPT!);
+      return;
+    }
+    if (method === "GET" && route === "/ui/player-presentation-browser.js") {
+      sendJavascript(response, securityHeaders, 200, UI_PLAYER_PRESENTATION_SCRIPT!);
       return;
     }
     if (method === "GET" && (route === "/combine-players" || route === "/combine-players/")) {

@@ -37,6 +37,7 @@ function renderAssetPath(path: string): string {
 function renderStylesheetLink(): string {
   return `<link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/styles.css"))}" />
   <link rel="stylesheet" href="${escapeHtml(renderAssetPath("/ui/icons.css"))}" />
+  <script src="${escapeHtml(renderAssetPath("/ui/player-presentation-browser.js"))}" defer></script>
   <script src="${escapeHtml(renderAssetPath("/ui/player-proof.js"))}" defer></script>
   <script src="${escapeHtml(renderAssetPath("/ui/player-consolidation.js"))}" defer></script>`;
 }
@@ -699,8 +700,8 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
     "Players and team choices",
     "Try choosing a team. Yellow is unavailable in this example.",
     `<div data-ui="player-grid" data-testid="player-grid">${[
-      renderPlayerCard({ name: "Ari Fisher", subtitle: "Red Team" }, "player-ari"),
-      renderPlayerCard({ name: "Mina G", subtitle: "Blue Team" }, "player-mina"),
+      renderPlayerCard({ name: "Ari Fisher", subtitle: "Red Team", linkState: "linked" }, "player-ari"),
+      renderPlayerCard({ name: "Mina G", subtitle: "Blue Team", linkState: "unlinked" }, "player-mina"),
       renderPlayerCard({ name: "Alexandra van der Westhuizen-Smith", subtitle: "Yellow Team" }, "player-chris"),
     ].join("")}</div>
     <fieldset data-ui="field">
@@ -711,10 +712,7 @@ export function renderComponentShowcasePage(apiBaseUrl: string): string {
         <label data-ui="team-chip" style="--team-color: #d6ad22"><input type="radio" name="fixture-team" value="yellow" disabled /><span data-ui="team-chip-visual"><span>Yellow</span></span></label>
       </div>
     </fieldset>
-    <div data-ui="button-row" data-testid="fixture-claim-badges">
-      <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderIcon("circle-user-round")}</span>
-      <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="Claimed" title="Claimed">${renderIcon("user-round-check")}</span>
-    </div>`,
+    `,
     "",
     "panel-player",
   );

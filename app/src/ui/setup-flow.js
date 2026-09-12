@@ -2184,7 +2184,9 @@
         const list = document.createElement("ul");
         for (const player of result.players) {
           const row = document.createElement("li");
-          row.textContent = [player.nickname, ...player.seasons.map(season => season.name)].join(" · "); list.append(row);
+          row.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+            linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
+            context: player.seasons.map(season => season.name).join(" · ") }); list.append(row);
         }
         panel.append(list);
         const button = document.createElement("button"); button.type = "button";
@@ -2275,28 +2277,19 @@
         directoryPlayers.set(player.playerId, player);
         const row = document.createElement("li");
         row.setAttribute("data-player-id", player.playerId);
-        const label = document.createElement("strong"); label.textContent = player.nickname;
-        const badge = document.createElement("span");
-        badge.setAttribute("data-ui", "claim-badge");
-        badge.setAttribute("data-state", player.claimed ? "claimed" : "unclaimed");
-        badge.title = player.claimed ? "Linked to an account" : "Not linked to an account";
-        badge.innerHTML = renderClientIcon(player.claimed ? "user-round-check" : "circle-user-round");
-        const accessible = document.createElement("span"); accessible.className = "sr-only"; accessible.textContent = badge.title;
-        badge.append(accessible);
-        const heading = document.createElement("div"); heading.setAttribute("data-ui", "directory-player-heading"); heading.append(label, badge);
+        const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
+        heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
+          context: (player.seasons ?? []).map(season => season.name).join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "") });
         if (canManage() && !player.claimed) {
           const actions = document.createElement("div");
+          actions.setAttribute("data-ui", "player-actions");
           actions.innerHTML = renderClientActionMenu(`directory-player-${encodeURIComponent(player.playerId)}`, player.nickname,
             renderClientIconButton({ icon: "user-round-plus", label: `Invite ${player.nickname} to link their profile`, text: "Invite to link profile",
               attributes: { "data-action": "invite-player-profile", "data-player-id": player.playerId } }));
           heading.append(actions);
         }
         row.append(heading);
-        const names = (Array.isArray(player.seasons) ? player.seasons : []).filter(season => typeof season.name === "string").map(season => season.name);
-        if (names.length) {
-          const context = document.createElement("p"); context.textContent = names.join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "");
-          row.append(context);
-        }
         list.append(row);
       }
       consolidation?.refreshRows();
@@ -2980,9 +2973,13 @@
             let playersLink = document.getElementById("season-players-link");
             if (!playersLink) {
               playersLink = document.createElement("a"); playersLink.id = "season-players-link";
-              playersLink.setAttribute("data-ui", "button"); playersLink.setAttribute("data-variant", "secondary");
-              playersLink.innerHTML = `${renderClientIcon("users")}<span>Players</span>`;
-              document.querySelector('[data-ui="header-actions"]')?.prepend(playersLink);
+              playersLink.setAttribute("data-ui", "row-action");
+              playersLink.innerHTML = `${renderClientIcon("users")}<span>Manage players</span>`;
+              const surface = document.getElementById("season-actions");
+              const menu = surface?.closest('[data-ui="action-menu"]');
+              menu?.removeAttribute("data-management-only");
+              if (menu) menu.hidden = false;
+              surface?.prepend(playersLink);
             }
             playersLink.href = `/leagues/${encodeURIComponent(leagueId)}?${new URLSearchParams({ seasonId })}#players`;
           }
@@ -5343,21 +5340,29 @@
       const open = openTransferPlayerId === playerId;
       const disabled = finishedRosterControlsLocked() || rosterMutationPending || playerCreatePending ? " disabled" : "";
       const nickname = playerNickname(playerId);
-      const alternatives = rosterTeams
-        .filter((team) => team.teamId !== currentTeamId)
-        .map((team) => assignmentButton(playerId, team, null, "transfer"))
-        .join("");
-
       return `<div data-ui="transfer-control">
         <button data-ui="transfer-toggle" type="button" data-action="toggle-transfer" ${playerIdentityAttribute(playerId)} aria-label="${escapeHtml(
           `Transfer ${nickname}`,
         )}" aria-expanded="${
           open ? "true" : "false"
         }" aria-controls="${menuId}" title="${escapeHtml(`Transfer ${nickname}`)}"${disabled}>${renderClientIcon("arrow-left-right")}</button>
-        <div id="${menuId}" data-ui="transfer-menu"${open ? "" : " hidden"}>
-          ${alternatives}
-        </div>
       </div>`;
+    }
+
+    function transferOptions(playerId, currentTeamId) {
+      return `<div id="${transferMenuId(playerId)}" data-ui="transfer-menu"${openTransferPlayerId === playerId ? "" : " hidden"}>
+        ${rosterTeams.filter(team => team.teamId !== currentTeamId).map(team => assignmentButton(playerId, team, null, "transfer")).join("")}
+      </div>`;
+    }
+
+    function renderRosterIdentity(player) {
+      const verified = currentLeagueRole === "admin" ? verifiedAdminPlayers.get(player?.playerId) : null;
+      // The admin DTO intentionally omits access for unclaimed profiles. The
+      // public/scorer DTO also omits it, so only verified admin reads establish
+      // that state. An explicitly malformed access object establishes nothing.
+      const linkState = !verified ? "unknown" : !Object.hasOwn(verified, "access") ? "unlinked"
+        : typeof verified.access?.userId === "string" && verified.access.userId.trim() ? "linked" : "unknown";
+      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState });
     }
 
     function playerAccessPanel(player) {
@@ -5369,9 +5374,6 @@
       if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
         const invitePath = invitationPath("", player.playerId);
         return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
-          <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
-            "circle-user-round",
-          )}</span>
           ${invitePath ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
             `<button data-ui="row-action" type="button" data-action="invite-player-profile" ${playerIdentityAttribute(player.playerId)}>Invite to link profile</button>`,
             { "data-player-management": "" }) : '<small>Profile linking is unavailable for this player. Ask for help.</small>'}
@@ -5388,9 +5390,7 @@
         </div>`, { "data-player-management": "" });
 
       return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
-        <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="${escapeHtml(
-          roleLabel,
-        )}" title="${escapeHtml(roleLabel)}">${renderClientIcon("user-round-check")}</span>
+        ${role === "admin" || role === "scorekeeper" ? `<span class="sr-only">${escapeHtml(roleLabel)}</span>` : ""}
         ${actions}
       </div>`;
     }
@@ -5427,10 +5427,9 @@
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
           return `<article data-ui="roster-player" ${playerIdentityAttribute(player.playerId)}>
-            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
-            <div data-ui="roster-player-main">
-              <strong>${escapeHtml(player.nickname)}</strong>
-              ${playerAccessPanel(player)}
+            <div data-ui="player-row">
+              ${renderRosterIdentity(player)}
+              <div data-ui="player-actions">${playerAccessPanel(player)}</div>
             </div>
             <div data-ui="row-action-buttons">
               ${canManageRoster() ? assignmentButtons(player.playerId, assignment?.teamId ?? null) : ""}
@@ -5460,8 +5459,10 @@
               const player = assignment.player ?? playerById(assignment.playerId);
               const nickname = player?.nickname ?? assignment.playerId;
               return `<li data-ui="roster-member" ${playerIdentityAttribute(assignment.playerId)}>
-                <div data-ui="roster-member-main"><strong>${escapeHtml(nickname)}</strong>${playerAccessPanel(playerById(assignment.playerId) ?? player)}</div>
-                ${canManageRoster() ? transferControl(assignment.playerId, team.teamId) : ""}
+                <div data-ui="player-row">${renderRosterIdentity({ ...player, playerId: assignment.playerId, nickname })}
+                  <div data-ui="player-actions">${playerAccessPanel(playerById(assignment.playerId) ?? player)}${canManageRoster() ? transferControl(assignment.playerId, team.teamId) : ""}</div>
+                </div>
+                ${canManageRoster() ? transferOptions(assignment.playerId, team.teamId) : ""}
               </li>`;
             })
             .join("");
@@ -5804,8 +5805,10 @@
       pickerList.replaceChildren();
       for (const player of pickerPlayers.values()) {
         const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
-        const heading = document.createElement("div"); heading.setAttribute("data-ui", "directory-player-heading");
-        const name = document.createElement("strong"); name.textContent = player.nickname; heading.append(name);
+        const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
+        heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
+          context: (player.seasons ?? []).map(season => season.name).join(" · ") });
         const button = document.createElement("button"); button.type = "button"; button.setAttribute("data-ui", "button");
         button.setAttribute("data-variant", "secondary"); button.setAttribute("data-action", "add-existing-player");
         button.setAttribute("data-player-id", player.playerId);
@@ -5815,7 +5818,8 @@
         const context = document.createElement("p");
         context.id = `game-player-picker-context-${pickerList.children.length}`;
         button.setAttribute("aria-describedby", context.id);
-        context.textContent = [...(player.seasons ?? []).map(season => season.name), player.claimed ? "Linked to an account" : "Not linked to an account"].join(" · ");
+        context.className = "sr-only";
+        context.textContent = (player.seasons ?? []).map(season => season.name).join(" · ");
         row.append(context); pickerList.append(row);
       }
       pickerTeam.disabled = locked || Boolean(existingPlayerAttempt);
