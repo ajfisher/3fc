@@ -46,9 +46,12 @@ scoring changes, production migration/release, merging or weakening review polic
 
 | Invariant | How this PR affects it | Why it remains valid | Evidence |
 | --- | --- | --- | --- |
-| INV-001 | League ACL discovery includes later database pages | Existing exact-user ACL predicate remains; no account data returned | Other-user and malformed-record regression |
-| INV-003 | Read-only scan traversal rejects cursor cycles | No mutation or retry identity changes | Cycle regression and existing complete API suite |
-| INV-009 | No authentication/session changes | Only repository read completeness changes | Full API/app regression |
+| INV-004 | Changes traversal of existing league/ACL entities in the documented single table | Existing PK/SK addressing and ownership remain unchanged; every scan continuation is traversed before resolving league metadata | Multi-page ACL discovery regression and complete repository suite |
+
+INV-001 (public email privacy), INV-002 (protected writes), INV-003 (idempotent
+writes), INV-005–008 (scoring/statistics) and INV-009 (httpOnly cookies/security
+headers) are unaffected by this read-only access-pattern change. Their canonical
+definitions are not reinterpreted as discovery or cursor guarantees.
 
 ### Architecture or decision record
 
@@ -94,6 +97,10 @@ The full-suite run preceded that test-only addition; runtime code is unchanged.
 Design review confirmed no partial-list
 or false-empty-state regression; filtering, names and navigation remain unchanged.
 Reviewers did not launch tests. Full validation was serialized under4GiB.
+Codex comments3994606897 and3994617151 corrected the packet's invariant mapping
+and the missing structured githubIssue172 metadata. The packet now uses canonical
+INV-004 access-pattern semantics, marks unrelated invariants unaffected, and the
+canonical backlog/export link PLAYER-06 to the actual issue.
 
 ### Unresolved blocking findings
 

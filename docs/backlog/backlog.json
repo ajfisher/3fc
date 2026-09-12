@@ -3059,6 +3059,7 @@
         "asOf": "2026-09-12",
         "wave": "reusable-players-follow-up",
         "status": "planned",
+        "githubIssue": 172,
         "notes": [
           "GitHub issue #172 tracks this P1 follow-up. Raised from PR #171 Codex finding 3994297839: complete league discovery remains O(table size), risking the existing 10-second request timeout as unrelated data grows.",
           "The current pagination repair restores completeness but is not an indexed discovery implementation or a performance guarantee.",
