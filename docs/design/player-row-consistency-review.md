@@ -32,7 +32,10 @@ coverage, not a claim of physical-device or browser-menu zoom acceptance.
 
 ## Scope boundaries
 
-No backend domain, API, DynamoDB, Terraform, migration, authentication or scoring
+Included: Shared player presentation, season contextual navigation, frontend
+asset delivery, regression tests and backlog reconciliation.
+
+Excluded: Backend domain, API, DynamoDB, Terraform, migration, authentication or scoring
 rule changes. The local app server/static exporter only deliver the new frontend
 bundle. No additional production dependency. Search controls and registration
 behaviour are deliberately unchanged until the next PR. No real QA data mutations.
@@ -114,7 +117,7 @@ Exact-head remote review, CI and deployed QA remain outstanding.
 Treating absent access as always unknown was rejected only for verified admin DTOs:
 api/src/server.ts toGamePlayerForLeagueRole defines absence as its unclaimed shape.
 All other missing-data cases stay unknown. Independent reviewers accepted this
-source-backed distinction.
+source-backed distinction. Evidence: `api/src/server.ts`, `toGamePlayerForLeagueRole`.
 
 ## Human judgement
 
@@ -122,19 +125,19 @@ source-backed distinction.
 
 ### Decision requiring judgement
 
-None beyond AJ's final review and merge authority.
+None.
 
 ### Options considered
 
-Separate per-page layouts were rejected in favour of the requested shared pattern.
+None.
 
 ### Reason selected
 
-One renderer and component-owned CSS prevent repeated alignment/status drift.
+None.
 
 ### Reversal cost
 
-Frontend rebuild and deployment only; no durable-state changes.
+None.
 
 ## Review focus
 
