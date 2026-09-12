@@ -6489,6 +6489,8 @@ test("malformed administrator claim metadata stays unknown rather than asserting
   for (const row of rows) {
     assert.equal(row.querySelector('[data-ui="player-initial"]')?.getAttribute("data-link-state"), "unknown");
     assert.doesNotMatch(row.textContent ?? "", /(?:Not linked|Linked) to an account/);
+    assert.equal(row.querySelector('[data-action="invite-player-profile"]'), null);
+    assert.doesNotMatch(row.textContent ?? "", /Invite to link profile/);
   }
 });
 

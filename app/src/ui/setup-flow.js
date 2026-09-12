@@ -5355,14 +5355,17 @@
       </div>`;
     }
 
-    function renderRosterIdentity(player) {
+    function rosterLinkState(player) {
       const verified = currentLeagueRole === "admin" ? verifiedAdminPlayers.get(player?.playerId) : null;
       // The admin DTO intentionally omits access for unclaimed profiles. The
       // public/scorer DTO also omits it, so only verified admin reads establish
       // that state. An explicitly malformed access object establishes nothing.
-      const linkState = !verified ? "unknown" : !Object.hasOwn(verified, "access") ? "unlinked"
+      return !verified ? "unknown" : !Object.hasOwn(verified, "access") ? "unlinked"
         : typeof verified.access?.userId === "string" && verified.access.userId.trim() ? "linked" : "unknown";
-      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState });
+    }
+
+    function renderRosterIdentity(player) {
+      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState: rosterLinkState(player) });
     }
 
     function playerAccessPanel(player) {
@@ -5371,7 +5374,9 @@
       }
 
       const access = verifiedAdminPlayers.get(player.playerId)?.access;
-      if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
+      const linkState = rosterLinkState(player);
+      if (linkState === "unknown") return "";
+      if (linkState === "unlinked") {
         const invitePath = invitationPath("", player.playerId);
         return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
           ${invitePath ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,

@@ -108,6 +108,23 @@ names, long-name primary-row alignment and malformed access falsely asserting
 unlinked. Browser checks exposed a narrow enlarged-text name column; the explicit
 responsive fallback fixes it and all20geometry cases pass.
 
+GitHub Codex review5185673510 on fa0ae0d found a further valid P2: the action
+panel still treated malformed access as unclaimed even though the initial was
+neutral. Both now use rosterLinkState; unknown offers no account-link action.
+The malformed-metadata controller regression also rejects invitation copy/actions.
+The focused regression and complete506interaction tests pass in group16201
+(exit0, peak2820016KiB, remaining[]). Complete app, lint/typecheck and57review-gate
+tests pass after the fix in group16715 (exit0, peak2402928KiB, remaining[]).
+Independent privacy/engineering re-review confirms the action/identity classifier
+is now shared and the malformed branch returns before any account action.
+
+Historical code-head fa0ae0d passed CI34679098624 and QA34679099872. Signed-in,
+read-only QA verified the shared asset version, no legacy claim badges, linked
+and unlinked rows, and Manage players navigation retaining the season filter.
+Directory geometry at320/390/430/768/1280px had zero name/initial/action centre
+delta and no overflow. These historical runs do not substitute for the corrected
+head's refreshed remote evidence, which is tracked in the PR body and checks.
+
 ### Unresolved blocking findings
 
 Exact-head remote review, CI and deployed QA remain outstanding.
