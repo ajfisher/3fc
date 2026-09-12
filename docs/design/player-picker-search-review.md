@@ -24,6 +24,8 @@ is a bot comment; AJ explicitly accepted verified exact-head no-findings outcome
 | Full lint/typecheck, API/app tests, contracts, build, backlog and review gate | Final fix group29584 exit0; 648 app, 14 operations and 57 review-gate tests; peak2488400KiB; remaining[] | PASS |
 | Computed player/form alignment and spacing across phone/tablet/desktop and enlarged text | check-player-ui: 20 browser cases PASS, group27331; subsequent independent fixture failure fixed below | PASS |
 | Two-client refresh, complete roster, picker draft/caret, transfer focus and scoring recovery | match-refresh.spec.ts: 14 browser tests PASS including 21st-player metadata recovery, group29584 exit0; remaining[] | PASS |
+| Complete roster browser suite and final shared geometry | 46 match-roster tests plus 20 shared-layout cases PASS, group36450 exit0; peak829152KiB; remaining[] | PASS |
+| Final affected app, lint/typecheck and review policy | Group36649 exit0; peak2438800KiB; remaining[] | PASS |
 | Exact-head Codex review, CI and deployed QA | Final remote evidence will be recorded in PR body/checks after publication | PENDING |
 
 Included acceptance work also covers in-flight abort and scoped reopen, and
@@ -113,6 +115,15 @@ This is bounded best-effort enrichment: unusually large missing-name sets or mor
 than 20 identical nicknames may remain unresolved under the existing API. Such
 rows remain neutral and feedback stays partial, never falsely complete. Guaranteed
 complete private enrichment would require separately reviewed API pagination.
+
+GitHub comment3995586590 on24435e5 identified stale removed-search assumptions in
+the large-roster browser file. All such scenarios now exercise complete rosters,
+explicit metadata recovery and the search-first/new-player disclosures. All46
+cases pass. The geometry checks found a shared selector overriding transfer width;
+the transfer component again owns its48px target. The enlarged-initial assertion
+now checks actual initial text rather than the intentionally attached tick, and
+asserts that initials exist instead of vacuously querying the removed avatar hook.
+The full20-case shared-layout browser matrix also passes after the sizing fix.
 
 Initial failures were stale fixtures expecting the removed Search this game input,
 immediate empty directory loading, or nickname focus on normal picker reopen.
