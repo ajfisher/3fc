@@ -134,9 +134,9 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `PLAYER-06` | reusable-players-follow-up | planned | [#172](https://github.com/ajfisher/3fc/issues/172) | - |
 | `PLAYER-07` | reusable-players-follow-up | in-progress | [#173](https://github.com/ajfisher/3fc/issues/173) | codex/player-combine-usability |
 | `PLAYER-08` | reusable-players-follow-up | in-progress | [#175](https://github.com/ajfisher/3fc/issues/175) | codex/player-production-preflight |
-| `UX-11` | frontend-consistency | in-progress | [#177](https://github.com/ajfisher/3fc/issues/177) | codex/ux-player-row-consistency |
-| `UX-12` | frontend-consistency | in-progress | [#178](https://github.com/ajfisher/3fc/issues/178) | codex/ux-player-picker-search |
-| `UX-13` | frontend-consistency | planned | [#179](https://github.com/ajfisher/3fc/issues/179) | codex/ux-scoreboard-consistency |
+| `UX-11` | frontend-consistency | review-ready | [#177](https://github.com/ajfisher/3fc/issues/177) | codex/ux-player-row-consistency |
+| `UX-12` | frontend-consistency | review-ready | [#178](https://github.com/ajfisher/3fc/issues/178) | codex/ux-player-picker-search |
+| `UX-13` | frontend-consistency | in-progress | [#179](https://github.com/ajfisher/3fc/issues/179) | codex/ux-scoreboard-consistency |
 
 ## Global Test Scenarios
 

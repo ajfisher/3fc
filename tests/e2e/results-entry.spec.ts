@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expectTeamTotalAlignment } from "./team-total-assertions.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -333,6 +334,7 @@ async function expectGeometry(page: Page) {
 }
 
 async function expectResultLabelsFit(page: Page) {
+  await expectTeamTotalAlignment(page, '[data-ui="result-team"]');
   const measurements = await page.locator('[data-ui="result-team-list"]').evaluate(list => {
     const labels = [...list.querySelectorAll("dt")].map(label => {
       const range = document.createRange();
