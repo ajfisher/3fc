@@ -1,6 +1,12 @@
 name: Deploy Production
 
 on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact full main commit approved by AJ for this production release
+        required: true
+        type: string
   push:
     branches:
       - main
@@ -29,6 +35,7 @@ env:
 jobs:
   deploy:
     name: deploy-prod
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -41,8 +48,27 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Verify approved production head
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/deploy/verify-production-head.mjs
+
       - name: Install dependencies
         run: npm ci
+
+      # A merged SHA may differ from every reviewed PR head. A manual release
+      # validates that exact checkout, without treating dispatch as a CI bypass.
+      - name: Validate manual production release
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          npm run lint
+          npm test
+          npm run contracts:check
+
+      - name: Recheck production head before credentials
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/deploy/verify-production-head.mjs
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -54,7 +80,10 @@ jobs:
       - name: Deploy API health service to production
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
-        run: make deploy ENV=prod SERVICE=api-health
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          node scripts/deploy/verify-production-head.mjs
+          make deploy ENV=prod SERVICE=api-health
 
       - name: Deploy API core service to production
         env:
@@ -63,6 +92,16 @@ jobs:
           PLAYER_CONSOLIDATION_ENABLED: ${{ vars.PLAYER_CONSOLIDATION_ENABLED || 'false' }}
           PLAYER_RETURNING_JOIN_ENABLED: ${{ vars.PLAYER_RETURNING_JOIN_ENABLED || 'false' }}
         run: make deploy ENV=prod SERVICE=api-core
+
+      # Preserve the successfully fingerprinted core even if site publication
+      # subsequently fails. This artifact alone is not full-release acceptance.
+      - name: Preserve production API deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prod-api-core-deployment-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/deploy/prod/api-core-deploy-manifest.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Smoke test deployed production core endpoints
         run: |
@@ -310,6 +349,17 @@ jobs:
         env:
           EXPECTED_HEAD: ${{ github.sha }}
         run: bash scripts/deploy/verify-api-core.sh prod "$EXPECTED_HEAD"
+
+      - name: Preserve completed production release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prod-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/deploy/prod/api-core-deploy-manifest.json
+            out/deploy/prod/api-health-deploy-manifest.json
+            out/deploy/prod/site-deploy-manifest.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Write deployment summary
         run: |

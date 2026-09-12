@@ -364,7 +364,8 @@
         "PLAYER-04",
         "PLAYER-05",
         "PLAYER-06",
-        "PLAYER-07"
+        "PLAYER-07",
+        "PLAYER-08"
       ]
     }
   ],
@@ -3098,6 +3099,22 @@
       "testScenarios": ["Logical pagination boundaries, cursor cycles, stale revisions, late matches and cross-league cursor rejection.", "Current/deleted/rescheduled game context, alias groups, bounded enrichment and partial context.", "Sequential combinations, Back/Cancel, retained-name changes, approval, uncertain retry and failed post-commit refresh.", "320/390/430px, keyboard checkbox/focus, long names, light/dark and 200% zoom."],
       "reviewRequirements": ["Independent UI/UX, frontend, engineering and QA review; architecture/security review of directory contract and read boundaries.", "Serialized resource-controlled tests, current-head Codex review, isolated QA evidence and review gate; no merge authority."],
       "delivery": {"asOf": "2026-09-12", "wave": "reusable-players-follow-up", "status": "in-progress", "githubIssue": 173, "branch": "codex/player-combine-usability", "notes": ["AJ reported real QA search and successive-combination defects; data verification confirms committed canonical identities with retained historical aliases."]}
+    }
+    ,{
+      "id": "PLAYER-08",
+      "title": "Prepare controlled production rollout for reusable players",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": ["area:ops", "area:infra", "area:qa", "type:chore", "milestone:PLAYER", "priority:P1"],
+      "dependsOn": ["PLAYER-04", "PLAYER-07"],
+      "summary": "Make the final merged player stack deliberately deployable with retained migration provenance and a reviewed production cutover checklist, without executing production changes.",
+      "scope": ["Main-only manual release with explicit full SHA, current-main checks before credentials/deployment and exact-checkout validation.", "Retain a verified core manifest before later site failure and separate final release artifacts.", "Read-only production preflight, temporary deployment hold and safe first-deploy GitHub environment flags.", "Document final-head release, backup/writer checks,905-second drain, paused audited migration and separately authorised activation."],
+      "outOfScope": ["Merging, production deployment, migration, QA-data import or feature activation.", "Terraform resources, IAM expansion or permanent changes to approval policy.", "Fixing the separate account-discovery scalability backlog item."],
+      "acceptanceCriteria": ["Stale, malformed, branch or mismatched manual releases fail before AWS credentials or deployment.", "Manual release validates the exact merged checkout; push releases and non-cancelling serialization remain supported.", "Successful core provenance survives later site failure and cannot be confused with final release acceptance.", "Production workflow hold and future proof/false/false flags are verified without changing the live API/data.", "Runbook distinguishes as-of read-only facts from future release/migration evidence and requires separate AJ execution authority."],
+      "testScenarios": ["Actual local git HEAD/remote-main parsing, stale remote and sanitized CLI errors.", "Workflow guard/check ordering, env-only dispatch inputs, artifact allow-list and immutable naming.", "Existing deployment, migration CLI, API and app regressions, CI/QA and current-head independent review."],
+      "reviewRequirements": ["Independent architecture/security and engineering/QA review of release authority, provenance, partial failure and cutover.", "No production execution as a validation technique; local serialized tests and QA only.", "Current-head Codex assessment, CI, QA and unchanged review gate before delivery."],
+      "delivery": {"asOf": "2026-09-12", "wave": "reusable-players-follow-up", "status": "in-progress", "githubIssue": 175, "branch": "codex/player-production-preflight", "notes": ["AJ requests readiness before merge, not production execution. Production workflow held; safe future feature variables pinned. Read-only production table COUNT0/no continuation and35-day PITR observed; recheck before execution."]}
     }
   ],
   "globalTestScenarios": [
