@@ -11,7 +11,9 @@ test("directory and league invitation HTTP adapters parse real request streams a
   const calls: string[] = [];
   const player = { playerId: "opaque/#% player", nickname: "Kesh", claimed: false, seasons: [], hasMoreSeasons: false };
   const directory: PlayerDirectoryRepository = {
-    async listLeaguePlayers(input) { assert.equal(input.leagueId, "league/#%"); calls.push("list"); return { players: [player], cursor: null }; },
+    async listLeaguePlayers(input) { assert.equal(input.leagueId, "league/#%"); calls.push("list"); return { players: [input.includeGames ? {
+      ...player, games: [{ gameId: "game", kickoffAt: "2026-09-12T00:00:00.000Z", seasonId: "season" }], gamesIncomplete: true,
+    } : player], cursor: null }; },
     async createLeaguePlayer(input) { calls.push("create"); return { ...player, playerId: input.playerId, nickname: input.nickname }; },
     async addExistingLeaguePlayer(input) { calls.push("register"); return { playerId: input.playerId, alreadyInGame: false }; },
   };
@@ -40,6 +42,14 @@ test("directory and league invitation HTTP adapters parse real request streams a
     assert.equal(listing.status, 200); assert.equal(listing.headers.get("cache-control"), "no-store");
     assert.equal(listing.headers.get("referrer-policy"), "no-referrer");
     assert.deepEqual(await listing.json(), { players: [player], cursor: null });
+    const enriched = await fetch(`${base}/v1/league-players?${query}&includeGames=true&limit=10`, { headers });
+    assert.equal(enriched.status, 200);
+    assert.deepEqual((await enriched.json() as { players: unknown[] }).players, [{ ...player,
+      games: [{ gameId: "game", kickoffAt: "2026-09-12T00:00:00.000Z", seasonId: "season" }], gamesIncomplete: true }]);
+    for (const suffix of ["includeGames=yes", "includeGames=true&limit=11", "includeGames=true&includeGames=false"]) {
+      const badContext = await fetch(`${base}/v1/league-players?${query}&${suffix}`, { headers });
+      assert.equal(badContext.status, 400); await badContext.arrayBuffer();
+    }
     const created = await fetch(`${base}/v1/league-players?${query}`, { headers, method: "POST", body: JSON.stringify({ playerId: player.playerId, nickname: "Kesh" }) });
     assert.equal(created.status, 201); await created.arrayBuffer();
     const registration = await fetch(`${base}/v1/game-player-registrations?gameId=game`, { headers, method: "POST", body: JSON.stringify({ playerId: player.playerId }) });
@@ -52,7 +62,7 @@ test("directory and league invitation HTTP adapters parse real request streams a
     assert.equal(invitation.headers.get("cache-control"), "no-store");
     const invalid = await fetch(`${base}/v1/player-proofs/league-invitation?${query}&gameId=foreign`, { headers });
     assert.equal(invalid.status, 400); await invalid.arrayBuffer();
-    assert.deepEqual(calls, ["list", "create", "register", "invitation"]);
+    assert.deepEqual(calls, ["list", "list", "create", "register", "invitation"]);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

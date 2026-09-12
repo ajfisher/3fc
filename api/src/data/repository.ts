@@ -20,6 +20,7 @@ import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-
 import { OwnedPlayerJoinService } from "./owned-player-join.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
   identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
+import { directoryGameSamples, type DirectoryGameSample } from "./player-directory-games.js";
 import {
   createPlayerConfirmation, hashPlayerProofSecret, parsePlayerClaimMode,
   PlayerProofError, PLAYER_PROOF_TTL_MS, PROOF_ID_PATTERN, PROOF_VERIFIER_PATTERN,
@@ -3397,10 +3398,11 @@ export class ThreeFcRepository {
   }
 
   async listLeaguePlayers(input: { leagueId: string; userIds: readonly string[]; seasonId?: string; gameId?: string;
-    query?: string; cursor?: string; limit?: number }): Promise<{
-      players: Array<{ playerId: string; nickname: string; claimed: boolean; seasons: Array<{ seasonId: string; name: string }>; hasMoreSeasons: boolean; inGame?: boolean }>;
-      cursor: string | null;
+    query?: string; cursor?: string; limit?: number; includeGames?: boolean }): Promise<{
+      players: Array<{ playerId: string; nickname: string; claimed: boolean; seasons: Array<{ seasonId: string; name: string }>; hasMoreSeasons: boolean; inGame?: boolean } & Partial<DirectoryGameSample>>;
+      cursor: string | null; searchIncomplete?: boolean;
     }> {
+    if (input.includeGames && input.limit !== undefined && input.limit > 10) throw new PlayerIdentityError("invalid_player_search", 400, "Game details support up to ten players per page.");
     const authority = await this.leaguePlayerAuthority(input.leagueId, input.userIds);
     const game = input.gameId === undefined ? null : await this.getEntity(gamePk(input.gameId), metadataSk(), { consistentRead: true });
     if (input.gameId !== undefined && (!game || game.entityType !== ENTITY_TYPE.game ||
@@ -3410,7 +3412,10 @@ export class ThreeFcRepository {
     if (input.seasonId !== undefined && !await this.getSeasonForLeague(input.leagueId, input.seasonId, { consistentRead: true })) {
       throw new PlayerIdentityError("player_season_unavailable", 404, "This season is no longer available.");
     }
-    const page = await this.identities.directoryPage(input);
+    const page = await this.identities.directoryPage({ ...input, ...(input.includeGames && input.limit === undefined ? { limit: 10 } : {}) });
+    const gameSamples = input.includeGames ? await directoryGameSamples(this.client, this.tableName, {
+      leagueId: input.leagueId, seasonId: input.seasonId, playerIds: page.entries.map(entry => entry.playerId),
+    }) : null;
     const players = [];
     for (const entry of page.entries) {
       const profile = await this.getPlayer(entry.playerId, { consistentRead: true });
@@ -3427,15 +3432,17 @@ export class ThreeFcRepository {
       }
       players.push({ playerId: entry.playerId, nickname: entry.nickname, claimed: profile.claimedByUserId !== null,
         seasons, hasMoreSeasons: input.seasonId === undefined && entry.hasMoreSeasons === true,
+        ...(gameSamples?.samples.get(entry.playerId) ?? {}),
         ...(input.gameId === undefined ? {} : { inGame: entry.inGame === true }) });
     }
     // Do not disclose a page obtained while the caller's league authority was
     // revoked. This read-only transaction checks the exact initial ACL snapshot.
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
       this.buildConditionalCheckFromStoredEntity(authority.league)!, this.buildConditionalCheckFromStoredEntity(authority.acl)!,
+      ...(gameSamples?.checks ?? []),
       ...(game ? [this.buildConditionalCheckFromStoredEntity(game)] : []),
     ] }));
-    return { players, cursor: page.cursor };
+    return { players, cursor: page.cursor, ...(page.searchIncomplete ? { searchIncomplete: true } : {}) };
   }
 
   async createLeaguePlayer(input: { leagueId: string; playerId: string; nickname: string; userIds: readonly string[] }): Promise<{

@@ -233,7 +233,7 @@ export class PlayerIdentityPlanner {
   }
 
   async directoryPage(input: { leagueId: string; seasonId?: string; gameId?: string; query?: string; cursor?: string; limit?: number }): Promise<{
-    entries: Array<PlayerDirectoryEntry & { inGame?: boolean }>; cursor: string | null;
+    entries: Array<PlayerDirectoryEntry & { inGame?: boolean }>; cursor: string | null; searchIncomplete?: boolean;
   }> {
     const { leagueId, seasonId } = input;
     const query = input.query?.trim().toLocaleLowerCase("en-AU") ?? "";
@@ -250,7 +250,7 @@ export class PlayerIdentityPlanner {
         if (input.cursor.length > 8000 || !/^[A-Za-z0-9_-]+$/.test(input.cursor)) throw new Error();
         const cursor = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8"));
         if (cursor.version !== 1 || cursor.leagueId !== leagueId || cursor.seasonId !== (seasonId ?? null) || (cursor.gameId ?? null) !== (input.gameId ?? null) ||
-            cursor.query !== query || !text(cursor.sk) || !cursor.sk.startsWith("PLAYER#")) throw new Error();
+            cursor.query !== query || !text(cursor.sk) || !cursor.sk.startsWith("PLAYER#") || Buffer.byteLength(cursor.sk) > 1024) throw new Error();
         if (cursor.revision !== revision.value.revision || cursor.epoch !== control.value.epoch) {
           throw new PlayerIdentityError("player_search_changed", 409, "The player list changed. Search again.");
         }
@@ -260,16 +260,37 @@ export class PlayerIdentityPlanner {
         throw new PlayerIdentityError("invalid_player_cursor", 400, "Start a new player search.");
       }
     }
+    const entries: Array<PlayerDirectoryEntry & { inGame?: boolean }> = [];
+    let key: Item | undefined = ExclusiveStartKey;
+    let rowsRead = 0, pagesRead = 0;
+    const compare = (left: string, right: string) => Buffer.compare(Buffer.from(left), Buffer.from(right));
+    const validCursor = (candidate: Item) => candidate.pk?.S === pk && text(candidate.sk?.S) &&
+      candidate.sk.S.startsWith("PLAYER#") && Buffer.byteLength(candidate.sk.S) <= 1024;
+    do {
+    const physicalLimit = Math.min(25, 250 - rowsRead);
     const page = await this.client.send(new QueryCommand({ TableName: this.tableName,
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :skPrefix)",
       ExpressionAttributeValues: { ":pk": { S: pk }, ":skPrefix": { S: "PLAYER#" } },
-      ConsistentRead: true, Limit: limit, ExclusiveStartKey })) as QueryCommandOutput;
-    const entries: Array<PlayerDirectoryEntry & { inGame?: boolean }> = [];
-    for (const item of page.Items ?? []) {
-      if (item.pk?.S !== pk || !item.sk?.S?.startsWith("PLAYER#")) return invalid();
-      const raw = parse(item, pk, item.sk.S, "leaguePlayer") as PlayerDirectoryEntry;
+      ConsistentRead: true, Limit: physicalLimit, ExclusiveStartKey: key })) as QueryCommandOutput;
+    pagesRead++;
+    const items = page.Items ?? [];
+    if (!Array.isArray(items) || items.length > physicalLimit) return invalid();
+    rowsRead += items.length;
+    const next = page.LastEvaluatedKey && Object.keys(page.LastEvaluatedKey).length ? page.LastEvaluatedKey : undefined;
+    let previous = key?.sk?.S;
+    // Validate the complete physical page before treating any prefix as a
+    // logical result page. Query order is UTF-8 key order, not locale order.
+    for (const item of items) {
+      if (!validCursor(item) || (previous !== undefined && compare(item.sk!.S!, previous) <= 0)) return invalid();
+      previous = item.sk!.S!;
+    }
+    if (next && (!validCursor(next) || (key && compare(next.sk!.S!, key.sk!.S!) <= 0) ||
+        (previous !== undefined && compare(next.sk!.S!, previous) < 0))) return invalid();
+    key = next;
+    for (const [index, item] of items.entries()) {
+      const raw = parse(item, pk, item.sk!.S!, "leaguePlayer") as PlayerDirectoryEntry;
       const entry = directoryEntry(raw, raw?.playerId);
-      if (item.sk.S !== identityDirectorySk(entry.playerId)) return invalid();
+      if (item.sk!.S! !== identityDirectorySk(entry.playerId)) return invalid();
       if (!entry.active || ![entry.nickname, ...entry.formerNames].some(name => name.toLocaleLowerCase("en-AU").includes(query))) continue;
       const identity = await this.resolve(entry.playerId);
       if (identity.root.value.playerId !== entry.playerId) return invalid();
@@ -285,7 +306,14 @@ export class PlayerIdentityPlanner {
         if (!included) continue;
       }
       entries.push({ ...entry, ...(input.gameId === undefined ? {} : { inGame: await this.registeredOriginal(identity, input.gameId) !== null }) });
+      if (entries.length === limit) {
+        // Never skip unconsumed rows from the fetched page. Re-query strictly
+        // after this processed key, not after the page's continuation key.
+        if (index + 1 < items.length || next) key = { pk: item.pk!, sk: item.sk! };
+        break;
+      }
     }
+    } while (key && entries.length < limit && rowsRead < 250 && pagesRead < 10);
     const [after, afterControl] = await Promise.all([
       this.record(pk, "PLAYER_DIRECTORY", "playerDirectoryRevision", { revision: "legacy" }), this.readControl(),
     ]);
@@ -293,10 +321,9 @@ export class PlayerIdentityPlanner {
     if (after.value.revision !== revision.value.revision || JSON.stringify(afterControl.value) !== JSON.stringify(control.value)) {
       throw new PlayerIdentityError("player_search_changed", 409, "The player list changed. Search again.");
     }
-    const key = page.LastEvaluatedKey;
-    if (key && (key.pk?.S !== pk || !key.sk?.S?.startsWith("PLAYER#"))) return invalid();
     return { entries, cursor: key ? Buffer.from(JSON.stringify({ version: 1, leagueId, seasonId: seasonId ?? null, gameId: input.gameId ?? null,
-      query, revision: revision.value.revision, epoch: control.value.epoch, sk: key.sk!.S })).toString("base64url") : null };
+      query, revision: revision.value.revision, epoch: control.value.epoch, sk: key.sk!.S })).toString("base64url") : null,
+      ...(key && entries.length < limit ? { searchIncomplete: true } : {}) };
   }
 
   writableControl(control: IdentitySnapshot<IdentityControl>): TransactWriteItem {

@@ -236,7 +236,7 @@ paths:
       summary: Search reusable players in an authorised league
       operationId: listLeaguePlayers
       description: >-
-        Requires league organiser or scorer access. Includes claimed and unclaimed players; no account IDs or emails. Optional season scope never imports another league. Pages may be empty with a non-null cursor; continue until cursor is null. Cursors bind league, season, query and directory revision; a changed list returns 409. Verified season names are historical association, not current game counts. Responses are no-store and no-referrer. Available only after reviewed identity cutover.
+        Requires league organiser or scorer access. Includes claimed and unclaimed players; no account IDs or emails. Optional season scope never imports another league. Pages contain matching players rather than one physical storage page. A bounded search may return searchIncomplete with a continuation; only a null cursor proves exhaustion. Cursors bind league, season, query and directory revision; a changed list returns 409. Verified season names are historical association, not current game counts. Optional game context is a bounded sample verified against current game metadata; gamesIncomplete means more context may exist, not that the listed games are the most recent. Responses are no-store and no-referrer. Available only after reviewed identity cutover.
       parameters:
         - $ref: "#/components/parameters/DirectoryLeagueId"
         - $ref: "#/components/parameters/DirectorySeasonId"
@@ -244,6 +244,11 @@ paths:
         - $ref: "#/components/parameters/DirectorySearch"
         - $ref: "#/components/parameters/DirectoryCursor"
         - $ref: "#/components/parameters/DirectoryLimit"
+        - name: includeGames
+          in: query
+          required: false
+          description: Include bounded, verified game dates for profile selection. Results are limited to ten players per page.
+          schema: { type: boolean }
       responses:
         "200":
           description: Search reusable players in an authorised league
@@ -2265,6 +2270,7 @@ components:
       required: [players, cursor]
       properties:
         cursor: { type: [string, "null"] }
+        searchIncomplete: { type: boolean, description: The bounded physical search ended before filling a matching page. Follow cursor to continue. }
         players:
           type: array
           items:
@@ -2277,6 +2283,19 @@ components:
               claimed: { type: boolean }
               inGame: { type: boolean, description: Present only when gameId is supplied; registration is checked across the complete canonical alias group. }
               hasMoreSeasons: { type: boolean }
+              gamesIncomplete: { type: boolean, description: Additional game context may exist outside this bounded sample. }
+              games:
+                type: array
+                maxItems: 20
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [gameId, kickoffAt, seasonId]
+                  properties:
+                    gameId: { $ref: "#/components/schemas/DirectoryIdentifier" }
+                    kickoffAt: { type: string, format: date-time }
+                    seasonId: { $ref: "#/components/schemas/DirectorySeasonIdentifier" }
+                    seasonName: { type: string }
               seasons:
                 type: array
                 maxItems: 3

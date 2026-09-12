@@ -19,7 +19,9 @@ export const addExistingLeaguePlayerSchema = z.object({ playerId: id, teamId: z.
   allowFinished: z.boolean().optional() }).strict();
 export const leaguePlayerPageSchema = z.object({ players: z.array(z.object({ playerId: id, nickname: z.string().min(1),
   claimed: z.boolean(), seasons: z.array(z.object({ seasonId: seasonIdSchema, name: z.string().min(1) }).strict()).max(3), hasMoreSeasons: z.boolean(), inGame: z.boolean().optional(),
-}).strict()), cursor: z.string().nullable() }).strict();
+  games: z.array(z.object({ gameId: gameIdSchema, kickoffAt: z.string().datetime(), seasonId: seasonIdSchema, seasonName: z.string().min(1).optional() }).strict()).max(20).optional(),
+  gamesIncomplete: z.boolean().optional(),
+}).strict()), cursor: z.string().nullable(), searchIncomplete: z.boolean().optional() }).strict();
 
 export function isPlayerDirectoryRoute(method: string, route: string): boolean {
   return ((method === "GET" || method === "POST") && route === "/v1/league-players") ||
@@ -53,16 +55,18 @@ export async function handlePlayerDirectoryRoute(input: {
   const invalid = () => ({ statusCode: 400, payload: { error: "bad_request", message: "Check the player details and try again." } });
   try {
     if (route === "/v1/league-players") {
-      const fields = queryFields(input.rawQueryString ?? "", method === "GET" ? ["leagueId", "seasonId", "gameId", "query", "cursor", "limit"] : ["leagueId"]);
+      const fields = queryFields(input.rawQueryString ?? "", method === "GET" ? ["leagueId", "seasonId", "gameId", "query", "cursor", "limit", "includeGames"] : ["leagueId"]);
       if (!leagueIdSchema.safeParse(fields.leagueId).success) return invalid();
       if (method === "GET") {
         if ((fields.seasonId !== undefined && !seasonIdSchema.safeParse(fields.seasonId).success) ||
             (fields.gameId !== undefined && !gameIdSchema.safeParse(fields.gameId).success) ||
             (fields.query !== undefined && fields.query.length > 100) ||
+            (fields.includeGames !== undefined && !["true", "false"].includes(fields.includeGames)) ||
+            (fields.includeGames === "true" && fields.limit !== undefined && Number(fields.limit) > 10) ||
             (fields.cursor !== undefined && (!fields.cursor || fields.cursor.length > 8000)) ||
             (fields.limit !== undefined && !/^(?:[1-9]|[1-4][0-9]|50)$/.test(fields.limit))) return invalid();
         const page = await repository.listLeaguePlayers({ leagueId: fields.leagueId, userIds, seasonId: fields.seasonId, gameId: fields.gameId,
-          query: fields.query, cursor: fields.cursor, limit: fields.limit === undefined ? undefined : Number(fields.limit) });
+          query: fields.query, cursor: fields.cursor, limit: fields.limit === undefined ? undefined : Number(fields.limit), includeGames: fields.includeGames === "true" });
         return { statusCode: 200, payload: leaguePlayerPageSchema.parse(page) };
       }
       if (method === "POST") {

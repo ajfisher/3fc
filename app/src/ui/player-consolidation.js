@@ -58,7 +58,7 @@
     const accountBar = element("div", undefined, { "data-ui": "button-row" });
     const content = element("div"); const actions = element("div", undefined, { "data-ui": "button-row" });
     panel.append(accountBar, status, content, actions);
-    let owner = null, proposal = null, attempt = null, previousRequest = null, pending = false, invalidated = false, generation = 0, signInNeeded = false;
+    let owner = null, proposal = null, attempt = null, previousRequest = null, pending = false, invalidated = false, generation = 0, signInNeeded = false, refreshFailed = false;
     const key = () => `threefc.consolidation.v1:${encodeURIComponent(subject(owner))}`;
     const say = (text, error = false) => { status.textContent = text; status.hidden = !text; status.setAttribute("role", error ? "alert" : "status"); };
     function persist(value) { sessionStorage.setItem(key(), JSON.stringify(value)); }
@@ -77,8 +77,9 @@
       owner = current;
     }
     function render() {
+      try {
       content.replaceChildren(); actions.replaceChildren(); accountBar.replaceChildren();
-      options.onLock?.(pending || Boolean(attempt) || Boolean(previousRequest) || Boolean(proposal && !["stale", "declined", "committed"].includes(proposal.status)), pending || Boolean(attempt), Boolean(proposal));
+      options.onLock?.(pending || Boolean(attempt) || Boolean(previousRequest) || Boolean(proposal && !["stale", "declined", "committed"].includes(proposal.status)), pending || Boolean(attempt) || Boolean(previousRequest), Boolean(proposal), proposal?.status);
       if (invalidated) return;
       if (options.proposalId && owner) {
         const signOut = button("Sign out"); signOut.disabled = pending;
@@ -111,6 +112,16 @@
         }
         return;
       }
+      if (proposal.status === "committed") {
+        say(`Profiles combined as ${proposal.nickname}.${refreshFailed ? " The player list couldn’t refresh. Return to players and try refreshing it." : ""}`);
+        if (options.onBackToPlayers) {
+          const back = button("Back to players"), more = button("Combine more");
+          back.disabled = pending; more.disabled = pending;
+          back.addEventListener("click", options.onBackToPlayers); more.addEventListener("click", options.onCombineMore);
+          actions.append(back, more);
+        }
+        return;
+      }
       content.append(element("h3", `Keep ${proposal.nickname}`), element("p", proposal.leagueName));
       const profiles = element("ul", undefined, { "data-ui": "directory-list", "aria-label": "Profiles to combine" });
       for (const profile of proposal.profiles) {
@@ -122,9 +133,6 @@
         profiles.append(row);
       }
       content.append(profiles);
-      if (proposal.status === "committed") {
-        say(`Profiles combined as ${proposal.nickname}.`); return;
-      }
       content.append(element("p", "These profiles will become one player. Existing game records will be kept."));
       if (proposal.status === "stale" || proposal.status === "declined") {
         say(proposal.status === "declined" ? "The player declined this proposal." : "These profiles changed. Review them again before combining.", true);
@@ -141,7 +149,7 @@
           control.addEventListener("click", () => { void mutate("/v1/player-consolidations/approve", { proposalId: proposal.proposalId, decision }, control); }); actions.append(control);
         }
       } else if (proposal.status === "pending_approval") {
-        say("Waiting for player approval. Share this proposal with the player whose account is linked.");
+        if (!status.textContent) say("Waiting for player approval. Share this proposal with the player whose account is linked.");
         const field = element("div", undefined, { "data-ui": "field" });
         const link = element("input", undefined, { id: "consolidation-approval-link", "data-ui": "input", readonly: "", "aria-label": "Player approval link" });
         link.value = new URL(urlFor(proposal.proposalId), location.origin).href;
@@ -153,10 +161,14 @@
       }
       if (proposal.status === "ready" && proposal.canCommit) {
         const commit = button("Combine profiles"); commit.disabled = pending;
+        commit.setAttribute("data-variant", "primary");
         commit.addEventListener("click", () => { void mutate("/v1/player-consolidations/commit", { proposalId: proposal.proposalId }, commit); }); actions.append(commit);
       } else if (proposal.status === "ready") say("Approval recorded. The organiser can now combine these profiles.");
-      const refresh = button("Check proposal"); refresh.disabled = pending;
-      refresh.addEventListener("click", () => { void load(proposal.proposalId, refresh); }); actions.append(refresh);
+      if (proposal.status === "pending_approval") {
+        const refresh = button("Check approval"); refresh.disabled = pending;
+        refresh.addEventListener("click", () => { void load(proposal.proposalId, refresh); }); actions.append(refresh);
+      }
+      } finally { options.renderNavigation?.(actions); }
     }
     async function load(id, control) {
       if (pending || invalidated || attempt) return;
@@ -189,7 +201,12 @@
         if (current !== generation) return;
         if (!validProposal(result.proposal) || result.proposal.proposalId !== body.proposalId) throw new Error("invalid_proposal");
         proposal = result.proposal; sessionStorage.removeItem(key()); attempt = null; say("");
-        if (proposal.status === "committed") options.onCommitted?.();
+        if (proposal.status === "committed") {
+          refreshFailed = false;
+          render();
+          try { await options.onCommitted?.(); } catch { refreshFailed = true; }
+          if (current !== generation || invalidated) return;
+        }
       } catch (error) {
         if (error.status === 403 && error.code === "account_changed") {
           // This response rejects this dispatch, not an earlier uncertain commit.
@@ -227,62 +244,109 @@
         say(signInNeeded ? "Sign in to review this proposal." : "Couldn’t verify your sign-in. Reload to try again.", true); render();
       } finally { pending = false; render(); }
     }
-    return { preview: (body, control) => mutate("/v1/player-consolidations", body, control), restore, render,
+    function reset() {
+      if (pending || attempt || previousRequest || invalidated) return false;
+      if (proposal?.status === "pending_approval") options.onDeferred?.(proposal);
+      proposal = null; refreshFailed = false; signInNeeded = false; generation += 1; say("");
+      return true;
+    }
+    return { preview: (body, control) => mutate("/v1/player-consolidations", body, control), restore, render, reset,
       hasProposal: () => Boolean(proposal || attempt), status };
   }
-  function initializeLeague({ leagueId, canManage, getPlayer, onCommitted }) {
+  function initializeLeague({ leagueId, canManage, getPlayer, getPlayers, onCommitted, onTaskState }) {
     const host = document.getElementById("league-player-combine-host"); if (!host) return null;
     const toggle = button("Combine profiles"); toggle.hidden = !canManage();
     const panel = element("section", undefined, { "data-ui": "disclosure-panel", "aria-label": "Combine player profiles" }); panel.hidden = true;
     const heading = element("h3", "Select profiles to combine", { tabindex: "-1" });
     const editor = element("div", undefined, { "data-ui": "consolidation-editor" });
-    const selections = element("ul", undefined, { "aria-label": "Selected profiles", "data-ui": "consolidation-selections" });
+    const table = element("table", undefined, { "data-ui": "consolidation-selection-table", "aria-label": "Players to combine" });
+    const head = element("thead"), titles = element("tr");
+    for (const title of ["Select", "Player", "Games"]) titles.append(element("th", title, { scope: "col" }));
+    head.append(titles);
+    const rows = element("tbody", undefined, { "data-ui": "consolidation-selection-body" }); table.append(head, rows);
     const retained = element("select", undefined, { id: "consolidation-retained", "data-ui": "input", "aria-label": "Profile to keep" });
     const name = element("input", undefined, { id: "consolidation-name", "data-ui": "input", maxlength: "80", "aria-label": "Player name" });
     const retainedLabel = element("div", undefined, { "data-ui": "field" }); retainedLabel.append(element("label", "Profile to keep", { for: retained.id }), retained);
     const nameLabel = element("div", undefined, { "data-ui": "field" }); nameLabel.append(element("label", "Player name", { for: name.id }), name);
-    const review = button("Review profiles"), cancel = button("Cancel");
-    const selectionActions = element("div", undefined, { "data-ui": "button-row" }); selectionActions.append(cancel);
-    editor.append(heading, selections, retainedLabel, nameLabel, review);
+    const review = button("Review profiles"), cancel = button("Cancel"), back = button("Back");
+    review.setAttribute("data-variant", "primary");
+    const selectionActions = element("div", undefined, { "data-ui": "button-row" }); selectionActions.append(review, back, cancel);
+    const selectionCount = element("p", "0 profiles selected", { "data-ui": "consolidation-selected-count", "aria-live": "polite" });
+    editor.append(heading, table, selectionCount, retainedLabel, nameLabel);
     panel.append(editor); host.append(toggle, panel);
-    const selected = new Map(); let active = false, locked = false, busy = false, reviewing = false;
+    const deferred = element("div", undefined, { "data-ui": "consolidation-pending-links" }); host.append(deferred);
+    const selected = new Map(), deferredIds = new Set(); let active = false, locked = false, busy = false, reviewing = false, success = false;
     const playerLabel = player => [player.nickname, ...(player.seasons || []).map(season => season.name)].join(" · ");
+    const gameDate = game => typeof game.kickoffAt === "string" && Number.isFinite(Date.parse(game.kickoffAt))
+      ? new Date(game.kickoffAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "Date unavailable";
+    const keeperLabel = player => `${playerLabel(player)} · ${Array.isArray(player.games) && player.games.length ? player.games.map(gameDate).join(", ") : Array.isArray(player.games) && !player.gamesIncomplete ? "No games" : "Game history unavailable"}`;
     let retired = false;
-    const state = controller(panel, { leagueId, onCommitted, onLock(value, operationPending, hasProposal) { locked = value; busy = operationPending; reviewing = hasProposal; renderSelection(); }, onRestart() { locked = false; reviewing = false; renderSelection(); heading.focus(); },
-      onInvalidated() { retired = true; selected.clear(); retained.replaceChildren(); name.value = ""; renderSelection(); } });
-    panel.append(selectionActions);
+    const state = controller(panel, { leagueId,
+      renderNavigation: actions => actions.append(selectionActions),
+      onCommitted() { selected.clear(); retained.replaceChildren(); name.value = ""; return onCommitted?.(); },
+      onBackToPlayers() { leave(false); }, onCombineMore() { leave(true); },
+      onDeferred(proposal) {
+        if (deferredIds.has(proposal.proposalId)) return;
+        deferredIds.add(proposal.proposalId);
+        deferred.append(element("a", `Awaiting approval: ${proposal.nickname}`, { href: urlFor(proposal.proposalId) }));
+      },
+      onLock(value, operationPending, hasProposal, status) { locked = value; busy = operationPending; reviewing = hasProposal; success = status === "committed"; renderSelection(); },
+      onRestart() { locked = false; reviewing = false; renderSelection(); heading.focus(); },
+      onInvalidated() { retired = true; active = false; selected.clear(); deferred.replaceChildren(); deferredIds.clear(); retained.replaceChildren(); name.value = ""; renderSelection(); } });
     function renderSelection() {
       toggle.hidden = retired || active || !canManage();
       editor.hidden = retired || reviewing;
-      selectionActions.hidden = retired;
-      cancel.textContent = reviewing ? "Close preview" : "Cancel";
-      selections.replaceChildren();
-      for (const player of selected.values()) {
-        const row = element("li", playerLabel(player)); const remove = button(`Remove ${playerLabel(player)}`); remove.disabled = locked;
-        remove.addEventListener("click", () => { selected.delete(player.playerId); refreshRetained(); refreshRows(); heading.focus(); }); row.append(remove); selections.append(row);
+      selectionActions.hidden = retired || success;
+      review.hidden = reviewing;
+      back.hidden = !reviewing; back.disabled = busy;
+      deferred.hidden = active || retired;
+      const focusedId = document.activeElement?.matches?.("[data-consolidation-select]") ? document.activeElement.dataset.playerId : null;
+      rows.replaceChildren();
+      const available = new Map((getPlayers ? getPlayers() : [...document.querySelectorAll("#league-player-list > li[data-player-id]")].map(row => getPlayer(row.dataset.playerId)).filter(Boolean)).map(player => [player.playerId, player]));
+      for (const [id, player] of available) if (selected.has(id)) selected.set(id, player);
+      // Keep already-selected profiles visible when the search changes, once each.
+      for (const [id, player] of selected) if (!available.has(id)) available.set(id, player);
+      for (const player of available.values()) {
+        const row = element("tr", undefined, { "data-player-id": player.playerId });
+        const selectCell = element("td"), label = element("label", undefined, { "data-ui": "check-row" });
+        const input = element("input", undefined, { type: "checkbox", "data-consolidation-select": "", "data-player-id": player.playerId, "aria-label": `Select ${playerLabel(player)}` });
+        input.checked = selected.has(player.playerId); input.disabled = retired || locked || (!input.checked && selected.size >= 20);
+        input.addEventListener("change", () => {
+          if (!canManage() || locked || retired) return;
+          if (input.checked) selected.set(player.playerId, player); else selected.delete(player.playerId);
+          refreshRetained();
+        });
+        label.append(input); selectCell.append(label);
+        const playerCell = element("td"); playerCell.append(element("strong", player.nickname), document.createTextNode(" "), element("span", player.claimed ? "Linked" : "Unlinked"));
+        const gamesCell = element("td", undefined, { id: `consolidation-games-${rows.children.length}` });
+        input.setAttribute("aria-describedby", gamesCell.id);
+        if (!Array.isArray(player.games)) gamesCell.textContent = "Game history unavailable";
+        else if (!player.games.length) gamesCell.textContent = player.gamesIncomplete ? "Game history unavailable" : "No games";
+        else {
+          const games = element("ul", undefined, { "aria-label": `Games for ${player.nickname}` });
+          for (const game of player.games) {
+            games.append(element("li", gameDate(game)));
+          }
+          gamesCell.append(games);
+          if (player.gamesIncomplete) gamesCell.append(element("p", "Some games are unavailable"));
+        }
+        row.append(selectCell, playerCell, gamesCell); rows.append(row);
       }
       retained.disabled = locked; name.readOnly = locked; review.disabled = locked || selected.size < 2 || !name.value.trim(); cancel.disabled = busy;
-      for (const input of document.querySelectorAll('[data-consolidation-select]')) { input.checked = selected.has(input.dataset.playerId); input.disabled = retired || locked; input.closest("label").hidden = retired || reviewing || !active; }
+      selectionCount.textContent = `${selected.size} ${selected.size === 1 ? "profile" : "profiles"} selected`;
+      for (const option of retained.options) if (selected.has(option.value)) option.textContent = keeperLabel(selected.get(option.value));
+      if (focusedId && !editor.hidden) [...rows.querySelectorAll("input")].find(input => input.dataset.playerId === focusedId)?.focus();
+      const directory = document.getElementById("league-player-list"); if (directory) directory.hidden = active;
+      onTaskState?.({ active: active && !retired, phase: success ? "success" : reviewing || busy ? "review" : "select" });
     }
     function refreshRetained() {
       const previous = retained.value; const claimed = [...selected.values()].filter(player => player.claimed);
       retained.replaceChildren();
-      for (const player of claimed.length ? claimed : selected.values()) retained.append(element("option", playerLabel(player), { value: player.playerId }));
+      for (const player of claimed.length ? claimed : selected.values()) retained.append(element("option", keeperLabel(player), { value: player.playerId }));
       if ([...retained.options].some(option => option.value === previous)) retained.value = previous;
       name.value = selected.get(retained.value)?.nickname || ""; renderSelection();
     }
     function refreshRows() {
-      for (const row of document.querySelectorAll("#league-player-list > li[data-player-id]")) {
-        if (row.querySelector("[data-consolidation-select]")) continue;
-        const player = getPlayer(row.dataset.playerId); if (!player) continue;
-        const label = element("label", `Select ${playerLabel(player)}`, { "data-ui": "check-row" }); label.hidden = !active;
-        const input = element("input", undefined, { type: "checkbox", "data-consolidation-select": "", "data-player-id": player.playerId });
-        input.addEventListener("change", () => {
-          if (!canManage() || locked) return;
-          if (input.checked) selected.set(player.playerId, player); else selected.delete(player.playerId);
-          refreshRetained();
-        }); label.prepend(input); row.prepend(label);
-      }
       renderSelection();
     }
     toggle.addEventListener("click", () => {
@@ -291,8 +355,14 @@
       if (reviewing) { panel.tabIndex = -1; panel.focus(); } else heading.focus();
       void state.restore();
     });
-    const close = () => { if (busy) return; active = false; panel.hidden = true; refreshRows(); toggle.focus(); };
-    cancel.addEventListener("click", close); panel.addEventListener("keydown", event => { if (event.key === "Escape" && !busy) { event.preventDefault(); close(); } });
+    function leave(more) {
+      if (busy || !state.reset()) return;
+      selected.clear(); retained.replaceChildren(); name.value = ""; active = more; panel.hidden = !more;
+      state.render(); refreshRows(); if (more) heading.focus(); else toggle.focus();
+    }
+    cancel.addEventListener("click", () => leave(false));
+    back.addEventListener("click", () => { if (busy || !state.reset()) return; state.render(); heading.focus(); });
+    panel.addEventListener("keydown", event => { if (event.key === "Escape" && !busy) { event.preventDefault(); leave(false); } });
     retained.addEventListener("change", () => { name.value = selected.get(retained.value)?.nickname || ""; renderSelection(); });
     name.addEventListener("input", renderSelection);
     review.addEventListener("click", () => {

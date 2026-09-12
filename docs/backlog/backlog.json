@@ -361,7 +361,10 @@
         "PLAYER-01",
         "PLAYER-02",
         "PLAYER-03",
-        "PLAYER-04"
+        "PLAYER-04",
+        "PLAYER-05",
+        "PLAYER-06",
+        "PLAYER-07"
       ]
     }
   ],
@@ -3066,6 +3069,35 @@
           "Prioritise before measured 5-second p95 discovery or inadequate timeout headroom; no calendar deadline is claimed."
         ]
       }
+    },
+    {
+      "id": "PLAYER-07",
+      "title": "Make player search complete and profile combination a focused task",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": ["area:app", "area:api", "area:data", "area:qa", "type:feature", "milestone:PLAYER", "priority:P1"],
+      "dependsOn": ["PLAYER-01", "PLAYER-02"],
+      "summary": "Replace physical-page search and stale embedded consolidation UI with complete scoped search, one selection table, focused review and a reusable success state.",
+      "scope": [
+        "Return logical matching directory pages with bounded physical work, safe continuation and automatic query continuation in league/game pickers.",
+        "Show a bounded, truthful sample of current game dates in selection rows through reviewed authorised reads; mark incomplete context explicitly.",
+        "Use one semantic checkbox table; place retained identity and name after selection; no duplicate selected-profile list.",
+        "Separate selection, review, pending approval, uncertain recovery and success; meaningful Back/Cancel and repeated combinations without reload.",
+        "Verify existing QA consolidations read-only; retain aliases and historical event IDs rather than deleting linked records."
+      ],
+      "outOfScope": ["Global player/account search or cross-league consolidation.", "Changes to ownership proof, scoring, merge conflict policy or historical IDs.", "Further mutations of AJ's real profiles, production changes or merging."],
+      "acceptanceCriteria": [
+        "A query finds matches beyond raw empty/inactive pages without repeated clicks; incomplete work is never labelled an exhausted search.",
+        "A single selectable table presents nickname, account-link status and verified game context before review.",
+        "Back preserves a settled draft, Cancel exits ordinary work, and uncertain requests retain exact recovery state.",
+        "Confirmed success refreshes independently and permits another combination without a page reload; refresh failure cannot offer another commit.",
+        "Owner approval, account switching, alias resolution, authorised scope and score semantics remain intact.",
+        "Mobile, keyboard and enlarged-text acceptance and exact-head review/CI/QA evidence are recorded."
+      ],
+      "testScenarios": ["Logical pagination boundaries, cursor cycles, stale revisions, late matches and cross-league cursor rejection.", "Current/deleted/rescheduled game context, alias groups, bounded enrichment and partial context.", "Sequential combinations, Back/Cancel, retained-name changes, approval, uncertain retry and failed post-commit refresh.", "320/390/430px, keyboard checkbox/focus, long names, light/dark and 200% zoom."],
+      "reviewRequirements": ["Independent UI/UX, frontend, engineering and QA review; architecture/security review of directory contract and read boundaries.", "Serialized resource-controlled tests, current-head Codex review, isolated QA evidence and review gate; no merge authority."],
+      "delivery": {"asOf": "2026-09-12", "wave": "reusable-players-follow-up", "status": "in-progress", "githubIssue": 173, "branch": "codex/player-combine-usability", "notes": ["AJ reported real QA search and successive-combination defects; data verification confirms committed canonical identities with retained historical aliases."]}
     }
   ],
   "globalTestScenarios": [

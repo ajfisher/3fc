@@ -32,8 +32,13 @@ export async function runConsolidationBrowser({ repository, base, sessions, orig
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     const ownOrigin = `http://127.0.0.1:${server.address().port}`;
     handler = createAppRequestHandler(ownOrigin);
-    for (const suffix of ["a", "b"]) await repository.createLeaguePlayer({ leagueId: "league", playerId: `browser-${suffix}`,
-      nickname: `Browser fixture ${suffix.toUpperCase()}`, userIds: ["organiser"] });
+    for (const [index, suffix] of ["a", "b"].entries()) {
+      await repository.createLeaguePlayer({ leagueId: "league", playerId: `browser-${suffix}`,
+        nickname: `Browser fixture ${suffix.toUpperCase()}`, userIds: ["organiser"] });
+      await repository.createGame({ gameId: `browser-game-${suffix}`, leagueId: "league", seasonId: "season",
+        sessionId: randomUUID(), gameStartTs: `2026-09-${index ? "08" : "01"}T09:30:00.000Z` });
+      await repository.addExistingLeaguePlayer({ gameId: `browser-game-${suffix}`, playerId: `browser-${suffix}`, userIds: ["organiser"] });
+    }
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark" });
     await context.addCookies([{ name: "threefc_session", value: sessions.organiser, url: ownOrigin, httpOnly: true, sameSite: "Lax" }]);
@@ -51,10 +56,13 @@ export async function runConsolidationBrowser({ repository, base, sessions, orig
       await expect(checkbox).toBeEnabled(); await checkbox.focus(); await page.keyboard.press("Space"); await expect(checkbox).toBeChecked();
     }
     const panel = page.getByRole("region", { name: "Combine player profiles", exact: true });
+    await expect(panel.locator('[data-ui="consolidation-selection-table"] tbody ul li')).toHaveCount(2);
     await panel.getByLabel("Player name", { exact: true }).focus(); await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
     await expect(page.getByRole("button", { name: "Combine profiles", exact: true })).toBeFocused();
     await page.getByRole("button", { name: "Combine profiles", exact: true }).click();
+    await expect(panel.getByLabel("Player name", { exact: true })).toHaveValue("");
+    for (const id of ["browser-a", "browser-b"]) await page.locator(`[data-consolidation-select][data-player-id="${id}"]`).check();
     await expect(panel.getByLabel("Player name", { exact: true })).toHaveValue("Browser fixture A");
     const captures = [];
     for (const width of [320, 390, 430, 768, 1280]) for (const colorScheme of ["light", "dark"]) {
@@ -92,6 +100,22 @@ export async function runConsolidationBrowser({ repository, base, sessions, orig
     await expect(panel.getByText("Profiles combined as Browser fixture A.", { exact: true })).toBeVisible();
     await expect(page.locator("#league-player-list > li[data-player-id]")).toHaveCount(1);
     assert.equal(await page.locator('#league-player-list > li[data-player-id="browser-a"]').count(), 1);
+
+    // A second task must not inherit the first committed proposal or require a reload.
+    for (const suffix of ["c", "d"]) await repository.createLeaguePlayer({ leagueId: "league", playerId: `browser-${suffix}`,
+      nickname: `Second fixture ${suffix.toUpperCase()}`, userIds: ["organiser"] });
+    await panel.getByRole("button", { name: "Combine more", exact: true }).click();
+    await search.fill("Second fixture"); await search.press("Enter");
+    for (const id of ["browser-c", "browser-d"]) await page.locator(`[data-consolidation-select][data-player-id="${id}"]`).check();
+    await page.getByRole("button", { name: "Review profiles", exact: true }).click();
+    await panel.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(page.locator('[data-consolidation-select]:checked')).toHaveCount(2);
+    await page.getByRole("button", { name: "Review profiles", exact: true }).click();
+    await panel.getByRole("button", { name: "Combine profiles", exact: true }).click();
+    await expect(panel.getByText("Profiles combined as Second fixture C.", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Back to players", exact: true }).click();
+    await expect(panel).toBeHidden();
+    await expect(page.locator("#league-player-list > li[data-player-id]")).toHaveCount(1);
 
     // claim-a/b are disposable fixtures claimed through the actual proof API by
     // the parent harness. Their earlier stale preview has never been committed.

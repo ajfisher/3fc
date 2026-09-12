@@ -27,9 +27,153 @@ function boot(approval: boolean, fetcher: typeof fetch, stored?: unknown) {
   return dom;
 }
 function named(dom: JSDOM, text: string) {
-  const control = [...dom.window.document.querySelectorAll("button")].find(node => node.textContent === text);
+  const control = [...dom.window.document.querySelectorAll("button")].find(node => node.textContent === text && !node.closest("[hidden]"));
   assert(control, `Missing button ${text}`); return control;
 }
+function initialize(dom: JSDOM, options: Record<string, unknown> = {}) {
+  const api = (dom.window as unknown as { ThreeFcConsolidation: { initializeLeague: (options: unknown) => { refreshRows: () => void } } }).ThreeFcConsolidation;
+  return api.initializeLeague({ leagueId: "league", canManage: () => true, getPlayer: (id: string) => profiles.find(player => player.playerId === id), ...options });
+}
+function selectPlayers(dom: JSDOM, ids = ["p1", "p2"]) {
+  for (const id of ids) dom.window.document.querySelector<HTMLInputElement>(`[data-consolidation-select][data-player-id="${id}"]`)!.click();
+}
+
+test("selection is one accessible table, preserves selected game enrichment across filters, and uses honest missing history", async () => {
+  const dom = boot(false, async () => response({ authenticated: true, session: account }));
+  let players: Array<Record<string, unknown>> = profiles.map(({ games: _games, ...player }) => player);
+  try {
+    const ui = initialize(dom, { getPlayers: () => players }); ui.refreshRows();
+    named(dom, "Combine profiles").click(); await flush();
+    assert.equal(dom.window.document.querySelectorAll('[data-ui="consolidation-selection-table"] tbody tr').length, 2);
+    assert.equal(dom.window.document.querySelectorAll('[data-ui="consolidation-selections"]').length, 0);
+    assert.match(dom.window.document.querySelector('tbody')!.textContent!, /Game history unavailable/);
+    assert.equal(dom.window.document.querySelector('[data-consolidation-select]')!.getAttribute("aria-label"), "Select Kesh");
+    selectPlayers(dom, ["p1"]);
+    players = profiles.map(player => ({ ...player, gamesIncomplete: player.playerId === "p2" })); ui.refreshRows();
+    assert.doesNotMatch(dom.window.document.querySelector('tbody')!.textContent!, /Game history unavailable/);
+    assert.match(dom.window.document.querySelector('tbody')!.textContent!, /Some games are unavailable/);
+    const checkbox = dom.window.document.querySelector<HTMLInputElement>('[data-consolidation-select][data-player-id="p1"]')!;
+    const description = dom.window.document.getElementById(checkbox.getAttribute('aria-describedby')!)!;
+    assert.match(description.textContent!, /2026/);
+    assert.match(dom.window.document.querySelector<HTMLOptionElement>('#consolidation-retained option')!.textContent!, /2026/);
+    assert.equal(dom.window.document.querySelector('[data-ui="consolidation-selected-count"]')!.textContent, '1 profile selected');
+    players = [players[1]]; ui.refreshRows();
+    const selected = dom.window.document.querySelector('tr[data-player-id="p1"]')!;
+    assert.equal(selected.querySelectorAll('ul li').length, 1, "selected row keeps newly loaded dates after filtering");
+    assert.equal(dom.window.document.querySelectorAll('tr[data-player-id="p1"]').length, 1);
+    assert.equal(dom.window.document.querySelector<HTMLInputElement>('[data-player-id="p1"][type="checkbox"]')!.checked, true);
+  } finally { dom.window.close(); }
+});
+
+test("two consecutive combines start fresh selections and proposal IDs without a stale success panel", async () => {
+  const extra = profiles.map((player, index) => ({ ...player, playerId: `p${index + 3}`, nickname: `Player ${index + 3}` }));
+  let players = [...profiles, ...extra]; const previews: Array<{proposalId: string; playerIds: string[]}> = [];
+  let current = proposal(); let commits = 0;
+  const dom = boot(false, async (input, init) => {
+    if (String(input).endsWith('/auth/session')) return response({ authenticated: true, session: account });
+    const body = JSON.parse(String(init?.body));
+    if (String(input).endsWith('/commit')) { commits += 1; current = { ...current, status: 'committed', canCommit: false }; }
+    else { previews.push(body); current = proposal({ ...body, profiles: players.filter(player => body.playerIds.includes(player.playerId)) }); }
+    return response({ proposal: current });
+  });
+  try {
+    initialize(dom, { getPlayers: () => players, onCommitted: async () => {
+      const removed = current.profiles.filter(player => player.playerId !== current.retainedPlayerId).map(player => player.playerId);
+      players = players.filter(player => !removed.includes(player.playerId));
+    } }).refreshRows();
+    named(dom, 'Combine profiles').click(); await flush(); selectPlayers(dom);
+    named(dom, 'Review profiles').click(); await flush(); named(dom, 'Combine profiles').click(); await flush();
+    assert.match(dom.window.document.body.textContent!, /Profiles combined as Kesh/);
+    assert.equal(dom.window.document.querySelector('[aria-label="Profiles to combine"]'), null, 'success does not render obsolete proposal details');
+    assert.equal(dom.window.document.querySelectorAll('[data-consolidation-select]:checked').length, 0);
+    named(dom, 'Combine more').click();
+    assert.equal(dom.window.document.querySelector<HTMLInputElement>('#consolidation-name')!.value, '');
+    assert.equal(dom.window.document.querySelectorAll('tr[data-player-id="p2"]').length, 0);
+    selectPlayers(dom, ['p3', 'p4']); named(dom, 'Review profiles').click(); await flush();
+    named(dom, 'Combine profiles').click(); await flush();
+    assert.equal(commits, 2); assert.equal(previews.length, 2);
+    assert.notEqual(previews[0].proposalId, previews[1].proposalId);
+    assert.deepEqual(previews[1].playerIds, ['p3', 'p4']);
+    named(dom, 'Back to players').click();
+    assert.equal(dom.window.document.querySelector<HTMLElement>('#league-player-list')!.hidden, false);
+    assert.equal(dom.window.document.activeElement, named(dom, 'Combine profiles'));
+  } finally { dom.window.close(); }
+});
+
+test("confirmed combine remains successful while refresh is pending and after refresh fails", async () => {
+  let current = proposal(); let rejectRefresh: ((reason: Error) => void) | undefined; let commits = 0;
+  const dom = boot(false, async (input, init) => {
+    if (String(input).endsWith('/auth/session')) return response({ authenticated: true, session: account });
+    const body = JSON.parse(String(init?.body));
+    if (String(input).endsWith('/commit')) { commits += 1; current = { ...current, status: 'committed', canCommit: false }; }
+    else current = proposal({ ...body });
+    return response({ proposal: current });
+  });
+  try {
+    initialize(dom, { onCommitted: () => new Promise<void>((_resolve, reject) => { rejectRefresh = reject; }) }).refreshRows();
+    named(dom, 'Combine profiles').click(); await flush(); selectPlayers(dom);
+    named(dom, 'Review profiles').click(); await flush(); named(dom, 'Combine profiles').click(); await flush();
+    assert.match(dom.window.document.body.textContent!, /Profiles combined as Kesh/);
+    assert.equal(named(dom, 'Combine more').disabled, true);
+    assert.equal(dom.window.sessionStorage.getItem('threefc.consolidation.v1:account-one'), null);
+    assert(rejectRefresh); rejectRefresh(new Error('directory offline')); await flush();
+    assert.match(dom.window.document.body.textContent!, /Profiles combined as Kesh.*player list couldn’t refresh/);
+    assert.equal(named(dom, 'Combine more').disabled, false);
+    assert.equal([...dom.window.document.querySelectorAll('button')].some(button => button.textContent === 'Retry this request'), false);
+    assert.equal(commits, 1);
+  } finally { dom.window.close(); }
+});
+
+test("Back keeps draft but creates a new proposal; pending approval Cancel keeps a separate resumable reference", async () => {
+  const writes: Array<{proposalId: string; nickname: string}> = []; let pending = false;
+  const dom = boot(false, async (input, init) => {
+    if (String(input).endsWith('/auth/session')) return response({ authenticated: true, session: account });
+    const body = JSON.parse(String(init?.body)); writes.push(body);
+    return response({ proposal: proposal({ ...body, status: pending ? 'pending_approval' : 'ready', canCommit: !pending, requiresApproval: pending }) });
+  });
+  try {
+    initialize(dom).refreshRows(); named(dom, 'Combine profiles').click(); await flush(); selectPlayers(dom);
+    const name = dom.window.document.querySelector<HTMLInputElement>('#consolidation-name')!;
+    name.value = 'Kesh retained'; name.dispatchEvent(new dom.window.Event('input'));
+    named(dom, 'Review profiles').click(); await flush();
+    assert.equal([...dom.window.document.querySelectorAll('button')].some(button => button.textContent === 'Check proposal'), false);
+    named(dom, 'Back').click(); assert.equal(name.value, 'Kesh retained');
+    assert.equal(dom.window.document.querySelectorAll('[data-consolidation-select]:checked').length, 2);
+    pending = true; named(dom, 'Review profiles').click(); await flush();
+    assert.notEqual(writes[0].proposalId, writes[1].proposalId); assert.equal(writes[1].nickname, 'Kesh retained');
+    named(dom, 'Check approval'); named(dom, 'Cancel').click();
+    const deferred = dom.window.document.querySelector<HTMLAnchorElement>('[data-ui="consolidation-pending-links"] a')!;
+    assert.equal(new URL(deferred.href).searchParams.get('proposalId'), writes[1].proposalId);
+    assert.equal(deferred.closest('[hidden]'), null);
+    assert.equal(dom.window.document.querySelectorAll('[data-consolidation-select]:checked').length, 0);
+    assert.equal(writes.length, 2);
+    dom.window.dispatchEvent(new dom.window.Event('threefc:player-proof-cleared'));
+    assert.equal(dom.window.document.querySelector('[data-ui="consolidation-pending-links"] a'), null);
+  } finally { dom.window.close(); }
+});
+
+test("uncertain preview cannot be cancelled, escaped or replaced and retries its immutable request", async () => {
+  const writes: string[] = []; const phases: string[] = [];
+  const dom = boot(false, async (input, init) => {
+    if (String(input).endsWith('/auth/session')) return response({ authenticated: true, session: account });
+    writes.push(String(init?.body)); if (writes.length === 1) throw new Error('response lost');
+    return response({ proposal: proposal(JSON.parse(String(init?.body))) });
+  });
+  try {
+    initialize(dom, { onTaskState: (state: {phase: string}) => phases.push(state.phase) }).refreshRows();
+    named(dom, 'Combine profiles').click(); await flush(); selectPlayers(dom); named(dom, 'Review profiles').click(); await flush();
+    assert.equal(named(dom, 'Cancel').disabled, true);
+    assert.equal(phases.at(-1), 'review');
+    named(dom, 'Cancel').click();
+    const panel = dom.window.document.querySelector<HTMLElement>('section[aria-label="Combine player profiles"]')!;
+    panel.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(panel.hidden, false);
+    for (const checkbox of dom.window.document.querySelectorAll<HTMLInputElement>('[data-consolidation-select]')) assert.equal(checkbox.disabled, true);
+    named(dom, 'Retry this request').click(); await flush();
+    assert.deepEqual(writes, [writes[0], writes[0]]);
+    named(dom, 'Back').click(); assert.equal(dom.window.document.querySelectorAll('[data-consolidation-select]:checked').length, 2);
+  } finally { dom.window.close(); }
+});
 
 test("consolidation selection preserves duplicate identities and explicit preview", async () => {
   const writes: unknown[] = [];
@@ -43,7 +187,7 @@ test("consolidation selection preserves duplicate identities and explicit previe
     const api = (dom.window as unknown as { ThreeFcConsolidation: { initializeLeague: (options: unknown) => { refreshRows: () => void } } }).ThreeFcConsolidation;
     api.initializeLeague({ leagueId: "league", canManage: () => true, getPlayer: (id: string) => players.get(id) }).refreshRows();
     named(dom, "Combine profiles").click(); await flush();
-    for (const checkbox of dom.window.document.querySelectorAll<HTMLInputElement>("[data-consolidation-select]")) checkbox.click();
+    selectPlayers(dom);
     assert.equal(writes.length, 0, "selection is not a mutation");
     const keep = dom.window.document.querySelector<HTMLSelectElement>('select[aria-label="Profile to keep"]')!;
     assert.equal(keep.options.length, 2); assert.match(keep.options[0].text, /Winter/); assert.match(keep.options[1].text, /Summer/);
@@ -53,13 +197,16 @@ test("consolidation selection preserves duplicate identities and explicit previe
     assert.deepEqual((writes[0] as { playerIds: string[] }).playerIds, ["p1", "p2"]);
     assert.match(dom.window.document.body.textContent ?? "", /Existing game records will be kept/);
     assert.equal(dom.window.document.querySelector<HTMLElement>('[data-ui="consolidation-editor"]')!.hidden, true);
-    for (const input of dom.window.document.querySelectorAll("[data-consolidation-select]")) assert.equal(input.closest("label")!.hidden, true);
-    named(dom, "Close preview").click();
+    for (const input of dom.window.document.querySelectorAll("[data-consolidation-select]")) assert(input.closest("[hidden]"));
+    named(dom, "Back").click();
+    assert.equal(dom.window.document.querySelector<HTMLElement>('[data-ui="consolidation-editor"]')!.hidden, false);
+    assert.equal(dom.window.document.querySelectorAll("[data-consolidation-select]:checked").length, 2);
+    named(dom, "Cancel").click();
     assert.equal(dom.window.document.activeElement, named(dom, "Combine profiles"));
     named(dom, "Combine profiles").click(); await flush();
-    assert.equal(dom.window.document.querySelector<HTMLElement>('[data-ui="consolidation-editor"]')!.hidden, true);
-    assert.equal(dom.window.document.activeElement?.getAttribute("aria-label"), "Combine player profiles");
-    assert.equal(writes.length, 1, "closing and reopening preview does not submit or discard the proposal");
+    assert.equal(dom.window.document.querySelector<HTMLElement>('[data-ui="consolidation-editor"]')!.hidden, false);
+    assert.equal(dom.window.document.querySelectorAll("[data-consolidation-select]:checked").length, 0);
+    assert.equal(writes.length, 1, "back and cancel do not mutate a settled server proposal");
   } finally { dom.window.close(); }
 });
 
@@ -77,6 +224,25 @@ test("owner approval is explicit and never commits automatically", async () => {
     named(dom, "Approve these profiles").click(); await flush();
     assert.equal(paths.length, 1); assert.match(paths[0], /\/approve$/);
     assert.match(dom.window.document.body.textContent ?? "", /organiser can now combine/);
+  } finally { dom.window.close(); }
+});
+
+test("failed approval refresh keeps its actionable error instead of overwriting it with waiting copy", async () => {
+  let reads = 0;
+  const dom = boot(true, async input => {
+    if (String(input).endsWith('/auth/session')) return response({ authenticated: true, session: account });
+    reads += 1;
+    if (reads === 2) return response({ error: 'unavailable' }, 503);
+    return response({ proposal: proposal({ status: 'pending_approval', requiresApproval: true, canCommit: false }) });
+  });
+  try {
+    await flush(); named(dom, 'Check approval').click(); await flush();
+    assert.match(dom.window.document.querySelector('[role="alert"]')!.textContent!, /Couldn’t load the proposal/);
+    assert.doesNotMatch(dom.window.document.body.textContent!, /Waiting for player approval/);
+    assert.equal(named(dom, 'Check approval').disabled, false);
+    named(dom, 'Check approval').click(); await flush();
+    assert.equal(dom.window.document.querySelector('[role="alert"]'), null);
+    assert.match(dom.window.document.body.textContent!, /Waiting for player approval/);
   } finally { dom.window.close(); }
 });
 

@@ -2210,6 +2210,8 @@
     const scope = document.getElementById("league-player-scope");
     const search = document.getElementById("league-player-search");
     const more = document.getElementById("league-player-more");
+    const moreAnchor = document.createComment("directory pagination position");
+    more.before(moreAnchor);
     const createToggle = document.getElementById("league-player-create-toggle");
     const createPanel = document.getElementById("league-player-create-region");
     const name = document.getElementById("league-player-name");
@@ -2220,8 +2222,21 @@
     let submittedQuery = "", submittedScope = "", filterRevision = 0;
     const seen = new Set();
     const directoryPlayers = new Map();
+    let combineActive = false;
     const consolidation = window.ThreeFcConsolidation?.initializeLeague({ leagueId, canManage,
-      getPlayer: playerId => directoryPlayers.get(playerId), onCommitted: () => { void load(); } });
+      getPlayer: playerId => directoryPlayers.get(playerId), getPlayers: () => [...directoryPlayers.values()],
+      onCommitted: async () => { if (!await load()) throw new Error("directory_refresh_failed"); },
+      onTaskState: ({ active, phase }) => {
+        const opened = active && !combineActive;
+        combineActive = active;
+        panel.dataset.combinePhase = active ? phase : "";
+        list.hidden = active;
+        document.getElementById("league-player-search-form").hidden = active && phase !== "select";
+        if (active && phase === "select") panel.querySelector('[data-ui="consolidation-selection-table"]')?.after(more);
+        else if (!active) moreAnchor.after(more);
+        if (active) setDisclosureState(createToggle, createPanel, false, { restoreFocus: false });
+        if (opened) queueMicrotask(() => { if (combineActive) void load(); });
+      } });
     const say = (message, error = false) => {
       status.textContent = message; status.hidden = !message;
       status.setAttribute("data-state", error ? "error" : "default");
@@ -2294,16 +2309,32 @@
       if (!append) { cursor = null; more.hidden = true; }
       say("Loading players…");
       if (!append) { submittedQuery = search.value.trim(); submittedScope = scope.value; }
-      const query = new URLSearchParams({ leagueId, query: submittedQuery, limit: "25" });
+      const query = new URLSearchParams({ leagueId, query: submittedQuery, limit: combineActive ? "10" : "25" });
+      if (combineActive) query.set("includeGames", "true");
       if (submittedScope) query.set("seasonId", submittedScope);
       if (append) query.set("cursor", cursor);
       try {
-        const result = await requestJsonOrThrow(`/v1/league-players?${query}`, { method: "GET", cache: "no-store" });
-        if (version !== generation) return;
-        if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string")) throw new Error("Invalid player list");
-        renderRows(result.players, append); cursor = result.cursor; loaded = true;
+        let result, continuing = append;
+        const visited = new Set();
+        // A typed search covers the complete authorised scope. Physical storage
+        // pages must not require repeated user clicks to discover one name.
+        do {
+          result = await requestJsonOrThrow(`/v1/league-players?${query}`, { method: "GET", cache: "no-store" });
+          if (version !== generation) return;
+          if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string")) throw new Error("Invalid player list");
+          renderRows(result.players, continuing); continuing = true;
+          cursor = result.cursor;
+          if (cursor) {
+            if (visited.has(cursor)) throw new Error("Repeated player cursor");
+            visited.add(cursor); query.set("cursor", cursor);
+          }
+          if (cursor && submittedQuery) say("Searching all matching players…");
+        } while (cursor && submittedQuery && visited.size < 100);
+        loaded = true;
         more.hidden = !cursor;
-        say(seen.size ? "" : cursor ? "No matches on this page. Load more players to continue searching." : "No players found.");
+        more.textContent = result.searchIncomplete ? "Continue loading players" : "Load more players";
+        say(cursor && submittedQuery ? "Search paused after a large result set. Continue loading to finish searching."
+          : seen.size ? "" : cursor ? "More players are being searched. Continue loading to see them." : "No players found.");
         return true;
       } catch (error) {
         if (version !== generation) return;
@@ -5805,13 +5836,23 @@
       if (pickerSeason) params.set("seasonId", pickerSeason);
       if (append) params.set("cursor", pickerCursor);
       try {
-        const result = await requestJsonOrThrow(`/v1/league-players?${params}`, { method: "GET", cache: "no-store" });
-        if (version !== pickerVersion || role !== currentLeagueRole || refreshAccountLocked) return;
-        if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string") || result.players.some(player => typeof player.inGame !== "boolean")) throw new Error("Invalid player page");
-        if (!append) pickerPlayers.clear();
-        for (const player of result.players) pickerPlayers.set(player.playerId, player);
-        pickerCursor = result.cursor; pickerMore.hidden = !pickerCursor;
-        pickerMessage(pickerPlayers.size ? "" : pickerCursor ? "No matches on this page. Load more players to continue searching." : "No players found. Try All league players or create a new player.");
+        let result, continuing = append;
+        const visited = new Set();
+        do {
+          result = await requestJsonOrThrow(`/v1/league-players?${params}`, { method: "GET", cache: "no-store" });
+          if (version !== pickerVersion || role !== currentLeagueRole || refreshAccountLocked) return;
+          if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string") || result.players.some(player => typeof player.inGame !== "boolean")) throw new Error("Invalid player page");
+          if (!continuing) pickerPlayers.clear();
+          for (const player of result.players) pickerPlayers.set(player.playerId, player);
+          continuing = true; pickerCursor = result.cursor;
+          if (pickerCursor) {
+            if (visited.has(pickerCursor)) throw new Error("Repeated player cursor");
+            visited.add(pickerCursor); params.set("cursor", pickerCursor);
+          }
+        } while (pickerCursor && pickerQuery && visited.size < 100);
+        pickerMore.hidden = !pickerCursor;
+        pickerMessage(pickerCursor && pickerQuery ? "Search paused after a large result set. Continue loading to finish searching."
+          : pickerPlayers.size ? "" : pickerCursor ? "Continue loading to see more players." : "No players found. Try All league players or create a new player.");
       } catch (error) {
         if (version !== pickerVersion) return;
         if (!append || [401, 403].includes(error.statusCode)) pickerPlayers.clear();

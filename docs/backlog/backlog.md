@@ -13,7 +13,7 @@ Generated from `docs/backlog/backlog.json`.
 | `EPIC-M4` | Notifications and Product Polish | M4 Notifications and Product Polish | 5 |
 | `EPIC-REV` | Risk-Based Pull Request Review System | Review System Rollout | 6 |
 | `EPIC-UX` | Mobile-First Frontend Redesign | UX Mobile-First Frontend Redesign | 8 |
-| `EPIC-PLAYER` | Reusable players and profile linking | Reusable Players and Profile Linking | 5 |
+| `EPIC-PLAYER` | Reusable players and profile linking | Reusable Players and Profile Linking | 8 |
 
 ## Child Issues
 
@@ -85,6 +85,7 @@ Generated from `docs/backlog/backlog.json`.
 | `PLAYER-04` | Complete player-identity acceptance and migration handoff | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-03` |
 | `PLAYER-05` | Define safe player retention after game deletion | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02`, `PLAYER-04` |
 | `PLAYER-06` | Replace table-wide league discovery with an account-keyed ACL index | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04` |
+| `PLAYER-07` | Make player search complete and profile combination a focused task | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02` |
 
 ## Delivery Tracking
 
@@ -127,6 +128,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `PLAYER-04` | reusable-players | in-progress | [#162](https://github.com/ajfisher/3fc/issues/162) | codex/player-identity-acceptance |
 | `PLAYER-05` | reusable-players-follow-up | planned | [#170](https://github.com/ajfisher/3fc/issues/170) | - |
 | `PLAYER-06` | reusable-players-follow-up | planned | [#172](https://github.com/ajfisher/3fc/issues/172) | - |
+| `PLAYER-07` | reusable-players-follow-up | in-progress | [#173](https://github.com/ajfisher/3fc/issues/173) | codex/player-combine-usability |
 
 ## Global Test Scenarios
 

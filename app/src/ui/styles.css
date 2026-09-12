@@ -2669,6 +2669,43 @@ body {
   strong { min-width: 0; overflow-wrap: anywhere; }
 }
 
+#league-player-search-form {
+  display: grid;
+  gap: 1rem;
+  margin-block: 1rem;
+  align-items: end;
+}
+#league-player-combine-host { margin-block: 1rem; }
+#league-players-region[data-combine-phase="select"],
+#league-players-region[data-combine-phase="review"],
+#league-players-region[data-combine-phase="success"] {
+  #league-player-create-toggle,
+  #league-player-create-region { display: none; }
+}
+#league-players-region[data-combine-phase="review"],
+#league-players-region[data-combine-phase="success"] {
+  #league-player-more { display: none; }
+}
+[data-ui="consolidation-editor"] { display: grid; gap: 1rem; }
+[aria-label="Combine player profiles"] > [data-ui="button-row"]:not(:empty) { margin-top: 1rem; }
+[data-ui="consolidation-selection-table"] {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  th, td { text-align: left; vertical-align: top; padding: 0.75rem 0.4rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  th:first-child, td:first-child { width: 44px; padding-inline: 0; }
+  label { display: flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; }
+  input[type="checkbox"] { width: 1.25rem; height: 1.25rem; }
+  td:nth-child(2) > span { display: block; margin-top: 0.25rem; color: var(--ink-soft); font-size: 0.875rem; }
+  p, ul { margin: 0.25rem 0; }
+  ul { padding-left: 1rem; }
+}
+@media (min-width: 768px) {
+  #league-player-search-form { grid-template-columns: minmax(12rem, 1fr) minmax(14rem, 2fr) auto; }
+  [data-ui="consolidation-selection-table"] { font-size: 1rem; }
+}
+
 [data-ui="game-mode-tabs"] {
   display: flex;
   flex-wrap: wrap;

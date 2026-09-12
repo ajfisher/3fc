@@ -4077,6 +4077,34 @@ test("league directory paginates submitted search, keeps equal names distinct an
   } finally { page.dom.window.close(); }
 });
 
+test("league directory search automatically follows physical pages to every matching player", async () => {
+  const apiState = createMockApiState();
+  seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
+  const baseFetch = createMockFetch(apiState);
+  const queries: URLSearchParams[] = [];
+  const page = await bootPage({ html: renderLeaguePage("http://localhost:3001", "three-sided-football-club"),
+    url: "http://localhost:3000/leagues/three-sided-football-club?seasonId=autumn-cup#players", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/v1/league-players") return baseFetch(input, init);
+      if (!url.searchParams.get("query")) return createJsonResponse(200, { players: [], cursor: null });
+      queries.push(url.searchParams);
+      const cursor = url.searchParams.get("cursor");
+      const players = cursor ? [{ playerId: cursor, nickname: "Gavin", claimed: false, seasons: [], hasMoreSeasons: false }] : [];
+      return createJsonResponse(200, { players, cursor: cursor === "last" ? null : cursor ? "last" : "middle", searchIncomplete: !cursor });
+    } });
+  try {
+    (page.document.getElementById("league-player-search") as HTMLInputElement).value = "Gavin";
+    page.document.getElementById("league-player-search-form")!.dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await flushAsync(); await flushAsync();
+    assert.equal(queries.length, 3);
+    assert.ok(queries.every(query => query.get("query") === "Gavin" && query.get("seasonId") === "autumn-cup"));
+    assert.deepEqual([...page.document.querySelectorAll("#league-player-list > li")].map(row => row.getAttribute("data-player-id")), ["middle", "last"]);
+    assert.equal((page.document.getElementById("league-player-more") as HTMLElement).hidden, true);
+    assert.doesNotMatch(page.document.getElementById("league-player-status")!.textContent || "", /No players|No matches/);
+  } finally { page.dom.window.close(); }
+});
+
 test("league directory creation retains original identity after ambiguous commit and later rejection", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "directory-fixture", role: "admin" });
