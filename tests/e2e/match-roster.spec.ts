@@ -30,7 +30,7 @@ type FixtureOptions = {
   metadataGate?: ReturnType<typeof deferred>;
   extraUnassigned?: number; missingUnassigned?: boolean;
 };
-const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
+const assets = new Map(["player-proof.js", "player-consolidation.js", "player-presentation-browser.js", "styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
 
@@ -132,6 +132,10 @@ async function installMatchFixture(page: Page, options: FixtureOptions = {}) {
     }
     const forbidden = () => route.fulfill({ status: 403, json: { error: "forbidden", code: "league_access_required", message: "Access to this league is required." } });
     if (!readable && url.pathname.startsWith("/v1/")) return forbidden();
+    if (method === "GET" && url.pathname === "/v1/league-players") return route.fulfill({ json: {
+      players: players.filter(player => player.nickname.toLowerCase().includes((url.searchParams.get("query") ?? "").toLowerCase()))
+        .map(player => ({ ...player, claimed: false, inGame: true, seasons: [], hasMoreSeasons: false })), cursor: null,
+    } });
     if (method === "GET" && url.pathname === apiGamePath) return route.fulfill({ json: game });
     if (method === "PATCH" && url.pathname === apiGamePath && body) {
       if (!isAdmin || game.status === "finished") return forbidden();
@@ -292,7 +296,7 @@ for (const colorScheme of ["light", "dark"] as const) {
       await expect(page).toHaveURL(`${origin}${gamePath}#teams`);
       await expectOnlyMode(page, "players");
       await expect(page.getByTestId("game-mode-players")).toBeFocused();
-      await expect(page.getByLabel("Search players", { exact: true })).toHaveCount(1);
+      await expect(page.locator("#player-search")).toHaveCount(0);
       await expect(page.locator("#player-pool-title")).toHaveText("Unassigned");
       await expect(page.locator('#player-pool [data-ui="roster-player"][data-player-id]')).toHaveCount(2);
       await expect(displayedPlayers(page)).toHaveCount(17);
@@ -308,6 +312,8 @@ for (const colorScheme of ["light", "dark"] as const) {
       const create = page.locator('[data-action="toggle-player-create"]');
       await create.focus();
       await page.keyboard.press("Enter");
+      await expect(page.getByLabel("Find an existing player", { exact: true })).toBeFocused();
+      await page.locator("#game-player-new-toggle").click();
       await expect(page.getByLabel("Player name", { exact: true })).toBeFocused();
       await expect(create).toBeHidden();
       await expect(create).toHaveAttribute("aria-expanded", "true");
@@ -315,12 +321,13 @@ for (const colorScheme of ["light", "dark"] as const) {
       await page.getByLabel("Player name", { exact: true }).fill("Unsent player draft");
       await expectMatchGeometry(page);
       if (width === 390 || (width === 320 && colorScheme === "dark")) await capture(page, testInfo, `match-add-player-${colorScheme}-${width}`);
-      await page.locator("#player-create-form").getByRole("button", { name: "Cancel", exact: true }).focus();
+      await page.locator("#game-player-picker-form").getByRole("button", { name: "Cancel", exact: true }).focus();
       await page.keyboard.press("Enter");
       await expect(page.locator("#player-create-region")).toBeHidden();
       await expect(create).toBeVisible();
       await expect(create).toBeFocused();
       await page.keyboard.press("Enter");
+      await expect(page.getByLabel("Player name", { exact: true })).toBeVisible();
       await expect(page.getByLabel("Player name", { exact: true })).toHaveValue("Unsent player draft");
       await page.keyboard.press("Escape");
       await expect(create).toBeVisible();
@@ -584,6 +591,7 @@ test("native player entry preserves a failed draft and supports consecutive addi
   await expectReady(page);
   await page.locator('[data-action="toggle-player-create"]').click();
   const input = page.getByLabel("Player name", { exact: true });
+  await page.locator("#game-player-new-toggle").click();
   await input.fill("Fictional Late Arrival");
   await page.keyboard.press("Enter");
   await expect(page.locator("#setup-error")).toBeVisible();
@@ -734,15 +742,14 @@ test("capped private enrichment does not cap the complete public roster or inven
   for (const player of fixture.players.slice(20)) {
     const member = page.locator(`[data-ui="roster-member"][data-player-id="${player.playerId}"]`);
     await expect(member).toContainText(player.nickname);
-    await expect(member.locator('[data-ui="claim-badge"]')).toHaveCount(0);
+    await expect(member.locator('[data-ui="player-initial"]')).toHaveAttribute("data-link-state", "unknown");
+    await expect(member.locator('[data-ui="player-linked-tick"]')).toHaveCount(0);
   }
   const target = fixture.players.at(-1)!;
-  await page.getByLabel("Search players", { exact: true }).fill(target.nickname);
+  await page.getByRole("button", { name: "Refresh player details", exact: true }).click();
   await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === target.nickname).length).toBe(1);
-  await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(1);
-  await expect(page.locator('[data-ui="roster-member"]')).toHaveAttribute("data-player-id", target.playerId);
-  await page.getByLabel("Search players", { exact: true }).fill("");
   await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
+  await expect(page.locator(`[data-ui="roster-member"][data-player-id="${target.playerId}"] [data-ui="player-initial"]`)).toHaveAttribute("data-link-state", "unlinked");
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -777,26 +784,30 @@ for (const [width, playersUnavailable] of [[320, false], [390, true]] as const) 
     const target = fixture.players.find(player => player.playerId === "fixture-public-join-1")!;
     const targetRow = page.locator(`#player-pool [data-ui="roster-player"][data-player-id="${target.playerId}"]`);
     await expect(targetRow).toContainText(target.nickname);
-    await expect(targetRow.locator('[data-ui="claim-badge"]')).toHaveCount(0);
+    await expect(targetRow.locator('[data-ui="player-initial"]')).toHaveAttribute("data-link-state", "unknown");
     await expect(targetRow.locator('[data-action="grant-player-access"]')).toHaveCount(0);
     // Duplicate display names stay separate identities across pool and teams.
     await expect(displayedPlayers(page).locator("strong").filter({ hasText: /^Sam$/ })).toHaveCount(3);
-    const search = page.getByLabel("Search players", { exact: true });
-    await search.fill(target.nickname);
-    await expect(pool).toHaveCount(1);
+    await page.locator("#roster-retry").click();
+    await expect(page.locator("#roster-retry-status")).not.toHaveText("Loading players…");
+    await expect(pool).toHaveCount(25);
     await expect(targetRow).toBeVisible();
-    await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(0);
-    await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === target.nickname).length).toBe(1);
+    await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
+    if (!playersUnavailable) await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === target.nickname).length).toBe(1);
+    if (!playersUnavailable) {
+      await expect(page.locator("#roster-retry-status")).toContainText("Some player details are still unavailable");
+      await page.getByRole("button", { name: "Refresh player details", exact: true }).click();
+      await expect(page.locator("#roster-retry")).toBeVisible();
+      await expect(displayedPlayers(page).locator('[data-ui="player-initial"][data-link-state="unknown"]')).toHaveCount(0);
+    }
     await expect(targetRow).toBeVisible();
     await expectMatchGeometry(page);
-    await capture(page, testInfo, `complete-unassigned-filtered-${width}`);
+    await capture(page, testInfo, `complete-unassigned-recovery-${width}`);
     await targetRow.locator('[data-action="assign-player"][data-team-id="yellow"]').click();
     await expect(page.locator("#setup-status")).toHaveText(`${target.nickname} assigned to Yellow.`);
-    await expect(pool).toHaveCount(0);
+    await expect(pool).toHaveCount(24);
     const assigned = page.locator(`[data-ui="roster-team"][data-team-id="yellow"] [data-ui="roster-member"][data-player-id="${target.playerId}"]`);
     await expect(assigned).toHaveCount(1);
-    await expect(displayedPlayers(page)).toHaveCount(1);
-    await search.fill("");
     await expect(pool).toHaveCount(24);
     await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(25);
     await expect(displayedPlayers(page)).toHaveCount(49);
@@ -814,12 +825,12 @@ test("an older roster response truthfully marks its Unassigned fallback as incom
   const fixture = await installMatchFixture(page, { largeRoster: true, extraUnassigned: 23, missingUnassigned: true });
   await page.goto(`${origin}${gamePath}#teams`);
   await expect(page.locator("#game-season-link")).toHaveText(seasonName);
-  await expect(page.getByText("The full Unassigned list is unavailable. Search by name to find players.", { exact: true })).toBeVisible();
+  await expect(page.getByText("The full Unassigned list is unavailable. Retry loading players to check the latest list.", { exact: true })).toBeVisible();
   await expect(page.locator('#player-pool [data-ui="roster-player"]')).toHaveCount(2);
   await expect(page.locator('[data-ui="roster-member"]')).toHaveCount(24);
-  await page.getByLabel("Search players", { exact: true }).fill("No such fictional player");
-  await expect.poll(() => fixture.requests.filter(request => request.path === `${apiGamePath}/players` && request.search === "No such fictional player").length).toBe(1);
-  await expect(page.getByText("No players found in the available search.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Retry loading players", exact: true }).click();
+  await expect(page.locator("#roster-retry-status")).toContainText("Some player details are still unavailable");
+  await expect(page.locator('#player-pool [data-ui="roster-player"]')).toHaveCount(2);
   await expect(page.getByText("No unassigned players to show.", { exact: true })).toHaveCount(0);
   expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -878,6 +889,7 @@ test("enlarged roster text retains names and controls at phone width", async ({ 
   await page.goto(`${origin}${gamePath}#teams`);
   await expectReady(page);
   await page.locator('[data-action="toggle-player-create"]').click();
+  await page.locator("#game-player-new-toggle").click();
   await page.getByLabel("Player name", { exact: true }).fill("Alexandra Francesca — unsent draft");
   // Deterministic 200% text-size fixture; not a claim of physical browser/device
   // zoom or software-keyboard coverage. Snapshot sizes before changing ancestors.
@@ -887,9 +899,11 @@ test("enlarged roster text retains names and controls at phone width", async ({ 
     for (const { element, size } of sizes) element.style.fontSize = `${size * 2}px`;
   });
   await expectMatchGeometry(page);
-  const escapedInitials = await page.locator('[data-ui="roster-player"] [data-ui="avatar"]').evaluateAll(avatars => avatars.flatMap(avatar => {
-    const text = avatar.querySelector("span");
-    if (!text) return ["Missing initials"];
+  const initials = page.locator('[data-ui="roster-player"] [data-ui="player-initial"]');
+  await expect(initials).toHaveCount(2);
+  const escapedInitials = await initials.evaluateAll(avatars => avatars.flatMap(avatar => {
+    const text = [...avatar.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+    if (!text) return ["Missing initial text"];
     const range = document.createRange();
     range.selectNodeContents(text);
     const outer = avatar.getBoundingClientRect();

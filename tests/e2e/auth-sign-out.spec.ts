@@ -6,7 +6,7 @@ import { renderSetupHomePage, renderSignInPage } from "../../app/dist/ui/layout.
 // Browser transport fixtures never contact QA, send email, or use real accounts.
 // Backend revocation is proved separately by local/Lambda/service tests.
 const origin = "https://3fc.fixture.test";
-const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js"].map(name => [
+const assets = new Map(["player-proof.js", "player-consolidation.js", "player-presentation-browser.js", "styles.css", "icons.css", "setup-flow.js", "auth-flow.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
 

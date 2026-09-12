@@ -3,6 +3,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import { renderPlayerIdentity } from "../dist/ui/player-presentation.js";
+import { renderGamePage } from "../dist/ui/layout.js";
 
 const output = process.env.PLAYER_UI_EVIDENCE;
 if (output) mkdirSync(output, { recursive: true });
@@ -12,12 +13,15 @@ const iconButton = (icon, label) => `<button data-ui="icon-button" aria-label="$
 const row = (name, context, actions, linkState = "linked") => `<div data-ui="player-row">${renderPlayerIdentity({ name, context, linkState })}${actions}</div>`;
 const actions = `<div data-ui="player-actions">${iconButton("ellipsis-vertical", "Player actions")}${iconButton("arrow-left-right", "Transfer player")}</div>`;
 const name = "Alexandra van der Westhuizen-Smith";
+const pickerForm = renderGamePage("http://localhost:3001", { gameId: "fixture" }).match(/<form id="game-player-picker-form"[\s\S]*?<\/form>/)?.[0];
+assert(pickerForm, "Use the production picker markup for spacing checks");
 const markup = `<main data-ui="app-shell"><section data-ui="panel"><h1>Player layout fixtures</h1>
   <ul data-ui="directory-list"><li>${row(name, "Winter 2026 · Spring 2026", actions)}</li><li>${row("Xavier", "Winter 2026", actions, "unlinked")}</li></ul>
   <article data-ui="roster-player">${row(name, "", actions)}<div data-ui="row-action-buttons"><button data-ui="button">Red</button><button data-ui="button">Blue</button><button data-ui="button">Yellow</button></div></article>
   <article data-ui="roster-team"><ul><li data-ui="roster-member">${row(name, "", actions)}<div data-ui="transfer-menu"><button data-ui="button">Blue</button><button data-ui="button">Yellow</button></div></li></ul></article>
   <ul data-ui="directory-list"><li>${row(name, "Winter 2026", '<button data-ui="button" disabled>Already in game</button>', "unknown")}</li></ul>
   <div data-ui="consolidation-editor"><table data-ui="consolidation-selection-table"><thead><tr><th>Select</th><th>Player</th><th>Games</th></tr></thead><tbody><tr><td><label><input type="checkbox" aria-label="Select fixture player" /></label></td><td>${renderPlayerIdentity({ name, linkState: "unlinked" })}</td><td>13 September 2026, 9:30 am</td></tr></tbody></table></div>
+  <h2>Add player</h2>${pickerForm}
 </section></main>`;
 const browser = await chromium.launch({ headless: true });
 try {
@@ -39,6 +43,9 @@ try {
           }),
           targets: [...document.querySelectorAll("button")].map(button => ({ width: box(button).width, height: box(button).height })),
           tableNameWidth: box(document.querySelector("td strong")).width,
+          fieldGaps: [...document.querySelectorAll('#game-player-picker-form > [data-ui="field"]')].map(field => {
+            const next = field.nextElementSibling; return next ? box(next).top - box(field).bottom : 0;
+          }),
         };
       });
       const context = `${width}px ${colorScheme} text-${scale}x`;
@@ -49,6 +56,7 @@ try {
       }
       for (const target of metrics.targets) assert(target.width >= 44 && target.height >= 44, `${context}: small target`);
       assert(metrics.tableNameWidth >= 48, `${context}: combine identity too narrow`);
+      assert(metrics.fieldGaps.every(gap => gap >= 12), `${context}: picker fields/actions touch`);
       if (output && width === 390 && scale === 1) await page.screenshot({ path: resolve(output, `players-${width}-${colorScheme}.png`), fullPage: true });
       console.log(`PASS ${context}`);
     } finally { await page.close(); }

@@ -3138,7 +3138,7 @@
       "acceptanceCriteria": ["Opening an empty picker makes no directory request; clearing or closing invalidates outstanding reads.", "All matching pages are traversed with truthful bounded continuation and recovery.", "No Search this game or Add to control remains; full available rosters and metadata reads still work.", "Registration failures preserve exact retry and idempotency state; success never changes an existing assignment.", "Forms have consistent gaps with no mobile overlap and current-head review/CI/QA evidence."],
       "testScenarios": ["Debounce, Enter, scope, empty input, multi-page results, stale responses, close/reopen, network errors.", "Roster unavailable recovery, creation suggestions, duplicate registration, uncertain writes and finished locks."],
       "reviewRequirements": ["Independent design, accessibility, engineering and QA; privacy review of retained metadata reads.", "Parent review:ready before implementation; serialized validation and exact-head Codex/QA/gate."],
-      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"planned","githubIssue":178,"branch":"codex/ux-player-picker-search","notes":["Child of UX-11; no implementation before its parent review cycle completes."]}
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"in-progress","githubIssue":178,"branch":"codex/ux-player-picker-search","notes":["Parent PR #180 is review:ready at ffb6286, with exact-head Codex no-findings completion, CI and QA PASS. Search-first implementation is undergoing validation."]}
     },{
       "id": "UX-13", "title": "Unify live and finished score presentation", "storyPoints": 3,
       "parentEpic": "EPIC-UX", "milestone": "UX Mobile-First Frontend Redesign",

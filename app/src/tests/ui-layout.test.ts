@@ -876,7 +876,8 @@ test("match overview is readable before intentional editing and roster entry is 
     }
     assert.equal(document.querySelector('label[for="player-nickname"]')?.textContent, "Player name");
     assert.equal(document.querySelector('[data-testid="quick-create-player"]')?.textContent?.trim(), "Add player");
-    assert.equal(document.querySelectorAll("#player-search").length, 1);
+    assert.equal(document.querySelectorAll("#player-search").length, 0);
+    assert.equal(document.querySelectorAll("#roster-retry").length, 1);
     assert.equal(document.querySelector("#player-pool-title")?.textContent, "Unassigned");
     assert.equal(document.querySelector("#player-pool")?.textContent, "");
     assert.equal(document.querySelector("#roster-teams")?.textContent, "");

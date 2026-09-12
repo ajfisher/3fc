@@ -333,6 +333,8 @@ body {
 }
 
 [data-ui="management-form"] {
+  display: grid;
+  gap: 1rem;
   margin: 0;
   max-width: 42rem;
 
@@ -1040,7 +1042,7 @@ body {
   min-height: 3rem;
   &:empty { display: none; }
   button { min-width: 44px; min-height: 44px; }
-  :is([data-ui="icon-button"], [data-ui="transfer-toggle"]) { width: 44px; height: 44px; padding: 8px; }
+  [data-ui="icon-button"] { width: 44px; height: 44px; padding: 8px; }
   [data-ui="icon"] { width: 20px; height: 20px; }
 }
 

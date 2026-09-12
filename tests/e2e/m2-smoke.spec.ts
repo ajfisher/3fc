@@ -1037,12 +1037,11 @@ test.describe("M2 local-stack smoke", () => {
       } finally { await anonymousContext.close(); }
 
       await selectGameMode(page, "players");
-      await page.locator("#player-search").fill("Cy");
+      await expect(page.locator("#player-search")).toHaveCount(0);
       // This external join can follow the initial complete roster snapshot.
       // Scheduled matches refresh it every 15 seconds; private search is not
       // the authority for Unassigned. Await that real refresh, not a fixed sleep.
       await expect(page.locator('[data-ui="roster-player"]').filter({ hasText: "Cy" })).toBeVisible({ timeout: 25000 });
-      await page.locator("#player-search").fill("");
 
       const ariPlayerId = await createAndAssignPlayer(page, ariNickname, "red", (playerId) => {
         playerIds.push(playerId);
