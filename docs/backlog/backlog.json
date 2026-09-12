@@ -2998,6 +2998,73 @@
           "No automatic cleanup or production deletion is authorised or implemented by adding this issue."
         ]
       }
+    },
+    {
+      "id": "PLAYER-06",
+      "title": "Replace table-wide league discovery with an account-keyed ACL index",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": [
+        "area:api",
+        "area:data",
+        "area:ops",
+        "area:qa",
+        "type:feature",
+        "milestone:PLAYER",
+        "priority:P1"
+      ],
+      "dependsOn": [
+        "PLAYER-04"
+      ],
+      "summary": "Replace complete but table-wide league discovery with bounded account-keyed reads before data growth exhausts the existing 10-second request budget.",
+      "scope": [
+        "Design and implement an account-keyed league ACL discovery index within reviewed storage and deployment constraints, covering every authority writer: league creation, direct grants, organiser invitations and acceptance, revocation, and league deletion.",
+        "Define canonical account lookup and compatibility for subject and email aliases without duplicate leagues, nickname matching, public account search or exposure of another account's memberships.",
+        "Keep authoritative permission checks independent of discovery projections. Revocation or deletion must never leave a stale index entry that grants authority; define consistent removal and stale-entry handling.",
+        "Provide complete account-scoped pagination with stable cursor validation and deduplication. Normal discovery must not fall back silently to a table-wide scan.",
+        "Provide a resumable, audited backfill with coverage and reconciliation evidence, interrupted-run recovery, verified writer compatibility and a controlled cutover. Incomplete coverage must not be represented as an empty account.",
+        "Specify rollback and operational monitoring that preserve access correctness without presenting stale memberships as authority.",
+        "Record exact-head end-to-end latency and capacity evidence against representative current and projected table sizes and account membership counts, including pagination, cold starts and subject/email compatibility."
+      ],
+      "outOfScope": [
+        "Implementing the index as part of the current pagination repair or merely adding this backlog item.",
+        "Global account discovery, public membership exposure, changing player ownership or league permission semantics.",
+        "An unreviewed infrastructure resource or IAM expansion; any necessary deployment change requires explicit architecture/security review.",
+        "A promised calendar deadline or production migration without separate AJ authorisation."
+      ],
+      "acceptanceCriteria": [
+        "Every league authority creation, grant, invitation, revoke and deletion path maintains the index safely; no legacy writer can bypass cutover guarantees.",
+        "Account-only discovery is complete and paginated for subject/email compatibility, returns no duplicate leagues and exposes no other account's memberships.",
+        "Revoked access and deleted leagues cannot be authorised through stale discovery entries; current authoritative access checks remain enforced.",
+        "Backfill inventory, coverage, reconciliation, cutover and rollback evidence are complete, resumable and auditable.",
+        "Exact-head performance evidence demonstrates adequate headroom within the existing 10-second request timeout at the agreed growth envelope, with p50/p95/p99 and cold-start behaviour recorded.",
+        "Operational monitoring triggers prioritised delivery before growth produces 5-second p95 discovery or otherwise inadequate timeout headroom; the threshold is a capacity trigger, not a calendar commitment.",
+        "Normal account discovery no longer performs work proportional to unrelated table contents."
+      ],
+      "testScenarios": [
+        "Subject-only, email-compatible and combined alias discovery; empty accounts, many leagues, duplicate projections, cursor boundaries and malformed/repeated cursors.",
+        "All grant and revoke paths, invitation acceptance/retry, concurrent revocation and discovery, league deletion/retry, and stale index records without stale authority.",
+        "Backfill interruption/resume, missing or malformed source ACLs, old writers during cutover, incomplete coverage and compatibility-preserving rollback.",
+        "Cross-account privacy and unchanged authorised league access; no public account enumeration.",
+        "Exact-head benchmark with increasing unrelated table data, large account memberships, cold starts and complete pagination under the 10-second request budget."
+      ],
+      "reviewRequirements": [
+        "Independent architecture, security, engineering and QA review of indexing, authority ownership, subject/email compatibility, writer completeness, migration and performance claims.",
+        "Frontend/UI review of loading, partial/unavailable discovery and recovery without false empty-account messaging.",
+        "Serialized validation, versioned migration/performance evidence, exact-head CI/QA/Codex review and review:ready before delivery.",
+        "No production migration, infrastructure expansion, merge or release without explicit AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-12",
+        "wave": "reusable-players-follow-up",
+        "status": "planned",
+        "notes": [
+          "GitHub issue #172 tracks this P1 follow-up. Raised from PR #171 Codex finding 3994297839: complete league discovery remains O(table size), risking the existing 10-second request timeout as unrelated data grows.",
+          "The current pagination repair restores completeness but is not an indexed discovery implementation or a performance guarantee.",
+          "Prioritise before measured 5-second p95 discovery or inadequate timeout headroom; no calendar deadline is claimed."
+        ]
+      }
     }
   ],
   "globalTestScenarios": [

@@ -84,6 +84,7 @@ Generated from `docs/backlog/backlog.json`.
 | `PLAYER-03` | Reuse linked identities when returning players join | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-02` |
 | `PLAYER-04` | Complete player-identity acceptance and migration handoff | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-03` |
 | `PLAYER-05` | Define safe player retention after game deletion | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02`, `PLAYER-04` |
+| `PLAYER-06` | Replace table-wide league discovery with an account-keyed ACL index | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04` |
 
 ## Delivery Tracking
 
@@ -125,6 +126,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `PLAYER-03` | reusable-players | in-progress | [#161](https://github.com/ajfisher/3fc/issues/161) | codex/returning-player-join |
 | `PLAYER-04` | reusable-players | in-progress | [#162](https://github.com/ajfisher/3fc/issues/162) | codex/player-identity-acceptance |
 | `PLAYER-05` | reusable-players-follow-up | planned | [#170](https://github.com/ajfisher/3fc/issues/170) | - |
+| `PLAYER-06` | reusable-players-follow-up | planned | Pending reconciliation | - |
 
 ## Global Test Scenarios
 

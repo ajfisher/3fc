@@ -9,6 +9,7 @@ scan had1390 rows and a continuation, no Melbourne ACLs; complete pagination had
 2057 rows and five Melbourne ACLs. The league and season were never deleted.
 
 Refs #162. Refs #170 (policy backlog only, not resolved).
+Refs #172 (account-keyed discovery follow-up, not resolved).
 Base: codex/player-identity-acceptance (#169).
 
 ## Specification and acceptance evidence
@@ -78,6 +79,15 @@ verified against QA and direct Melbourne league/season access still worked.
 
 ## Automated and agent review disposition
 
+Codex review5184329267 at8f8b833 raised P2 comment3994297839: complete
+table-wide reads can exceed the10-second API timeout as unrelated data grows.
+This is a valid, deferred scalability limitation, not a false positive or a
+claim fixed by pagination. P1 PLAYER-06/#172 specifies account-keyed ACL reads,
+all authority writers, audited migration and performance acceptance. Independent
+architecture/security review agrees that bolting an unreviewed authority index
+onto this cutover would broaden its trust boundary. Current-head deployed
+latency/headroom evidence and AJ's temporary-risk disposition remain required.
+
 Independent architecture/security review found no introduced ACL/privacy blocker
 and requested malformed-cursor coverage, now passing in the final test-file run.
 The full-suite run preceded that test-only addition; runtime code is unchanged.
@@ -97,24 +107,29 @@ None.
 
 ## Human judgement
 
-- [x] `human-judgement:none`
+- [x] `human-judgement:requested`
 
 ### Decision requiring judgement
 
-None for this code change. QA data-removal scope is separately recorded in the
-cutover task and is not authorised by this packet.
+Whether to accept complete table-wide discovery temporarily, subject to observed
+QA headroom, while P1 #172 delivers account-keyed lookup. QA data-removal scope
+is separately recorded in the cutover task and is not authorised by this packet.
 
 ### Options considered
 
-None.
+Retain the incomplete single-page read; ship complete pagination temporarily;
+or delay the fix for a separately reviewed ACL index and migration.
 
 ### Reason selected
 
-None.
+Complete pagination restores today's missing league without changing permissions
+or introducing an unreviewed index writer/cutover. Its growth limitation remains
+explicit and must not be presented as a scalable final design.
 
 ### Reversal cost
 
-None.
+Reverting pagination restores the known missing-league bug. The future indexed
+implementation needs its own reviewed writer/backfill compatibility plan.
 
 ## Review focus
 
