@@ -3127,7 +3127,7 @@
       "acceptanceCriteria": ["Avatar, name and trailing actions are vertically centred with consistent secondary spacing and at least44px action targets.", "Unicode initials, long names and linked/unlinked/unknown status render safely without account identifiers.", "Directory, roster, picker, suggestions, combine table and showcase use the shared renderer.", "Manage players preserves season scope and role visibility; delete remains organiser-only.", "Current-head independent reviews, CI, QA and review gate pass before child implementation."],
       "testScenarios": ["Renderer escape/Unicode/status tests, actor variants, SVG-child menu actions and focus recovery.", "320/390/430px, tablet/desktop, light/dark, keyboard and200% zoom with computed alignment evidence."],
       "reviewRequirements": ["Read-only design, frontend/accessibility, engineering, QA and privacy/security reviews.", "Serialized4GiB validation, exact-head Codex review, CI and disposable QA evidence; no merge."],
-      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"in-progress","githubIssue":177,"branch":"codex/ux-player-row-consistency","notes":["First of three frontend-only follow-up PRs; retain accepted identity backend."]}
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"review-ready","githubIssue":177,"branch":"codex/ux-player-row-consistency","notes":["PR #180 review:ready atffb6286; CI34679464480, QA34679464495 and exact-head Codex no-findings5644347918. Unmerged, awaiting AJ final stack review."]}
     },{
       "id": "UX-12", "title": "Make adding reusable players search-first", "storyPoints": 5,
       "parentEpic": "EPIC-UX", "milestone": "UX Mobile-First Frontend Redesign",
@@ -3138,7 +3138,7 @@
       "acceptanceCriteria": ["Opening an empty picker makes no directory request; clearing or closing invalidates outstanding reads.", "All matching pages are traversed with truthful bounded continuation and recovery.", "No Search this game or Add to control remains; full available rosters and metadata reads still work.", "Registration failures preserve exact retry and idempotency state; success never changes an existing assignment.", "Forms have consistent gaps with no mobile overlap and current-head review/CI/QA evidence."],
       "testScenarios": ["Debounce, Enter, scope, empty input, multi-page results, stale responses, close/reopen, network errors.", "Roster unavailable recovery, creation suggestions, duplicate registration, uncertain writes and finished locks."],
       "reviewRequirements": ["Independent design, accessibility, engineering and QA; privacy review of retained metadata reads.", "Parent review:ready before implementation; serialized validation and exact-head Codex/QA/gate."],
-      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"in-progress","githubIssue":178,"branch":"codex/ux-player-picker-search","notes":["Parent PR #180 is review:ready at ffb6286, with exact-head Codex no-findings completion, CI and QA PASS. Search-first implementation is undergoing validation."]}
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"review-ready","githubIssue":178,"branch":"codex/ux-player-picker-search","notes":["PR #181 review:ready at413112f; CI34683681591, QA34683681580 and exact-head Codex no-findings5644824093. Unmerged; parent gate passed before implementation."]}
     },{
       "id": "UX-13", "title": "Unify live and finished score presentation", "storyPoints": 3,
       "parentEpic": "EPIC-UX", "milestone": "UX Mobile-First Frontend Redesign",
@@ -3149,7 +3149,7 @@
       "acceptanceCriteria": ["Live and finished team totals use consistent centring and Red/Blue/Yellow order with Conceded primary.", "Native radio dots are invisible but keyboard navigation, names, disabled prerequisites and checked state work.", "Mobile/zoom layout and scoring regressions pass; complete stack is ready for AJ without merging."],
       "testScenarios": ["Scheduled/live/finished computed alignment, narrow containers and200% zoom.", "Radio arrow keys, focus-visible, label/SVG child clicks, normal/own goals and unchanged winner/contributions."],
       "reviewRequirements": ["Independent UX, frontend, engineering and QA; unchanged scoring invariants explicitly reviewed.", "Serialized full validation, controlled M2 smoke, exact-head Codex, QA and review:ready."],
-      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"planned","githubIssue":179,"branch":"codex/ux-scoreboard-consistency","notes":["Child of UX-12; no backend or deployment configuration changes planned."]}
+      "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"in-progress","githubIssue":179,"branch":"codex/ux-scoreboard-consistency","notes":["Parent PR #181 reached review:ready at413112f with CI34683681591, QA34683681580 and verified exact-head Codex no-findings comment5644824093 before implementation. Shared presentation and native-radio styling are undergoing validation; no backend or deployment configuration changes."]}
     }
   ],
   "globalTestScenarios": [

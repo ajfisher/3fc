@@ -2,6 +2,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { renderGamePage } from "../../app/dist/ui/layout.js";
+import { expectTeamTotalAlignment } from "./team-total-assertions.js";
 
 // Production-built HTML/CSS/controller with fictional, fully intercepted data.
 // No API server, AWS, email, QA account or real match is used. Build first; run
@@ -232,8 +233,8 @@ async function openScoring(page: Page, fixture: Awaited<ReturnType<typeof instal
 }
 
 async function normalDraft(page: Page, fixture: Awaited<ReturnType<typeof installScoringFixture>>) {
-  await teamRadio(page, "scoring", "red").check();
-  await teamRadio(page, "conceding", "blue").check();
+  await teamRadio(page, "scoring", "red").locator("..").click();
+  await teamRadio(page, "conceding", "blue").locator("..").click();
   await page.locator("#goal-scorer").selectOption(fixture.players[0].playerId);
   await expect(page.getByTestId("add-goal")).toBeEnabled();
 }
@@ -270,46 +271,14 @@ async function expectGeometry(page: Page) {
 }
 
 async function expectScoreAndGoalAlignment(page: Page) {
-  const geometry = await page.evaluate(() => {
-    const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
-    const center = (rect: DOMRect) => rect.left + rect.width / 2;
-    const textRect = (element: Element) => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      return { rect: range.getBoundingClientRect(), fragments: range.getClientRects().length };
-    };
-    return {
-      zoom,
-      teams: [...document.querySelectorAll<HTMLElement>('#live-scoreboard [data-ui="score-team"]')].map(team => {
-        const swatch = team.querySelector('[data-ui="team-swatch"]')!.getBoundingClientRect();
-        const name = textRect(team.querySelector("header strong")!);
-        const headerLeft = Math.min(swatch.left, name.rect.left);
-        const headerRight = Math.max(swatch.right, name.rect.right);
-        return { id: team.dataset.teamId, headingOffset: (headerLeft + headerRight) / 2 - center(team.getBoundingClientRect()),
-          totals: [...team.querySelectorAll("dt, dd")].map(element => {
-            const text = textRect(element);
-            const cell = element.parentElement!.getBoundingClientRect();
-            return { text: element.textContent, offset: center(text.rect) - center(cell), fragments: text.fragments };
-          }),
-        };
-      }),
-      rows: [...document.querySelectorAll<HTMLElement>('#goal-timeline [data-ui="goal-event"]')].map(row => {
-        const style = getComputedStyle(row);
-        return { latest: row.dataset.state === "latest", padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft] };
-      }),
-    };
-  });
-  expect(geometry.teams).toHaveLength(3);
-  for (const team of geometry.teams) {
-    expect(Math.abs(team.headingOffset), `${team.id} dot and heading are centered as one unit`).toBeLessThanOrEqual(1.5 * geometry.zoom);
-    for (const total of team.totals) {
-      expect(total.fragments, `${team.id} ${total.text} remains unfragmented`).toBe(1);
-      expect(Math.abs(total.offset), `${team.id} ${total.text} is centered in its total column`).toBeLessThanOrEqual(1.5 * geometry.zoom);
-    }
-  }
-  expect(geometry.rows.length).toBeGreaterThan(1);
-  expect(geometry.rows.filter(row => row.latest)).toHaveLength(1);
-  for (const row of geometry.rows) expect(row.padding, "Latest highlighting must not change the shared goal-row inset").toEqual(geometry.rows[0].padding);
+  await expectTeamTotalAlignment(page, '#live-scoreboard [data-ui="score-team"]');
+  const rows = await page.locator('#goal-timeline [data-ui="goal-event"]').evaluateAll(elements => elements.map(row => {
+    const style = getComputedStyle(row);
+    return { latest: row.getAttribute("data-state") === "latest", padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft] };
+  }));
+  expect(rows.length).toBeGreaterThan(1);
+  expect(rows.filter(row => row.latest)).toHaveLength(1);
+  for (const row of rows) expect(row.padding, "Latest highlighting must not change the shared goal-row inset").toEqual(rows[0].padding);
 }
 
 async function capture(page: Page, testInfo: TestInfo, name: string) {
@@ -319,6 +288,39 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
 }
 
 test.use({ timezoneId: "Australia/Melbourne", locale: "en-AU" });
+
+test("team choices hide radio chrome but retain native keyboard and disabled behaviour", async ({ page }) => {
+  const fixture = await installScoringFixture(page);
+  await openScoring(page, fixture);
+  const red = teamRadio(page, "scoring", "red"), blue = teamRadio(page, "scoring", "blue");
+  await red.focus(); await page.keyboard.press("Space"); await expect(red).toBeChecked();
+  await page.keyboard.press("ArrowRight"); await expect(blue).toBeChecked(); await expect(blue).toBeFocused();
+  const style = await blue.evaluate(input => {
+    const radio = getComputedStyle(input), label = getComputedStyle(input.closest("label")!);
+    return { display: radio.display, visibility: radio.visibility, width: radio.width, clip: radio.clipPath, outline: label.outlineWidth };
+  });
+  expect(style.display).not.toBe("none"); expect(style.visibility).toBe("visible");
+  expect(style.width).toBe("1px"); expect(style.clip).toBe("inset(50%)"); expect(style.outline).toBe("2px");
+  await expect(teamRadio(page, "conceding", "blue")).toBeDisabled();
+  const concedingRed = teamRadio(page, "conceding", "red");
+  await concedingRed.focus(); await page.keyboard.press("Space"); await page.keyboard.press("ArrowRight");
+  await expect(teamRadio(page, "conceding", "yellow")).toBeChecked();
+  await red.locator("..").click(); await expect(red).toBeChecked();
+  await page.emulateMedia({ forcedColors: "active" });
+  await expect(red.locator("..")).toHaveCSS("border-top-width", "3px");
+  await expect(blue.locator("..")).toHaveCSS("border-top-width", "1px");
+  await expect(red).toBeChecked();
+  await expect(page.locator("#goal-own-goal")).toBeVisible();
+  expect(fixture.mutations()).toEqual([]); expect(fixture.unexpected).toEqual([]);
+});
+
+for (const width of [320, 390, 430, 768, 1280]) test(`scheduled totals share alignment ${width}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const fixture = await installScoringFixture(page, { status: "scheduled" });
+  await openScoring(page, fixture);
+  await expectTeamTotalAlignment(page, '#live-scoreboard [data-ui="score-team"]');
+  expect(fixture.mutations()).toEqual([]);
+});
 
 test("scoring is a stable native navigation destination with no redundant return action", async ({ page }) => {
   const fixture = await installScoringFixture(page, { status: "scheduled" });
@@ -447,7 +449,7 @@ test("own goal records a null scoring team and only the conceding tally", async 
   await openScoring(page, fixture);
   await page.locator("#goal-own-goal").check();
   await expect(page.locator('#goal-scoring-team input:enabled')).toHaveCount(0);
-  await teamRadio(page, "conceding", "blue").check();
+  await teamRadio(page, "conceding", "blue").locator("..").click();
   await page.locator("#goal-scorer").selectOption(fixture.players[6].playerId);
   await page.getByTestId("goal-assists-dropdown").locator("summary").click();
   await assist(page, fixture.players[12].playerId).check();

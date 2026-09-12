@@ -537,7 +537,7 @@ for (const role of ["scorekeeper", "viewer", "unknown"] as const) {
     await expect(page.getByTestId("toggle-organiser-invite")).toBeHidden();
     await expect(page.getByTestId("delete-league")).toBeHidden();
     await expect(page.getByTestId("create-season")).toBeDisabled();
-    await expect(page.locator('[data-ui="more-actions"]:visible')).toHaveCount(0);
+    await expect(leagueActions(page)).toBeHidden();
     await page.goto(`${origin}${seasonPath}#create-game`);
     await expectSharedShell(page, seasonName);
     await expect(page.getByRole("table", { name: "Upcoming games", exact: true })).toBeVisible();
@@ -545,7 +545,15 @@ for (const role of ["scorekeeper", "viewer", "unknown"] as const) {
     await expect(page.getByTestId("create-game")).toBeDisabled();
     await expect(page.getByTestId("delete-season")).toBeHidden();
     await expect(page.locator("#season-create-game-region")).toBeHidden();
-    await expect(page.locator('[data-ui="more-actions"]:visible')).toHaveCount(0);
+    const seasonMenu = page.locator('[data-action="toggle-action-menu"][aria-controls="season-actions"]');
+    if (role === "scorekeeper") {
+      await expect(seasonMenu).toBeVisible();
+      await seasonMenu.click();
+      await expect(page.getByRole("link", { name: "Manage players", exact: true })).toHaveAttribute("href", `${leaguePath}?seasonId=${encodeURIComponent(seasonId)}#players`);
+      await expect(page.getByTestId("delete-season")).toBeHidden();
+      await page.keyboard.press("Escape");
+      await expect(seasonMenu).toBeFocused();
+    } else await expect(seasonMenu).toBeHidden();
     await expectGeometry(page);
     expect(fixture.requests.filter(request => request.method !== "GET")).toEqual([]);
     expect(fixture.requests.filter(request => request.path === apiLeaguePath)).toHaveLength(2);

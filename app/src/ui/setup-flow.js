@@ -4238,20 +4238,7 @@
           ${outcome ? `<strong data-testid="game-result-outcome">${escapeHtml(outcome.text)}</strong>` : '<strong data-testid="result-unavailable">Result unavailable</strong><p data-ui="empty-note">The match result could not be loaded. Reload to try again.</p>'}
         </header>
         ${teams.length > 0 ? `<div data-ui="result-team-list" data-testid="game-result-teams">
-          ${teams
-            .map((team) => {
-              return `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
-                <header>
-                  <span data-ui="team-swatch" aria-hidden="true"></span>
-                  <strong>${escapeHtml(team.name)}</strong>
-                </header>
-                <dl>
-                  <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
-                  <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
-                </dl>
-              </article>`;
-            })
-            .join("")}
+          ${teams.map(team => renderTeamTotal(team, "result-team")).join("")}
         </div>` : ""}
         ${goalLogsLoaded ? `${renderFinalAggregateStats()}${renderFinalFullGoalLog()}` : renderFinalGoalSummariesUnavailable()}
       </section>`);
@@ -4303,6 +4290,19 @@
       selectElement.disabled = options.length === 0 && !preservesMissingSelection;
     }
 
+    function renderTeamTotal(team, context) {
+      return `<article data-ui="${context}" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
+        <header>
+          <span data-ui="team-swatch" aria-hidden="true"></span>
+          <strong>${escapeHtml(team.name)}</strong>
+        </header>
+        <dl>
+          <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+          <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
+        </dl>
+      </article>`;
+    }
+
     function renderLiveScoreboard() {
       if (!(liveScoreboardElement instanceof HTMLElement)) {
         return;
@@ -4326,20 +4326,7 @@
         return;
       }
 
-      liveScoreboardElement.innerHTML = teams
-        .map(
-          (team) => `<article data-ui="score-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
-            <header>
-              <span data-ui="team-swatch"></span>
-              <strong>${escapeHtml(team.name)}</strong>
-            </header>
-            <dl>
-              <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
-              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
-            </dl>
-          </article>`,
-        )
-        .join("");
+      liveScoreboardElement.innerHTML = teams.map(team => renderTeamTotal(team, "score-team")).join("");
     }
 
     function selectedAssistPlayerIds() {

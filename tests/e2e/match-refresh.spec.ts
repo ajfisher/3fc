@@ -231,7 +231,7 @@ async function refresh(page: Page, milliseconds = 5_100) {
 const radio = (page: Page, group: "scoring" | "conceding", team: TeamId) => page.locator(`#goal-${group}-team input[value="${team}"]`);
 const events = (page: Page) => page.locator('#goal-timeline [data-ui="goal-event"]');
 async function draft(page: Page, backend: Backend, scorerIndex = 0) {
-  await radio(page, "scoring", "red").check(); await radio(page, "conceding", "blue").check();
+  await radio(page, "scoring", "red").locator("..").click(); await radio(page, "conceding", "blue").locator("..").click();
   await page.locator("#goal-scorer").selectOption(backend.players[scorerIndex].playerId);
   await expect(page.getByTestId("add-goal")).toBeEnabled();
 }

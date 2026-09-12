@@ -6595,6 +6595,23 @@ for (const malformed of [{ players: null }, { players: [{ playerId: "missing-nam
   } finally { page.dom.window.close(); }
 });
 
+test("live and finished team totals share semantic presentation without changing results", async () => {
+  const apiState = createMockApiState(), gameId = "shared-team-totals";
+  seedResultsEntry(apiState, gameId, "admin");
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }), url: `http://localhost:3000/games/${gameId}#results`, scriptFile: "setup-flow.js", apiState });
+  try {
+    const live = [...page.document.querySelectorAll('[data-ui="score-team"]')];
+    const results = [...page.document.querySelectorAll('[data-ui="result-team"]')];
+    assert.equal(live.length, 3); assert.equal(results.length, 3);
+    assert.deepEqual(results.map(team => team.getAttribute("data-team-id")), ["red", "blue", "yellow"]);
+    results.forEach((team, index) => {
+      assert.equal(team.innerHTML, live[index].innerHTML);
+      assert.deepEqual([...team.querySelectorAll("dt")].map(label => label.textContent), ["Conceded", "Scored"]);
+      assert.equal(team.querySelector('[data-ui="team-swatch"]')?.getAttribute("aria-hidden"), "true");
+    });
+  } finally { page.dom.window.close(); }
+});
+
 test("match roster renders permitted teams when optional operator enrichment fails", async () => {
   const apiState = createMockApiState();
   seedGoalScoringGame(apiState, { gameId: "game-match-enrichment", role: "admin" });

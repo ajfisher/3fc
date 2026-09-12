@@ -1054,8 +1054,8 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.getByTestId("add-goal")).toBeVisible();
       await expect(page.getByTestId("undo-last-goal")).toBeVisible();
       await startThird(page, 1);
-      await page.locator('#goal-scoring-team input[type="radio"][value="red"]').check();
-      await page.locator('#goal-conceding-team input[type="radio"][value="blue"]').check();
+      await page.locator('#goal-scoring-team input[type="radio"][value="red"]').locator("..").click();
+      await page.locator('#goal-conceding-team input[type="radio"][value="blue"]').locator("..").click();
       await page.locator("#goal-scorer").selectOption(ariPlayerId);
       await page.getByTestId("goal-assists-dropdown").locator("summary").click();
       await page.locator(`#goal-assists input[value="${beaPlayerId}"]`).check();
@@ -1126,8 +1126,8 @@ test.describe("M2 local-stack smoke", () => {
       await expect(page.locator('#goal-conceding-team input[type="radio"]:enabled')).toHaveCount(0);
       await expect(page.locator("#goal-scorer")).toBeDisabled();
       await expect(page.getByTestId("add-goal")).toBeDisabled();
-      await page.locator('#goal-scoring-team input[type="radio"][value="red"]').check();
-      await page.locator('#goal-conceding-team input[type="radio"][value="blue"]').check();
+      await page.locator('#goal-scoring-team input[type="radio"][value="red"]').locator("..").click();
+      await page.locator('#goal-conceding-team input[type="radio"][value="blue"]').locator("..").click();
       await page.locator("#goal-scorer").selectOption(ariPlayerId);
       await expect(page.getByTestId("add-goal")).toBeEnabled();
       await expect(page.locator("#goal-form-note")).not.toContainText("final whistle");
