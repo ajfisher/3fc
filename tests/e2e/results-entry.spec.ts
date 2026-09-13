@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expectTeamTotalAlignment } from "./team-total-assertions.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -42,7 +43,7 @@ type Plan = { kind: Operation; gate?: ReturnType<typeof deferred>; status?: numb
 type LookupPlan = { gate?: ReturnType<typeof deferred>; status?: number; payload?: unknown };
 type Options = { authenticated?: boolean; role?: Role; result?: ResultKind; log?: LogKind; sessionGate?: ReturnType<typeof deferred>; inviteLeagueId?: string;
   contextPlayers?: Array<{ playerId: string; nickname: string }> };
-const assets = new Map(["styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js", "player-proof.js", "player-consolidation.js", "returning-player.js"].map(name => [
+const assets = new Map(["player-presentation-browser.js", "styles.css", "icons.css", "setup-flow.js", "auth-flow.js", "modal.js", "player-proof.js", "player-consolidation.js", "returning-player.js"].map(name => [
   `/ui/${name}`, readFileSync(resolve("app/dist/ui", name), "utf8"),
 ]));
 
@@ -333,6 +334,7 @@ async function expectGeometry(page: Page) {
 }
 
 async function expectResultLabelsFit(page: Page) {
+  await expectTeamTotalAlignment(page, '[data-ui="result-team"]');
   const measurements = await page.locator('[data-ui="result-team-list"]').evaluate(list => {
     const labels = [...list.querySelectorAll("dt")].map(label => {
       const range = document.createRange();

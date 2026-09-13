@@ -125,8 +125,9 @@
       content.append(element("h3", `Keep ${proposal.nickname}`), element("p", proposal.leagueName));
       const profiles = element("ul", undefined, { "data-ui": "directory-list", "aria-label": "Profiles to combine" });
       for (const profile of proposal.profiles) {
-        const row = element("li"); row.append(element("strong", profile.nickname));
-        row.append(element("p", `${profile.claimed ? "Linked to an account" : "Not linked to an account"}${profile.playerId === proposal.retainedPlayerId ? " · Profile to keep" : ""}`));
+        const row = element("li");
+        row.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: profile.nickname, linkState: profile.claimed ? "linked" : "unlinked",
+          context: profile.playerId === proposal.retainedPlayerId ? "Profile to keep" : "" });
         const games = element("ul", undefined, { "aria-label": `Games for ${profile.nickname}` });
         for (const game of profile.games) games.append(element("li", new Date(game.kickoffAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })));
         if (profile.games.length) row.append(games); else row.append(element("p", "No game registrations."));
@@ -323,7 +324,7 @@
           refreshRetained();
         });
         label.append(input); selectCell.append(label);
-        const playerCell = element("td"); playerCell.append(element("strong", player.nickname), document.createTextNode(" "), element("span", player.claimed ? "Linked" : "Unlinked"));
+        const playerCell = element("td"); playerCell.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname, linkState: player.claimed ? "linked" : "unlinked" });
         const gamesCell = element("td", undefined, { id: `consolidation-games-${rows.children.length}` });
         input.setAttribute("aria-describedby", gamesCell.id);
         if (!Array.isArray(player.games)) gamesCell.textContent = "Game history unavailable";

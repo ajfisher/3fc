@@ -33,6 +33,14 @@ interface StaticAsset {
 
 const STATIC_ASSETS: StaticAsset[] = [
   {
+    outputPath: "ui/player-presentation-browser.js",
+    candidateSources: [
+      fileURLToPath(new URL("./ui/player-presentation-browser.js", import.meta.url)),
+      resolve(process.cwd(), "dist/ui/player-presentation-browser.js"),
+      resolve(process.cwd(), "app/dist/ui/player-presentation-browser.js"),
+    ],
+  },
+  {
     outputPath: "ui/returning-player.js",
     candidateSources: [
       fileURLToPath(new URL("./ui/returning-player.js", import.meta.url)),

@@ -507,6 +507,7 @@
     const focusWasInside = panel.contains(document.activeElement);
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
     panel.hidden = !open;
+    panel.dispatchEvent(new CustomEvent("disclosurechange", { detail: { open } }));
     if (trigger.hasAttribute("data-hide-when-expanded")) trigger.hidden = open || trigger.disabled;
     if (open && options.focus !== false) {
       const focusTarget = panel.querySelector("input, select, button, [tabindex]");
@@ -2184,7 +2185,9 @@
         const list = document.createElement("ul");
         for (const player of result.players) {
           const row = document.createElement("li");
-          row.textContent = [player.nickname, ...player.seasons.map(season => season.name)].join(" · "); list.append(row);
+          row.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+            linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
+            context: player.seasons.map(season => season.name).join(" · ") }); list.append(row);
         }
         panel.append(list);
         const button = document.createElement("button"); button.type = "button";
@@ -2275,28 +2278,19 @@
         directoryPlayers.set(player.playerId, player);
         const row = document.createElement("li");
         row.setAttribute("data-player-id", player.playerId);
-        const label = document.createElement("strong"); label.textContent = player.nickname;
-        const badge = document.createElement("span");
-        badge.setAttribute("data-ui", "claim-badge");
-        badge.setAttribute("data-state", player.claimed ? "claimed" : "unclaimed");
-        badge.title = player.claimed ? "Linked to an account" : "Not linked to an account";
-        badge.innerHTML = renderClientIcon(player.claimed ? "user-round-check" : "circle-user-round");
-        const accessible = document.createElement("span"); accessible.className = "sr-only"; accessible.textContent = badge.title;
-        badge.append(accessible);
-        const heading = document.createElement("div"); heading.setAttribute("data-ui", "directory-player-heading"); heading.append(label, badge);
+        const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
+        heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
+          context: (player.seasons ?? []).map(season => season.name).join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "") });
         if (canManage() && !player.claimed) {
           const actions = document.createElement("div");
+          actions.setAttribute("data-ui", "player-actions");
           actions.innerHTML = renderClientActionMenu(`directory-player-${encodeURIComponent(player.playerId)}`, player.nickname,
             renderClientIconButton({ icon: "user-round-plus", label: `Invite ${player.nickname} to link their profile`, text: "Invite to link profile",
               attributes: { "data-action": "invite-player-profile", "data-player-id": player.playerId } }));
           heading.append(actions);
         }
         row.append(heading);
-        const names = (Array.isArray(player.seasons) ? player.seasons : []).filter(season => typeof season.name === "string").map(season => season.name);
-        if (names.length) {
-          const context = document.createElement("p"); context.textContent = names.join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "");
-          row.append(context);
-        }
         list.append(row);
       }
       consolidation?.refreshRows();
@@ -2980,9 +2974,13 @@
             let playersLink = document.getElementById("season-players-link");
             if (!playersLink) {
               playersLink = document.createElement("a"); playersLink.id = "season-players-link";
-              playersLink.setAttribute("data-ui", "button"); playersLink.setAttribute("data-variant", "secondary");
-              playersLink.innerHTML = `${renderClientIcon("users")}<span>Players</span>`;
-              document.querySelector('[data-ui="header-actions"]')?.prepend(playersLink);
+              playersLink.setAttribute("data-ui", "row-action");
+              playersLink.innerHTML = `${renderClientIcon("users")}<span>Manage players</span>`;
+              const surface = document.getElementById("season-actions");
+              const menu = surface?.closest('[data-ui="action-menu"]');
+              menu?.removeAttribute("data-management-only");
+              if (menu) menu.hidden = false;
+              surface?.prepend(playersLink);
             }
             playersLink.href = `/leagues/${encodeURIComponent(leagueId)}?${new URLSearchParams({ seasonId })}#players`;
           }
@@ -3260,7 +3258,6 @@
     const finalGameStatus = document.getElementById("final-game-status");
     const playerNicknameInput = document.getElementById("player-nickname");
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
-    const playerSearchInput = document.getElementById("player-search");
     const playerPoolElement = document.getElementById("player-pool");
     const rosterTeamsElement = document.getElementById("roster-teams");
     const liveScoreboardElement = document.getElementById("live-scoreboard");
@@ -3304,7 +3301,6 @@
     // search enrichment. null means the additive read is unavailable, not empty.
     let rosterUnassignedPlayers = null;
     let rosterAssignments = [];
-    let rosterSearchTimer = 0;
     let existingPlayerAttempt = null;
     let openTransferPlayerId = null;
     let scoreboardTeams = [];
@@ -3327,9 +3323,9 @@
     let rosterReadVersion = 0;
     let playersReadVersion = 0;
     let rosterDataLoaded = false;
-    let playerSearchState = "loading";
+    let playerDetailsState = "loading";
+    let playerDetailsRecovery = { key: "", searched: new Set() };
     let playerNicknameGeneration = 0;
-    let playerSearchGeneration = 0;
     const knownRosterPlayers = new Map();
     const verifiedAdminPlayers = new Map();
     const pendingCreatedPlayers = new Map();
@@ -3784,7 +3780,6 @@
       return (
         playerNicknameInput instanceof HTMLInputElement &&
         quickCreatePlayerButton instanceof HTMLButtonElement &&
-        playerSearchInput instanceof HTMLInputElement &&
         playerPoolElement instanceof HTMLElement &&
         rosterTeamsElement instanceof HTMLElement
       );
@@ -4243,20 +4238,7 @@
           ${outcome ? `<strong data-testid="game-result-outcome">${escapeHtml(outcome.text)}</strong>` : '<strong data-testid="result-unavailable">Result unavailable</strong><p data-ui="empty-note">The match result could not be loaded. Reload to try again.</p>'}
         </header>
         ${teams.length > 0 ? `<div data-ui="result-team-list" data-testid="game-result-teams">
-          ${teams
-            .map((team) => {
-              return `<article data-ui="result-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
-                <header>
-                  <span data-ui="team-swatch" aria-hidden="true"></span>
-                  <strong>${escapeHtml(team.name)}</strong>
-                </header>
-                <dl>
-                  <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
-                  <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
-                </dl>
-              </article>`;
-            })
-            .join("")}
+          ${teams.map(team => renderTeamTotal(team, "result-team")).join("")}
         </div>` : ""}
         ${goalLogsLoaded ? `${renderFinalAggregateStats()}${renderFinalFullGoalLog()}` : renderFinalGoalSummariesUnavailable()}
       </section>`);
@@ -4308,6 +4290,19 @@
       selectElement.disabled = options.length === 0 && !preservesMissingSelection;
     }
 
+    function renderTeamTotal(team, context) {
+      return `<article data-ui="${context}" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
+        <header>
+          <span data-ui="team-swatch" aria-hidden="true"></span>
+          <strong>${escapeHtml(team.name)}</strong>
+        </header>
+        <dl>
+          <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
+          <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
+        </dl>
+      </article>`;
+    }
+
     function renderLiveScoreboard() {
       if (!(liveScoreboardElement instanceof HTMLElement)) {
         return;
@@ -4331,20 +4326,7 @@
         return;
       }
 
-      liveScoreboardElement.innerHTML = teams
-        .map(
-          (team) => `<article data-ui="score-team" data-team-id="${escapeHtml(team.teamId)}"${teamSwatchStyle(team)}>
-            <header>
-              <span data-ui="team-swatch"></span>
-              <strong>${escapeHtml(team.name)}</strong>
-            </header>
-            <dl>
-              <div><dt>Conceded</dt><dd>${escapeHtml(String(team.conceded))}</dd></div>
-              <div><dt>Scored</dt><dd>${escapeHtml(String(team.scored))}</dd></div>
-            </dl>
-          </article>`,
-        )
-        .join("");
+      liveScoreboardElement.innerHTML = teams.map(team => renderTeamTotal(team, "score-team")).join("");
     }
 
     function selectedAssistPlayerIds() {
@@ -5343,21 +5325,32 @@
       const open = openTransferPlayerId === playerId;
       const disabled = finishedRosterControlsLocked() || rosterMutationPending || playerCreatePending ? " disabled" : "";
       const nickname = playerNickname(playerId);
-      const alternatives = rosterTeams
-        .filter((team) => team.teamId !== currentTeamId)
-        .map((team) => assignmentButton(playerId, team, null, "transfer"))
-        .join("");
-
       return `<div data-ui="transfer-control">
         <button data-ui="transfer-toggle" type="button" data-action="toggle-transfer" ${playerIdentityAttribute(playerId)} aria-label="${escapeHtml(
           `Transfer ${nickname}`,
         )}" aria-expanded="${
           open ? "true" : "false"
         }" aria-controls="${menuId}" title="${escapeHtml(`Transfer ${nickname}`)}"${disabled}>${renderClientIcon("arrow-left-right")}</button>
-        <div id="${menuId}" data-ui="transfer-menu"${open ? "" : " hidden"}>
-          ${alternatives}
-        </div>
       </div>`;
+    }
+
+    function transferOptions(playerId, currentTeamId) {
+      return `<div id="${transferMenuId(playerId)}" data-ui="transfer-menu"${openTransferPlayerId === playerId ? "" : " hidden"}>
+        ${rosterTeams.filter(team => team.teamId !== currentTeamId).map(team => assignmentButton(playerId, team, null, "transfer")).join("")}
+      </div>`;
+    }
+
+    function rosterLinkState(player) {
+      const verified = currentLeagueRole === "admin" ? verifiedAdminPlayers.get(player?.playerId) : null;
+      // The admin DTO intentionally omits access for unclaimed profiles. The
+      // public/scorer DTO also omits it, so only verified admin reads establish
+      // that state. An explicitly malformed access object establishes nothing.
+      return !verified ? "unknown" : !Object.hasOwn(verified, "access") ? "unlinked"
+        : typeof verified.access?.userId === "string" && verified.access.userId.trim() ? "linked" : "unknown";
+    }
+
+    function renderRosterIdentity(player) {
+      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState: rosterLinkState(player) });
     }
 
     function playerAccessPanel(player) {
@@ -5366,12 +5359,11 @@
       }
 
       const access = verifiedAdminPlayers.get(player.playerId)?.access;
-      if (!access || typeof access.userId !== "string" || access.userId.length === 0) {
+      const linkState = rosterLinkState(player);
+      if (linkState === "unknown") return "";
+      if (linkState === "unlinked") {
         const invitePath = invitationPath("", player.playerId);
         return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
-          <span data-ui="claim-badge" data-state="unclaimed" role="img" aria-label="Not claimed" title="Not claimed">${renderClientIcon(
-            "circle-user-round",
-          )}</span>
           ${invitePath ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
             `<button data-ui="row-action" type="button" data-action="invite-player-profile" ${playerIdentityAttribute(player.playerId)}>Invite to link profile</button>`,
             { "data-player-management": "" }) : '<small>Profile linking is unavailable for this player. Ask for help.</small>'}
@@ -5388,9 +5380,7 @@
         </div>`, { "data-player-management": "" });
 
       return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
-        <span data-ui="claim-badge" data-state="claimed" role="img" aria-label="${escapeHtml(
-          roleLabel,
-        )}" title="${escapeHtml(roleLabel)}">${renderClientIcon("user-round-check")}</span>
+        ${role === "admin" || role === "scorekeeper" ? `<span class="sr-only">${escapeHtml(roleLabel)}</span>` : ""}
         ${actions}
       </div>`;
     }
@@ -5406,19 +5396,17 @@
         patchReadOnlyMarkup(playerPoolElement, "");
         return;
       }
-      const search = playerSearchInput.value.trim().toLocaleLowerCase();
       const candidates = new Map((rosterUnassignedPlayers ?? rosterPlayers).map((player) => [player.playerId, player]));
       for (const player of pendingCreatedPlayers.values()) candidates.set(player.playerId, player);
-      const players = [...candidates.values()].filter((player) => !assignmentByPlayerId(player.playerId) &&
-        (!search || player.nickname.toLocaleLowerCase().includes(search)))
+      const players = [...candidates.values()].filter((player) => !assignmentByPlayerId(player.playerId))
         .sort((left, right) => left.nickname.localeCompare(right.nickname) || left.playerId.localeCompare(right.playerId));
       const limitedNote = rosterUnassignedPlayers === null && rosterDataLoaded
-        ? '<p data-ui="empty-note">The full Unassigned list is unavailable. Search by name to find players.</p>' : "";
+        ? '<p data-ui="empty-note">The full Unassigned list is unavailable. Retry loading players to check the latest list.</p>' : "";
       if (players.length === 0) {
-        const message = rosterUnassignedPlayers === null && playerSearchState === "unavailable" ? "Unassigned players couldn’t be loaded. Try searching again."
-          : rosterUnassignedPlayers === null && playerSearchState === "loading" ? "Loading players…"
-            : rosterUnassignedPlayers === null ? "No players found in the available search."
-              : search ? "No matching unassigned players." : "No unassigned players to show.";
+        const message = rosterUnassignedPlayers === null && playerDetailsState === "unavailable" ? "Unassigned players couldn’t be loaded. Retry loading players."
+          : rosterUnassignedPlayers === null && playerDetailsState === "loading" ? "Loading players…"
+            : rosterUnassignedPlayers === null ? "No players found in the available data."
+              : "No unassigned players to show.";
         patchReadOnlyMarkup(playerPoolElement, `<p data-ui="empty-note">${message}</p>${limitedNote}`);
         return;
       }
@@ -5427,10 +5415,9 @@
         .map((player) => {
           const assignment = assignmentByPlayerId(player.playerId);
           return `<article data-ui="roster-player" ${playerIdentityAttribute(player.playerId)}>
-            <figure data-ui="avatar"><span>${escapeHtml(initialsForName(player.nickname))}</span></figure>
-            <div data-ui="roster-player-main">
-              <strong>${escapeHtml(player.nickname)}</strong>
-              ${playerAccessPanel(player)}
+            <div data-ui="player-row">
+              ${renderRosterIdentity(player)}
+              <div data-ui="player-actions">${playerAccessPanel(player)}</div>
             </div>
             <div data-ui="row-action-buttons">
               ${canManageRoster() ? assignmentButtons(player.playerId, assignment?.teamId ?? null) : ""}
@@ -5452,16 +5439,17 @@
 
       patchReadOnlyMarkup(rosterTeamsElement, rosterTeams
         .map((team) => {
-          const search = playerSearchInput.value.trim().toLocaleLowerCase();
           const allAssignments = rosterAssignments.filter((assignment) => assignment.teamId === team.teamId);
-          const assignments = allAssignments.filter((assignment) => !search || playerNickname(assignment.playerId).toLocaleLowerCase().includes(search));
+          const assignments = allAssignments;
           const players = assignments
             .map((assignment) => {
               const player = assignment.player ?? playerById(assignment.playerId);
               const nickname = player?.nickname ?? assignment.playerId;
               return `<li data-ui="roster-member" ${playerIdentityAttribute(assignment.playerId)}>
-                <div data-ui="roster-member-main"><strong>${escapeHtml(nickname)}</strong>${playerAccessPanel(playerById(assignment.playerId) ?? player)}</div>
-                ${canManageRoster() ? transferControl(assignment.playerId, team.teamId) : ""}
+                <div data-ui="player-row">${renderRosterIdentity({ ...player, playerId: assignment.playerId, nickname })}
+                  <div data-ui="player-actions">${playerAccessPanel(playerById(assignment.playerId) ?? player)}${canManageRoster() ? transferControl(assignment.playerId, team.teamId) : ""}</div>
+                </div>
+                ${canManageRoster() ? transferOptions(assignment.playerId, team.teamId) : ""}
               </li>`;
             })
             .join("");
@@ -5473,7 +5461,7 @@
               <span data-ui="roster-count">${allAssignments.length}</span>
             </header>
             <ul>
-              ${players || `<li data-ui="empty-note">${search && allAssignments.length ? "No matching players." : "No players assigned."}</li>`}
+              ${players || '<li data-ui="empty-note">No players assigned.</li>'}
             </ul>
           </article>`;
         })
@@ -5482,6 +5470,14 @@
 
     function renderRosterSetup() {
       syncGameCapabilities();
+      const retry = document.getElementById("roster-retry");
+      if (retry) {
+        const failed = playerDetailsState === "unavailable" || (playerDetailsState !== "loading" && rosterUnassignedPlayers === null);
+        // Public polling can discover a new player without private enrichment.
+        // Keep an explicit recovery path without giving other roles admin reads.
+        retry.hidden = !isLeagueOperator() || !(failed || currentLeagueRole === "admin");
+        retry.textContent = failed ? "Retry loading players" : "Refresh player details";
+      }
       const focus = captureRosterFocus();
       const active = document.activeElement;
       const rosterLocked = finishedRosterControlsLocked();
@@ -5591,16 +5587,57 @@
       }
     }
 
-    async function loadPlayerSearch() {
+    async function loadPlayerDetails({ resolveMissing = false } = {}) {
       if (!rosterControlsAvailable() || !isLeagueOperator()) return;
       const version = ++playersReadVersion;
       const role = currentLeagueRole;
-      const search = playerSearchInput.value.trim();
-      playerSearchState = "loading";
+      playerDetailsState = "loading";
       try {
-        const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players${search ? `?search=${encodeURIComponent(search)}` : ""}`, { method: "GET" });
-        if (version !== playersReadVersion || role !== currentLeagueRole || search !== playerSearchInput.value.trim()) return;
-        rosterPlayers = Array.isArray(payload?.players) ? payload.players : [];
+        const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players`, { method: "GET" });
+        if (version !== playersReadVersion || role !== currentLeagueRole) return;
+        const readPlayers = value => {
+          if (!value || !Array.isArray(value.players)) throw new Error("Invalid player details");
+          const ids = new Set();
+          for (const player of value.players) {
+            if (!player || typeof player.playerId !== "string" || !player.playerId.trim()
+              || typeof player.nickname !== "string" || !player.nickname.trim() || ids.has(player.playerId)) {
+              throw new Error("Invalid player details");
+            }
+            ids.add(player.playerId);
+          }
+          return value.players;
+        };
+        const fresh = readPlayers(payload);
+        const freshIds = new Set(fresh.map(player => player.playerId));
+        const details = new Map(resolveMissing && role === "admin" ? verifiedAdminPlayers : []);
+        for (const player of fresh) details.set(player.playerId, player);
+        if (resolveMissing && role === "admin") {
+          // The existing private endpoint caps each nickname search at 20.
+          // Explicit recovery may target known roster names, never account IDs
+          // or a wider directory. Bound the work and keep unresolved rows neutral.
+          const entries = [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].map(entry => ({
+            playerId: entry.playerId,
+            nickname: (entry.nickname ?? entry.player?.nickname ?? knownRosterPlayers.get(entry.playerId)?.nickname ?? "").trim(),
+          }));
+          const key = JSON.stringify([role, entries.sort((a, b) => a.playerId.localeCompare(b.playerId))]);
+          const names = [...new Set(entries.filter(entry => !freshIds.has(entry.playerId)).map(entry => entry.nickname).filter(Boolean))];
+          const searched = new Set(playerDetailsRecovery.key === key ? playerDetailsRecovery.searched : []);
+          if (names.every(name => searched.has(name))) searched.clear();
+          // Progress is separate from cached authority: later refresh cycles must
+          // revalidate already-known players whose ownership may have changed.
+          for (const nickname of names.filter(name => !searched.has(name)).slice(0, 20)) {
+            const extra = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players?${new URLSearchParams({ search: nickname })}`, { method: "GET" });
+            if (version !== playersReadVersion || role !== currentLeagueRole) return;
+            const refreshed = readPlayers(extra);
+            for (const entry of entries) {
+              if (entry.nickname === nickname && !freshIds.has(entry.playerId)) details.delete(entry.playerId);
+            }
+            for (const player of refreshed) details.set(player.playerId, player);
+            searched.add(nickname);
+          }
+          playerDetailsRecovery = { key, searched };
+        }
+        rosterPlayers = [...details.values()];
         verifiedAdminPlayers.clear();
         if (role === "admin") {
           for (const player of rosterPlayers) verifiedAdminPlayers.set(player.playerId, player);
@@ -5611,15 +5648,19 @@
             // its previous refresh may have failed after this creation committed.
             if (rosterUnassignedPlayers === null) pendingCreatedPlayers.delete(playerId);
           }
-          else if (!search || player.nickname.toLocaleLowerCase().includes(search.toLocaleLowerCase())) rosterPlayers.unshift(player);
+          else rosterPlayers.unshift(player);
         }
         for (const player of rosterPlayers) knownRosterPlayers.set(player.playerId, player);
-        playerSearchState = "loaded";
+        playerDetailsState = "loaded";
       } catch {
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
-        playerSearchState = "unavailable";
+        playerDetailsState = "unavailable";
+        playerDetailsRecovery = { key: "", searched: new Set() };
         verifiedAdminPlayers.clear();
-        rosterPlayers = [...pendingCreatedPlayers.values()].filter((player) => !search || player.nickname.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+        // Retain usable names after a refresh fails, but never retain authority.
+        const retained = new Map(rosterPlayers.map(player => [player.playerId, player]));
+        for (const player of pendingCreatedPlayers.values()) retained.set(player.playerId, player);
+        rosterPlayers = [...retained.values()];
       }
       renderRosterSetup();
     }
@@ -5740,8 +5781,9 @@
       ++playersReadVersion;
       knownRosterPlayers.clear();
       verifiedAdminPlayers.clear();
+      playerDetailsRecovery = { key: "", searched: new Set() };
       rosterPlayers = [];
-      playerSearchState = "loading";
+      playerDetailsState = "loading";
       finishedRosterEditing = false;
       finishedResultEditing = false;
       syncGameCapabilities();
@@ -5781,10 +5823,10 @@
     const playerCreateRegion = document.getElementById("player-create-region");
     const pickerSearch = document.getElementById("game-player-picker-search");
     const pickerScope = document.getElementById("game-player-picker-scope");
-    const pickerTeam = document.getElementById("game-player-picker-team");
     const pickerList = document.getElementById("game-player-picker-list");
     const pickerStatus = document.getElementById("game-player-picker-status");
     const pickerMore = document.getElementById("game-player-picker-more");
+    const pickerRetry = document.getElementById("game-player-picker-retry");
     const newPlayerToggle = document.getElementById("game-player-new-toggle");
     const nameSuggestions = attachPlayerNameSuggestions({ input: playerNicknameInput, panel: document.getElementById("game-player-name-matches"),
       leagueId: () => currentLeagueId, canRead: () => canManageRoster() && !refreshAccountLocked && !playerCreatePending && !playerCreateAttempt && !existingPlayerAttempt && !signOutPending && !signOutUnconfirmed,
@@ -5793,6 +5835,7 @@
         pickerScope.value = "league"; pickerSearch.value = nickname; pickerSearch.focus(); void loadPicker();
       } });
     let pickerCursor = null, pickerVersion = 0, pickerQuery = "", pickerSeason = "", pickerLoading = false;
+    let pickerDebounce = 0, pickerAbort = null, pickerRetryAppend = false;
     const pickerPlayers = new Map();
     function pickerMessage(message, error = false) {
       pickerStatus.textContent = message; pickerStatus.hidden = !message;
@@ -5804,8 +5847,10 @@
       pickerList.replaceChildren();
       for (const player of pickerPlayers.values()) {
         const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
-        const heading = document.createElement("div"); heading.setAttribute("data-ui", "directory-player-heading");
-        const name = document.createElement("strong"); name.textContent = player.nickname; heading.append(name);
+        const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
+        heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
+          context: (player.seasons ?? []).map(season => season.name).join(" · ") });
         const button = document.createElement("button"); button.type = "button"; button.setAttribute("data-ui", "button");
         button.setAttribute("data-variant", "secondary"); button.setAttribute("data-action", "add-existing-player");
         button.setAttribute("data-player-id", player.playerId);
@@ -5815,22 +5860,44 @@
         const context = document.createElement("p");
         context.id = `game-player-picker-context-${pickerList.children.length}`;
         button.setAttribute("aria-describedby", context.id);
-        context.textContent = [...(player.seasons ?? []).map(season => season.name), player.claimed ? "Linked to an account" : "Not linked to an account"].join(" · ");
+        context.className = "sr-only";
+        context.textContent = (player.seasons ?? []).map(season => season.name).join(" · ");
         row.append(context); pickerList.append(row);
       }
-      pickerTeam.disabled = locked || Boolean(existingPlayerAttempt);
       pickerSearch.disabled = locked || Boolean(existingPlayerAttempt);
       pickerScope.disabled = locked || Boolean(existingPlayerAttempt);
       pickerMore.disabled = locked || pickerLoading || Boolean(existingPlayerAttempt);
+      pickerRetry.disabled = locked || pickerLoading || Boolean(existingPlayerAttempt);
       newPlayerToggle.disabled = locked || Boolean(existingPlayerAttempt);
       if (focusedPlayerId) [...pickerList.querySelectorAll("button")].find(button => button.getAttribute("data-player-id") === focusedPlayerId && !button.disabled)?.focus({ preventScroll: true });
     }
-    async function loadPicker(append = false) {
-      if (!currentLeagueId || !canManageRoster() || existingPlayerAttempt || playerCreateAttempt || (append && (!pickerCursor || pickerLoading))) return;
+    function cancelPickerRead({ clear = true } = {}) {
+      window.clearTimeout(pickerDebounce); pickerDebounce = 0;
+      pickerAbort?.abort(); pickerAbort = null; ++pickerVersion; pickerLoading = false;
+      // Search changes must never discard a frozen addition's only retry row.
+      if (existingPlayerAttempt || playerCreateAttempt) return;
+      pickerRetry.hidden = true;
+      if (clear) { pickerPlayers.clear(); pickerCursor = null; pickerMore.hidden = true; pickerMessage(""); }
+      renderPicker();
+    }
+    function schedulePickerSearch(immediate = false) {
+      if (existingPlayerAttempt || playerCreateAttempt) return;
+      cancelPickerRead();
+      if (!pickerSearch.value.trim() || playerCreateRegion.hidden) return;
+      if (immediate) void loadPicker();
+      else pickerDebounce = window.setTimeout(() => { pickerDebounce = 0; void loadPicker(); }, 300);
+    }
+    async function loadPicker(append = false, initiator = null) {
+      window.clearTimeout(pickerDebounce); pickerDebounce = 0;
+      if (!currentLeagueId || !canManageRoster() || playerCreateRegion.hidden || existingPlayerAttempt || playerCreateAttempt || (append && (!pickerCursor || pickerLoading))) return;
+      if (!pickerSearch.value.trim()) { cancelPickerRead(); return; }
+      pickerAbort?.abort(); pickerAbort = new AbortController();
+      const signal = pickerAbort.signal;
       const version = ++pickerVersion, role = currentLeagueRole;
-      const finishFocus = append ? trackInteractionFocus(pickerMore) : null;
+      const finishFocus = initiator ? trackInteractionFocus(initiator) : append ? trackInteractionFocus(pickerMore) : null;
       pickerLoading = true;
-      if (!append) { pickerCursor = null; pickerMore.hidden = true; pickerQuery = pickerSearch.value.trim(); pickerSeason = pickerScope.value === "season" ? currentSeasonId : ""; }
+      pickerRetry.hidden = true;
+      if (!append) { pickerPlayers.clear(); pickerCursor = null; pickerMore.hidden = true; pickerQuery = pickerSearch.value.trim(); pickerSeason = pickerScope.value === "season" ? currentSeasonId : ""; }
       renderPicker(); pickerMessage("Loading players…");
       const params = new URLSearchParams({ leagueId: currentLeagueId, gameId, query: pickerQuery, limit: "25" });
       if (pickerSeason) params.set("seasonId", pickerSeason);
@@ -5839,7 +5906,7 @@
         let result, continuing = append;
         const visited = new Set();
         do {
-          result = await requestJsonOrThrow(`/v1/league-players?${params}`, { method: "GET", cache: "no-store" });
+          result = await requestJsonOrThrow(`/v1/league-players?${params}`, { method: "GET", cache: "no-store", signal });
           if (version !== pickerVersion || role !== currentLeagueRole || refreshAccountLocked) return;
           if (!Array.isArray(result.players) || (result.cursor !== null && typeof result.cursor !== "string") || result.players.some(player => typeof player.inGame !== "boolean")) throw new Error("Invalid player page");
           if (!continuing) pickerPlayers.clear();
@@ -5858,21 +5925,28 @@
         if (!append || [401, 403].includes(error.statusCode)) pickerPlayers.clear();
         if (error.statusCode === 409 || error.statusCode === 400) { pickerCursor = null; pickerMore.hidden = true; }
         pickerMessage(error.statusCode === 503 ? "The player list is temporarily unavailable. Try again later."
-          : "Could not load players. Search again to refresh the list.", true);
+          : "Could not finish searching players. Retry search to continue.", true);
+        pickerRetryAppend = append && Boolean(pickerCursor);
+        pickerRetry.hidden = false;
       } finally {
         const owned = finishFocus?.();
         if (version === pickerVersion) {
           pickerLoading = false; renderPicker();
-          if (owned && pickerMore.hidden && !playerCreateRegion.hidden) {
+          if (owned && !playerCreateRegion.hidden && !pickerRetry.hidden) pickerRetry.focus();
+          else if (owned && !playerCreateRegion.hidden && !pickerMore.hidden) pickerMore.focus();
+          else if (owned && pickerMore.hidden && !playerCreateRegion.hidden) {
             if (pickerStatus.hidden) pickerMessage("All matching players loaded.");
             pickerStatus.tabIndex = -1; pickerStatus.focus();
           }
         }
       }
     }
-    document.getElementById("game-player-picker-form")?.addEventListener("submit", event => { event.preventDefault(); void loadPicker(); });
-    pickerScope?.addEventListener("change", () => { void loadPicker(); });
+    document.getElementById("game-player-picker-form")?.addEventListener("submit", event => { event.preventDefault(); schedulePickerSearch(true); });
+    pickerSearch?.addEventListener("input", () => schedulePickerSearch());
+    pickerScope?.addEventListener("change", () => schedulePickerSearch(true));
     pickerMore?.addEventListener("click", () => { void loadPicker(true); });
+    pickerRetry?.addEventListener("click", () => { if (!pickerRetry.disabled) void loadPicker(pickerRetryAppend, pickerRetry); });
+    playerCreateRegion?.addEventListener("disclosurechange", event => { if (!event.detail.open) cancelPickerRead(); });
     newPlayerToggle?.addEventListener("click", () => {
       if (newPlayerToggle.disabled || existingPlayerAttempt) return;
       const form = document.getElementById("player-create-form");
@@ -5890,10 +5964,10 @@
       if (!selected || selected.inGame) return;
       if (!existingPlayerAttempt) existingPlayerAttempt = { playerId: selected.playerId, nickname: selected.nickname, uncertain: false,
         path: `/v1/game-player-registrations?${new URLSearchParams({ gameId })}`,
-        body: JSON.stringify({ playerId: selected.playerId, teamId: pickerTeam.value || null, allowFinished: isGameFinished() }) };
+        body: JSON.stringify({ playerId: selected.playerId, teamId: null, allowFinished: isGameFinished() }) };
       if (existingPlayerAttempt.playerId !== selected.playerId) return;
       // A read started before dispatch cannot replace the frozen retry's row.
-      pickerVersion += 1; pickerLoading = false; pickerCursor = null; pickerMore.hidden = true;
+      cancelPickerRead({ clear: false }); pickerCursor = null; pickerMore.hidden = true;
       const authorityAtDispatch = authorityRevision;
       const finishFocus = trackInteractionFocus(button.closest("li"));
       rosterMutationPending = true; renderRosterSetup(); renderPicker(); pickerMessage("Adding player…");
@@ -5907,7 +5981,7 @@
         if (refreshAccountLocked || authorityAtDispatch !== authorityRevision) return;
         pendingCreatedPlayers.set(player.playerId, player); knownRosterPlayers.set(player.playerId, player);
         ++playersReadVersion;
-        await loadRosterSetup({ updateStatus: false }); await loadPlayerSearch();
+        await loadRosterSetup({ updateStatus: false }); await loadPlayerDetails();
         pickerMessage(response.registration.alreadyInGame ? `${player.nickname} is already in this game.` : `${player.nickname} added.`);
       } catch (error) {
         if (committed) pickerMessage("Player added. The latest teams couldn’t be loaded. Reload to check them.", true);
@@ -5946,8 +6020,10 @@
     }
     attachDisclosure(gameEditToggle, gameEditRegion);
     attachDisclosure(playerCreateToggle, playerCreateRegion, { onOpen: () => {
-      void loadPicker();
-      if (!document.getElementById("player-create-form").hidden) playerNicknameInput.focus();
+      if (!existingPlayerAttempt && !playerCreateAttempt) schedulePickerSearch(true);
+      if (existingPlayerAttempt) pickerList.querySelector('[data-action="add-existing-player"]:not(:disabled)')?.focus();
+      else if (playerCreateAttempt) quickCreatePlayerButton.focus();
+      else pickerSearch.focus();
     } });
     for (const panel of [gameEditRegion, playerCreateRegion]) panel?.addEventListener("keydown", (event) => {
       // The disclosure's Escape handler already closed it. Its original trigger
@@ -6128,8 +6204,8 @@
         finishedRosterEditing = false;
         try {
           await loadLeagueAccess();
-          await loadPlayerSearch();
-          accessAvailable = currentLeagueRole !== null && playerSearchState !== "unavailable";
+          await loadPlayerDetails();
+          accessAvailable = currentLeagueRole !== null && playerDetailsState !== "unavailable";
         } catch {
           accessAvailable = false;
         }
@@ -6272,6 +6348,28 @@
     });
 
     if (rosterControlsAvailable()) {
+      document.getElementById("roster-retry")?.addEventListener("click", async event => {
+        const button = event.currentTarget;
+        if (button.disabled || !isLeagueOperator() || refreshAccountLocked) return;
+        const status = document.getElementById("roster-retry-status");
+        button.disabled = true; status.hidden = false; status.textContent = "Loading players…";
+        const finishFocus = trackInteractionFocus(button);
+        try {
+          const [rosterResult] = await Promise.allSettled([loadRosterSetup({ updateStatus: false }), loadPlayerDetails({ resolveMissing: true })]);
+          status.textContent = rosterResult.status === "rejected" ? "Players couldn’t be refreshed. The available list is still shown."
+            : rosterUnassignedPlayers === null || playerDetailsState === "unavailable"
+            ? "Some player details are still unavailable. Retry loading players." : currentLeagueRole === "admin"
+              && [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].some(player => !verifiedAdminPlayers.has(player.playerId))
+            ? "Some player details are still unavailable. The available list is still shown." : "Players updated.";
+          if (rosterResult.status === "rejected") button.hidden = false;
+        } catch {
+          status.textContent = "Players couldn’t be refreshed. The available list is still shown.";
+          button.hidden = false;
+        } finally {
+          button.disabled = false;
+          if (finishFocus() && button.hidden) { status.tabIndex = -1; status.focus(); }
+        }
+      });
       root.addEventListener("keydown", (event) => {
         if (event.key !== "Escape" || !openTransferPlayerId) {
           return;
@@ -6286,18 +6384,6 @@
       playerNicknameInput.addEventListener("input", () => {
         ++playerNicknameGeneration;
         setFieldMessage("player-nickname");
-      });
-
-      playerSearchInput.addEventListener("input", () => {
-        ++playerSearchGeneration;
-        window.clearTimeout(rosterSearchTimer);
-        ++playersReadVersion;
-        rosterPlayers = [];
-        playerSearchState = "loading";
-        renderRosterSetup();
-        rosterSearchTimer = window.setTimeout(() => {
-          void loadPlayerSearch();
-        }, 160);
       });
 
       attachFormSubmit("player-create-form", quickCreatePlayerButton, async () => {
@@ -6317,8 +6403,8 @@
         const nicknameSlug = slugify(nickname) || "player";
         const playerId = `player-${nicknameSlug}-${randomSuffix(6)}`;
         if (!playerCreateAttempt) playerCreateAttempt = {
-          playerId, nickname, search: playerSearchInput.value,
-          nicknameGeneration: playerNicknameGeneration, searchGeneration: playerSearchGeneration,
+          playerId, nickname,
+          nicknameGeneration: playerNicknameGeneration,
           request: freezeCreationRequest(`/v1/games/${encodeURIComponent(gameId)}/players`, { playerId, nickname }, "create-player", `${gameId}-${playerId}`),
           uncertain: false,
         };
@@ -6336,7 +6422,6 @@
           pendingCreatedPlayers.set(player.playerId, player);
           knownRosterPlayers.set(player.playerId, player);
           if (playerNicknameGeneration === playerCreateAttempt.nicknameGeneration && playerNicknameInput.value.trim() === playerCreateAttempt.nickname) playerNicknameInput.value = "";
-          if (playerSearchGeneration === playerCreateAttempt.searchGeneration && playerSearchInput.value === playerCreateAttempt.search) playerSearchInput.value = "";
           playerCreateAttempt = null;
           nameSuggestions.clear();
           ++playersReadVersion;
@@ -6345,7 +6430,7 @@
           setFieldMessage("player-nickname");
           try {
             await loadRosterSetup({ updateStatus: false });
-            await loadPlayerSearch();
+            await loadPlayerDetails();
             finishGameFeedback("Player added.", feedback);
           } catch {
             showError("Player added. The latest teams couldn’t be loaded. Reload to check them.", { includesOutcome: true });
@@ -6447,7 +6532,7 @@
 
             const player = verifiedAdminPlayers.get(playerId);
             if (player) verifiedAdminPlayers.set(playerId, { ...player, access: { ...player.access, role } });
-            await loadPlayerSearch();
+            await loadPlayerDetails();
             finishGameFeedback(
               role === "admin"
                 ? "Player can now co-organise and score."
@@ -6758,13 +6843,15 @@
 
     function discardPrivateEnrichment() {
       playerInvitation.discard();
+      cancelPickerRead();
       pickerVersion += 1; pickerPlayers.clear(); pickerList.replaceChildren(); pickerCursor = null; pickerMore.hidden = true;
       pickerSearch.value = ""; pickerMessage("");
       ++playersReadVersion;
       knownRosterPlayers.clear();
       verifiedAdminPlayers.clear();
+      playerDetailsRecovery = { key: "", searched: new Set() };
       rosterPlayers = [];
-      playerSearchState = "unavailable";
+      playerDetailsState = "unavailable";
       finishedRosterEditing = false;
       finishedResultEditing = false;
       openTransferPlayerId = null;
@@ -7010,7 +7097,7 @@
     } catch {
       showError("Teams couldn’t be loaded. Reload this page to try again.", { includesOutcome: true });
     }
-    await loadPlayerSearch();
+    await loadPlayerDetails();
     const goalsLoaded = await loadGameGoals();
     if (!goalsLoaded && scoreboardState !== "authoritative") {
       scoreboardState = "unavailable";

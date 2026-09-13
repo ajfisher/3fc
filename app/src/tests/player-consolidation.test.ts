@@ -23,6 +23,7 @@ function boot(approval: boolean, fetcher: typeof fetch, stored?: unknown) {
   Object.defineProperty(dom.window, "crypto", { value: webcrypto });
   dom.window.fetch = fetcher; dom.window.AbortController = AbortController;
   if (stored) dom.window.sessionStorage.setItem("threefc.consolidation.v1:account-one", JSON.stringify(stored));
+  dom.window.eval(readFileSync(resolve(process.cwd(), "dist/ui/player-presentation-browser.js"), "utf8"));
   dom.window.eval(script);
   return dom;
 }

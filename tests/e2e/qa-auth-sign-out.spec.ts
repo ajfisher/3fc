@@ -970,8 +970,8 @@ test("isolated deployed QA two-client match refresh", async ({ browser }) => {
     await expect(writer.locator('[data-action="finish-active-third"]')).toBeEnabled();
     await expect(observer.locator('[data-action="finish-active-third"]')).toBeEnabled({ timeout: 25000 });
     const choose = async (page: Page, scorer: string) => {
-      await page.locator('#goal-scoring-team input[value="red"]').check();
-      await page.locator('#goal-conceding-team input[value="blue"]').check();
+      await page.locator('#goal-scoring-team input[value="red"]').locator("..").click();
+      await page.locator('#goal-conceding-team input[value="blue"]').locator("..").click();
       await page.locator("#goal-scorer").selectOption(scorer);
     };
     await choose(observer, fixture.playerIds[0]);
@@ -1005,7 +1005,7 @@ test("isolated deployed QA two-client match refresh", async ({ browser }) => {
     phase = "remote own-goal correction";
     await writer.locator('[data-action="edit-goal"]').click();
     await writer.locator("#goal-own-goal").check();
-    await writer.locator('#goal-conceding-team input[value="blue"]').check();
+    await writer.locator('#goal-conceding-team input[value="blue"]').locator("..").click();
     await writer.locator("#goal-scorer").selectOption(fixture.playerIds[1]);
     await writer.locator('[data-action="save-goal"]').click();
     await expect(writer.locator('[data-ui="goal-scorer"]')).toHaveText("QA Bea");
