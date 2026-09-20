@@ -13,7 +13,7 @@ Generated from `docs/backlog/backlog.json`.
 | `EPIC-M4` | Notifications and Product Polish | M4 Notifications and Product Polish | 5 |
 | `EPIC-REV` | Risk-Based Pull Request Review System | Review System Rollout | 6 |
 | `EPIC-UX` | Mobile-First Frontend Redesign | UX Mobile-First Frontend Redesign | 8 |
-| `EPIC-PLAYER` | Reusable players and profile linking | Reusable Players and Profile Linking | 9 |
+| `EPIC-PLAYER` | Reusable players and profile linking | Reusable Players and Profile Linking | 10 |
 
 ## Child Issues
 
@@ -47,7 +47,7 @@ Generated from `docs/backlog/backlog.json`.
 | `M3-03` | Season standings aggregation + API (wins/draws/losses ranking rule) | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M2-08`, `M3-07` |
 | `M3-04` | Player leaderboards (total goals, goals-per-match, own-goals separate) | 5 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-03` |
 | `M3-05` | Player claim flow and conflict handling | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M2-02`, `M1-04`, `M3-07` |
-| `M3-06` | Personal profile page (private stats, claimed identity context) | 3 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-05`, `M3-04`, `M3-08` |
+| `M3-06` | Player profile card, match history and private personal view | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-05`, `M3-04`, `M3-08` |
 | `M4-01` | Async game-finish notification pipeline (queue + worker) | 5 | `EPIC-M4` | M4 Notifications and Product Polish | `M2-08` |
 | `M4-02` | SES email templates (summary + personal callouts + result link) | 5 | `EPIC-M4` | M4 Notifications and Product Polish | `M4-01` |
 | `M4-03` | QR join UX polish and onboarding latency optimization | 5 | `EPIC-M4` | M4 Notifications and Product Polish | `M2-02`, `M3-09` |
@@ -87,6 +87,7 @@ Generated from `docs/backlog/backlog.json`.
 | `PLAYER-06` | Replace table-wide league discovery with an account-keyed ACL index | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04` |
 | `PLAYER-07` | Make player search complete and profile combination a focused task | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-01`, `PLAYER-02` |
 | `PLAYER-08` | Prepare controlled production rollout for reusable players | 3 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `PLAYER-04`, `PLAYER-07` |
+| `PLAYER-09` | Remove a player from a scheduled game safely | 5 | `EPIC-PLAYER` | Reusable Players and Profile Linking | `M2-03`, `PLAYER-01` |
 | `UX-11` | Unify player identity rows and season player navigation | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `PLAYER-07`, `UX-07` |
 | `UX-12` | Make adding reusable players search-first | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-11` |
 | `UX-13` | Unify live and finished score presentation | 3 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-12` |
@@ -134,6 +135,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `PLAYER-06` | reusable-players-follow-up | planned | [#172](https://github.com/ajfisher/3fc/issues/172) | - |
 | `PLAYER-07` | reusable-players-follow-up | in-progress | [#173](https://github.com/ajfisher/3fc/issues/173) | codex/player-combine-usability |
 | `PLAYER-08` | reusable-players-follow-up | in-progress | [#175](https://github.com/ajfisher/3fc/issues/175) | codex/player-production-preflight |
+| `PLAYER-09` | reusable-players-follow-up | planned | [#184](https://github.com/ajfisher/3fc/issues/184) | - |
 | `UX-11` | frontend-consistency | review-ready | [#177](https://github.com/ajfisher/3fc/issues/177) | codex/ux-player-row-consistency |
 | `UX-12` | frontend-consistency | review-ready | [#178](https://github.com/ajfisher/3fc/issues/178) | codex/ux-player-picker-search |
 | `UX-13` | frontend-consistency | in-progress | [#179](https://github.com/ajfisher/3fc/issues/179) | codex/ux-scoreboard-consistency |
