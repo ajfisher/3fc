@@ -365,7 +365,8 @@
         "PLAYER-05",
         "PLAYER-06",
         "PLAYER-07",
-        "PLAYER-08"
+        "PLAYER-08",
+        "PLAYER-09"
       ]
     }
   ],
@@ -1332,12 +1333,16 @@
     },
     {
       "id": "M3-06",
-      "title": "Personal profile page (private stats, claimed identity context)",
-      "storyPoints": 3,
+      "title": "Player profile card, match history and private personal view",
+      "storyPoints": 8,
       "parentEpic": "EPIC-M3",
       "milestone": "M3 Public Results and Season Stats",
       "labels": [
+        "area:api",
         "area:app",
+        "area:data",
+        "area:auth",
+        "area:qa",
         "type:feature",
         "milestone:M3",
         "priority:P2"
@@ -1347,33 +1352,46 @@
         "M3-04",
         "M3-08"
       ],
-      "summary": "Provide authenticated users a private view of their own performance metrics.",
+      "summary": "Give each league player a useful performance profile while keeping account and personal information in an owner-only view.",
       "scope": [
-        "Build private profile page with claim-aware identity context.",
-        "Display personal goals, assists, and match counts from aggregated stats.",
-        "Enforce owner-only access for private fields."
+        "Add a mobile-first player profile card reachable from authorised league, season, roster and results contexts.",
+        "Lead with the player's latest completed match and its personal contribution totals, team and result.",
+        "Provide a bounded, paginated match log with per-match goals, assists, own goals, team, result and played date.",
+        "Show current-season totals and league-career totals from the same canonical aggregation source, including games played, goals, assists and own goals.",
+        "Resolve consolidated aliases as one player without rewriting historical registrations or scoring events, and count a finished game once.",
+        "Provide a separately authorised private view for the owning account's personal information and profile linkage; expose only stored, product-approved fields.",
+        "Use owner-only API responses for private fields and keep email or account identifiers out of public/league profile responses, page source, logs and analytics.",
+        "Define clear loading, empty, unavailable and no-completed-match states without presenting partial history as complete."
       ],
       "outOfScope": [
-        "Editable profile settings.",
-        "Social/following features."
+        "Editable profile settings, account recovery or identity consolidation UI.",
+        "Public account search, social/following features or cross-league career totals.",
+        "New scoring rules, attendance tracking or inferring participation from organiser/scorer duties."
       ],
       "acceptanceCriteria": [
-        "Claimed users can view personal stats when authenticated.",
-        "Non-owners cannot access another player's private profile endpoint/page.",
-        "Profile view uses same leaderboard aggregation source of truth."
+        "An authorised league participant can open a player profile and see the latest completed match, a paginated match log, selected-season totals and career totals for that league.",
+        "Games played means team membership in a finished game; registration, claim, organiser or scorer access alone does not count.",
+        "Goals, assists, own goals, corrections and consolidated aliases use the existing canonical statistics rules and never double-count a game or contribution.",
+        "The account owner can open the private personal view; another player, organiser, scorer, anonymous user or owner from another league cannot retrieve its fields.",
+        "Public and league-scoped profile responses contain no email address or private account identifier, including errors and rendered HTML.",
+        "History reads are indexed, bounded and cursor-paginated; incomplete or failed continuation is labelled truthfully.",
+        "The profile is usable with long names, empty history and enlarged text at 320, 390 and 430px widths, with keyboard and screen-reader navigation."
       ],
       "testScenarios": [
-        "Authenticated owner profile load.",
-        "Anonymous/private page access redirect or deny.",
-        "Profile reflects updated stats after completed game."
+        "Latest match, multi-page history, season switch and league-career totals across zero, one and many completed games.",
+        "Unassigned registration, late assignment, corrected goals, assists, own goals, duplicate aliases and a consolidated canonical identity.",
+        "Owner, other player, organiser-only, scorer-only, anonymous and cross-league attempts against public and private fields.",
+        "Cursor boundaries, stale aggregates, partial/unavailable reads and refresh after a completed or corrected game.",
+        "Long and Unicode names, empty states, keyboard/focus, screen reader, light/dark, 200% zoom and 320/390/430px layouts."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
+        "asOf": "2026-09-20",
         "wave": "deferred-player-portal",
         "status": "planned",
         "githubIssue": 37,
         "notes": [
-          "Not implemented by the frontend redesign stack. Preserve the complete existing M3 scope and acceptance."
+          "Expanded after AJ's request to cover the player card, latest-match summary, match-by-match contributions, season/career league totals and a separate private personal-information view.",
+          "M3-08 owns the bounded linked-player history foundation; this issue owns the profile presentation and owner-only personal view."
         ]
       },
       "reviewRequirements": [
@@ -3115,6 +3133,60 @@
       "testScenarios": ["Actual local git HEAD/remote-main parsing, stale remote and sanitized CLI errors.", "Workflow guard/check ordering, env-only dispatch inputs, artifact allow-list and immutable naming.", "Existing deployment, migration CLI, API and app regressions, CI/QA and current-head independent review."],
       "reviewRequirements": ["Independent architecture/security and engineering/QA review of release authority, provenance, partial failure and cutover.", "No production execution as a validation technique; local serialized tests and QA only.", "Current-head Codex assessment, CI, QA and unchanged review gate before delivery."],
       "delivery": {"asOf": "2026-09-12", "wave": "reusable-players-follow-up", "status": "in-progress", "githubIssue": 175, "branch": "codex/player-production-preflight", "notes": ["AJ requests readiness before merge, not production execution. Production workflow held; safe future feature variables pinned. Read-only production table COUNT0/no continuation and35-day PITR observed; recheck before execution."]}
+    }
+    ,{
+      "id": "PLAYER-09",
+      "title": "Remove a player from a scheduled game safely",
+      "storyPoints": 5,
+      "parentEpic": "EPIC-PLAYER",
+      "milestone": "Reusable Players and Profile Linking",
+      "labels": ["area:api", "area:app", "area:data", "area:qa", "type:feature", "milestone:PLAYER", "priority:P1"],
+      "dependsOn": ["M2-03", "PLAYER-01"],
+      "summary": "Let an authorised organiser or scorer remove an accidentally added player from a scheduled game through the player's action menu without deleting the reusable player profile.",
+      "scope": [
+        "Add Remove from game to the existing player action menu for assigned and Unassigned registrations while the game is scheduled.",
+        "Show a focused confirmation naming the player and explaining that only this game registration will be removed.",
+        "Atomically remove the game registration and any current team assignment while retaining the league player, canonical identity, claim, invitations and registrations in other games.",
+        "Provide an idempotent API operation with expected-revision protection and truthful recovery when the request committed but its response was lost.",
+        "Refresh the roster after confirmed success, restore focus predictably and preserve the exact retry state after uncertain failure.",
+        "Record a privacy-safe audit event for the actor, game and removed player identity without personal account information."
+      ],
+      "outOfScope": [
+        "Deleting or archiving a reusable player profile, canonical identity or historical records.",
+        "Removing players from live or finished games, or rewriting goals, assists, corrections and match results.",
+        "Bulk roster removal, attendance/no-show workflows or undoing identity consolidation."
+      ],
+      "acceptanceCriteria": [
+        "An authorised organiser or scorer can remove an assigned or Unassigned player from a scheduled game using that player's action menu.",
+        "The confirmation clearly distinguishes Remove from game from deleting the player; cancellation makes no change and returns focus to the action trigger.",
+        "Successful removal deletes the registration and assignment together, but the player remains searchable and reusable in the league and retains all other game history and ownership state.",
+        "Players referenced by a live or finished game cannot be removed through this operation; the UI omits the action and the API independently enforces the lock.",
+        "Repeated requests return the settled outcome, while concurrent transfer, join, removal or re-add operations cannot produce a partial registration/assignment state.",
+        "Definitive failures restore the current roster; uncertain failures retain an explicit retry/reconcile path and never falsely report success.",
+        "The action menu, confirmation and recovery states are keyboard and screen-reader accessible with 44px targets at 320, 390 and 430px widths."
+      ],
+      "testScenarios": [
+        "Remove assigned and Unassigned players from a scheduled game; cancel confirmation; re-add the same reusable player.",
+        "Organiser, scorer, player-only, viewer, cross-league and unauthenticated permission cases at both UI and API layers.",
+        "Live and finished locks, a player referenced by goals/assists/corrections, and unchanged historical statistics.",
+        "Concurrent transfer/removal, join/removal and remove/re-add; stale revision, repeated request and committed-response-loss recovery.",
+        "Long and Unicode names, SVG-child menu activation, focus restoration, keyboard/screen reader, 200% zoom and 320/390/430px layouts."
+      ],
+      "reviewRequirements": [
+        "Independent design/content, frontend/accessibility, engineering and QA review; reviewers remain read-only and do not run tests.",
+        "Architecture/security review of registration ownership, idempotency, audit data, concurrency and retained historical identity.",
+        "Focused tests followed by serialized full validation, current-head GitHub Codex review, isolated QA acceptance and review:ready; no merge or production release without AJ authorisation."
+      ],
+      "delivery": {
+        "asOf": "2026-09-20",
+        "wave": "reusable-players-follow-up",
+        "status": "planned",
+        "githubIssue": 184,
+        "notes": [
+          "Requested by AJ after reusable-player assignment shipped.",
+          "This removes one game registration only. Safe cleanup of profiles orphaned by deleting an entire game remains tracked separately in #170."
+        ]
+      }
     }
     ,{
       "id": "UX-11", "title": "Unify player identity rows and season player navigation", "storyPoints": 5,
