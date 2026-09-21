@@ -133,8 +133,17 @@ Removal now skips only structurally impossible roster keys while fencing every
 representable slot, and both recovery paths record roster truth before optional
 enrichment. Strict Dynamo-key and deferred-enrichment regressions cover both
 findings; independent engineering/QA and architecture/security re-reviews are
-clear. GitHub
-evidence must be refreshed for the new head.
+clear. The following exact-head review found the complementary recovery order:
+an earlier authoritative read could observe absence, another client could then
+re-add the player, and a receipt replay followed by a failed roster refresh
+could overstate that the player was still removed. Every uncertain receipt
+replay now preserves the complete last-observed projection and describes it as
+stale until a fresh roster read succeeds, regardless of whether that projection
+was present or absent. The revealed recovery action is labelled **Reload
+roster** to match its live-region instruction. The exact ordering has a rendered
+regression, and independent engineering/QA and UX/accessibility re-reviews
+cleared the amended behavior. GitHub evidence must be refreshed for the new
+head.
 
 ### Unresolved blocking findings
 
@@ -144,7 +153,7 @@ pending publication, not unresolved implementation findings.
 ### Local validation
 
 - `npm test --workspace @3fc/api`: 528 passed.
-- `npm test --workspace @3fc/app`: 666 passed.
+- `npm test --workspace @3fc/app`: 667 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

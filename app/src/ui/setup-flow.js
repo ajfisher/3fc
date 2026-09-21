@@ -3332,6 +3332,7 @@
     let playersReadVersion = 0;
     let rosterDataLoaded = false;
     let playerDetailsState = "loading";
+    let rosterReloadRequired = false;
     let playerDetailsRecovery = { key: "", searched: new Set() };
     let playerNicknameGeneration = 0;
     const knownRosterPlayers = new Map();
@@ -5480,13 +5481,18 @@
         const response = await requestJsonOrThrow(attempt.path, attempt.request);
         if (response?.removal?.gameId !== gameId || response.removal.playerId !== attempt.playerId ||
             typeof response.removal.removedAt !== "string") throw new Error("Removal could not be confirmed.");
-        const preserveLastObservedRow = wasUncertain && attempt.lastObservedPresent === true;
+        // A receipt replay confirms only the original removal. It cannot prove
+        // current absence: another client may have re-added the player after
+        // any earlier roster observation, whether that observation was present
+        // or absent. Preserve the complete last-observed projection until the
+        // following authoritative roster read succeeds.
+        const preserveLastObservedState = wasUncertain;
         playerRemovalAttempt = null;
         outcome = "committed";
-        announceRosterStatus(preserveLastObservedRow
+        announceRosterStatus(preserveLastObservedState
           ? `${attempt.name}’s removal was confirmed. Checking the current roster…`
           : `${attempt.name} removed from this game.`);
-        if (!preserveLastObservedRow) applyLocalPlayerRemoval(attempt.playerId);
+        if (!preserveLastObservedState) applyLocalPlayerRemoval(attempt.playerId);
         try {
           await loadRosterSetup({ updateStatus: false });
           const present = recordPlayerRemovalRosterTruth(attempt);
@@ -5498,8 +5504,9 @@
           // the authoritative roster observation used by removal recovery.
           try { await loadPlayerDetails(); } catch { /* retain roster truth */ }
         } catch {
-          announceRosterStatus(preserveLastObservedRow
-            ? `${attempt.name}’s removal was confirmed, but the latest roster could not be loaded. The row shows the last roster state; reload the roster to confirm whether ${attempt.name} is currently in this game.`
+          rosterReloadRequired = true;
+          announceRosterStatus(preserveLastObservedState
+            ? `${attempt.name}’s original removal was confirmed, but the latest roster could not be loaded. The page shows the last observed roster state; reload the roster to confirm whether ${attempt.name} is currently in this game.`
             : `${attempt.name} removed from this game. The latest roster could not be loaded.`);
           const retry = document.getElementById("roster-retry"); if (retry) retry.hidden = false;
         }
@@ -5634,8 +5641,8 @@
         const failed = playerDetailsState === "unavailable" || (playerDetailsState !== "loading" && rosterUnassignedPlayers === null);
         // Public polling can discover a new player without private enrichment.
         // Keep an explicit recovery path without giving other roles admin reads.
-        retry.hidden = !isLeagueOperator() || !(failed || currentLeagueRole === "admin");
-        retry.textContent = failed ? "Retry loading players" : "Refresh player details";
+        retry.hidden = !isLeagueOperator() || !(rosterReloadRequired || failed || currentLeagueRole === "admin");
+        retry.textContent = rosterReloadRequired ? "Reload roster" : failed ? "Retry loading players" : "Refresh player details";
       }
       const focus = captureRosterFocus();
       const active = document.activeElement;
@@ -5735,6 +5742,7 @@
       // fallback when only the optional complete-Unassigned DTO is unavailable.
       if (!refreshRosterValid(rosterPayload, { allowUnavailableUnassigned: true })) throw new Error("The latest roster could not be loaded.");
       applyRosterPayload(rosterPayload, confirmedBeforeRead);
+      rosterReloadRequired = false;
       if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
       }

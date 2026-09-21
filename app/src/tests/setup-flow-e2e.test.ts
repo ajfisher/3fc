@@ -6613,7 +6613,7 @@ test("response-loss reload keeps the write locked until same-key replay and repo
     const retry = recovery.querySelector('[data-action="retry-player-removal"]'); assert(retry instanceof page.window.HTMLButtonElement);
     dispatchClick(retry); await flushAsync();
     assert.equal(deletes, 2); assert.equal(recovery.hidden, true);
-    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /row shows the last roster state/);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /last observed roster state/);
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', "player-ari").length, 1);
   } finally { page.dom.window.close(); }
 });
@@ -6665,7 +6665,7 @@ test("removal recovery records a re-added roster row before optional player deta
     assert.equal(deletes, 2); assert.equal(recovery.hidden, true);
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1,
       "receipt replay cannot hide the last authoritative re-added row when refresh fails");
-    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /row shows the last roster state/);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /last observed roster state/);
   } finally { releaseDetails?.(); await flushAsync(); page.dom.window.close(); }
 });
 
@@ -6702,7 +6702,52 @@ test("immediate uncertain replay preserves the initially visible row when a late
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1,
       "the initially visible row stays until a refresh can prove current absence");
     const status = page.document.getElementById("roster-retry-status")?.textContent ?? "";
-    assert.match(status, /row shows the last roster state/); assert.doesNotMatch(status, /later registration|currently back/);
+    assert.match(status, /last observed roster state/); assert.doesNotMatch(status, /later registration|currently back/);
+  } finally { page.dom.window.close(); }
+});
+
+test("uncertain receipt replay never treats an earlier absent observation as current truth", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-absent-then-readd", role: "scorekeeper" });
+  const base = createMockFetch(apiState); let deletes = 0; let failRefreshAfterReplay = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-absent-then-readd" }),
+    url: "http://localhost:3000/games/remove-absent-then-readd#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
+        deletes += 1; const response = await base(input, init);
+        if (deletes === 1) throw new Error("response lost");
+        failRefreshAfterReplay = true; return response;
+      }
+      if (failRefreshAfterReplay && (init.method ?? "GET") === "GET" && path.endsWith("/roster")) {
+        failRefreshAfterReplay = false; throw new Error("refresh lost");
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]');
+    assert(remove instanceof page.window.HTMLButtonElement); openActionMenuFor(remove); dispatchClick(remove);
+    dispatchClick(page.document.querySelector('[data-action="confirm-player-removal"]') as HTMLElement); await flushAsync();
+    const recovery = page.document.getElementById("player-removal-recovery"); assert(recovery instanceof page.window.HTMLElement);
+    dispatchClick(recovery.querySelector('[data-action="reload-after-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 0);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /not currently in this game/);
+
+    apiState.gamePlayers.set("remove-absent-then-readd:player-ari", { gameId: "remove-absent-then-readd", playerId: "player-ari",
+      createdAt: "2026-03-28T12:00:00.000Z", updatedAt: "2026-03-28T12:00:00.000Z" });
+    apiState.roster.set("remove-absent-then-readd:player-ari", { gameId: "remove-absent-then-readd", playerId: "player-ari", teamId: "yellow",
+      createdAt: "2026-03-28T12:00:00.000Z", updatedAt: "2026-03-28T12:00:00.000Z" });
+    dispatchClick(recovery.querySelector('[data-action="retry-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(deletes, 2); assert.equal(recovery.hidden, true);
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 0,
+      "failed refresh retains the earlier absent projection without asserting it is current");
+    const status = page.document.getElementById("roster-retry-status")?.textContent ?? "";
+    assert.match(status, /original removal was confirmed/); assert.match(status, /last observed roster state/);
+    assert.doesNotMatch(status, /removed from this game|not currently in this game|currently back/);
+    assert.equal(page.document.getElementById("roster-retry")?.textContent, "Reload roster",
+      "the visible recovery action must match the status instruction");
+    assert.equal(page.document.getElementById("roster-retry")?.hidden, false,
+      "scorekeepers retain the roster recovery action after a committed refresh failure");
   } finally { page.dom.window.close(); }
 });
 
@@ -6735,7 +6780,7 @@ test("uncommitted removal retry keeps last-observed roster truth when confirmati
     assert.equal(deletes, 2); assert.equal(apiState.gamePlayers.has("remove-first-commit:player-ari"), false);
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1, "last-observed row stays until an authoritative read succeeds");
     const status = page.document.getElementById("roster-retry-status")?.textContent ?? "";
-    assert.match(status, /row shows the last roster state/); assert.doesNotMatch(status, /later registration|currently back/);
+    assert.match(status, /last observed roster state/); assert.doesNotMatch(status, /later registration|currently back/);
   } finally { page.dom.window.close(); }
 });
 
