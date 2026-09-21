@@ -6714,6 +6714,40 @@ test("a definitive same-key retry clears an earlier uncertain removal", async ()
   } finally { page.dom.window.close(); }
 });
 
+test("an uncertain removal keeps its exact retry across a same-session role change and game start", async () => {
+  const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled", "admin");
+  const base = createMockFetch(apiState); const keys: Array<string | null> = []; let attempts = 0;
+  const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+    const path = new URL(String(input)).pathname;
+    if (init.method === "DELETE" && path.endsWith("/player-registration")) {
+      attempts += 1; keys.push(readInitHeader(init, "idempotency-key")); const response = await base(input, init);
+      if (attempts === 1) throw new Error("response lost");
+      return response;
+    }
+    return base(input, init);
+  } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]');
+    assert(remove instanceof page.window.HTMLButtonElement); openActionMenuFor(remove); dispatchClick(remove);
+    dispatchClick(page.document.querySelector('[data-action="confirm-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(attempts, 1); assert.equal(apiState.gamePlayers.has("ux10-match:player-ari"), false);
+    const recovery = page.document.getElementById("player-removal-recovery"); assert(recovery instanceof page.window.HTMLElement);
+    grantMockLeagueAccess(apiState, "three-sided-football-club", apiState.session!.email, "scorekeeper");
+    await advanceUx10(page, 15000);
+    const retry = recovery.querySelector('[data-action="retry-player-removal"]');
+    assert(retry instanceof page.window.HTMLButtonElement); assert.equal(retry.disabled, false);
+    assert.equal(recovery.hidden, false, "same-session authority refresh keeps the frozen removal owner");
+    apiState.games.get("ux10-match")!.status = "live";
+    dispatchClick(recovery.querySelector('[data-action="reload-after-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(recovery.hidden, false); assert.match(recovery.textContent ?? "", /still unconfirmed/);
+    dispatchClick(retry); await flushAsync();
+    assert.equal(attempts, 2); assert.equal(recovery.hidden, true);
+    assert.ok(keys[0]); assert.equal(keys[1], keys[0], "the role and game-state refresh cannot mint a replacement request");
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /Ari removed from this game/);
+  } finally { closeUx10Page(page); }
+});
+
 test("an auth-layer rejection cannot falsely settle an uncertain committed removal", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-auth-change", role: "admin" });
   const base = createMockFetch(apiState); const keys: Array<string | null> = []; let attempts = 0;

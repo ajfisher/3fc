@@ -116,7 +116,16 @@ findings. Its next exact-head review identified one further valid recovery gap:
 an immediate same-key retry had not yet recorded the visibly present row. The
 attempt now starts from that observable truth and preserves it as explicitly
 stale until a successful authoritative refresh; a response-loss, later re-add,
-immediate replay and failed-refresh regression covers the boundary. GitHub
+immediate replay and failed-refresh regression covers the boundary. A following
+review found that a game-start refresh could prevent replaying the already-owned
+request. Scheduled state now gates only new removals; uncertain receipt retries
+remain available and settle against the backend's durable receipt after the game
+starts. Independent engineering review then found that a same-session role
+refresh could discard that frozen request. Authority refreshes now preserve the
+exact removal owner while clearing role-specific enrichment; account changes and
+sign-out still clear it, and a non-operator role cannot dispatch the retry. The
+combined regression covers response loss, administrator-to-scorer refresh, game
+start and exact-key receipt replay. GitHub
 evidence must be refreshed for the new head.
 
 ### Unresolved blocking findings
@@ -127,7 +136,7 @@ pending publication, not unresolved implementation findings.
 ### Local validation
 
 - `npm test --workspace @3fc/api`: 527 passed.
-- `npm test --workspace @3fc/app`: 664 passed.
+- `npm test --workspace @3fc/app`: 665 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

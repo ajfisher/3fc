@@ -5427,8 +5427,10 @@
       if (!(playerRemovalRecovery instanceof HTMLElement)) return;
       const visible = Boolean(playerRemovalAttempt?.uncertain);
       playerRemovalRecovery.hidden = !visible;
-      const buttons = playerRemovalRecovery.querySelectorAll("button");
-      for (const button of buttons) button.disabled = playerRemovalPending;
+      const retry = playerRemovalRecovery.querySelector('[data-action="retry-player-removal"]');
+      const reload = playerRemovalRecovery.querySelector('[data-action="reload-after-player-removal"]');
+      if (retry instanceof HTMLButtonElement) retry.disabled = playerRemovalPending || !isLeagueOperator();
+      if (reload instanceof HTMLButtonElement) reload.disabled = playerRemovalPending;
       if (visible && playerRemovalRecoveryStatus && !playerRemovalRecoveryStatus.textContent) {
         playerRemovalRecoveryStatus.textContent = `Removal of ${playerRemovalAttempt.name} could not be confirmed.`;
       }
@@ -5452,7 +5454,7 @@
 
     async function executePlayerRemoval() {
       const attempt = playerRemovalAttempt;
-      if (!attempt || playerRemovalPending || currentGame?.status !== "scheduled" || !isLeagueOperator()) return;
+      if (!attempt || playerRemovalPending || (!attempt.uncertain && currentGame?.status !== "scheduled") || !isLeagueOperator()) return;
       const wasUncertain = attempt.uncertain;
       const wasAssigned = rosterAssignments.some(entry => entry.playerId === attempt.playerId);
       playerRemovalPending = true;
@@ -7051,9 +7053,11 @@
         playerRemovalPending || playerRemovalAttempt || playerInvitation.hasPending() || existingPlayerAttempt || uncertainReadBarriers.size);
     }
 
-    function discardPrivateEnrichment() {
+    function discardPrivateEnrichment({ preservePlayerRemoval = false } = {}) {
       closePlayerRemovalDialog({ restoreFocus: false });
-      playerRemovalAttempt = null; playerRemovalPending = false;
+      if (!preservePlayerRemoval) {
+        playerRemovalAttempt = null; playerRemovalPending = false;
+      }
       playerInvitation.discard();
       cancelPickerRead();
       pickerVersion += 1; pickerPlayers.clear(); pickerList.replaceChildren(); pickerCursor = null; pickerMore.hidden = true;
@@ -7177,7 +7181,11 @@
         const role = normalizeLeagueRole(league.access.role);
         authorityRevision += 1;
         if (role !== currentLeagueRole) {
-          discardPrivateEnrichment();
+          // This refresh has already fenced the same authenticated session.
+          // A role change must purge role-specific enrichment without losing
+          // the exact request/key that owns an uncertain removal. Account
+          // changes still take the stronger lockRefreshAccount path above.
+          discardPrivateEnrichment({ preservePlayerRemoval: true });
           currentLeagueRole = role;
           renderRosterSetup();
           renderTimer();
