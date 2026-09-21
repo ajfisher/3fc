@@ -311,13 +311,13 @@ functions:
           path: /v1/games/{gameId}/players
       - httpApi:
           method: DELETE
-          path: /v1/games/{gameId}/players/{playerId}
+          path: /v1/games/{gameId}/player-registration
       - httpApi:
           method: OPTIONS
           path: /v1/games/{gameId}/players
       - httpApi:
           method: OPTIONS
-          path: /v1/games/{gameId}/players/{playerId}
+          path: /v1/games/{gameId}/player-registration
       - httpApi:
           method: GET
           path: /v1/games/{gameId}/roster

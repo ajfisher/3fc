@@ -3589,7 +3589,23 @@ export class ThreeFcRepository {
     }
     if (existingAssignments.length > 1) throw new PlayerIdentityError("player_registration_changed", 409,
       "This player has conflicting team assignments. Reload and try again.");
-    const [goals, goalAudit] = await Promise.all([this.listGoalEvents(input.gameId), this.listGoalAuditEntriesWithConsistency(input.gameId, true)]);
+    const goalStateBefore = await this.getEntity(gamePk(input.gameId), goalStateSk(), { consistentRead: true });
+    if (goalStateBefore && goalStateBefore.entityType !== ENTITY_TYPE.goalState) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "Scoring history changed. Reload and try again.");
+    }
+    const [goals, goalAudit] = await Promise.all([
+      this.listGoalEventsWithConsistency(input.gameId, true),
+      this.listGoalAuditEntriesWithConsistency(input.gameId, true),
+    ]);
+    const goalState = await this.getEntity(gamePk(input.gameId), goalStateSk(), { consistentRead: true });
+    if (goalState && goalState.entityType !== ENTITY_TYPE.goalState) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "Scoring history changed. Reload and try again.");
+    }
+    const unchangedGoalState = goalStateBefore === null ? goalState === null :
+      goalState !== null && goalStateBefore.rawData === goalState.rawData && goalStateBefore.updatedAt === goalState.updatedAt;
+    if (!unchangedGoalState) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "Scoring history changed. Reload and try again.");
+    }
     const referencesPlayer = (value: unknown): boolean => {
       if (!value || typeof value !== "object") return false;
       if (Array.isArray(value)) return value.some(referencesPlayer);
@@ -3611,11 +3627,16 @@ export class ThreeFcRepository {
         ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
     const identityActions = await this.identities.planGameRemoval(identity, { gameId: game.gameId, leagueId: game.leagueId,
       seasonId: game.seasonId, gameStartTs: game.gameStartTs, registeredPlayerId: input.playerId }, now);
+    const goalStateFence: TransactWriteItem = goalState
+      ? this.buildConditionalCheckFromStoredEntity(goalState)
+      : { ConditionCheck: { TableName: this.tableName,
+        Key: { pk: { S: gamePk(input.gameId) }, sk: { S: goalStateSk() } },
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } };
     try {
       await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
         ...identityActions, this.buildGameConditionCheck(input.gameId, initialGame),
         this.buildConditionalCheckFromStoredEntity(authority.league)!, this.buildConditionalCheckFromStoredEntity(authority.acl)!,
-        this.buildConditionalDeleteFromStoredEntity(registration), ...rosterDeletes,
+        goalStateFence, this.buildConditionalDeleteFromStoredEntity(registration), ...rosterDeletes,
         { Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), receiptKey, ENTITY_TYPE.rosterRemoval, receipt, now),
           ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
       ]) }));
@@ -5530,6 +5551,30 @@ export class ThreeFcRepository {
     return { scorerPlayerId: mapped.get(scorerPlayerId)!, assistPlayerIds: assistPlayerIds.map(id => mapped.get(id)!) };
   }
 
+  private async goalPlayerRegistrationChecks(
+    gameId: string,
+    playerIds: string[],
+    operation: "creation" | "correction",
+  ): Promise<TransactWriteItem[]> {
+    const uniquePlayerIds = [...new Set(playerIds)];
+    const registrations = await Promise.all(uniquePlayerIds.map(playerId =>
+      this.getEntity(gamePk(gameId), gamePlayerSk(playerId), { consistentRead: true })));
+    return registrations.map((registration, index) => {
+      const playerId = uniquePlayerIds[index];
+      const value = registration?.data as Partial<GamePlayerRecord> | undefined;
+      if (!registration || registration.entityType !== ENTITY_TYPE.gamePlayer ||
+          value?.gameId !== gameId || value.playerId !== playerId) {
+        if (operation === "creation") {
+          throw new GoalCreationError("scoreboard_state_changed", 409,
+            "A selected player is no longer registered in this game. Reload the game and try again.");
+        }
+        throw new GoalCorrectionError("goal_state_changed", 409,
+          "A selected player is no longer registered in this game. Reload the game and try again.");
+      }
+      return this.buildConditionalCheckFromStoredEntity(registration);
+    });
+  }
+
   async createGoal(input: CreateGoalInput): Promise<CreateGoalResult | null> {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
@@ -5677,6 +5722,8 @@ export class ThreeFcRepository {
         );
       }
     }
+    const playerRegistrationChecks = await this.goalPlayerRegistrationChecks(input.gameId,
+      [input.scorerPlayerId, ...input.assistPlayerIds], "creation");
 
     const now = this.clock.now();
     const startedAtMs = activeThird?.startedAt ? Date.parse(activeThird.startedAt) : NaN;
@@ -5758,6 +5805,7 @@ export class ThreeFcRepository {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...playerRegistrationChecks,
             ...(updatedFinishedGame
               ? [
                   this.buildGamePutTransactionItem({
@@ -5981,6 +6029,8 @@ export class ThreeFcRepository {
     );
     const roster = await this.listGameRoster(input.gameId);
     this.validateGoalRules(goal, teams, roster, "correction", previousGoal);
+    const playerRegistrationChecks = await this.goalPlayerRegistrationChecks(input.gameId,
+      [goal.scorerPlayerId, ...goal.assistPlayerIds], "correction");
 
     const now = this.clock.now();
     const updatedGoal = {
@@ -6028,6 +6078,7 @@ export class ThreeFcRepository {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...playerRegistrationChecks,
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
             ...(updatedFinishedGame
               ? [

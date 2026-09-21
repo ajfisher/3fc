@@ -71,14 +71,27 @@ Removal owns a single player and idempotency key from confirmation until the
 outcome is settled. Exact retries replay an immutable receipt. Ambiguous failures
 lock conflicting roster/scoring writes and offer retry with the same key or an
 authoritative reload. A successful local removal is followed by a roster read;
-that read may truthfully show a later re-add without replaying the delete.
+that read may truthfully show a later re-add without replaying the delete. If a
+later refresh fails after an uncertain attempt, the last observed row remains
+visible but is explicitly labelled stale; presence alone does not prove re-add.
+
+The authenticated removal route is
+`DELETE /v1/games/{gameId}/player-registration?playerId={opaqueId}`. The player
+identity is query data rather than a path segment because historical opaque IDs
+may contain reserved path characters. It is URL-decoded exactly once.
 
 The transaction deletes only the game registration, any assignment and the
 matching reverse game-membership row. It retains the reusable profile, claim,
 aliases, league/season membership and all other matches. The receipt stores a
 privacy-safe actor hash and role, not email, and public responses omit actor
 data. Registration-bound claim proof remains stored to normal expiry but cannot
-be redeemed after its required registration disappears.
+be redeemed after its required registration disappears. Goal creation and
+correction transactions condition every selected scorer/assist registration,
+so a scoring write cannot introduce a reference while that registration is
+being removed. Removal brackets the complete strong history traversal with
+strong goal-state reads, requires the same exact present/absent revision, then
+conditions that revision in its transaction. A scoring write during or after
+the history scan therefore forces removal to fail without deleting membership.
 
 ## Verification and rollback
 

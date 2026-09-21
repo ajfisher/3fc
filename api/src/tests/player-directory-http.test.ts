@@ -57,11 +57,13 @@ test("directory and league invitation HTTP adapters parse real request streams a
     assert.equal(created.status, 201); await created.arrayBuffer();
     const registration = await fetch(`${base}/v1/game-player-registrations?gameId=game`, { headers, method: "POST", body: JSON.stringify({ playerId: player.playerId }) });
     assert.equal(registration.status, 200); await registration.arrayBuffer();
-    const removal = await fetch(`${base}/v1/games/game/players/${encodeURIComponent(player.playerId)}`, { headers: { ...headers,
+    const removalUrl = new URL(`${base}/v1/games/game/player-registration`);
+    removalUrl.searchParams.set("playerId", player.playerId);
+    const removal = await fetch(removalUrl, { headers: { ...headers,
       "idempotency-key": "removal-fixture-0001" }, method: "DELETE" });
     assert.equal(removal.status, 200); assert.deepEqual(await removal.json(), { removal: { gameId: "game", playerId: player.playerId,
       teamId: "blue", removedAt: "2026-09-21T01:02:03.000Z" } });
-    const missingKey = await fetch(`${base}/v1/games/game/players/${encodeURIComponent(player.playerId)}`, { headers, method: "DELETE" });
+    const missingKey = await fetch(removalUrl, { headers, method: "DELETE" });
     assert.equal(missingKey.status, 400); await missingKey.arrayBuffer();
     const malformed = await fetch(`${base}/v1/league-players?${query}`, { headers, method: "POST", body: "{" });
     assert.equal(malformed.status, 400); await malformed.arrayBuffer();

@@ -2297,9 +2297,14 @@ test("Lambda player removal enforces session, league role, state, key, and priva
         requestHash: "private-request", actorRef: "private-actor", actorRole: "scorekeeper", createdAt: stamp, updatedAt: stamp };
     },
   });
-  const request = (gameId: string, account?: string, withKey = true) => createEvent({ method: "DELETE",
-    path: `/v1/games/${gameId}/players/player-one`, cookies: account ? [`threefc_session=${account}`] : undefined,
-    headers: { Origin: "https://qa.3fc.football", ...(withKey ? { "Idempotency-Key": "remove-fixture-key" } : {}) } });
+  const playerId = "opaque/#% player";
+  const request = (gameId: string, account?: string, withKey = true) => {
+    const event = createEvent({ method: "DELETE",
+      path: `/v1/games/${gameId}/player-registration`, cookies: account ? [`threefc_session=${account}`] : undefined,
+      headers: { Origin: "https://qa.3fc.football", ...(withKey ? { "Idempotency-Key": "remove-fixture-key" } : {}) } });
+    event.rawQueryString = new URLSearchParams({ playerId }).toString();
+    return event;
+  };
   assert.equal((await handler(request("game-scheduled"))).statusCode, 401);
   assert.equal((await handler(request("game-scheduled", "viewer"))).statusCode, 403);
   assert.equal((await handler(request("game-scheduled", "cross"))).statusCode, 403);
@@ -2308,7 +2313,7 @@ test("Lambda player removal enforces session, league role, state, key, and priva
     const response = await handler(request("game-scheduled", account));
     assert.equal(response.statusCode, 200); assert.equal(response.headers?.["cache-control"], "no-store");
     assert.equal(response.headers?.["referrer-policy"], "no-referrer");
-    assert.deepEqual(JSON.parse(response.body), { removal: { gameId: "game-scheduled", playerId: "player-one", teamId: "blue", removedAt: stamp } });
+    assert.deepEqual(JSON.parse(response.body), { removal: { gameId: "game-scheduled", playerId, teamId: "blue", removedAt: stamp } });
     assert.doesNotMatch(response.body, /private-request|private-actor|example\.com/);
   }
   for (const gameId of ["game-live", "game-finished"]) {
@@ -2316,6 +2321,7 @@ test("Lambda player removal enforces session, league role, state, key, and priva
     assert.equal(response.statusCode, 409); assert.equal(JSON.parse(response.body).code, "game_not_scheduled");
   }
   assert.equal(calls.length, 4);
+  assert(calls.every(call => call.playerId === playerId));
   assert(calls.some(call => call.userIds.includes("admin") && call.idempotencyKey === "remove-fixture-key"));
   assert(calls.some(call => call.userIds.includes("scorer")));
 });

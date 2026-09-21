@@ -169,7 +169,7 @@ test("league player directory and invitation operations have deployed routes and
 });
 
 test("scheduled-game player removal has deployed DELETE, preflight, and documented privacy-safe replay contract", () => {
-  const path = "/v1/games/{gameId}/players/{playerId}";
+  const path = "/v1/games/{gameId}/player-registration";
   assertServerlessRoute("DELETE", path);
   assertServerlessRoute("OPTIONS", path);
   const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");

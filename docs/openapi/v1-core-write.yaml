@@ -1884,7 +1884,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-  /v1/games/{gameId}/players/{playerId}:
+  /v1/games/{gameId}/player-registration:
     delete:
       summary: Remove a player registration from a scheduled game
       operationId: removeGamePlayer
@@ -1899,8 +1899,9 @@ paths:
           required: true
           schema: { type: string, minLength: 1 }
         - name: playerId
-          in: path
+          in: query
           required: true
+          description: Opaque identifier, URL-encoded and decoded exactly once so reserved path characters remain data.
           schema: { type: string, minLength: 1 }
         - name: Idempotency-Key
           in: header

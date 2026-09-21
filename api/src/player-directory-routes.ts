@@ -27,7 +27,7 @@ export const leaguePlayerPageSchema = z.object({ players: z.array(z.object({ pla
 export function isPlayerDirectoryRoute(method: string, route: string): boolean {
   return ((method === "GET" || method === "POST") && route === "/v1/league-players") ||
     (method === "POST" && route === "/v1/game-player-registrations") ||
-    (method === "DELETE" && /^\/v1\/games\/[^/]+\/players\/[^/]+$/.test(route));
+    (method === "DELETE" && /^\/v1\/games\/[^/]+\/player-registration$/.test(route));
 }
 
 function queryFields(raw: string, allowed: readonly string[]): Record<string, string> {
@@ -85,10 +85,14 @@ export async function handlePlayerDirectoryRoute(input: {
       const registration = await repository.addExistingLeaguePlayer({ ...body.data, gameId: fields.gameId, userIds });
       return { statusCode: 200, payload: { registration } };
     }
-    const removal = /^\/v1\/games\/([^/]+)\/players\/([^/]+)$/.exec(route);
-    if (removal && method === "DELETE") {
+    const opaqueRemoval = /^\/v1\/games\/([^/]+)\/player-registration$/.exec(route);
+    if (opaqueRemoval && method === "DELETE") {
       let gameId: string; let playerId: string;
-      try { gameId = decodeURIComponent(removal[1]); playerId = decodeURIComponent(removal[2]); encodeURIComponent(gameId); encodeURIComponent(playerId); }
+      try {
+        gameId = decodeURIComponent(opaqueRemoval[1]);
+        playerId = queryFields(input.rawQueryString ?? "", ["playerId"]).playerId;
+        encodeURIComponent(gameId); encodeURIComponent(playerId);
+      }
       catch { return invalid(); }
       if (!gameIdSchema.safeParse(gameId).success || !id.safeParse(playerId).success) return invalid();
       const key = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);

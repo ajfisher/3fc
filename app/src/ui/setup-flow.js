@@ -5471,10 +5471,13 @@
         const response = await requestJsonOrThrow(attempt.path, attempt.request);
         if (response?.removal?.gameId !== gameId || response.removal.playerId !== attempt.playerId ||
             typeof response.removal.removedAt !== "string") throw new Error("Removal could not be confirmed.");
+        const preserveLastObservedRow = wasUncertain && attempt.lastObservedPresent === true;
         playerRemovalAttempt = null;
         outcome = "committed";
-        announceRosterStatus(`${attempt.name} removed from this game.`);
-        applyLocalPlayerRemoval(attempt.playerId);
+        announceRosterStatus(preserveLastObservedRow
+          ? `${attempt.name}’s removal was confirmed. Checking the current roster…`
+          : `${attempt.name} removed from this game.`);
+        if (!preserveLastObservedRow) applyLocalPlayerRemoval(attempt.playerId);
         try {
           await loadRosterSetup({ updateStatus: false });
           await loadPlayerDetails();
@@ -5485,7 +5488,9 @@
             ? `${attempt.name}’s original removal was confirmed. ${attempt.name} is currently back in this game.`
             : `${attempt.name} removed from this game.`);
         } catch {
-          announceRosterStatus(`${attempt.name} removed from this game. The latest roster could not be loaded.`);
+          announceRosterStatus(preserveLastObservedRow
+            ? `${attempt.name}’s removal was confirmed, but the latest roster could not be loaded. The row shows the last roster state; reload the roster to confirm whether ${attempt.name} is currently in this game.`
+            : `${attempt.name} removed from this game. The latest roster could not be loaded.`);
           const retry = document.getElementById("roster-retry"); if (retry) retry.hidden = false;
         }
       } catch (error) {
@@ -6635,8 +6640,8 @@
         if (action === "confirm-player-removal") {
           if (!playerRemovalPrompt || playerRemovalPending || playerRemovalAttempt?.uncertain) return;
           const { playerId, name } = playerRemovalPrompt;
-          playerRemovalAttempt = { playerId, name, uncertain: false,
-            path: `/v1/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(playerId)}`,
+          playerRemovalAttempt = { playerId, name, uncertain: false, lastObservedPresent: false,
+            path: `/v1/games/${encodeURIComponent(gameId)}/player-registration?${new URLSearchParams({ playerId })}`,
             request: Object.freeze({ method: "DELETE", headers: Object.freeze({
               "Idempotency-Key": createIdempotencyKey("remove-player", `${gameId}:${playerId}`),
             }) }) };
@@ -6657,6 +6662,7 @@
             await loadGame(); await loadRosterSetup({ updateStatus: false }); await loadPlayerDetails();
             const present = rosterAssignments.some(entry => entry.playerId === attempt.playerId) ||
               (Array.isArray(rosterUnassignedPlayers) && rosterUnassignedPlayers.some(entry => entry.playerId === attempt.playerId));
+            attempt.lastObservedPresent = present;
             announceRosterStatus(present ? `${attempt.name} is currently in this game.` : `${attempt.name} is not currently in this game.`);
             if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent =
               `Removal of ${attempt.name} is still unconfirmed. Retry removal to settle the original request.`;

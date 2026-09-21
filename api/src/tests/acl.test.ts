@@ -74,7 +74,7 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "assignRosterPlayer",
     gameId: "game-1",
   });
-  assert.deepEqual(resolveProtectedMutationRoute("DELETE", "/v1/games/game-1/players/player-1"), {
+  assert.deepEqual(resolveProtectedMutationRoute("DELETE", "/v1/games/game-1/player-registration"), {
     operation: "removeGamePlayer",
     gameId: "game-1",
   });
@@ -341,7 +341,7 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
   });
 });
 
-test("game-scoped player removal allows scorekeepers and validates both opaque path identifiers", async () => {
+test("game-scoped player removal allows scorekeepers on the opaque-safe fixed route", async () => {
   const lookup = new InMemoryAclLookup({
     games: { "game-1": { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1", gameId: "game-1",
       status: "scheduled", gameStartTs: "2026-02-23T10:00:00.000Z", ...defaultGameStateFields(),
@@ -351,9 +351,9 @@ test("game-scoped player removal allows scorekeepers and validates both opaque p
     leagueAccess: { "league-1:scorekeeper-user": { leagueId: "league-1", userId: "scorekeeper-user", role: "scorekeeper",
       grantedByUserId: "admin-user", createdAt: "2026-02-23T00:00:00.000Z", updatedAt: "2026-02-23T00:00:00.000Z" } },
   });
-  const result = await authorizeProtectedMutation("DELETE", "/v1/games/game-1/players/player-1", "scorekeeper-user", lookup);
+  const result = await authorizeProtectedMutation("DELETE", "/v1/games/game-1/player-registration", "scorekeeper-user", lookup);
   assert.equal(result.allowed, true); assert.equal(result.operation, "removeGamePlayer");
-  const malformed = await authorizeProtectedMutation("DELETE", "/v1/games/game-1/players/%E0%A4", "scorekeeper-user", lookup);
+  const malformed = await authorizeProtectedMutation("DELETE", "/v1/games/%E0%A4/player-registration", "scorekeeper-user", lookup);
   assert.equal(malformed.allowed, false); assert.equal(malformed.statusCode, 400); assert.equal(malformed.error?.code, "invalid_path");
 });
 

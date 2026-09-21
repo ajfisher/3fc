@@ -20,7 +20,7 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS focused |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS focused |
 | Full local and independent evidence | API 523/523; app 662/662; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
-| CI, exact-head Codex and deployed QA evidence | To be attached after publication | PENDING |
+| CI, exact-head Codex and deployed QA evidence | Initial `c153478` CI/deploy passed; three Codex findings were accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
 
 ## Scope boundaries
 
@@ -55,7 +55,7 @@ production writes, merge and release.
 | INV-002 | Adds organiser/scorer roster-removal authority | Both global ACL routing and the repository require current league authority | ACL and negative repository/handler cases |
 | INV-003 | Adds a retriable destructive roster operation | One frozen client request and immutable hashed-key receipt own replay and recovery | Same-key, conflict, response-loss and re-add cases |
 | INV-004 | Deletes one registration, assignment and game reverse marker | Canonical identity, claim, league/season membership and history remain; identity and directory revisions are fenced | Single-table docs and retention/CAS assertions |
-| INV-008 | Adds a scheduled-game-only destructive transaction | Complete strong scoring reads block referenced players and the scheduled snapshot fences concurrent game start/scoring | Goal/audit pagination and game-start race cases |
+| INV-008 | Adds a scheduled-game-only destructive transaction | Complete strong scoring reads block referenced players; the goal-state revision, scheduled snapshot and scorer/assist registration conditions fence both scoring/removal commit orders | Goal/audit pagination, scoring-revision, registration-condition and game-start race cases |
 | INV-009 | Adds one authenticated DELETE route and confirmation flow | Existing cookie authentication, no-store/no-referrer, CORS and local-asset policies remain | HTTP/session/deployment and built-browser checks |
 
 ### Architecture or decision record
@@ -72,9 +72,12 @@ no success. After an uncertain dispatch, only receipt-aware repository state
 codes settle the attempt; pre-repository 401/403 and other ambiguous outcomes
 retain the exact player/key, lock conflicting writes and expose Retry removal
 plus Reload roster. Reload reports current roster truth but cannot by itself
-settle an in-flight write. Confirmed success removes the local row before
-authoritative refresh; refresh failure still reports the committed removal. A
-later re-add is shown after same-key replay and the old receipt cannot delete it.
+settle an in-flight write. Confirmed first-attempt success removes the local row
+before authoritative refresh; refresh failure still reports the committed
+removal. After an uncertain attempt, a player row observed by Reload roster
+remains visible when same-key success confirms removal but the following refresh
+fails. The UI labels that row as last-observed state rather than claiming it is a
+later re-add. The old receipt cannot delete an actual later registration.
 
 ### Rollback approach
 
@@ -98,6 +101,19 @@ complete goal/audit pagination, authority-safe replay and uncertain client
 settlement. Each was fixed and all three final re-reviews reported no remaining
 material findings.
 
+GitHub Codex reviewed exact head `c153478` and identified three material cases,
+all accepted: API Gateway could reinterpret reserved characters in a path-based
+player ID; an observed later re-add could be hidden if receipt replay succeeded
+but its following refresh failed; and goal correction did not condition the
+selected game registrations. The route now carries the opaque player ID as an
+exactly-once-decoded query parameter, last-observed roster state is preserved and
+labelled stale through a failed refresh, goal creation/correction fence every
+scorer and assist registration, and removal brackets complete history reads
+with the goal-state revision before conditioning it in the transaction. Focused
+regressions cover scoring before, during and after that traversal. All three
+independent local re-reviews cleared the amended diff with no remaining material
+findings. GitHub evidence must be refreshed for the new head.
+
 ### Unresolved blocking findings
 
 None. GitHub current-head review, CI and QA acceptance are delivery evidence
@@ -105,8 +121,8 @@ pending publication, not unresolved implementation findings.
 
 ### Local validation
 
-- `npm test --workspace @3fc/api`: 523 passed.
-- `npm test --workspace @3fc/app`: 662 passed.
+- `npm test --workspace @3fc/api`: 527 passed.
+- `npm test --workspace @3fc/app`: 663 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

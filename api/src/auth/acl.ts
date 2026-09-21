@@ -8,7 +8,7 @@ const ROUTES = {
   updateSeasonTeam: /^\/v1\/seasons\/([^/]+)\/teams\/([^/]+)$/,
   updateGameTeam: /^\/v1\/games\/([^/]+)\/teams\/([^/]+)$/,
   createGamePlayer: /^\/v1\/games\/([^/]+)\/players$/,
-  removeGamePlayer: /^\/v1\/games\/([^/]+)\/players\/([^/]+)$/,
+  removeOpaqueGamePlayer: /^\/v1\/games\/([^/]+)\/player-registration$/,
   assignRosterPlayer: /^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/,
   startGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/,
   finishGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/,
@@ -144,10 +144,9 @@ export function resolveProtectedMutationRoute(
     };
   }
 
-  const removeGamePlayerMatch = upperMethod === "DELETE" ? route.match(ROUTES.removeGamePlayer) : null;
-  if (removeGamePlayerMatch) {
-    decodeRouteParam(removeGamePlayerMatch[2]);
-    return { operation: "removeGamePlayer", gameId: decodeRouteParam(removeGamePlayerMatch[1]) };
+  const removeOpaqueGamePlayerMatch = upperMethod === "DELETE" ? route.match(ROUTES.removeOpaqueGamePlayer) : null;
+  if (removeOpaqueGamePlayerMatch) {
+    return { operation: "removeGamePlayer", gameId: decodeRouteParam(removeOpaqueGamePlayerMatch[1]) };
   }
 
   const assignRosterPlayerMatch = upperMethod === "PUT" ? route.match(ROUTES.assignRosterPlayer) : null;

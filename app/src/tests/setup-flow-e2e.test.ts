@@ -1568,10 +1568,10 @@ function createMockFetch(state: MockApiState) {
       return createJsonResponse(201, publicPlayer(player));
     }
 
-    const removeGamePlayerMatch = path.match(/^\/v1\/games\/([^/]+)\/players\/([^/]+)$/);
+    const removeGamePlayerMatch = path.match(/^\/v1\/games\/([^/]+)\/player-registration$/);
     if (method === "DELETE" && removeGamePlayerMatch) {
       const gameId = decodeURIComponent(removeGamePlayerMatch[1]);
-      const playerId = decodeURIComponent(removeGamePlayerMatch[2]);
+      const playerId = target.searchParams.get("playerId") ?? "";
       const key = readInitHeader(init, "idempotency-key");
       if (!key) return createJsonResponse(400, { error: "bad_request", message: "Idempotency-Key is required for player removal." });
       const receiptKey = `${gameId}:${key}`;
@@ -6501,7 +6501,7 @@ test("scheduled roster actions confirm and remove one assigned player while pres
     url: "http://localhost:3000/games/remove-player#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
       const path = new URL(String(input)).pathname;
-      if (init.method === "DELETE" && path.includes("/players/")) writes.push({ path, key: readInitHeader(init, "idempotency-key") });
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) writes.push({ path, key: readInitHeader(init, "idempotency-key") });
       return base(input, init);
     } });
   try {
@@ -6530,13 +6530,14 @@ test("scheduled roster actions confirm and remove one assigned player while pres
 
 test("Unassigned player removal supports Escape cancellation and keyboard focus restoration", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-unassigned", role: "scorekeeper" });
-  seedUx09Registration(apiState, "remove-unassigned", "loose-player", "Łucja");
+  const playerId = "loose/#% player";
+  seedUx09Registration(apiState, "remove-unassigned", playerId, "Łucja");
   const base = createMockFetch(apiState); let deletes = 0;
   const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-unassigned" }),
     url: "http://localhost:3000/games/remove-unassigned#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => { if (init.method === "DELETE") deletes += 1; return base(input, init); } });
   try {
-    const row = ux09PlayerRows(page, '[data-ui="roster-player"]', "loose-player")[0]; assert(row instanceof page.window.HTMLElement);
+    const row = ux09PlayerRows(page, '[data-ui="roster-player"]', playerId)[0]; assert(row instanceof page.window.HTMLElement);
     const remove = row.querySelector('[data-action="open-player-removal"]'); assert(remove instanceof page.window.HTMLButtonElement);
     const { trigger } = openActionMenuFor(remove); dispatchClick(remove);
     const cancel = page.document.querySelector('#player-removal-dialog [data-action="cancel-player-removal"]:not([data-ui="prompt-backdrop"])');
@@ -6546,8 +6547,8 @@ test("Unassigned player removal supports Escape cancellation and keyboard focus 
     openActionMenuFor(remove); dispatchClick(remove);
     const confirm = page.document.querySelector('[data-action="confirm-player-removal"]'); assert(confirm instanceof page.window.HTMLButtonElement);
     dispatchClick(confirm); await flushAsync();
-    assert.equal(deletes, 1); assert.equal(apiState.gamePlayers.has("remove-unassigned:loose-player"), false);
-    assert.equal(apiState.players.get("loose-player")?.nickname, "Łucja");
+    assert.equal(deletes, 1); assert.equal(apiState.gamePlayers.has(`remove-unassigned:${playerId}`), false);
+    assert.equal(apiState.players.get(playerId)?.nickname, "Łucja");
   } finally { page.dom.window.close(); }
 });
 
@@ -6558,7 +6559,7 @@ test("uncertain player removal freezes conflicting actions and retries the exact
     url: "http://localhost:3000/games/remove-retry#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
       const path = new URL(String(input)).pathname;
-      if (init.method === "DELETE" && path.includes("/players/")) {
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
         attempts += 1; keys.push(readInitHeader(init, "idempotency-key"));
         if (attempts === 1) return createJsonResponse(503, { error: "unavailable" });
       }
@@ -6583,13 +6584,18 @@ test("uncertain player removal freezes conflicting actions and retries the exact
 
 test("response-loss reload keeps the write locked until same-key replay and reports a later re-add", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-readd", role: "admin" });
-  const base = createMockFetch(apiState); let deletes = 0;
+  const base = createMockFetch(apiState); let deletes = 0; let failRefreshAfterReplay = false;
   const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-readd" }),
     url: "http://localhost:3000/games/remove-readd#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
       const path = new URL(String(input)).pathname;
-      if (init.method === "DELETE" && path.includes("/players/")) {
-        deletes += 1; const response = await base(input, init); if (deletes === 1) throw new Error("response lost"); return response;
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
+        deletes += 1; const response = await base(input, init);
+        if (deletes === 1) throw new Error("response lost");
+        failRefreshAfterReplay = true; return response;
+      }
+      if (failRefreshAfterReplay && (init.method ?? "GET") === "GET" && path.endsWith("/roster")) {
+        failRefreshAfterReplay = false; throw new Error("refresh lost");
       }
       return base(input, init);
     } });
@@ -6607,8 +6613,41 @@ test("response-loss reload keeps the write locked until same-key replay and repo
     const retry = recovery.querySelector('[data-action="retry-player-removal"]'); assert(retry instanceof page.window.HTMLButtonElement);
     dispatchClick(retry); await flushAsync();
     assert.equal(deletes, 2); assert.equal(recovery.hidden, true);
-    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /currently back in this game/);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /row shows the last roster state/);
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-player"]', "player-ari").length, 1);
+  } finally { page.dom.window.close(); }
+});
+
+test("uncommitted removal retry keeps last-observed roster truth when confirmation refresh fails", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-first-commit", role: "admin" });
+  const base = createMockFetch(apiState); let deletes = 0; let failRefreshAfterCommit = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-first-commit" }),
+    url: "http://localhost:3000/games/remove-first-commit#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
+        deletes += 1;
+        if (deletes === 1) return createJsonResponse(503, { error: "unavailable" });
+        const response = await base(input, init); failRefreshAfterCommit = true; return response;
+      }
+      if (failRefreshAfterCommit && (init.method ?? "GET") === "GET" && path.endsWith("/roster")) {
+        failRefreshAfterCommit = false; throw new Error("refresh lost");
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]');
+    assert(remove instanceof page.window.HTMLButtonElement); openActionMenuFor(remove); dispatchClick(remove);
+    dispatchClick(page.document.querySelector('[data-action="confirm-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(apiState.gamePlayers.has("remove-first-commit:player-ari"), true);
+    const recovery = page.document.getElementById("player-removal-recovery"); assert(recovery instanceof page.window.HTMLElement);
+    dispatchClick(recovery.querySelector('[data-action="reload-after-player-removal"]') as HTMLElement); await flushAsync();
+    dispatchClick(recovery.querySelector('[data-action="retry-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(deletes, 2); assert.equal(apiState.gamePlayers.has("remove-first-commit:player-ari"), false);
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1, "last-observed row stays until an authoritative read succeeds");
+    const status = page.document.getElementById("roster-retry-status")?.textContent ?? "";
+    assert.match(status, /row shows the last roster state/); assert.doesNotMatch(status, /later registration|currently back/);
   } finally { page.dom.window.close(); }
 });
 
@@ -6619,7 +6658,7 @@ test("a definitive same-key retry clears an earlier uncertain removal", async ()
     url: "http://localhost:3000/games/remove-rejected#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
       const path = new URL(String(input)).pathname;
-      if (init.method === "DELETE" && path.includes("/players/")) {
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
         attempts += 1;
         return attempts === 1 ? createJsonResponse(503, { error: "unavailable" })
           : createJsonResponse(409, { error: "conflict", code: "game_not_scheduled", message: "Players can only be removed before scoring starts." });
@@ -6645,7 +6684,7 @@ test("an auth-layer rejection cannot falsely settle an uncertain committed remov
     url: "http://localhost:3000/games/remove-auth-change#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
       const path = new URL(String(input)).pathname;
-      if (init.method === "DELETE" && path.includes("/players/")) {
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
         attempts += 1; keys.push(readInitHeader(init, "idempotency-key"));
         if (attempts === 1) return createJsonResponse(503, { error: "unavailable" });
         if (attempts === 2) return createJsonResponse(403, { error: "forbidden", message: "You no longer have access." });
