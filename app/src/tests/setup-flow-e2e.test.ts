@@ -6635,6 +6635,51 @@ test("stale roster recovery hides finished-game correction entry until an author
   } finally { page.dom.window.close(); }
 });
 
+test("a superseded definitive-removal roster read keeps every write locked", async () => {
+  const gameId = "remove-superseded-recovery";
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId, role: "admin" });
+  const base = createMockFetch(apiState); let removalDispatched = false, recoveryRosterReads = 0;
+  const firstRoster = { release: null as (() => void) | null };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }),
+    url: `http://localhost:3000/games/${gameId}#teams`, scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (init.method === "DELETE" && url.pathname.endsWith("/player-registration")) removalDispatched = true;
+      if (removalDispatched && init.method === "GET" && url.pathname === `/v1/games/${gameId}/roster`) {
+        recoveryRosterReads += 1;
+        if (recoveryRosterReads === 1) {
+          return new Promise<Response>((resolve) => {
+            firstRoster.release = () => { void base(input, init).then(resolve); };
+          });
+        }
+        if (recoveryRosterReads === 2) return createJsonResponse(503, { error: "unavailable", message: "Roster unavailable." });
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]'); assert(remove instanceof page.window.HTMLButtonElement);
+    openActionMenuFor(remove); dispatchClick(remove);
+    const registration = apiState.gamePlayers.get(`${gameId}:player-ari`); assert(registration);
+    apiState.gamePlayers.set(`${gameId}:player-ari`, { ...registration, registrationRevision: "superseding-revision" });
+    const confirm = page.document.querySelector('[data-action="confirm-player-removal"]'); assert(confirm instanceof page.window.HTMLButtonElement);
+    dispatchClick(confirm); await flushAsync();
+
+    const refresh = page.document.getElementById("roster-retry"); assert(refresh instanceof page.window.HTMLButtonElement);
+    assert.equal(refresh.disabled, true, "competing player-detail refresh is unavailable while recovery owns the roster read");
+    refresh.disabled = false;
+    dispatchClick(refresh); await flushAsync();
+    assert.equal(recoveryRosterReads, 2, "the forced competing read supersedes the owned recovery read");
+    assert(firstRoster.release); firstRoster.release(); await flushAsync();
+
+    assert.equal(refresh.hidden, false); assert.equal(refresh.textContent, "Reload roster");
+    const transfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+    assert(transfer instanceof page.window.HTMLButtonElement); assert.equal(transfer.disabled, true);
+    assert.equal(page.document.getElementById("game-mode-tab-run")?.hasAttribute("hidden"), true);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /was not removed.*Reload the roster/i);
+  } finally { page.dom.window.close(); }
+});
+
 test("stale removal refresh keeps current roster truth when optional player details fail", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-stale-details", role: "admin" });
   const base = createMockFetch(apiState); let failPlayerDetails = false;
@@ -7556,6 +7601,33 @@ test("match roster retry restores private actions without filtering the complete
     assert.equal(page.document.querySelectorAll('[data-ui="roster-member"]').length, 3);
     assert.equal(page.document.querySelectorAll('[data-ui="player-initial"][data-link-state="unknown"]').length, 0);
     assert.equal(page.document.getElementById("roster-retry-status")?.textContent, "Players updated.");
+  } finally { page.dom.window.close(); }
+});
+
+test("match roster retry stays latched until roster and private details have both settled", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "game-retry-latched", role: "admin" });
+  const base = createMockFetch(apiState); let holdDetails = false, heldDetailReads = 0;
+  const pendingDetails = { release: null as (() => void) | null };
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "game-retry-latched" }),
+    url: "http://localhost:3000/games/game-retry-latched#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (holdDetails && url.pathname === "/v1/games/game-retry-latched/players") {
+        heldDetailReads += 1;
+        return new Promise<Response>(resolve => {
+          pendingDetails.release = () => { void base(input, init).then(resolve); };
+        });
+      }
+      return base(input, init);
+    } });
+  try {
+    const retry = page.document.getElementById("roster-retry"); assert(retry instanceof page.window.HTMLButtonElement);
+    holdDetails = true; dispatchClick(retry); await flushAsync();
+    assert.equal(heldDetailReads, 1); assert(pendingDetails.release);
+    assert.equal(retry.disabled, true, "roster rendering cannot reopen the shared refresh while detail recovery is pending");
+    assert.equal(page.document.getElementById("roster-retry-status")?.textContent, "Loading players…");
+    pendingDetails.release(); await flushAsync();
+    assert.equal(retry.disabled, false); assert.equal(page.document.getElementById("roster-retry-status")?.textContent, "Players updated.");
   } finally { page.dom.window.close(); }
 });
 

@@ -388,6 +388,21 @@ export async function authorizeProtectedMutation(
     };
   }
 
+  if (resolvedRoute.operation === "removeGamePlayer") {
+    // The repository owns this authorization boundary because an exact-key
+    // retry must remain replayable after the scheduled game metadata has been
+    // deleted. New attempts still resolve the live game and verify current
+    // league authority; settled receipts carry their immutable league scope
+    // and are replayed only after the same authority check.
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: null,
+      error: null,
+    };
+  }
+
   if (resolvedRoute.operation === "createSeason") {
     const leagueId = resolvedRoute.leagueId as string;
     const isAdmin = await verifyLeagueAdmin(userId, leagueId, aclLookup);

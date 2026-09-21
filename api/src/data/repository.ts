@@ -3535,26 +3535,42 @@ export class ThreeFcRepository {
   async removeGamePlayer(input: RemoveGamePlayerInput): Promise<RosterRemovalRecord> {
     requireNonEmpty("gameId", input.gameId); requireNonEmpty("playerId", input.playerId);
     requireNonEmpty("expectedRegistrationRevision", input.expectedRegistrationRevision); requireNonEmpty("idempotencyKey", input.idempotencyKey);
-    const initialGame = await this.readMutableGameEntity(input.gameId);
-    if (!initialGame || initialGame.entityType !== ENTITY_TYPE.game) {
-      throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
-    }
-    const game = normalizeGamePayload(initialGame.data);
-    const authority = await this.leaguePlayerAuthority(game.leagueId, input.userIds);
-    const acl = authority.acl.data as LeagueAclRecord;
-    const actorRole = acl.role === "admin" ? "admin" as const : "scorekeeper" as const;
-    const actorRef = createHash("sha256").update(JSON.stringify(["roster-removal", game.leagueId, acl.userId])).digest("hex");
     const requestHash = createHash("sha256").update(JSON.stringify([
       input.gameId, input.playerId, input.expectedRegistrationRevision,
     ])).digest("hex");
     const receiptKey = rosterRemovalSk(input.idempotencyKey);
+    let existingReceipt = await this.getEntity(gamePk(input.gameId), receiptKey, { consistentRead: true });
+    let receiptValue = existingReceipt?.data as Partial<Omit<RosterRemovalRecord, "createdAt" | "updatedAt">> | undefined;
+    let receiptLeagueId = typeof receiptValue?.leagueId === "string" && receiptValue.leagueId.trim() ? receiptValue.leagueId : null;
+    const initialGame = await this.readMutableGameEntity(input.gameId);
+    const game = initialGame?.entityType === ENTITY_TYPE.game ? normalizeGamePayload(initialGame.data) : null;
+    if (!game && !receiptLeagueId) {
+      // A retry can read just before the original removal commits, then see
+      // the game missing just after deletion commits. Re-read the durable
+      // receipt before returning 404 so that ordering still converges on the
+      // settled result without weakening its retained league authorization.
+      existingReceipt = await this.getEntity(gamePk(input.gameId), receiptKey, { consistentRead: true });
+      receiptValue = existingReceipt?.data as Partial<Omit<RosterRemovalRecord, "createdAt" | "updatedAt">> | undefined;
+      receiptLeagueId = typeof receiptValue?.leagueId === "string" && receiptValue.leagueId.trim() ? receiptValue.leagueId : null;
+      if (!receiptLeagueId) throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
+    }
+    if (game && receiptLeagueId && receiptLeagueId !== game.leagueId) {
+      throw new PlayerIdentityError("idempotency_conflict", 409, "This request key was already used for a different player removal.");
+    }
+    const leagueId = receiptLeagueId ?? game!.leagueId;
+    const authority = await this.leaguePlayerAuthority(leagueId, input.userIds);
+    const acl = authority.acl.data as LeagueAclRecord;
+    const actorRole = acl.role === "admin" ? "admin" as const : "scorekeeper" as const;
+    const actorRef = createHash("sha256").update(JSON.stringify(["roster-removal", leagueId, acl.userId])).digest("hex");
     const settledReceipt = (stored: StoredEntity<unknown>): RosterRemovalRecord => {
-      const value = stored.data as Omit<RosterRemovalRecord, "createdAt" | "updatedAt">;
+      const value = stored.data as Partial<Omit<RosterRemovalRecord, "createdAt" | "updatedAt">>;
       if (stored.entityType !== ENTITY_TYPE.rosterRemoval || value.requestHash !== requestHash ||
-          value.gameId !== input.gameId || value.playerId !== input.playerId) {
+          value.gameId !== input.gameId || value.playerId !== input.playerId ||
+          (value.leagueId !== undefined && value.leagueId !== leagueId)) {
         throw new PlayerIdentityError("idempotency_conflict", 409, "This request key was already used for a different player removal.");
       }
-      return withTimestamps(value, stored.createdAt, stored.updatedAt);
+      return withTimestamps({ ...value, leagueId } as Omit<RosterRemovalRecord, "createdAt" | "updatedAt">,
+        stored.createdAt, stored.updatedAt);
     };
     const replayReceipt = async (stored: StoredEntity<unknown>): Promise<RosterRemovalRecord> => {
       const result = settledReceipt(stored);
@@ -3564,9 +3580,11 @@ export class ThreeFcRepository {
       ] }));
       return result;
     };
-    const existingReceipt = await this.getEntity(gamePk(input.gameId), receiptKey, { consistentRead: true });
     if (existingReceipt) {
       return replayReceipt(existingReceipt);
+    }
+    if (!initialGame || !game) {
+      throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
     }
     try {
     if (game.status !== "scheduled") {
@@ -3633,7 +3651,7 @@ export class ThreeFcRepository {
     const now = this.clock.now();
     const teamId = existingAssignments.length === 1 ? (existingAssignments[0].data as RosterAssignmentRecord).teamId : null;
     const receipt: Omit<RosterRemovalRecord, "createdAt" | "updatedAt"> = {
-      gameId: input.gameId, playerId: input.playerId, teamId, removedAt: now, requestHash, actorRef, actorRole,
+      gameId: input.gameId, leagueId: game.leagueId, playerId: input.playerId, teamId, removedAt: now, requestHash, actorRef, actorRole,
     };
     const rosterDeletes = assignmentSlots.map((candidate, index): TransactWriteItem => assignments[index]
       ? this.buildConditionalDeleteFromStoredEntity(assignments[index]!)

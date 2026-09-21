@@ -16,7 +16,7 @@ test("directory and league invitation HTTP adapters parse real request streams a
     } : player], cursor: null }; },
     async createLeaguePlayer(input) { calls.push("create"); return { ...player, playerId: input.playerId, nickname: input.nickname }; },
     async addExistingLeaguePlayer(input) { calls.push("register"); return { playerId: input.playerId, alreadyInGame: false }; },
-    async removeGamePlayer(input) { assert.equal(input.expectedRegistrationRevision, "registration-revision"); calls.push("remove"); return { entityType: "rosterRemoval", gameId: input.gameId,
+    async removeGamePlayer(input) { assert.equal(input.expectedRegistrationRevision, "registration-revision"); calls.push("remove"); return { entityType: "rosterRemoval", gameId: input.gameId, leagueId: "league/#%",
       playerId: input.playerId, teamId: "blue", removedAt: "2026-09-21T01:02:03.000Z", requestHash: "private",
       actorRef: "private", actorRole: "scorekeeper", createdAt: "2026-09-21T01:02:03.000Z", updatedAt: "2026-09-21T01:02:03.000Z" }; },
   };

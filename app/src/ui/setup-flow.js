@@ -3323,6 +3323,7 @@
     let gameDeletionPending = false;
     let timerMutationPending = false;
     let rosterMutationPending = false;
+    let rosterRefreshPending = false;
     let playerRemovalPending = false;
     let playerRemovalAttempt = null;
     let playerRemovalPrompt = null;
@@ -5504,7 +5505,7 @@
           : `${attempt.name} removed from this game.`);
         if (!preserveLastObservedState) applyLocalPlayerRemoval(attempt.playerId);
         try {
-          await loadRosterSetup({ updateStatus: false });
+          if (!await loadRosterSetup({ updateStatus: false })) throw new Error("Roster refresh was superseded.");
           const present = recordPlayerRemovalRosterTruth(attempt);
           if (playerRemovalRecovery instanceof HTMLElement) playerRemovalRecovery.hidden = true;
           announceRosterStatus(present
@@ -5530,7 +5531,7 @@
           outcome = "definitive";
           try {
             await loadGame();
-            await loadRosterSetup({ updateStatus: false });
+            if (!await loadRosterSetup({ updateStatus: false })) throw new Error("Roster refresh was superseded.");
           }
           catch {
             definitiveRefreshFailed = true;
@@ -5671,6 +5672,7 @@
         // Public polling can discover a new player without private enrichment.
         // Keep an explicit recovery path without giving other roles admin reads.
         retry.hidden = !isLeagueOperator() || !(rosterReloadRequired || failed || currentLeagueRole === "admin");
+        if (retry instanceof HTMLButtonElement) retry.disabled = playerRemovalPending || rosterRefreshPending;
         retry.textContent = rosterReloadRequired ? "Reload roster" : failed ? "Retry loading players" : "Refresh player details";
       }
       const focus = captureRosterFocus();
@@ -5762,11 +5764,11 @@
     }
 
     async function loadRosterSetup(options = {}) {
-      if (!rosterControlsAvailable()) return;
+      if (!rosterControlsAvailable()) return false;
       const version = ++rosterReadVersion;
       const confirmedBeforeRead = new Map(pendingAssignments);
       const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET", cache: "no-store" });
-      if (version !== rosterReadVersion) return;
+      if (version !== rosterReadVersion) return false;
       // Preserve independently valid assignments and the existing search
       // fallback when only the optional complete-Unassigned DTO is unavailable.
       if (!refreshRosterValid(rosterPayload, { allowUnavailableUnassigned: true })) throw new Error("The latest roster could not be loaded.");
@@ -5782,6 +5784,7 @@
       if (options.updateStatus !== false) {
         setStatus("");
       }
+      return true;
     }
 
     async function loadPlayerDetails({ resolveMissing = false } = {}) {
@@ -6547,23 +6550,25 @@
     if (rosterControlsAvailable()) {
       document.getElementById("roster-retry")?.addEventListener("click", async event => {
         const button = event.currentTarget;
-        if (button.disabled || !isLeagueOperator() || refreshAccountLocked) return;
+        if (button.disabled || rosterRefreshPending || !isLeagueOperator() || refreshAccountLocked) return;
         const status = document.getElementById("roster-retry-status");
-        button.disabled = true; status.hidden = false; status.textContent = "Loading players…";
+        rosterRefreshPending = true; button.disabled = true; status.hidden = false; status.textContent = "Loading players…";
         const finishFocus = trackInteractionFocus(button);
         try {
           const [rosterResult] = await Promise.allSettled([loadRosterSetup({ updateStatus: false }), loadPlayerDetails({ resolveMissing: true })]);
-          status.textContent = rosterResult.status === "rejected" ? "Players couldn’t be refreshed. The available list is still shown."
+          const rosterApplied = rosterResult.status === "fulfilled" && rosterResult.value === true;
+          status.textContent = !rosterApplied ? "Players couldn’t be refreshed. The available list is still shown."
             : rosterUnassignedPlayers === null || playerDetailsState === "unavailable"
             ? "Some player details are still unavailable. Retry loading players." : currentLeagueRole === "admin"
               && [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].some(player => !verifiedAdminPlayers.has(player.playerId))
             ? "Some player details are still unavailable. The available list is still shown." : "Players updated.";
-          if (rosterResult.status === "rejected") button.hidden = false;
+          if (!rosterApplied) button.hidden = false;
         } catch {
           status.textContent = "Players couldn’t be refreshed. The available list is still shown.";
           button.hidden = false;
         } finally {
-          button.disabled = false;
+          rosterRefreshPending = false;
+          renderRosterSetup();
           if (finishFocus() && button.hidden) { status.tabIndex = -1; status.focus(); }
         }
       });
@@ -6710,7 +6715,8 @@
           const attempt = playerRemovalAttempt;
           if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent = "Reloading roster…";
           try {
-            await loadGame(); await loadRosterSetup({ updateStatus: false });
+            await loadGame();
+            if (!await loadRosterSetup({ updateStatus: false })) throw new Error("Roster refresh was superseded.");
             const present = recordPlayerRemovalRosterTruth(attempt);
             announceRosterStatus(present ? `${attempt.name} is currently in this game.` : `${attempt.name} is not currently in this game.`);
             if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent =

@@ -2293,8 +2293,15 @@ test("Lambda player removal enforces session, league role, state, key, and priva
     },
     async removeGamePlayerOverride(input) {
       calls.push(input);
+      if (!input.userIds.some(userId => userId === "admin" || userId === "scorer")) {
+        throw new PlayerIdentityError("league_access_required", 403, "League organiser or scorer access is required.");
+      }
+      if (input.gameId === "game-deleted") {
+        return { gameId: input.gameId, leagueId: "league-removal", playerId: input.playerId, teamId: null, removedAt: stamp,
+          requestHash: "private-request", actorRef: "private-actor", actorRole: "scorekeeper", createdAt: stamp, updatedAt: stamp };
+      }
       if (input.gameId !== "game-scheduled") throw new GameMutationStateError("game_not_scheduled", "Players can only be removed before scoring starts.");
-      return { gameId: input.gameId, playerId: input.playerId, teamId: "blue", removedAt: stamp,
+      return { gameId: input.gameId, leagueId: "league-removal", playerId: input.playerId, teamId: "blue", removedAt: stamp,
         requestHash: "private-request", actorRef: "private-actor", actorRole: "scorekeeper", createdAt: stamp, updatedAt: stamp };
     },
   });
@@ -2321,7 +2328,10 @@ test("Lambda player removal enforces session, league role, state, key, and priva
     const response = await handler(request(gameId, "admin"));
     assert.equal(response.statusCode, 409); assert.equal(JSON.parse(response.body).code, "game_not_scheduled");
   }
-  assert.equal(calls.length, 4);
+  const deletedReplay = await handler(request("game-deleted", "admin"));
+  assert.equal(deletedReplay.statusCode, 200);
+  assert.deepEqual(JSON.parse(deletedReplay.body), { removal: { gameId: "game-deleted", playerId, teamId: null, removedAt: stamp } });
+  assert.equal(calls.length, 7);
   assert(calls.every(call => call.playerId === playerId));
   assert(calls.every(call => call.expectedRegistrationRevision === "registration-revision"));
   assert(calls.some(call => call.userIds.includes("admin") && call.idempotencyKey === "remove-fixture-key"));

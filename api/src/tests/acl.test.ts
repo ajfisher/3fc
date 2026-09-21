@@ -341,7 +341,7 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
   });
 });
 
-test("game-scoped player removal allows scorekeepers on the opaque-safe fixed route", async () => {
+test("player removal defers league authority to receipt-aware repository handling", async () => {
   const lookup = new InMemoryAclLookup({
     games: { "game-1": { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1", gameId: "game-1",
       status: "scheduled", gameStartTs: "2026-02-23T10:00:00.000Z", ...defaultGameStateFields(),
@@ -353,6 +353,11 @@ test("game-scoped player removal allows scorekeepers on the opaque-safe fixed ro
   });
   const result = await authorizeProtectedMutation("DELETE", "/v1/games/game-1/player-registration", "scorekeeper-user", lookup);
   assert.equal(result.allowed, true); assert.equal(result.operation, "removeGamePlayer");
+  assert.equal(result.scope, null);
+  const deletedGameReplay = await authorizeProtectedMutation("DELETE", "/v1/games/deleted-game/player-registration", "scorekeeper-user",
+    new InMemoryAclLookup({}));
+  assert.equal(deletedGameReplay.allowed, true); assert.equal(deletedGameReplay.operation, "removeGamePlayer");
+  assert.equal(deletedGameReplay.scope, null, "the repository rechecks authority using the retained receipt league scope");
   const malformed = await authorizeProtectedMutation("DELETE", "/v1/games/%E0%A4/player-registration", "scorekeeper-user", lookup);
   assert.equal(malformed.allowed, false); assert.equal(malformed.statusCode, 400); assert.equal(malformed.error?.code, "invalid_path");
 });

@@ -100,11 +100,12 @@ membership. Re-enabling linking cannot retroactively mint proof on replay.
 - Scheduled-game player removal receipt:
   - `pk=GAME#{gameId}`
   - `sk=ROSTER_REMOVAL#{sha256(idempotencyKey)}`
-  - stores the exact removed registration ID, former team, removal time, request hash,
-    actor role and a league-scoped hash of the actor identity; it never stores an
-    email address or the raw idempotency key
+  - stores the immutable league scope, exact removed registration ID, former
+    team, removal time, request hash, actor role and a league-scoped hash of the
+    actor identity; it never stores an email address or the raw idempotency key
   - is an immutable retry/audit receipt: replay returns the original settled result
-    and cannot remove a later registration of the same player
+    and cannot remove a later registration of the same player; ordinary game
+    deletion retains it so an authorised exact-key response-loss retry can settle
 - Session -> game index:
   - `pk=SESSION#{sessionId}`
   - `sk=GAME#{gameStartTs}#{gameId}`

@@ -19,8 +19,8 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS |
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS |
-| Full local and independent evidence | API 533/533; app 670/670; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS |
-| CI, exact-head Codex and deployed QA evidence | Head `b258a12` passed CI and QA deployment; Codex completed with no new findings; disposable deployed acceptance passed 10/10 and removed every fixture row | PASS |
+| Full local and independent evidence | API 535/535; app 672/672; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS |
+| CI, exact-head Codex and deployed QA evidence | Prior head `ed0a2f1` passed CI and QA deployment; its exact-head Codex findings are resolved locally and current-head evidence must be refreshed after push | PASS |
 
 ## Scope boundaries
 
@@ -54,7 +54,7 @@ and release.
 | Invariant | How this PR affects it | Why it remains valid | Evidence |
 | --- | --- | --- | --- |
 | INV-001 | Adds a durable removal audit receipt | Actor is a league-scoped SHA-256 reference and the public result omits actor/account data | Repository and HTTP privacy assertions |
-| INV-002 | Adds organiser/scorer roster-removal authority | Both global ACL routing and the repository require current league authority | ACL and negative repository/handler cases |
+| INV-002 | Adds organiser/scorer roster-removal authority | Authenticated routing delegates this receipt-aware boundary to the repository, which resolves live-game or immutable receipt league scope and requires current authority | ACL and negative repository/handler cases |
 | INV-003 | Adds a retriable destructive roster operation | One frozen client request and immutable hashed-key receipt own replay and recovery | Same-key, conflict, response-loss and re-add cases |
 | INV-004 | Deletes one registration, assignment and game reverse marker | Canonical identity, claim, league/season membership and history remain; identity and directory revisions are fenced | Single-table docs and retention/CAS assertions |
 | INV-008 | Adds a scheduled-game-only destructive transaction | Complete strong scoring reads block referenced players; the goal-state revision, scheduled snapshot and scorer/assist registration conditions fence both scoring/removal commit orders | Goal/audit pagination, scoring-revision, registration-condition and game-start race cases |
@@ -191,7 +191,21 @@ bypasses the disabled delete-game control to prove the central guard, repeats
 the same write after recovery, and covers a scheduled-to-finished transition.
 Authoritative roster recovery re-renders all write capabilities immediately.
 Final UX/accessibility, engineering/QA and architecture/security re-reviews are
-clear.
+clear. That exact-head Codex review also recovered an older replay finding:
+settled removals became unreachable if their game was subsequently deleted. The
+immutable removal receipt now carries its league scope, survives normal game
+deletion and moves deleted-game replay authorization into the repository, where
+current organiser/scorer authority is re-established and transactionally
+fenced. A second strong receipt read closes the receipt-commit/game-delete
+interleaving before `game_unavailable`; deterministic repository and Lambda
+regressions cover replay, denial and conflicting key reuse. The same review
+found that a roster recovery read could be superseded while its caller treated
+completion as authoritative. `loadRosterSetup()` now reports whether it applied
+its snapshot, all removal recovery paths require that positive result, and the
+shared refresh stays latched until both public roster and private detail reads
+settle. Superseded reads retain the reload-required write lock and truthful
+recovery announcement. Fresh UX/accessibility, engineering/QA and
+architecture/security re-reviews found no remaining material issues.
 
 ### Unresolved blocking findings
 
@@ -199,8 +213,8 @@ None.
 
 ### Local validation
 
-- `npm test --workspace @3fc/api`: 533 passed.
-- `npm test --workspace @3fc/app`: 670 passed.
+- `npm test --workspace @3fc/api`: 535 passed.
+- `npm test --workspace @3fc/app`: 672 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

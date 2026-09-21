@@ -1008,6 +1008,7 @@ test("scheduled removal settles assigned and Unassigned registrations without de
     const receipt = client.readItem("GAME#directory-game", rosterRemovalSk(key)); assert(receipt);
     assert.equal(receipt.entityType.S, "rosterRemoval");
     const privateReceipt = JSON.parse(receipt.data!.S!);
+    assert.equal(privateReceipt.leagueId, "directory");
     assert.equal(Object.hasOwn(privateReceipt, "email"), false); assert.match(privateReceipt.actorRef, /^[a-f0-9]{64}$/);
     assert.deepEqual(await repository.removeGamePlayer(exactInput), result);
     await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"] });
@@ -1018,6 +1019,56 @@ test("scheduled removal settles assigned and Unassigned registrations without de
     assert.notEqual(nextRemoval.removedAt, result.removedAt, "a new key may explicitly remove the later registration");
     assert.equal(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), undefined);
   }
+});
+
+test("settled player removal remains authority-checked and replayable after game deletion", async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId: "deleted-game-player", nickname: "Player",
+    userIds: ["organiser"] });
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "deleted-game-player", teamId: "blue",
+    userIds: ["organiser"] });
+  const registration = await repository.getGamePlayer("directory-game", "deleted-game-player");
+  assert(registration?.registrationRevision);
+  const input = { gameId: "directory-game", playerId: "deleted-game-player",
+    expectedRegistrationRevision: registration.registrationRevision, userIds: ["organiser"], idempotencyKey: "deleted-game-replay" };
+  const settled = await repository.removeGamePlayer(input);
+  assert.equal(await repository.deleteGame("directory-game"), true);
+  assert.equal(await repository.getGame("directory-game"), null);
+  assert(client.readItem("GAME#directory-game", rosterRemovalSk("deleted-game-replay")), "game deletion retains the audit receipt");
+  assert.deepEqual(await repository.removeGamePlayer(input), settled);
+  await assert.rejects(repository.removeGamePlayer({ ...input, userIds: ["viewer"] }),
+    (error: unknown) => error instanceof PlayerIdentityError && error.status === 403);
+  await assert.rejects(repository.removeGamePlayer({ ...input, playerId: "another-player" }),
+    (error: unknown) => error instanceof PlayerIdentityError && error.code === "idempotency_conflict");
+});
+
+test("settled player removal converges when receipt creation and game deletion straddle retry reads", async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId: "interleaved-player", nickname: "Player",
+    userIds: ["organiser"] });
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "interleaved-player",
+    userIds: ["organiser"] });
+  const registration = await repository.getGamePlayer("directory-game", "interleaved-player");
+  assert(registration?.registrationRevision);
+  const input = { gameId: "directory-game", playerId: "interleaved-player",
+    expectedRegistrationRevision: registration.registrationRevision, userIds: ["organiser"], idempotencyKey: "interleaved-replay" };
+  const settled = await repository.removeGamePlayer(input);
+  const receiptSk = rosterRemovalSk(input.idempotencyKey), send = client.send.bind(client);
+  let hidInitialReceipt = false, receiptReads = 0;
+  client.send = async (command: unknown): Promise<unknown> => {
+    if (command instanceof GetItemCommand && command.input.Key?.pk.S === "GAME#directory-game" && command.input.Key.sk.S === receiptSk) {
+      receiptReads += 1;
+      if (!hidInitialReceipt) {
+        hidInitialReceipt = true;
+        client.deleteItem("GAME#directory-game", "METADATA");
+        return {};
+      }
+    }
+    return send(command);
+  };
+  assert.deepEqual(await repository.removeGamePlayer(input), settled);
+  assert.equal(hidInitialReceipt, true, "fixture forced receipt-absent then game-absent interleaving");
+  assert.equal(receiptReads, 2, "retry re-reads the settled receipt before returning game_unavailable");
 });
 
 test("player removal enforces scorer authority and scheduled state", async () => {

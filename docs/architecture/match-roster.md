@@ -86,8 +86,11 @@ replacement fails without deleting the newer row.
 The transaction deletes only the game registration, any assignment and the
 matching reverse game-membership row. It retains the reusable profile, claim,
 aliases, league/season membership and all other matches. The receipt stores a
-privacy-safe actor hash and role, not email, and public responses omit actor
-data. Registration-bound claim proof remains stored to normal expiry but cannot
+privacy-safe actor hash, role and immutable league scope, not email, and public
+responses omit actor data. The repository owns the removal authorization
+boundary so an exact-key response-loss retry can re-check current league
+authority and replay its retained receipt even after game metadata is deleted.
+Registration-bound claim proof remains stored to normal expiry but cannot
 be redeemed after its required registration disappears. Goal creation and
 correction transactions condition every selected scorer/assist registration,
 so a scoring write cannot introduce a reference while that registration is

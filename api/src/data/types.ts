@@ -143,6 +143,7 @@ export interface RosterAssignmentRecord {
 
 export interface RosterRemovalRecord {
   gameId: string;
+  leagueId: string;
   playerId: string;
   teamId: TeamId | null;
   removedAt: string;
