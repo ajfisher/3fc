@@ -76,9 +76,12 @@ later refresh fails after an uncertain attempt, the last observed row remains
 visible but is explicitly labelled stale; presence alone does not prove re-add.
 
 The authenticated removal route is
-`DELETE /v1/games/{gameId}/player-registration?playerId={opaqueId}`. The player
-identity is query data rather than a path segment because historical opaque IDs
-may contain reserved path characters. It is URL-decoded exactly once.
+`DELETE /v1/games/{gameId}/player-registration?playerId={opaqueId}&registrationRevision={opaqueRevision}`.
+The player identity is query data rather than a path segment because historical
+opaque IDs may contain reserved path characters. It is URL-decoded exactly
+once. Roster reads expose the registration revision that was rendered; the
+confirmation freezes it and a stale transfer, removal/re-add or registration
+replacement fails without deleting the newer row.
 
 The transaction deletes only the game registration, any assignment and the
 matching reverse game-membership row. It retains the reusable profile, claim,

@@ -16,7 +16,7 @@ test("directory and league invitation HTTP adapters parse real request streams a
     } : player], cursor: null }; },
     async createLeaguePlayer(input) { calls.push("create"); return { ...player, playerId: input.playerId, nickname: input.nickname }; },
     async addExistingLeaguePlayer(input) { calls.push("register"); return { playerId: input.playerId, alreadyInGame: false }; },
-    async removeGamePlayer(input) { calls.push("remove"); return { entityType: "rosterRemoval", gameId: input.gameId,
+    async removeGamePlayer(input) { assert.equal(input.expectedRegistrationRevision, "registration-revision"); calls.push("remove"); return { entityType: "rosterRemoval", gameId: input.gameId,
       playerId: input.playerId, teamId: "blue", removedAt: "2026-09-21T01:02:03.000Z", requestHash: "private",
       actorRef: "private", actorRole: "scorekeeper", createdAt: "2026-09-21T01:02:03.000Z", updatedAt: "2026-09-21T01:02:03.000Z" }; },
   };
@@ -59,12 +59,16 @@ test("directory and league invitation HTTP adapters parse real request streams a
     assert.equal(registration.status, 200); await registration.arrayBuffer();
     const removalUrl = new URL(`${base}/v1/games/game/player-registration`);
     removalUrl.searchParams.set("playerId", player.playerId);
+    removalUrl.searchParams.set("registrationRevision", "registration-revision");
     const removal = await fetch(removalUrl, { headers: { ...headers,
       "idempotency-key": "removal-fixture-0001" }, method: "DELETE" });
     assert.equal(removal.status, 200); assert.deepEqual(await removal.json(), { removal: { gameId: "game", playerId: player.playerId,
       teamId: "blue", removedAt: "2026-09-21T01:02:03.000Z" } });
     const missingKey = await fetch(removalUrl, { headers, method: "DELETE" });
     assert.equal(missingKey.status, 400); await missingKey.arrayBuffer();
+    const missingRevision = new URL(removalUrl); missingRevision.searchParams.delete("registrationRevision");
+    const staleUnsafe = await fetch(missingRevision, { headers: { ...headers, "idempotency-key": "unsafe-without-revision" }, method: "DELETE" });
+    assert.equal(staleUnsafe.status, 400); await staleUnsafe.arrayBuffer();
     const malformed = await fetch(`${base}/v1/league-players?${query}`, { headers, method: "POST", body: "{" });
     assert.equal(malformed.status, 400); await malformed.arrayBuffer();
     query.set("playerId", player.playerId);

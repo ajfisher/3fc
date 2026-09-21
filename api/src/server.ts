@@ -977,7 +977,7 @@ async function buildRosterResponse(game: {
   updatedAt: string;
 }) {
   const teams = await readGameTeams(game);
-  const { roster, playersById, unassignedPlayers } = await readRosterPlayerData(repository, game.gameId);
+  const { roster, playersById, registrationRevisions, unassignedPlayers } = await readRosterPlayerData(repository, game.gameId);
 
   return {
     teams,
@@ -985,6 +985,7 @@ async function buildRosterResponse(game: {
     roster: roster
       .map((assignment) => ({
         ...assignment,
+        registrationRevision: registrationRevisions.get(assignment.playerId),
         player: playersById.get(assignment.playerId) ?? null,
       }))
       .sort((left, right) => {

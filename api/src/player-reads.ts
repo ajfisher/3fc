@@ -73,6 +73,9 @@ export async function readRosterPlayerData(repository: PlayerReadRepository, gam
   }
   const assignedIds = new Set(roster.map((entry) => entry.playerId));
   const linkedIds = new Set(links.map((entry) => entry.playerId));
+  const registrationRevisions = new Map(links.flatMap((entry) =>
+    typeof entry.registrationRevision === "string" && entry.registrationRevision.length > 0
+      ? [[entry.playerId, entry.registrationRevision] as const] : []));
   const ids = [...new Set([...assignedIds, ...linkedIds])];
   const playersById = new Map<string, PublicPlayer>();
   let next = 0;
@@ -101,7 +104,8 @@ export async function readRosterPlayerData(repository: PlayerReadRepository, gam
   }));
   if (failed) throw new Error("Roster player details could not be loaded.");
   const unassignedPlayers = [...linkedIds].filter((id) => !assignedIds.has(id))
-    .map((id) => playersById.get(id)!)
+    .map((id) => ({ ...playersById.get(id)!, ...(registrationRevisions.has(id)
+      ? { registrationRevision: registrationRevisions.get(id)! } : {}) }))
     .sort((left, right) => left.nickname.localeCompare(right.nickname) || left.playerId.localeCompare(right.playerId));
-  return { roster, playersById, unassignedPlayers };
+  return { roster, playersById, registrationRevisions, unassignedPlayers };
 }

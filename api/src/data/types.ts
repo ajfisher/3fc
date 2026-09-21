@@ -104,6 +104,7 @@ export interface PlayerRecord {
 export interface GamePlayerRecord {
   gameId: string;
   playerId: string;
+  registrationRevision?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -418,6 +419,7 @@ export interface AssignRosterInput {
 export interface RemoveGamePlayerInput {
   gameId: string;
   playerId: string;
+  expectedRegistrationRevision: string;
   userIds: readonly string[];
   idempotencyKey: string;
 }

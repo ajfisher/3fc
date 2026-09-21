@@ -866,6 +866,13 @@ async function directoryHarness() {
   return { client, repository };
 }
 
+type CurrentRemovalInput = Omit<Parameters<ThreeFcRepository["removeGamePlayer"]>[0], "expectedRegistrationRevision">;
+async function removeCurrentGamePlayer(repository: ThreeFcRepository, input: CurrentRemovalInput) {
+  const registration = await repository.getGamePlayer(input.gameId, input.playerId);
+  assert(registration?.registrationRevision, "fixture must expose the current registration revision");
+  return repository.removeGamePlayer({ ...input, expectedRegistrationRevision: registration.registrationRevision });
+}
+
 test("historical standalone IDs migrate at partition-key boundaries without narrowing reads", async () => {
   for (const playerId of ["x".repeat(1025), "x".repeat(2041), "é".repeat(1020), "😀".repeat(510)]) {
     const client = new InMemoryDynamoClient(), now = "2026-09-11T00:00:00Z";
@@ -939,7 +946,7 @@ test("player removal skips only Dynamo-impossible roster slots for a boundary le
   assert.equal(Buffer.byteLength(`ROSTER#blue#${playerId}`) > 1024, true);
   enforceDynamoKeyBounds(client);
 
-  const result = await repository.removeGamePlayer({ gameId: "directory-game", playerId,
+  const result = await removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId,
     userIds: ["organiser"], idempotencyKey: "boundary-legacy-removal" });
 
   assert.equal(result.teamId, "red");
@@ -985,7 +992,11 @@ test("scheduled removal settles assigned and Unassigned registrations without de
     const revisionBefore = structuredClone(client.readItem("LEAGUE#directory", "PLAYER_DIRECTORY"));
     assert(directoryBefore); assert(revisionBefore);
     const key = `remove-${playerId}-fixture`;
-    const result = await repository.removeGamePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"], idempotencyKey: key });
+    const input = { gameId: "directory-game", playerId, userIds: ["organiser"], idempotencyKey: key };
+    const registration = await repository.getGamePlayer(input.gameId, input.playerId);
+    assert(registration?.registrationRevision);
+    const exactInput = { ...input, expectedRegistrationRevision: registration.registrationRevision };
+    const result = await repository.removeGamePlayer(exactInput);
     assert.equal(result.playerId, playerId); assert.equal(result.teamId, teamId);
     assert.equal(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), undefined);
     for (const team of ["red", "blue", "yellow"]) assert.equal(client.readItem("GAME#directory-game", `ROSTER#${team}#${playerId}`), undefined);
@@ -998,12 +1009,12 @@ test("scheduled removal settles assigned and Unassigned registrations without de
     assert.equal(receipt.entityType.S, "rosterRemoval");
     const privateReceipt = JSON.parse(receipt.data!.S!);
     assert.equal(Object.hasOwn(privateReceipt, "email"), false); assert.match(privateReceipt.actorRef, /^[a-f0-9]{64}$/);
-    assert.deepEqual(await repository.removeGamePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"], idempotencyKey: key }), result);
+    assert.deepEqual(await repository.removeGamePlayer(exactInput), result);
     await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"] });
-    assert.deepEqual(await repository.removeGamePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"], idempotencyKey: key }), result,
+    assert.deepEqual(await repository.removeGamePlayer(exactInput), result,
       "old-key replay returns its original result");
     assert(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), "old-key replay cannot remove the re-added registration");
-    const nextRemoval = await repository.removeGamePlayer({ gameId: "directory-game", playerId, userIds: ["organiser"], idempotencyKey: `${key}-different` });
+    const nextRemoval = await removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId, userIds: ["organiser"], idempotencyKey: `${key}-different` });
     assert.notEqual(nextRemoval.removedAt, result.removedAt, "a new key may explicitly remove the later registration");
     assert.equal(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), undefined);
   }
@@ -1013,21 +1024,21 @@ test("player removal enforces scorer authority and scheduled state", async () =>
   const { client, repository } = await directoryHarness();
   await repository.createLeaguePlayer({ leagueId: "directory", playerId: "player", nickname: "Player", userIds: ["organiser"] });
   await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "player", userIds: ["organiser"] });
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "player", userIds: ["viewer"], idempotencyKey: "denied-key" }),
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "player", userIds: ["viewer"], idempotencyKey: "denied-key" }),
     (error: unknown) => error instanceof PlayerIdentityError && error.status === 403);
   client.seedItem(identityItem("LEAGUE#directory", "ACL#USER#scorer", "acl", { leagueId: "directory", userId: "scorer", role: "scorekeeper",
     grantedByUserId: "organiser" }, "2026-09-11T00:00:00Z"));
-  assert.equal((await repository.removeGamePlayer({ gameId: "directory-game", playerId: "player", userIds: ["scorer"],
+  assert.equal((await removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "player", userIds: ["scorer"],
     idempotencyKey: "scorer-key" })).playerId, "player");
   await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "player", userIds: ["organiser"] });
   await repository.startGameThird({ gameId: "directory-game", third: 1 });
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "player", userIds: ["scorer"], idempotencyKey: "live-key" }),
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "player", userIds: ["scorer"], idempotencyKey: "live-key" }),
     (error: unknown) => error instanceof GameMutationStateError && error.code === "game_not_scheduled");
   assert(client.readItem("GAME#directory-game", "PLAYER#player"));
   const game = client.readItem("GAME#directory-game", "METADATA")!;
   client.seedItem(identityItem("GAME#directory-game", "METADATA", "game", { ...JSON.parse(game.data!.S!), status: "finished" },
     "2026-09-12T00:00:00Z", game.createdAt!.S));
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "player", userIds: ["organiser"], idempotencyKey: "finished-key" }),
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "player", userIds: ["organiser"], idempotencyKey: "finished-key" }),
     (error: unknown) => error instanceof GameMutationStateError && error.code === "game_not_scheduled");
 });
 
@@ -1038,8 +1049,8 @@ test("player removal rejects conflicting key reuse and loses a concurrent transf
     await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, teamId: "red", userIds: ["organiser"] });
   }
   const key = "shared-removal-key";
-  await repository.removeGamePlayer({ gameId: "directory-game", playerId: "first", userIds: ["organiser"], idempotencyKey: key });
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "second", userIds: ["organiser"], idempotencyKey: key }),
+  await removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "first", userIds: ["organiser"], idempotencyKey: key });
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "second", userIds: ["organiser"], idempotencyKey: key }),
     (error: unknown) => error instanceof PlayerIdentityError && error.code === "idempotency_conflict");
   assert(client.readItem("GAME#directory-game", "PLAYER#second"));
   const red = client.readItem("GAME#directory-game", "ROSTER#red#second")!;
@@ -1048,7 +1059,7 @@ test("player removal rejects conflicting key reuse and loses a concurrent transf
     client.seedItem({ ...red, sk: { S: "ROSTER#blue#second" },
       data: { S: JSON.stringify({ ...JSON.parse(red.data!.S!), teamId: "blue" }) } });
   });
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "second", userIds: ["organiser"], idempotencyKey: "transfer-race" }),
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "second", userIds: ["organiser"], idempotencyKey: "transfer-race" }),
     (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_changed");
   assert(client.readItem("GAME#directory-game", "PLAYER#second"));
   assert(client.readItem("GAME#directory-game", "ROSTER#blue#second"));
@@ -1056,11 +1067,53 @@ test("player removal rejects conflicting key reuse and loses a concurrent transf
   assert.equal(client.readItem("GAME#directory-game", rosterRemovalSk("transfer-race")), undefined);
 });
 
+test("stale removal confirmation cannot delete a transferred or re-added registration", async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId: "stale", nickname: "Stale", userIds: ["organiser"] });
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "stale", teamId: "red", userIds: ["organiser"] });
+  const original = await repository.getGamePlayer("directory-game", "stale"); assert(original?.registrationRevision);
+
+  await repository.assignRosterPlayer({ gameId: "directory-game", playerId: "stale", teamId: "blue" });
+  const transferred = await repository.getGamePlayer("directory-game", "stale");
+  assert(transferred?.registrationRevision); assert.notEqual(transferred.registrationRevision, original.registrationRevision);
+  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "stale",
+    expectedRegistrationRevision: original.registrationRevision, userIds: ["organiser"], idempotencyKey: "stale-transfer" }),
+  (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_changed");
+  assert(client.readItem("GAME#directory-game", "PLAYER#stale"));
+  assert(client.readItem("GAME#directory-game", "ROSTER#blue#stale"));
+
+  await repository.removeGamePlayer({ gameId: "directory-game", playerId: "stale",
+    expectedRegistrationRevision: transferred.registrationRevision, userIds: ["organiser"], idempotencyKey: "other-client-removal" });
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "stale", teamId: "yellow", userIds: ["organiser"] });
+  const readded = await repository.getGamePlayer("directory-game", "stale");
+  assert(readded?.registrationRevision); assert.notEqual(readded.registrationRevision, transferred.registrationRevision);
+  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "stale",
+    expectedRegistrationRevision: transferred.registrationRevision, userIds: ["organiser"], idempotencyKey: "stale-readd" }),
+  (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_changed");
+  assert(client.readItem("GAME#directory-game", "PLAYER#stale"));
+  assert(client.readItem("GAME#directory-game", "ROSTER#yellow#stale"));
+  assert.equal(client.readItem("GAME#directory-game", rosterRemovalSk("stale-readd")), undefined);
+});
+
+test("legacy registration revision is stable across DynamoDB map field order", async () => {
+  const { client, repository } = await directoryHarness();
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId: "legacy-revision", nickname: "Legacy", userIds: ["organiser"] });
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "legacy-revision", userIds: ["organiser"] });
+  const stored = client.readItem("GAME#directory-game", "PLAYER#legacy-revision"); assert(stored);
+  client.seedItem({ ...stored, data: { S: JSON.stringify({ playerId: "legacy-revision", gameId: "directory-game" }) } });
+  const first = await repository.getGamePlayer("directory-game", "legacy-revision"); assert(first?.registrationRevision);
+  client.seedItem({ ...stored, data: { S: JSON.stringify({ gameId: "directory-game", playerId: "legacy-revision" }) } });
+  const second = await repository.getGamePlayer("directory-game", "legacy-revision");
+  assert.equal(second?.registrationRevision, first.registrationRevision);
+});
+
 test("concurrent identical removals converge on one durable receipt", async () => {
   const { client, repository } = await directoryHarness();
   await repository.createLeaguePlayer({ leagueId: "directory", playerId: "same", nickname: "Same", userIds: ["organiser"] });
   await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "same", teamId: "yellow", userIds: ["organiser"] });
-  const input = { gameId: "directory-game", playerId: "same", userIds: ["organiser"], idempotencyKey: "same-key-race" };
+  const registration = await repository.getGamePlayer("directory-game", "same"); assert(registration?.registrationRevision);
+  const input = { gameId: "directory-game", playerId: "same", expectedRegistrationRevision: registration.registrationRevision,
+    userIds: ["organiser"], idempotencyKey: "same-key-race" };
   const [first, second] = await Promise.all([repository.removeGamePlayer(input), repository.removeGamePlayer(input)]);
   assert.deepEqual(second, first);
   assert.equal(client.readItem("GAME#directory-game", "PLAYER#same"), undefined);
@@ -1079,7 +1132,7 @@ test("player removal fails closed for incomplete identity and reverse-membership
     await repository.createLeaguePlayer({ leagueId: "directory", playerId: "guarded", nickname: "Guarded", userIds: ["organiser"] });
     await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "guarded", teamId: "blue", userIds: ["organiser"] });
     corrupt(client);
-    await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "guarded", userIds: ["organiser"],
+    await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "guarded", userIds: ["organiser"],
       idempotencyKey: `guard-${name}` }), (error: unknown) => error instanceof PlayerIdentityError && error.status === 503, name);
     assert(client.readItem("GAME#directory-game", "PLAYER#guarded"), name);
     assert(client.readItem("GAME#directory-game", "ROSTER#blue#guarded"), name);
@@ -1093,7 +1146,7 @@ test("row-complete removal remains available after a prior deletion invalidates 
   await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "complete", userIds: ["organiser"] });
   client.seedItem(identityItem("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl",
     { mode: "fenced", epoch: "post-deletion", coverage: "unknown", writerVersion: 1 }, "2026-09-11T00:00:00Z"));
-  const removal = await repository.removeGamePlayer({ gameId: "directory-game", playerId: "complete", userIds: ["organiser"],
+  const removal = await removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "complete", userIds: ["organiser"],
     idempotencyKey: "row-complete" });
   assert.equal(removal.playerId, "complete");
   assert.equal(client.readItem("GAME#directory-game", "PLAYER#complete"), undefined);
@@ -1114,7 +1167,7 @@ test("player removal resolves an aliased historical registration while retaining
     formerNames: [], active: true, seasonIds: ["winter"], hasMoreSeasons: false }, now));
   client.seedItem(identityItem("LEAGUE#directory", identityDirectorySk("alias"), "leaguePlayer", { playerId: "alias", nickname: "Xavier",
     formerNames: [], active: false, seasonIds: ["winter"], hasMoreSeasons: false }, now));
-  const result = await repository.removeGamePlayer({ gameId: "directory-game", playerId: "alias", userIds: ["organiser"], idempotencyKey: "alias-removal" });
+  const result = await removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "alias", userIds: ["organiser"], idempotencyKey: "alias-removal" });
   assert.equal(result.playerId, "alias"); assert.equal(result.teamId, "red");
   assert.equal(client.readItem("PLAYER#alias", identityGameSk("directory-game")), undefined);
   assert(client.readItem("PLAYER#root", identityLeagueSk("directory")));
@@ -1133,7 +1186,7 @@ test("player removal scans complete goal and audit history before deleting a sch
     client.seedItem(identityItem("GAME#directory-game", "GOAL#a", "goal", goal("someone-else", "a"), "2026-09-11T00:00:00Z"));
     client.seedItem(identityItem("GAME#directory-game", "GOAL#z", "goal", goal("history", "z"), "2026-09-11T00:00:00Z"));
     client.setQueryPageSize(1);
-    await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "history", userIds: ["organiser"],
+    await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "history", userIds: ["organiser"],
       idempotencyKey: "goal-history" }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_has_match_history");
     assert(client.readItem("GAME#directory-game", "PLAYER#history"));
   }
@@ -1143,7 +1196,7 @@ test("player removal scans complete goal and audit history before deleting a sch
     await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId: "audit", userIds: ["organiser"] });
     client.seedItem(identityItem("GAME#directory-game", "AUDIT#GOAL#1", "goalAudit", { auditId: "1", gameId: "directory-game",
       eventId: "old", actorUserId: "private", action: "goal_deleted", before: goal("audit", "old"), after: null }, "2026-09-11T00:00:00Z"));
-    await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "audit", userIds: ["organiser"],
+    await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "audit", userIds: ["organiser"],
       idempotencyKey: "audit-history" }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_has_match_history");
     assert(client.readItem("GAME#directory-game", "PLAYER#audit"));
   }
@@ -1167,7 +1220,7 @@ test("player removal loses a scoring-revision race after its complete history re
     client.seedItem(identityItem("GAME#directory-game", goalStateSk(), "goalState", { gameId: "directory-game",
       latestEventId: "scoring-race", latestGoalSk: goalKey, revision: 2 }, "2026-09-12T00:00:00Z"));
   });
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "target", userIds: ["organiser"],
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "target", userIds: ["organiser"],
     idempotencyKey: "scoring-revision-race" }),
   (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_changed");
   assert(client.readItem("GAME#directory-game", "PLAYER#target"));
@@ -1193,7 +1246,7 @@ test("player removal rejects a scoring revision committed between its bracketing
     client.seedItem(identityItem("GAME#directory-game", goalStateSk(), "goalState", { gameId: "directory-game",
       latestEventId: "bracket-race", latestGoalSk: goalKey, revision: 2 }, "2026-09-12T00:00:00Z"));
   });
-  await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "target", userIds: ["organiser"],
+  await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "target", userIds: ["organiser"],
     idempotencyKey: "scoring-bracket-race" }),
   (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_changed");
   assert(client.readItem("GAME#directory-game", "PLAYER#target"));
@@ -1221,7 +1274,7 @@ test("player removal loses game-start, join/re-add and consolidation races witho
           "2026-09-12T00:00:00Z", item.createdAt!.S));
       }
     });
-    await assert.rejects(repository.removeGamePlayer({ gameId: "directory-game", playerId: "raced", userIds: ["organiser"],
+    await assert.rejects(removeCurrentGamePlayer(repository, { gameId: "directory-game", playerId: "raced", userIds: ["organiser"],
       idempotencyKey: `${race}-race` }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_registration_changed");
     assert(client.readItem("GAME#directory-game", "PLAYER#raced"));
     assert(client.readItem("GAME#directory-game", "ROSTER#yellow#raced"));
@@ -1338,7 +1391,9 @@ test("league directory local and Lambda routes preserve scoped privacy and rejec
     assert.equal(JSON.stringify(page.body).includes("claimedByUserId"), false);
     assert.equal((await request("/v1/game-player-registrations", "gameId=directory-game", { playerId: "p", teamId: "blue" })).status, 200);
     assert.ok(client.readItem("GAME#directory-game", "ROSTER#blue#p"));
-    const removed = await request("/v1/games/directory-game/player-registration", "playerId=p", {}, "DELETE");
+    const registration = await repository.getGamePlayer("directory-game", "p"); assert(registration?.registrationRevision);
+    const removed = await request("/v1/games/directory-game/player-registration",
+      new URLSearchParams({ playerId: "p", registrationRevision: registration.registrationRevision }).toString(), {}, "DELETE");
     assert.equal(removed.status, 200); assert.deepEqual(removed.body.removal.teamId, "blue");
     assert.equal(JSON.stringify(removed.body).includes("actor"), false); assert.equal(JSON.stringify(removed.body).includes("private@example.com"), false);
     assert.equal(client.readItem("GAME#directory-game", "PLAYER#p"), undefined);
@@ -1621,7 +1676,7 @@ test("removing a fresh registration retains its proof receipt but makes the game
   const storedProof = structuredClone(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA")); assert(storedProof);
   client.seedItem(identityItem("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl",
     { mode: "fenced", epoch: "verified-proof", coverage: "verified", writerVersion: 1 }, "2026-09-10T00:00:00.000Z"));
-  await repository.removeGamePlayer({ gameId: "proof-game", playerId: "self", userIds: ["organiser"], idempotencyKey: "remove-proof-player" });
+  await removeCurrentGamePlayer(repository, { gameId: "proof-game", playerId: "self", userIds: ["organiser"], idempotencyKey: "remove-proof-player" });
   assert.deepEqual(client.readItem(`PLAYER_PROOF#${proof.proofId}`, "METADATA"), storedProof, "normal proof expiry remains authoritative");
   await assert.rejects(repository.previewPlayerProof({ ...proof, userId: "owner", sessionId: "owner-session" }),
     (error: unknown) => error instanceof PlayerProofError && error.code === "claim_profile_changed");
@@ -4243,14 +4298,12 @@ test("repository quick player creation preserves existing player claims", async 
 
   assert.equal(linked.nickname, "Claimed");
   assert.equal(linked.claimedByUserId, "delegate@example.com");
-  assert.deepEqual(await repository.listGamePlayers("game-1"), [
-    {
-      gameId: "game-1",
-      playerId: "player-claimed",
-      createdAt: "2026-02-22T00:00:02.000Z",
-      updatedAt: "2026-02-22T00:00:02.000Z",
-    },
-  ]);
+  const registrations = await repository.listGamePlayers("game-1");
+  assert.match(registrations[0]?.registrationRevision ?? "", /^[0-9a-f-]{36}$/);
+  assert.deepEqual(registrations.map(({ registrationRevision: _revision, ...entry }) => entry), [{
+    gameId: "game-1", playerId: "player-claimed",
+    createdAt: "2026-02-22T00:00:02.000Z", updatedAt: "2026-02-22T00:00:02.000Z",
+  }]);
   assert.deepEqual(await repository.getPlayer("player-claimed"), {
     playerId: "player-claimed",
     nickname: "Claimed",
@@ -4576,14 +4629,12 @@ test("repository allows join registration for finished games so players can clai
   assert.equal(joinResult.game.status, "finished");
   assert.equal(joinResult.player.playerId, "player-late");
   assert.equal(joinResult.player.claimedByUserId, null);
-  assert.deepEqual(await repository.listGamePlayers(game.gameId), [
-    {
-      gameId: game.gameId,
-      playerId: "player-late",
-      createdAt: joinResult.link.createdAt,
-      updatedAt: joinResult.link.updatedAt,
-    },
-  ]);
+  const registrations = await repository.listGamePlayers(game.gameId);
+  assert.equal(registrations[0]?.registrationRevision, joinResult.link.registrationRevision);
+  assert.deepEqual(registrations.map(({ registrationRevision: _revision, ...entry }) => entry), [{
+    gameId: game.gameId, playerId: "player-late",
+    createdAt: joinResult.link.createdAt, updatedAt: joinResult.link.updatedAt,
+  }]);
 
   const preview = await repository.previewPlayerProof({ ...proof, userId: "late-subject", sessionId: "late-session" });
   const claimed = await repository.claimPlayer({

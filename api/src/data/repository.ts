@@ -2189,6 +2189,7 @@ export class ThreeFcRepository {
     const linkPayload = {
       gameId: game.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
     const linkingUnavailable = Boolean(input.claimProof && this.playerClaimMode === "disabled");
     const issueProof = input.claimProof && !linkingUnavailable;
@@ -2359,6 +2360,7 @@ export class ThreeFcRepository {
       // The original no-proof outcome survives mode changes and lost replies.
       // Never mint a capability retroactively onto this registration.
       return { game: input.game, player, link: { gameId: link.gameId, playerId: link.playerId,
+        ...(link.registrationRevision ? { registrationRevision: link.registrationRevision } : {}),
         createdAt: link.createdAt, updatedAt: link.updatedAt }, linkingUnavailable: true };
     }
     if (input.claimProof) {
@@ -3522,7 +3524,7 @@ export class ThreeFcRepository {
       if (input.teamId && Buffer.byteLength(rosterSk(input.teamId, rootId)) > 1024) throw new PlayerIdentityError("player_roster_key_too_large", 400,
         "This legacy player profile cannot be assigned to this team. Ask the organiser for help.");
       actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), gamePlayerSk(rootId), ENTITY_TYPE.gamePlayer,
-        { gameId: input.gameId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
+        { gameId: input.gameId, playerId: rootId, registrationRevision: randomUUID() }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
       if (input.teamId) actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), rosterSk(input.teamId, rootId), ENTITY_TYPE.roster,
         { gameId: input.gameId, teamId: input.teamId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
     }
@@ -3531,7 +3533,8 @@ export class ThreeFcRepository {
   }
 
   async removeGamePlayer(input: RemoveGamePlayerInput): Promise<RosterRemovalRecord> {
-    requireNonEmpty("gameId", input.gameId); requireNonEmpty("playerId", input.playerId); requireNonEmpty("idempotencyKey", input.idempotencyKey);
+    requireNonEmpty("gameId", input.gameId); requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("expectedRegistrationRevision", input.expectedRegistrationRevision); requireNonEmpty("idempotencyKey", input.idempotencyKey);
     const initialGame = await this.readMutableGameEntity(input.gameId);
     if (!initialGame || initialGame.entityType !== ENTITY_TYPE.game) {
       throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
@@ -3541,7 +3544,9 @@ export class ThreeFcRepository {
     const acl = authority.acl.data as LeagueAclRecord;
     const actorRole = acl.role === "admin" ? "admin" as const : "scorekeeper" as const;
     const actorRef = createHash("sha256").update(JSON.stringify(["roster-removal", game.leagueId, acl.userId])).digest("hex");
-    const requestHash = createHash("sha256").update(JSON.stringify([input.gameId, input.playerId])).digest("hex");
+    const requestHash = createHash("sha256").update(JSON.stringify([
+      input.gameId, input.playerId, input.expectedRegistrationRevision,
+    ])).digest("hex");
     const receiptKey = rosterRemovalSk(input.idempotencyKey);
     const settledReceipt = (stored: StoredEntity<unknown>): RosterRemovalRecord => {
       const value = stored.data as Omit<RosterRemovalRecord, "createdAt" | "updatedAt">;
@@ -3578,6 +3583,9 @@ export class ThreeFcRepository {
     if (!registration || registration.entityType !== ENTITY_TYPE.gamePlayer ||
         (registration.data as GamePlayerRecord).gameId !== input.gameId || (registration.data as GamePlayerRecord).playerId !== input.playerId) {
       throw new PlayerIdentityError("player_not_in_game", 404, "This player is no longer in the game.");
+    }
+    if (this.gamePlayerRevision(registration) !== input.expectedRegistrationRevision) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "The player registration changed. Reload and try again.");
     }
     // A legacy registration can fit PLAYER#<id> while one or more longer
     // ROSTER#<team>#<id> keys cannot exist in DynamoDB. Fence every
@@ -3676,6 +3684,19 @@ export class ThreeFcRepository {
 
   private playerRevision(stored: StoredEntity<unknown>): string {
     return createHash("sha256").update(JSON.stringify([stored.rawData, stored.createdAt, stored.updatedAt])).digest("hex");
+  }
+
+  private gamePlayerRevision(stored: StoredEntity<unknown>): string {
+    const registration = stored.data as { gameId?: unknown; playerId?: unknown; registrationRevision?: unknown } | null;
+    const persisted = registration?.registrationRevision;
+    if (typeof persisted === "string" && persisted.length > 0 && persisted.length <= 128) return persisted;
+    // Legacy registrations predate explicit revision IDs. Their immutable
+    // stored snapshot remains a stable compatibility token until any writer
+    // replaces the row with a newly generated revision. Hash only ordered,
+    // defined fields because DynamoDB map attribute order is not significant.
+    return createHash("sha256").update(JSON.stringify([
+      stored.pk, stored.sk, registration?.gameId, registration?.playerId, stored.createdAt, stored.updatedAt,
+    ])).digest("hex");
   }
 
   private proofMetadata(proof: PlayerProofRecord): PlayerProofMetadata {
@@ -4120,6 +4141,7 @@ export class ThreeFcRepository {
     const payload = {
       gameId: input.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
 
     try {
@@ -4203,6 +4225,7 @@ export class ThreeFcRepository {
     const linkPayload = {
       gameId: input.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
 
     try {
@@ -4262,7 +4285,8 @@ export class ThreeFcRepository {
     requireNonEmpty("playerId", playerId);
     const item = await this.getEntity(gamePk(gameId), gamePlayerSk(playerId), { consistentRead: true });
     if (item?.entityType !== ENTITY_TYPE.gamePlayer) return null;
-    const link = withTimestamps(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
+    const link = withTimestamps({ ...(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">),
+      registrationRevision: this.gamePlayerRevision(item) }, item.createdAt, item.updatedAt);
     return link.gameId === gameId && link.playerId === playerId ? link : null;
   }
 
@@ -4274,13 +4298,8 @@ export class ThreeFcRepository {
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.gamePlayer)
-      .map((item) =>
-        withTimestamps(
-          item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">,
-          item.createdAt,
-          item.updatedAt,
-        ),
-      );
+      .map((item) => withTimestamps({ ...(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">),
+        registrationRevision: this.gamePlayerRevision(item) }, item.createdAt, item.updatedAt));
   }
 
   private async liveLeagueForAuthority(leagueId: string): Promise<StoredEntity<unknown>> {
@@ -4832,6 +4851,7 @@ export class ThreeFcRepository {
     const linkPayload = {
       gameId: input.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
     const transactionItems: TransactWriteItem[] = [
       ...membership.actions,

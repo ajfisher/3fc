@@ -19,8 +19,8 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS focused |
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS focused |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS focused |
-| Full local and independent evidence | API 528/528; app 666/666; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
-| CI, exact-head Codex and deployed QA evidence | Initial `c153478` CI/deploy passed; three Codex findings were accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
+| Full local and independent evidence | API 531/531; app 669/669; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
+| CI, exact-head Codex and deployed QA evidence | Earlier heads passed CI/deploy and every Codex finding was accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
 
 ## Scope boundaries
 
@@ -143,7 +143,30 @@ was present or absent. The revealed recovery action is labelled **Reload
 roster** to match its live-region instruction. The exact ordering has a rendered
 regression, and independent engineering/QA and UX/accessibility re-reviews
 cleared the amended behavior. GitHub evidence must be refreshed for the new
-head.
+head. The latest exact-head review found that the confirmation was not bound to
+the rendered registration version, so another client's transfer or re-add could
+be deleted before confirmation. Every fresh registration now receives an opaque
+revision, genuine legacy registrations receive a stable snapshot-derived
+revision, roster reads project it, and removal freezes and conditionally checks
+it in both the request identity and transaction. Exact receipt replay after a
+re-add remains safe, while a new request carrying the old revision fails without
+mutation. Architecture/security review also identified the returning-player
+join writer as a missing revision source; it now assigns a fresh revision and a
+remove/rejoin regression covers it. UX/accessibility review identified that a
+definitive stale rejection followed by refresh failure did not expose the reload
+action named by its message; the UI now enters an explicit reload-required state
+and focuses **Reload roster**. Its final re-review also challenged optional
+player-detail failure after roster success. Although that loader already settles
+its own failure, the definitive recovery now explicitly separates authoritative
+game/roster refresh from optional enrichment; a rendered regression proves that
+current roster truth is retained without falsely demanding a roster reload.
+The same recovery now replaces its pending live-region message with a settled
+“not removed; latest roster shown” outcome and removes stale “Reload” wording
+when that automatic roster refresh succeeded.
+Legacy revision hashing uses ordered identity/timestamp fields rather than
+DynamoDB map order, with a compatibility regression. Engineering/QA re-review
+cleared the complete delta. GitHub evidence must be refreshed again for the
+final head.
 
 ### Unresolved blocking findings
 
@@ -152,8 +175,8 @@ pending publication, not unresolved implementation findings.
 
 ### Local validation
 
-- `npm test --workspace @3fc/api`: 528 passed.
-- `npm test --workspace @3fc/app`: 667 passed.
+- `npm test --workspace @3fc/api`: 531 passed.
+- `npm test --workspace @3fc/app`: 669 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

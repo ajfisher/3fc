@@ -87,17 +87,20 @@ export async function handlePlayerDirectoryRoute(input: {
     }
     const opaqueRemoval = /^\/v1\/games\/([^/]+)\/player-registration$/.exec(route);
     if (opaqueRemoval && method === "DELETE") {
-      let gameId: string; let playerId: string;
+      let gameId: string; let playerId: string; let expectedRegistrationRevision: string;
       try {
         gameId = decodeURIComponent(opaqueRemoval[1]);
-        playerId = queryFields(input.rawQueryString ?? "", ["playerId"]).playerId;
-        encodeURIComponent(gameId); encodeURIComponent(playerId);
+        const fields = queryFields(input.rawQueryString ?? "", ["playerId", "registrationRevision"]);
+        playerId = fields.playerId; expectedRegistrationRevision = fields.registrationRevision;
+        encodeURIComponent(gameId); encodeURIComponent(playerId); encodeURIComponent(expectedRegistrationRevision);
       }
       catch { return invalid(); }
-      if (!gameIdSchema.safeParse(gameId).success || !id.safeParse(playerId).success) return invalid();
+      if (!gameIdSchema.safeParse(gameId).success || !id.safeParse(playerId).success ||
+          !z.string().min(1).max(128).safeParse(expectedRegistrationRevision).success) return invalid();
       const key = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);
       if (!key.success) return { statusCode: 400, payload: { error: "bad_request", message: "Idempotency-Key is required for player removal." } };
-      const removalResult = await repository.removeGamePlayer({ gameId, playerId, userIds, idempotencyKey: key.data });
+      const removalResult = await repository.removeGamePlayer({ gameId, playerId, expectedRegistrationRevision,
+        userIds, idempotencyKey: key.data });
       return { statusCode: 200, payload: { removal: {
         gameId: removalResult.gameId, playerId: removalResult.playerId, teamId: removalResult.teamId, removedAt: removalResult.removedAt,
       } } };

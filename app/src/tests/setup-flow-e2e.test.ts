@@ -121,6 +121,7 @@ interface MockRosterAssignment {
 interface MockGamePlayer {
   gameId: string;
   playerId: string;
+  registrationRevision?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1503,6 +1504,8 @@ function createMockFetch(state: MockApiState) {
         .filter((assignment) => assignment.gameId === game.gameId)
         .map((assignment) => ({
           ...assignment,
+          registrationRevision: state.gamePlayers.get(`${game.gameId}:${assignment.playerId}`)?.registrationRevision ??
+            `legacy-${state.gamePlayers.get(`${game.gameId}:${assignment.playerId}`)?.updatedAt ?? "missing"}`,
           player: state.players.get(assignment.playerId)
             ? publicPlayer(state.players.get(assignment.playerId) as MockPlayer)
             : null,
@@ -1515,7 +1518,7 @@ function createMockFetch(state: MockApiState) {
           .filter(link => link.gameId === game.gameId && !roster.some(assignment => assignment.playerId === link.playerId))
           .flatMap(link => {
             const player = state.players.get(link.playerId);
-            return player ? [publicPlayer(player)] : [];
+            return player ? [{ ...publicPlayer(player), registrationRevision: link.registrationRevision ?? `legacy-${link.updatedAt}` }] : [];
           }),
       });
     }
@@ -1572,6 +1575,7 @@ function createMockFetch(state: MockApiState) {
     if (method === "DELETE" && removeGamePlayerMatch) {
       const gameId = decodeURIComponent(removeGamePlayerMatch[1]);
       const playerId = target.searchParams.get("playerId") ?? "";
+      const expectedRegistrationRevision = target.searchParams.get("registrationRevision") ?? "";
       const key = readInitHeader(init, "idempotency-key");
       if (!key) return createJsonResponse(400, { error: "bad_request", message: "Idempotency-Key is required for player removal." });
       const receiptKey = `${gameId}:${key}`;
@@ -1583,7 +1587,11 @@ function createMockFetch(state: MockApiState) {
       const role = league ? mockLeagueRoleForSession(state, league) : null;
       if (role !== "admin" && role !== "scorekeeper") return createJsonResponse(403, { error: "forbidden", message: "Admin or scorekeeper role is required." });
       if (game.status !== "scheduled") return createJsonResponse(409, { error: "conflict", code: "game_not_scheduled", message: "Players can only be removed before scoring starts." });
-      if (!state.gamePlayers.has(`${gameId}:${playerId}`)) return createJsonResponse(404, { error: "not_found", code: "player_not_in_game", message: "This player is no longer in the game." });
+      const registration = state.gamePlayers.get(`${gameId}:${playerId}`);
+      if (!registration) return createJsonResponse(404, { error: "not_found", code: "player_not_in_game", message: "This player is no longer in the game." });
+      const currentRevision = registration.registrationRevision ?? `legacy-${registration.updatedAt}`;
+      if (!expectedRegistrationRevision || expectedRegistrationRevision !== currentRevision) return createJsonResponse(409,
+        { error: "conflict", code: "player_registration_changed", message: "The player registration changed. Reload and try again." });
       const assignment = state.roster.get(`${gameId}:${playerId}`);
       const removal = { gameId, playerId, teamId: assignment?.teamId ?? null, removedAt: "2026-03-28T11:00:15.000Z" };
       state.gamePlayers.delete(`${gameId}:${playerId}`); state.roster.delete(`${gameId}:${playerId}`);
@@ -6525,6 +6533,76 @@ test("scheduled roster actions confirm and remove one assigned player while pres
     assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 0);
     assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /Ari removed from this game/);
     assert.equal(page.document.activeElement?.id, "roster-board-title");
+  } finally { page.dom.window.close(); }
+});
+
+test("stale removal confirmation cannot remove a registration transferred by another client", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-stale-confirmation", role: "scorekeeper" });
+  const base = createMockFetch(apiState); let sentRevision = "", rejectNextRoster = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-stale-confirmation" }),
+    url: "http://localhost:3000/games/remove-stale-confirmation#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (init.method === "DELETE" && url.pathname.endsWith("/player-registration")) {
+        sentRevision = url.searchParams.get("registrationRevision") ?? ""; rejectNextRoster = true;
+      }
+      if (rejectNextRoster && init.method === "GET" && url.pathname === "/v1/games/remove-stale-confirmation/roster") {
+        rejectNextRoster = false; return createJsonResponse(503, { error: "unavailable", message: "Roster unavailable." });
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]'); assert(remove instanceof page.window.HTMLButtonElement);
+    openActionMenuFor(remove); dispatchClick(remove);
+    const registration = apiState.gamePlayers.get("remove-stale-confirmation:player-ari"); assert(registration);
+    const confirmedRevision = registration.registrationRevision ?? `legacy-${registration.updatedAt}`;
+    apiState.gamePlayers.set("remove-stale-confirmation:player-ari", { ...registration, registrationRevision: "later-transfer-revision" });
+    const assignment = apiState.roster.get("remove-stale-confirmation:player-ari"); assert(assignment);
+    apiState.roster.set("remove-stale-confirmation:player-ari", { ...assignment, teamId: "blue" });
+    const confirm = page.document.querySelector('[data-action="confirm-player-removal"]'); assert(confirm instanceof page.window.HTMLButtonElement);
+    dispatchClick(confirm); await flushAsync();
+    assert.equal(sentRevision, confirmedRevision, "the request stays bound to the row that was confirmed");
+    assert(apiState.gamePlayers.has("remove-stale-confirmation:player-ari"));
+    assert.equal(apiState.roster.get("remove-stale-confirmation:player-ari")?.teamId, "blue");
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /registration changed|Reload and try again/i);
+    const reload = page.document.getElementById("roster-retry"); assert(reload instanceof page.window.HTMLButtonElement);
+    assert.equal(reload.hidden, false); assert.equal(reload.textContent, "Reload roster"); assert.equal(page.document.activeElement, reload);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /was not removed.*Reload the roster/i);
+  } finally { page.dom.window.close(); }
+});
+
+test("stale removal refresh keeps current roster truth when optional player details fail", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-stale-details", role: "admin" });
+  const base = createMockFetch(apiState); let failPlayerDetails = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-stale-details" }),
+    url: "http://localhost:3000/games/remove-stale-details#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (init.method === "DELETE" && url.pathname.endsWith("/player-registration")) failPlayerDetails = true;
+      if (failPlayerDetails && init.method === "GET" && url.pathname === "/v1/games/remove-stale-details/players") {
+        failPlayerDetails = false; return createJsonResponse(503, { error: "unavailable", message: "Player details unavailable." });
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]'); assert(remove instanceof page.window.HTMLButtonElement);
+    openActionMenuFor(remove); dispatchClick(remove);
+    const registration = apiState.gamePlayers.get("remove-stale-details:player-ari"); assert(registration);
+    apiState.gamePlayers.set("remove-stale-details:player-ari", { ...registration, registrationRevision: "later-transfer-revision" });
+    const assignment = apiState.roster.get("remove-stale-details:player-ari"); assert(assignment);
+    apiState.roster.set("remove-stale-details:player-ari", { ...assignment, teamId: "blue" });
+    const confirm = page.document.querySelector('[data-action="confirm-player-removal"]'); assert(confirm instanceof page.window.HTMLButtonElement);
+    dispatchClick(confirm); await flushAsync();
+    assert.equal(apiState.roster.get("remove-stale-details:player-ari")?.teamId, "blue");
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1);
+    const retry = page.document.getElementById("roster-retry"); assert(retry instanceof page.window.HTMLButtonElement);
+    assert.notEqual(retry.textContent, "Reload roster", "optional enrichment failure must not invalidate current roster truth");
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /was not removed.*latest roster is shown/i);
+    assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /registration changed.*latest roster is shown/i);
+    assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /Reload and try again/i);
   } finally { page.dom.window.close(); }
 });
 

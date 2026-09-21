@@ -2277,7 +2277,8 @@ test("Lambda player removal enforces session, league role, state, key, and priva
     gameId: `game-${status}`, leagueId: "league-removal", seasonId: "season", sessionId: "session", status,
     gameStartTs: stamp, createdAt: stamp, updatedAt: stamp,
   }]));
-  const calls: Array<{ gameId: string; playerId: string; userIds: readonly string[]; idempotencyKey: string }> = [];
+  const calls: Array<{ gameId: string; playerId: string; expectedRegistrationRevision: string;
+    userIds: readonly string[]; idempotencyKey: string }> = [];
   const { handler } = createHarness({
     sessions: Object.fromEntries(["admin", "scorer", "viewer", "cross"].map(id => [id, session(id)])), games,
     leagues: { "league-removal": { leagueId: "league-removal", name: "Removal", slug: null, createdByUserId: "admin",
@@ -2302,7 +2303,7 @@ test("Lambda player removal enforces session, league role, state, key, and priva
     const event = createEvent({ method: "DELETE",
       path: `/v1/games/${gameId}/player-registration`, cookies: account ? [`threefc_session=${account}`] : undefined,
       headers: { Origin: "https://qa.3fc.football", ...(withKey ? { "Idempotency-Key": "remove-fixture-key" } : {}) } });
-    event.rawQueryString = new URLSearchParams({ playerId }).toString();
+    event.rawQueryString = new URLSearchParams({ playerId, registrationRevision: "registration-revision" }).toString();
     return event;
   };
   assert.equal((await handler(request("game-scheduled"))).statusCode, 401);
@@ -2322,6 +2323,7 @@ test("Lambda player removal enforces session, league role, state, key, and priva
   }
   assert.equal(calls.length, 4);
   assert(calls.every(call => call.playerId === playerId));
+  assert(calls.every(call => call.expectedRegistrationRevision === "registration-revision"));
   assert(calls.some(call => call.userIds.includes("admin") && call.idempotencyKey === "remove-fixture-key"));
   assert(calls.some(call => call.userIds.includes("scorer")));
 });

@@ -7,7 +7,8 @@ import { handleLocalJoinPlayerContextRoute } from "../server.js";
 
 const timestamp = "2026-09-08T10:00:00.000Z";
 const player = { playerId: "player-one", nickname: "Same name", createdAt: timestamp, updatedAt: timestamp };
-const link = { gameId: "game-one", playerId: player.playerId, createdAt: timestamp, updatedAt: timestamp };
+const link = { gameId: "game-one", playerId: player.playerId, registrationRevision: "registration-revision",
+  createdAt: timestamp, updatedAt: timestamp };
 const contextQuery = (id: string) => new URLSearchParams({ playerId: id }).toString();
 function fixture(overrides: Partial<PlayerReadRepository> = {}): PlayerReadRepository {
   return {
@@ -107,7 +108,8 @@ test("complete roster identities exceed recent-search cap, deduplicate and bound
   assert.equal(new Set(result.unassignedPlayers.map((entry) => entry.playerId)).size, 24);
   assert.equal(reads.length, 45); assert.equal(new Set(reads).size, 45);
   assert.ok(peak > 1 && peak <= 8); assert.equal(active, 0);
-  for (const entry of result.unassignedPlayers) assert.deepEqual(Object.keys(entry).sort(), ["createdAt", "nickname", "playerId", "updatedAt"]);
+  for (const entry of result.unassignedPlayers) assert.deepEqual(Object.keys(entry).sort(),
+    ["createdAt", "nickname", "playerId", "registrationRevision", "updatedAt"]);
   assert.doesNotMatch(JSON.stringify(result.unassignedPlayers), /private|claimedBy|access/);
   const moved = await readRosterPlayerData({ ...repository, async listGameRoster(gameId) { return records.slice(0, 22).map((entry) => ({ ...link, gameId, playerId: entry.playerId, teamId: "red" as const })); } }, "game-one");
   assert.equal(moved.unassignedPlayers.length, 23);

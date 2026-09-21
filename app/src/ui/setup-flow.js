@@ -3861,6 +3861,12 @@
       return rosterAssignments.find((assignment) => assignment.playerId === playerId) ?? null;
     }
 
+    function registrationRevisionFor(playerId) {
+      const value = assignmentByPlayerId(playerId)?.registrationRevision ??
+        rosterUnassignedPlayers?.find((player) => player.playerId === playerId)?.registrationRevision;
+      return typeof value === "string" && value.length > 0 && value.length <= 128 ? value : null;
+    }
+
     function rosteredPlayers() {
       const seen = new Set();
       const players = [];
@@ -5382,7 +5388,7 @@
           }
         }
       }
-      if (currentGame?.status === "scheduled") {
+      if (currentGame?.status === "scheduled" && registrationRevisionFor(player.playerId)) {
         const disabled = refreshAccountLocked || refreshWriteLocked || rosterMutationPending || playerCreatePending || playerRemovalPending || playerRemovalAttempt?.uncertain ? " disabled" : "";
         actions.push(`<button data-ui="row-action" data-tone="danger" type="button" data-action="open-player-removal" ${playerIdentityAttribute(player.playerId)}${disabled}>Remove from game</button>`);
       }
@@ -5415,9 +5421,11 @@
     function openPlayerRemovalDialog(playerId, trigger) {
       if (!usableEntityId(playerId) || currentGame?.status !== "scheduled" || !isLeagueOperator() ||
           playerRemovalPending || playerRemovalAttempt?.uncertain) return;
+      const registrationRevision = registrationRevisionFor(playerId);
+      if (!registrationRevision) return;
       const name = playerRemovalName(playerId);
       closeActionMenu();
-      playerRemovalPrompt = { playerId, name, trigger };
+      playerRemovalPrompt = { playerId, name, registrationRevision, trigger };
       if (playerRemovalTitle) playerRemovalTitle.textContent = `Remove ${name} from this game?`;
       if (playerRemovalDialog instanceof HTMLElement) playerRemovalDialog.hidden = false;
       document.body.classList.add("modal-open");
@@ -5477,6 +5485,7 @@
       }
       const finishFocus = trackInteractionFocus(wasUncertain ? playerRemovalRecovery : rosterRetryStatus);
       let outcome = "uncertain";
+      let definitiveRefreshFailed = false;
       try {
         const response = await requestJsonOrThrow(attempt.path, attempt.request);
         if (response?.removal?.gameId !== gameId || response.removal.playerId !== attempt.playerId ||
@@ -5518,9 +5527,25 @@
         if (definitive) {
           playerRemovalAttempt = null;
           outcome = "definitive";
-          try { await loadGame(); await loadRosterSetup({ updateStatus: false }); await loadPlayerDetails(); } catch { /* retain the available roster */ }
+          try {
+            await loadGame();
+            await loadRosterSetup({ updateStatus: false });
+          }
+          catch {
+            definitiveRefreshFailed = true;
+            rosterReloadRequired = true;
+            announceRosterStatus(`${attempt.name} was not removed. Reload the roster before trying again.`);
+          }
+          // Private claim/access enrichment is optional. Once roster truth has
+          // loaded, its failure must not falsely demand another roster reload.
+          if (!definitiveRefreshFailed) {
+            await loadPlayerDetails();
+            announceRosterStatus(`${attempt.name} was not removed. The latest roster is shown; review it and try again.`);
+          }
           if (playerRemovalRecovery instanceof HTMLElement) playerRemovalRecovery.hidden = true;
-          const message = error instanceof Error ? error.message : "Player could not be removed.";
+          const message = error.responseCode === "player_registration_changed" && !definitiveRefreshFailed
+            ? "This player’s game registration changed. The latest roster is shown; review it and try again."
+            : error instanceof Error ? error.message : "Player could not be removed.";
           showError(message); setStatus("Player was not removed.", "error");
         } else {
           attempt.uncertain = true;
@@ -5536,6 +5561,9 @@
         if (finishFocus()) {
           if (outcome === "uncertain" && playerRemovalAttempt?.uncertain) {
             playerRemovalRecovery?.querySelector('[data-action="retry-player-removal"]')?.focus();
+          } else if (outcome === "definitive" && definitiveRefreshFailed) {
+            const retry = document.getElementById("roster-retry");
+            if (retry instanceof HTMLElement) retry.focus({ preventScroll: true });
           } else if (outcome === "definitive") {
             focusPlayerAction(attempt.playerId);
           } else if (outcome === "committed") {
@@ -5721,7 +5749,7 @@
       rosterUnassignedPlayers = Array.isArray(publicPlayers) && publicPlayers.every((player) =>
         usableEntityId(player?.playerId) && typeof player.nickname === "string" && player.nickname.trim())
         ? [...new Map(publicPlayers.map((player) => [player.playerId, {
-            playerId: player.playerId, nickname: player.nickname,
+            playerId: player.playerId, nickname: player.nickname, registrationRevision: player.registrationRevision,
           }])).values()] : null;
       for (const player of rosterUnassignedPlayers ?? []) {
         // Public reads never establish claimed identity or administrator access.
@@ -6657,14 +6685,14 @@
         }
         if (action === "confirm-player-removal") {
           if (!playerRemovalPrompt || playerRemovalPending || playerRemovalAttempt?.uncertain) return;
-          const { playerId, name } = playerRemovalPrompt;
+          const { playerId, name, registrationRevision } = playerRemovalPrompt;
           // Confirmation is reachable only from a rendered roster row. Keep
           // that visible state as the recovery baseline until an authoritative
           // reload proves otherwise.
-          playerRemovalAttempt = { playerId, name, uncertain: false, lastObservedPresent: true,
-            path: `/v1/games/${encodeURIComponent(gameId)}/player-registration?${new URLSearchParams({ playerId })}`,
+          playerRemovalAttempt = { playerId, name, registrationRevision, uncertain: false, lastObservedPresent: true,
+            path: `/v1/games/${encodeURIComponent(gameId)}/player-registration?${new URLSearchParams({ playerId, registrationRevision })}`,
             request: Object.freeze({ method: "DELETE", headers: Object.freeze({
-              "Idempotency-Key": createIdempotencyKey("remove-player", `${gameId}:${playerId}`),
+              "Idempotency-Key": createIdempotencyKey("remove-player", `${gameId}:${playerId}:${registrationRevision}`),
             }) }) };
           closePlayerRemovalDialog({ restoreFocus: false });
           void executePlayerRemoval();

@@ -1903,6 +1903,11 @@ paths:
           required: true
           description: Opaque identifier, URL-encoded and decoded exactly once so reserved path characters remain data.
           schema: { type: string, minLength: 1 }
+        - name: registrationRevision
+          in: query
+          required: true
+          description: Opaque revision returned with the roster row being removed. Stale revisions fail without mutation.
+          schema: { type: string, minLength: 1, maxLength: 128 }
         - name: Idempotency-Key
           in: header
           required: true
@@ -3099,6 +3104,11 @@ components:
         playerId:
           type: string
           minLength: 1
+        registrationRevision:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Opaque game-registration revision, present only in roster reads that support stale-removal protection.
         nickname:
           type: string
           minLength: 1
@@ -3360,6 +3370,11 @@ components:
             - yellow
         playerId:
           type: string
+        registrationRevision:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Opaque revision of the corresponding game registration, supplied by roster reads.
         player:
           anyOf:
             - $ref: "#/components/schemas/Player"
