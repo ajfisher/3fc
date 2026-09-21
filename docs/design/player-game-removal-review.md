@@ -13,22 +13,24 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 
 | Acceptance criterion | Evidence | Result |
 | --- | --- | --- |
-| Assigned and Unassigned removal through one player action menu | Repository removal cases; scheduled roster interaction tests | PASS focused |
-| Organiser/scorer authority and scheduled-only state | ACL, repository, route and live/finished UI cases | PASS focused |
-| Exact atomic game-only deletion and retained identity/history | Transaction planner plus repository retention/reverse-marker/directory-revision assertions | PASS focused |
-| Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS focused |
-| Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS focused |
-| Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS focused |
-| Full local and independent evidence | API 533/533; app 669/669; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
-| CI, exact-head Codex and deployed QA evidence | Earlier heads passed CI/deploy and every Codex finding was accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
+| Assigned and Unassigned removal through one player action menu | Repository removal cases; scheduled roster interaction tests | PASS |
+| Organiser/scorer authority and scheduled-only state | ACL, repository, route and live/finished UI cases | PASS |
+| Exact atomic game-only deletion and retained identity/history | Transaction planner plus repository retention/reverse-marker/directory-revision assertions | PASS |
+| Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS |
+| Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS |
+| Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS |
+| Full local and independent evidence | API 533/533; app 669/669; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS |
+| CI, exact-head Codex and deployed QA evidence | Head `b258a12` passed CI and QA deployment; Codex completed with no new findings; disposable deployed acceptance passed 10/10 and removed every fixture row | PASS |
 
 ## Scope boundaries
 
 Included: one authenticated DELETE contract, additive immutable removal receipt,
 scheduled-game transaction, combined roster actions, focused confirmation and
-explicit uncertain recovery. Excluded: player/profile deletion, bulk removal,
-live/finished correction, score-rule changes, migration, Terraform/IAM changes,
-production writes, merge and release.
+explicit uncertain recovery.
+
+Excluded: player/profile deletion, bulk removal, live/finished correction,
+score-rule changes, migration, Terraform/IAM changes, production writes, merge
+and release.
 
 ## Change classification
 
@@ -172,12 +174,13 @@ revision. Roster reads now bracket the complete assignment query with complete
 registration snapshots, retry at most three times, and fail closed if membership
 or revisions do not stabilise. Focused tests prove a mid-read transfer returns
 only the later assignment/revision pair and continual changes return no mixed
-projection. GitHub evidence must be refreshed again for the final head.
+projection. Exact-head CI and QA deployment passed for `b258a12`; Codex completed
+without new findings. Disposable deployed acceptance passed 10/10 checks and
+verified complete fixture cleanup.
 
 ### Unresolved blocking findings
 
-None. GitHub current-head review, CI and QA acceptance are delivery evidence
-pending publication, not unresolved implementation findings.
+None.
 
 ### Local validation
 
@@ -217,8 +220,7 @@ None.
 
 ### Reversal cost
 
-Already committed removals remain intentional durable changes; code rollback
-does not automatically re-register a player in a game.
+None.
 
 ## Review focus
 
