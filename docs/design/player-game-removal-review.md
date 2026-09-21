@@ -34,28 +34,38 @@ production writes, merge and release.
 
 - Declared risk: `high`
 - [x] `application-behaviour`
+- [x] `backlog-maintenance`
 - [x] `public-contract`
 - [x] `permission-trust-boundary`
 - [x] `durable-state-ownership`
+- [x] `destructive-behaviour`
+- [x] `authentication-authorisation`
 - [x] `privacy-regulated-data`
+- [x] `infrastructure-production-configuration`
 
 ## Architecture and invariants
 
 - [x] `architecture:documented`
 
-| Invariant | Impact and preservation | Evidence |
-| --- | --- | --- |
-| INV-001 | Receipt actor is a league-scoped SHA-256 reference; response omits actor/account data | Repository/HTTP privacy assertions |
-| INV-002 | Global ACL and repository both require current admin/scorer league authority | ACL/negative repository tests |
-| INV-003 | One frozen client attempt and immutable hashed-key receipt own replay/recovery | Retry, conflict, lost-response and re-add cases |
-| INV-004 | Exact registration/assignment/reverse marker are deleted; directory revision and identity revision are fenced | Single-table docs and repository assertions |
-| INV-008 | Strong scoring reads block referenced players; scheduled snapshot prevents a concurrent scoring write | Repository transaction design and regressions |
-| INV-009 | Existing cookie authentication, no-store/no-referrer and local assets remain | HTTP/session/security and deployment checks |
+### Affected invariants
+
+| Invariant | How this PR affects it | Why it remains valid | Evidence |
+| --- | --- | --- | --- |
+| INV-001 | Adds a durable removal audit receipt | Actor is a league-scoped SHA-256 reference and the public result omits actor/account data | Repository and HTTP privacy assertions |
+| INV-002 | Adds organiser/scorer roster-removal authority | Both global ACL routing and the repository require current league authority | ACL and negative repository/handler cases |
+| INV-003 | Adds a retriable destructive roster operation | One frozen client request and immutable hashed-key receipt own replay and recovery | Same-key, conflict, response-loss and re-add cases |
+| INV-004 | Deletes one registration, assignment and game reverse marker | Canonical identity, claim, league/season membership and history remain; identity and directory revisions are fenced | Single-table docs and retention/CAS assertions |
+| INV-008 | Adds a scheduled-game-only destructive transaction | Complete strong scoring reads block referenced players and the scheduled snapshot fences concurrent game start/scoring | Goal/audit pagination and game-start race cases |
+| INV-009 | Adds one authenticated DELETE route and confirmation flow | Existing cookie authentication, no-store/no-referrer, CORS and local-asset policies remain | HTTP/session/deployment and built-browser checks |
+
+### Architecture or decision record
 
 `docs/architecture/match-roster.md` and `docs/dynamodb-single-table.md` document
 the write boundary and additive receipt. No invariant definition changes.
 
 ## Failure and rollback
+
+### Failure behaviour
 
 An initial definitive 4xx refreshes authoritative game/roster state and reports
 no success. After an uncertain dispatch, only receipt-aware repository state
@@ -66,9 +76,18 @@ settle an in-flight write. Confirmed success removes the local row before
 authoritative refresh; refresh failure still reports the committed removal. A
 later re-add is shown after same-key replay and the old receipt cannot delete it.
 
+### Rollback approach
+
 Rollback is a code redeploy. Existing receipts are harmless to older readers;
 already committed removals are intentional durable writes and are not reversed.
 No Terraform apply, IAM update or data migration is required.
+
+### Rollback evidence
+
+Repository and browser cases prove receipt replay after response loss and re-add,
+and the complete pre-existing API/app suites pass with the route present. The
+additive receipt is ignored by older readers. A production rollback was not
+performed because this PR is not authorised for production deployment.
 
 ## Automated and agent review disposition
 
@@ -81,8 +100,8 @@ material findings.
 
 ### Unresolved blocking findings
 
-GitHub current-head review, CI and QA acceptance remain pending until
-publication. Local validation and independent reviews are complete.
+None. GitHub current-head review, CI and QA acceptance are delivery evidence
+pending publication, not unresolved implementation findings.
 
 ### Local validation
 
@@ -107,6 +126,23 @@ publication. Local validation and independent reviews are complete.
 ## Human judgement
 
 - [x] `human-judgement:none`
+
+### Decision requiring judgement
+
+None.
+
+### Options considered
+
+None.
+
+### Reason selected
+
+None.
+
+### Reversal cost
+
+Already committed removals remain intentional durable changes; code rollback
+does not automatically re-register a player in a game.
 
 ## Review focus
 
