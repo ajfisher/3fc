@@ -3579,7 +3579,13 @@ export class ThreeFcRepository {
         (registration.data as GamePlayerRecord).gameId !== input.gameId || (registration.data as GamePlayerRecord).playerId !== input.playerId) {
       throw new PlayerIdentityError("player_not_in_game", 404, "This player is no longer in the game.");
     }
-    const assignments = await Promise.all(TEAM_IDS.map(teamId => this.getEntity(gamePk(input.gameId), rosterSk(teamId, input.playerId), { consistentRead: true })));
+    // A legacy registration can fit PLAYER#<id> while one or more longer
+    // ROSTER#<team>#<id> keys cannot exist in DynamoDB. Fence every
+    // representable slot and omit only structurally impossible keys.
+    const assignmentSlots = TEAM_IDS.map(teamId => ({ teamId, sk: rosterSk(teamId, input.playerId) }))
+      .filter(slot => Buffer.byteLength(slot.sk) <= 1024);
+    const assignments = await Promise.all(assignmentSlots.map(slot =>
+      this.getEntity(gamePk(input.gameId), slot.sk, { consistentRead: true })));
     const existingAssignments = assignments.filter((item): item is StoredEntity<unknown> => item !== null);
     for (const assignment of existingAssignments) {
       const value = assignment.data as RosterAssignmentRecord;
@@ -3621,9 +3627,9 @@ export class ThreeFcRepository {
     const receipt: Omit<RosterRemovalRecord, "createdAt" | "updatedAt"> = {
       gameId: input.gameId, playerId: input.playerId, teamId, removedAt: now, requestHash, actorRef, actorRole,
     };
-    const rosterDeletes = TEAM_IDS.map((candidate, index): TransactWriteItem => assignments[index]
+    const rosterDeletes = assignmentSlots.map((candidate, index): TransactWriteItem => assignments[index]
       ? this.buildConditionalDeleteFromStoredEntity(assignments[index]!)
-      : { Delete: { TableName: this.tableName, Key: { pk: { S: gamePk(input.gameId) }, sk: { S: rosterSk(candidate, input.playerId) } },
+      : { Delete: { TableName: this.tableName, Key: { pk: { S: gamePk(input.gameId) }, sk: { S: candidate.sk } },
         ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
     const identityActions = await this.identities.planGameRemoval(identity, { gameId: game.gameId, leagueId: game.leagueId,
       seasonId: game.seasonId, gameStartTs: game.gameStartTs, registeredPlayerId: input.playerId }, now);

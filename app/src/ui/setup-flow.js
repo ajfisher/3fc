@@ -5452,6 +5452,13 @@
       rosterRetryStatus.textContent = message;
     }
 
+    function recordPlayerRemovalRosterTruth(attempt) {
+      const present = rosterAssignments.some(entry => entry.playerId === attempt.playerId) ||
+        (Array.isArray(rosterUnassignedPlayers) && rosterUnassignedPlayers.some(entry => entry.playerId === attempt.playerId));
+      attempt.lastObservedPresent = present;
+      return present;
+    }
+
     async function executePlayerRemoval() {
       const attempt = playerRemovalAttempt;
       if (!attempt || playerRemovalPending || (!attempt.uncertain && currentGame?.status !== "scheduled") || !isLeagueOperator()) return;
@@ -5482,13 +5489,14 @@
         if (!preserveLastObservedRow) applyLocalPlayerRemoval(attempt.playerId);
         try {
           await loadRosterSetup({ updateStatus: false });
-          await loadPlayerDetails();
+          const present = recordPlayerRemovalRosterTruth(attempt);
           if (playerRemovalRecovery instanceof HTMLElement) playerRemovalRecovery.hidden = true;
-          const present = rosterAssignments.some(entry => entry.playerId === attempt.playerId) ||
-            (Array.isArray(rosterUnassignedPlayers) && rosterUnassignedPlayers.some(entry => entry.playerId === attempt.playerId));
           announceRosterStatus(present
             ? `${attempt.name}’s original removal was confirmed. ${attempt.name} is currently back in this game.`
             : `${attempt.name} removed from this game.`);
+          // Claim/access enrichment is optional and must not roll back or delay
+          // the authoritative roster observation used by removal recovery.
+          try { await loadPlayerDetails(); } catch { /* retain roster truth */ }
         } catch {
           announceRosterStatus(preserveLastObservedRow
             ? `${attempt.name}’s removal was confirmed, but the latest roster could not be loaded. The row shows the last roster state; reload the roster to confirm whether ${attempt.name} is currently in this game.`
@@ -6664,13 +6672,12 @@
           const attempt = playerRemovalAttempt;
           if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent = "Reloading roster…";
           try {
-            await loadGame(); await loadRosterSetup({ updateStatus: false }); await loadPlayerDetails();
-            const present = rosterAssignments.some(entry => entry.playerId === attempt.playerId) ||
-              (Array.isArray(rosterUnassignedPlayers) && rosterUnassignedPlayers.some(entry => entry.playerId === attempt.playerId));
-            attempt.lastObservedPresent = present;
+            await loadGame(); await loadRosterSetup({ updateStatus: false });
+            const present = recordPlayerRemovalRosterTruth(attempt);
             announceRosterStatus(present ? `${attempt.name} is currently in this game.` : `${attempt.name} is not currently in this game.`);
             if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent =
               `Removal of ${attempt.name} is still unconfirmed. Retry removal to settle the original request.`;
+            try { await loadPlayerDetails(); } catch { /* optional enrichment does not change roster truth */ }
           } catch {
             if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent = "The roster could not be reloaded. Retry removal or try reloading again.";
           } finally {

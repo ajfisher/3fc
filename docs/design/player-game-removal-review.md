@@ -19,7 +19,7 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS focused |
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS focused |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS focused |
-| Full local and independent evidence | API 527/527; app 664/664; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
+| Full local and independent evidence | API 528/528; app 666/666; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
 | CI, exact-head Codex and deployed QA evidence | Initial `c153478` CI/deploy passed; three Codex findings were accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
 
 ## Scope boundaries
@@ -125,7 +125,15 @@ refresh could discard that frozen request. Authority refreshes now preserve the
 exact removal owner while clearing role-specific enrichment; account changes and
 sign-out still clear it, and a non-operator role cannot dispatch the retry. The
 combined regression covers response loss, administrator-to-scorer refresh, game
-start and exact-key receipt replay. GitHub
+start and exact-key receipt replay. The next exact-head review identified two
+further compatibility/recovery boundaries: some legacy registration IDs fit a
+game-player key but not every longer team-roster key, and optional player-detail
+enrichment could delay recording an already-rendered authoritative roster row.
+Removal now skips only structurally impossible roster keys while fencing every
+representable slot, and both recovery paths record roster truth before optional
+enrichment. Strict Dynamo-key and deferred-enrichment regressions cover both
+findings; independent engineering/QA and architecture/security re-reviews are
+clear. GitHub
 evidence must be refreshed for the new head.
 
 ### Unresolved blocking findings
@@ -135,8 +143,8 @@ pending publication, not unresolved implementation findings.
 
 ### Local validation
 
-- `npm test --workspace @3fc/api`: 527 passed.
-- `npm test --workspace @3fc/app`: 665 passed.
+- `npm test --workspace @3fc/api`: 528 passed.
+- `npm test --workspace @3fc/app`: 666 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

@@ -428,6 +428,24 @@ class InMemoryDynamoClient {
   }
 }
 
+function enforceDynamoKeyBounds(client: InMemoryDynamoClient): void {
+  const send = client.send.bind(client);
+  const check = (key: Record<string, AttributeValue> | undefined): void => {
+    if (!key) return;
+    assert(Buffer.byteLength(key.pk?.S ?? "") <= 2048, "DynamoDB partition key exceeds 2048 bytes");
+    assert(Buffer.byteLength(key.sk?.S ?? "") <= 1024, "DynamoDB sort key exceeds 1024 bytes");
+  };
+  client.send = async (command: unknown): Promise<unknown> => {
+    if (command instanceof GetItemCommand) check(command.input.Key);
+    if (command instanceof TransactWriteItemsCommand) {
+      for (const item of command.input.TransactItems ?? []) {
+        check(item.Put?.Item); check(item.Delete?.Key); check(item.ConditionCheck?.Key);
+      }
+    }
+    return send(command);
+  };
+}
+
 class IncrementingClock {
   private offset = 0;
 
@@ -909,6 +927,26 @@ test("historical registration-sized ID rejects a larger roster key atomically", 
     (error: unknown) => error instanceof PlayerIdentityError && error.code === "player_roster_key_too_large");
   assert(client.readItem("GAME#directory-game", `PLAYER#${playerId}`));
   assert.equal(client.readItem("GAME#directory-game", `ROSTER#red#${playerId}`), undefined);
+});
+
+test("player removal skips only Dynamo-impossible roster slots for a boundary legacy ID", async () => {
+  const { client, repository } = await directoryHarness();
+  const playerId = "x".repeat(1013);
+  await repository.createLeaguePlayer({ leagueId: "directory", playerId, nickname: "Boundary legacy", userIds: ["organiser"] });
+  await repository.addExistingLeaguePlayer({ gameId: "directory-game", playerId, teamId: "red", userIds: ["organiser"] });
+  assert.equal(Buffer.byteLength(`PLAYER#${playerId}`) <= 1024, true);
+  assert.equal(Buffer.byteLength(`ROSTER#red#${playerId}`), 1024);
+  assert.equal(Buffer.byteLength(`ROSTER#blue#${playerId}`) > 1024, true);
+  enforceDynamoKeyBounds(client);
+
+  const result = await repository.removeGamePlayer({ gameId: "directory-game", playerId,
+    userIds: ["organiser"], idempotencyKey: "boundary-legacy-removal" });
+
+  assert.equal(result.teamId, "red");
+  assert.equal(client.readItem("GAME#directory-game", `PLAYER#${playerId}`), undefined);
+  assert.equal(client.readItem("GAME#directory-game", `ROSTER#red#${playerId}`), undefined);
+  assert.equal(client.readItem(`PLAYER#${playerId}`, identityGameSk("directory-game")), undefined);
+  assert(client.readItem("GAME#directory-game", rosterRemovalSk("boundary-legacy-removal")));
 });
 
 test("league directory creates an unclaimed standalone player and reuses it without duplicate registration or transfer", async () => {

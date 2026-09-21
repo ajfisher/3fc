@@ -6618,6 +6618,57 @@ test("response-loss reload keeps the write locked until same-key replay and repo
   } finally { page.dom.window.close(); }
 });
 
+test("removal recovery records a re-added roster row before optional player details settle", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-details-late", role: "admin" });
+  const base = createMockFetch(apiState); let deletes = 0; let holdDetails = false; let failRefreshAfterReplay = false;
+  let releaseDetails: (() => void) | undefined;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-details-late" }),
+    url: "http://localhost:3000/games/remove-details-late#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
+        deletes += 1; const response = await base(input, init);
+        if (deletes === 1) throw new Error("response lost");
+        failRefreshAfterReplay = true; return response;
+      }
+      if (holdDetails && (init.method ?? "GET") === "GET" && path.endsWith("/players")) {
+        holdDetails = false;
+        return new Promise<Response>(resolve => { releaseDetails = () => resolve(createJsonResponse(503, { error: "unavailable" })); });
+      }
+      if (failRefreshAfterReplay && (init.method ?? "GET") === "GET" && path.endsWith("/roster")) {
+        failRefreshAfterReplay = false; throw new Error("refresh lost");
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]');
+    assert(remove instanceof page.window.HTMLButtonElement); openActionMenuFor(remove); dispatchClick(remove);
+    dispatchClick(page.document.querySelector('[data-action="confirm-player-removal"]') as HTMLElement); await flushAsync();
+    const recovery = page.document.getElementById("player-removal-recovery"); assert(recovery instanceof page.window.HTMLElement);
+    const reload = recovery.querySelector('[data-action="reload-after-player-removal"]'); assert(reload instanceof page.window.HTMLButtonElement);
+    dispatchClick(reload); await flushAsync();
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /not currently in this game/);
+
+    apiState.gamePlayers.set("remove-details-late:player-ari", { gameId: "remove-details-late", playerId: "player-ari",
+      createdAt: "2026-03-28T12:00:00.000Z", updatedAt: "2026-03-28T12:00:00.000Z" });
+    apiState.roster.set("remove-details-late:player-ari", { gameId: "remove-details-late", playerId: "player-ari", teamId: "yellow",
+      createdAt: "2026-03-28T12:00:00.000Z", updatedAt: "2026-03-28T12:00:00.000Z" });
+    holdDetails = true; dispatchClick(reload); await flushAsync();
+    assert(releaseDetails, "optional player details remain pending after authoritative roster presentation");
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1);
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /Ari is currently in this game/);
+    assert.match(recovery.textContent ?? "", /still unconfirmed/);
+    releaseDetails(); releaseDetails = undefined; await flushAsync();
+
+    dispatchClick(recovery.querySelector('[data-action="retry-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(deletes, 2); assert.equal(recovery.hidden, true);
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1,
+      "receipt replay cannot hide the last authoritative re-added row when refresh fails");
+    assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /row shows the last roster state/);
+  } finally { releaseDetails?.(); await flushAsync(); page.dom.window.close(); }
+});
+
 test("immediate uncertain replay preserves the initially visible row when a later re-add cannot be refreshed", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-immediate-readd", role: "admin" });
   const base = createMockFetch(apiState); let deletes = 0; let failRefreshAfterReplay = false;
