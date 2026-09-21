@@ -19,7 +19,7 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS focused |
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS focused |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS focused |
-| Full local and independent evidence | API 531/531; app 669/669; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
+| Full local and independent evidence | API 533/533; app 669/669; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
 | CI, exact-head Codex and deployed QA evidence | Earlier heads passed CI/deploy and every Codex finding was accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
 
 ## Scope boundaries
@@ -165,8 +165,14 @@ The same recovery now replaces its pending live-region message with a settled
 when that automatic roster refresh succeeded.
 Legacy revision hashing uses ordered identity/timestamp fields rather than
 DynamoDB map order, with a compatibility regression. Engineering/QA re-review
-cleared the complete delta. GitHub evidence must be refreshed again for the
-final head.
+cleared the complete delta. The next exact-head review found that separate
+strongly consistent roster and registration queries could still straddle a
+transfer, pairing an old displayed assignment with the new deletion-authorising
+revision. Roster reads now bracket the complete assignment query with complete
+registration snapshots, retry at most three times, and fail closed if membership
+or revisions do not stabilise. Focused tests prove a mid-read transfer returns
+only the later assignment/revision pair and continual changes return no mixed
+projection. GitHub evidence must be refreshed again for the final head.
 
 ### Unresolved blocking findings
 
@@ -175,7 +181,7 @@ pending publication, not unresolved implementation findings.
 
 ### Local validation
 
-- `npm test --workspace @3fc/api`: 531 passed.
+- `npm test --workspace @3fc/api`: 533 passed.
 - `npm test --workspace @3fc/app`: 669 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.

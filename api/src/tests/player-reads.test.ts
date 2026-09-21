@@ -116,6 +116,43 @@ test("complete roster identities exceed recent-search cap, deduplicate and bound
   assert.equal(moved.unassignedPlayers.some((entry) => entry.playerId === "player-21"), false);
 });
 
+test("roster reads never pair a pre-transfer assignment with its replacement registration revision", async () => {
+  let playerReads = 0; let rosterReads = 0;
+  const oldLink = { ...link, registrationRevision: "old-revision", updatedAt: "2026-09-08T10:00:00.000Z" };
+  const newLink = { ...link, registrationRevision: "new-revision", updatedAt: "2026-09-08T10:00:01.000Z" };
+  const repository = fixture({
+    async listGamePlayers(_gameId, options) {
+      assert.deepEqual(options, { complete: true, consistentRead: true });
+      playerReads += 1;
+      return playerReads === 1 ? [oldLink] : [newLink];
+    },
+    async listGameRoster(gameId, options) {
+      assert.deepEqual(options, { complete: true, consistentRead: true });
+      rosterReads += 1;
+      return [{ ...link, gameId, teamId: rosterReads === 1 ? "red" as const : "blue" as const }];
+    },
+  });
+  const result = await readRosterPlayerData(repository, "game-one");
+  assert.equal(playerReads, 4); assert.equal(rosterReads, 2);
+  assert.equal(result.roster[0]?.teamId, "blue");
+  assert.equal(result.registrationRevisions.get(player.playerId), "new-revision");
+});
+
+test("roster reads fail closed when registration revisions keep changing", async () => {
+  let playerReads = 0; let rosterReads = 0;
+  await assert.rejects(readRosterPlayerData(fixture({
+    async listGamePlayers(gameId) {
+      playerReads += 1;
+      return [{ ...link, gameId, registrationRevision: `revision-${playerReads}` }];
+    },
+    async listGameRoster(gameId) {
+      rosterReads += 1;
+      return [{ ...link, gameId, teamId: "red" as const }];
+    },
+  }), "game-one"), /membership could not be confirmed/);
+  assert.equal(playerReads, 6); assert.equal(rosterReads, 3);
+});
+
 test("roster read fails instead of inventing empty data and drains bounded failed lookups", async () => {
   await assert.rejects(readRosterPlayerData(fixture({ async getPlayer() { return null; } }), "game-one"), /could not be loaded/);
   await assert.rejects(readRosterPlayerData(fixture({ async listGamePlayers() { return [{ ...link, gameId: "other" }]; } }), "game-one"), /membership/);
