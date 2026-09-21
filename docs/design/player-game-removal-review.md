@@ -19,7 +19,7 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS focused |
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS focused |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS focused |
-| Full local and independent evidence | API 523/523; app 662/662; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
+| Full local and independent evidence | API 527/527; app 664/664; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS local |
 | CI, exact-head Codex and deployed QA evidence | Initial `c153478` CI/deploy passed; three Codex findings were accepted and fixed. Current-head refresh required after push. | REFRESH PENDING |
 
 ## Scope boundaries
@@ -112,7 +112,12 @@ scorer and assist registration, and removal brackets complete history reads
 with the goal-state revision before conditioning it in the transaction. Focused
 regressions cover scoring before, during and after that traversal. All three
 independent local re-reviews cleared the amended diff with no remaining material
-findings. GitHub evidence must be refreshed for the new head.
+findings. Its next exact-head review identified one further valid recovery gap:
+an immediate same-key retry had not yet recorded the visibly present row. The
+attempt now starts from that observable truth and preserves it as explicitly
+stale until a successful authoritative refresh; a response-loss, later re-add,
+immediate replay and failed-refresh regression covers the boundary. GitHub
+evidence must be refreshed for the new head.
 
 ### Unresolved blocking findings
 
@@ -122,7 +127,7 @@ pending publication, not unresolved implementation findings.
 ### Local validation
 
 - `npm test --workspace @3fc/api`: 527 passed.
-- `npm test --workspace @3fc/app`: 663 passed.
+- `npm test --workspace @3fc/app`: 664 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

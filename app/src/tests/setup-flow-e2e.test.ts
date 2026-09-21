@@ -6618,6 +6618,43 @@ test("response-loss reload keeps the write locked until same-key replay and repo
   } finally { page.dom.window.close(); }
 });
 
+test("immediate uncertain replay preserves the initially visible row when a later re-add cannot be refreshed", async () => {
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-immediate-readd", role: "admin" });
+  const base = createMockFetch(apiState); let deletes = 0; let failRefreshAfterReplay = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-immediate-readd" }),
+    url: "http://localhost:3000/games/remove-immediate-readd#teams", scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "DELETE" && path.endsWith("/player-registration")) {
+        deletes += 1; const response = await base(input, init);
+        if (deletes === 1) throw new Error("response lost");
+        failRefreshAfterReplay = true; return response;
+      }
+      if (failRefreshAfterReplay && (init.method ?? "GET") === "GET" && path.endsWith("/roster")) {
+        failRefreshAfterReplay = false; throw new Error("refresh lost");
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]');
+    assert(remove instanceof page.window.HTMLButtonElement); openActionMenuFor(remove); dispatchClick(remove);
+    dispatchClick(page.document.querySelector('[data-action="confirm-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(deletes, 1); assert.equal(apiState.gamePlayers.has("remove-immediate-readd:player-ari"), false);
+    apiState.gamePlayers.set("remove-immediate-readd:player-ari", { gameId: "remove-immediate-readd", playerId: "player-ari",
+      createdAt: "2026-03-28T12:00:00.000Z", updatedAt: "2026-03-28T12:00:00.000Z" });
+    apiState.roster.set("remove-immediate-readd:player-ari", { gameId: "remove-immediate-readd", playerId: "player-ari", teamId: "blue",
+      createdAt: "2026-03-28T12:00:00.000Z", updatedAt: "2026-03-28T12:00:00.000Z" });
+    const recovery = page.document.getElementById("player-removal-recovery"); assert(recovery instanceof page.window.HTMLElement);
+    dispatchClick(recovery.querySelector('[data-action="retry-player-removal"]') as HTMLElement); await flushAsync();
+    assert.equal(deletes, 2); assert.equal(recovery.hidden, true);
+    assert.equal(ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari").length, 1,
+      "the initially visible row stays until a refresh can prove current absence");
+    const status = page.document.getElementById("roster-retry-status")?.textContent ?? "";
+    assert.match(status, /row shows the last roster state/); assert.doesNotMatch(status, /later registration|currently back/);
+  } finally { page.dom.window.close(); }
+});
+
 test("uncommitted removal retry keeps last-observed roster truth when confirmation refresh fails", async () => {
   const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-first-commit", role: "admin" });
   const base = createMockFetch(apiState); let deletes = 0; let failRefreshAfterCommit = false;

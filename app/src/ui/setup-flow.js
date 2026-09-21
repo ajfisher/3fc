@@ -6640,7 +6640,10 @@
         if (action === "confirm-player-removal") {
           if (!playerRemovalPrompt || playerRemovalPending || playerRemovalAttempt?.uncertain) return;
           const { playerId, name } = playerRemovalPrompt;
-          playerRemovalAttempt = { playerId, name, uncertain: false, lastObservedPresent: false,
+          // Confirmation is reachable only from a rendered roster row. Keep
+          // that visible state as the recovery baseline until an authoritative
+          // reload proves otherwise.
+          playerRemovalAttempt = { playerId, name, uncertain: false, lastObservedPresent: true,
             path: `/v1/games/${encodeURIComponent(gameId)}/player-registration?${new URLSearchParams({ playerId })}`,
             request: Object.freeze({ method: "DELETE", headers: Object.freeze({
               "Idempotency-Key": createIdempotencyKey("remove-player", `${gameId}:${playerId}`),
