@@ -19,7 +19,7 @@ Closes #184 (PLAYER-09). Branch: `codex/player-game-removal`, base: `main`.
 | Replay, conflicting reuse, response loss, transfer, join/re-add and consolidation safety | Repository idempotency/CAS race cases and browser retry/reconciliation cases | PASS |
 | Confirmation, Cancel/Escape, focus, feedback and recovery | Rendered layout and interaction tests, including Unicode Unassigned player | PASS |
 | Local/Lambda/OpenAPI/Serverless/deployment parity | Shared-handler parity, HTTP adapter and deployment configuration tests | PASS |
-| Full local and independent evidence | API 533/533; app 669/669; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS |
+| Full local and independent evidence | API 533/533; app 670/670; ops 14/14; review-gate 57/57; typecheck, contracts, build, backlog and disposable local M2 | PASS |
 | CI, exact-head Codex and deployed QA evidence | Head `b258a12` passed CI and QA deployment; Codex completed with no new findings; disposable deployed acceptance passed 10/10 and removed every fixture row | PASS |
 
 ## Scope boundaries
@@ -175,8 +175,23 @@ registration snapshots, retry at most three times, and fail closed if membership
 or revisions do not stabilise. Focused tests prove a mid-read transfer returns
 only the later assignment/revision pair and continual changes return no mixed
 projection. Exact-head CI and QA deployment passed for `b258a12`; Codex completed
-without new findings. Disposable deployed acceptance passed 10/10 checks and
-verified complete fixture cleanup.
+with one further accepted recovery finding: a failed authoritative roster reload
+after a stale-revision rejection displayed the correct recovery action but did
+not keep other writes locked. The reload-required state now disables roster,
+scoring, game-edit and row-access writes and the synchronous write guard rejects
+any missed control until `loadRosterSetup()` succeeds. A rendered regression
+proves the lock, zero bypassed delete-game dispatches at the request boundary
+and one committed dispatch after successful authoritative recovery. Final
+independent review also found that finished-game correction entry did not
+consume this lock, and that the strengthened test had initially stopped at a
+disabled transfer control rather than exercising the request guard. Correction
+entry is now hidden, disabled and defensively guarded during recovery while an
+already-open correction retains its no-write Exit action. The regression now
+bypasses the disabled delete-game control to prove the central guard, repeats
+the same write after recovery, and covers a scheduled-to-finished transition.
+Authoritative roster recovery re-renders all write capabilities immediately.
+Final UX/accessibility, engineering/QA and architecture/security re-reviews are
+clear.
 
 ### Unresolved blocking findings
 
@@ -185,7 +200,7 @@ None.
 ### Local validation
 
 - `npm test --workspace @3fc/api`: 533 passed.
-- `npm test --workspace @3fc/app`: 669 passed.
+- `npm test --workspace @3fc/app`: 670 passed.
 - `npm run typecheck`, `npm run contracts:check`, `npm run build`: passed.
 - `npm run test:ops`: 14 passed; `npm run test:review-gate`: 57 passed.
 - `make backlog-validate`, `make backlog-export`, `git diff --check`: passed.

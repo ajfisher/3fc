@@ -6537,8 +6537,8 @@ test("scheduled roster actions confirm and remove one assigned player while pres
 });
 
 test("stale removal confirmation cannot remove a registration transferred by another client", async () => {
-  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-stale-confirmation", role: "scorekeeper" });
-  const base = createMockFetch(apiState); let sentRevision = "", rejectNextRoster = false;
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId: "remove-stale-confirmation", role: "admin" });
+  const base = createMockFetch(apiState); let sentRevision = "", rejectNextRoster = false, gameDeleteWrites = 0;
   const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId: "remove-stale-confirmation" }),
     url: "http://localhost:3000/games/remove-stale-confirmation#teams", scriptFile: "setup-flow.js", apiState,
     fetch: async (input, init = {}) => {
@@ -6549,6 +6549,7 @@ test("stale removal confirmation cannot remove a registration transferred by ano
       if (rejectNextRoster && init.method === "GET" && url.pathname === "/v1/games/remove-stale-confirmation/roster") {
         rejectNextRoster = false; return createJsonResponse(503, { error: "unavailable", message: "Roster unavailable." });
       }
+      if (init.method === "DELETE" && url.pathname === "/v1/games/remove-stale-confirmation") gameDeleteWrites += 1;
       return base(input, init);
     } });
   try {
@@ -6570,6 +6571,67 @@ test("stale removal confirmation cannot remove a registration transferred by ano
     const reload = page.document.getElementById("roster-retry"); assert(reload instanceof page.window.HTMLButtonElement);
     assert.equal(reload.hidden, false); assert.equal(reload.textContent, "Reload roster"); assert.equal(page.document.activeElement, reload);
     assert.match(page.document.getElementById("roster-retry-status")?.textContent ?? "", /was not removed.*Reload the roster/i);
+    const lockedTransfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+    assert(lockedTransfer instanceof page.window.HTMLButtonElement); assert.equal(lockedTransfer.disabled, true);
+    assert.equal(page.document.getElementById("game-mode-tab-run")?.hasAttribute("hidden"), true,
+      "scoring remains unavailable while roster truth is stale");
+    const deleteGame = page.document.querySelector('[data-action="delete-game"]');
+    assert(deleteGame instanceof page.window.HTMLButtonElement); assert.equal(deleteGame.disabled, true);
+    page.window.confirm = () => true;
+    deleteGame.disabled = false;
+    dispatchClick(deleteGame); await flushAsync();
+    assert.equal(gameDeleteWrites, 0, "the request guard blocks a connected write even if its disabled control is bypassed");
+    assert(apiState.games.has("remove-stale-confirmation"));
+
+    dispatchClick(reload); await flushAsync();
+    const unlockedTransfer = page.document.querySelector('[data-action="toggle-transfer"][data-player-id="player-ari"]');
+    assert(unlockedTransfer instanceof page.window.HTMLButtonElement); assert.equal(unlockedTransfer.disabled, false,
+      "a successful authoritative roster reload releases the write lock");
+    assert.equal(page.document.getElementById("game-mode-tab-run")?.hasAttribute("hidden"), false);
+    assert.equal(deleteGame.disabled, false, deleteGame.outerHTML);
+    dispatchClick(deleteGame); await flushAsync();
+    assert.equal(gameDeleteWrites, 1, "the same connected write dispatches after authoritative recovery");
+    assert.equal(apiState.games.has("remove-stale-confirmation"), false);
+  } finally { page.dom.window.close(); }
+});
+
+test("stale roster recovery hides finished-game correction entry until an authoritative reload", async () => {
+  const gameId = "remove-stale-finished-transition";
+  const apiState = createMockApiState(); seedGoalScoringGame(apiState, { gameId, role: "admin" });
+  const base = createMockFetch(apiState); let rejectNextRoster = false;
+  const page = await bootPage({ html: renderGamePage("http://localhost:3001", { gameId }),
+    url: `http://localhost:3000/games/${gameId}#teams`, scriptFile: "setup-flow.js", apiState,
+    fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      if (init.method === "DELETE" && url.pathname.endsWith("/player-registration")) {
+        const game = apiState.games.get(gameId); assert(game);
+        apiState.games.set(gameId, { ...game, status: "finished" });
+        rejectNextRoster = true;
+      }
+      if (rejectNextRoster && init.method === "GET" && url.pathname === `/v1/games/${gameId}/roster`) {
+        rejectNextRoster = false; return createJsonResponse(503, { error: "unavailable", message: "Roster unavailable." });
+      }
+      return base(input, init);
+    } });
+  try {
+    const row = ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+    const remove = row.querySelector('[data-action="open-player-removal"]'); assert(remove instanceof page.window.HTMLButtonElement);
+    openActionMenuFor(remove); dispatchClick(remove);
+    const registration = apiState.gamePlayers.get(`${gameId}:player-ari`); assert(registration);
+    apiState.gamePlayers.set(`${gameId}:player-ari`, { ...registration, registrationRevision: "later-finished-revision" });
+    const confirm = page.document.querySelector('[data-action="confirm-player-removal"]'); assert(confirm instanceof page.window.HTMLButtonElement);
+    dispatchClick(confirm); await flushAsync();
+
+    const editTeams = page.document.querySelector('[data-action="edit-finished-teams"]');
+    const correctResult = page.document.querySelector('[data-action="correct-finished-result"]');
+    assert(editTeams instanceof page.window.HTMLButtonElement); assert(correctResult instanceof page.window.HTMLButtonElement);
+    assert.equal(editTeams.hidden, true); assert.equal(editTeams.disabled, true);
+    assert.equal(correctResult.hidden, true); assert.equal(correctResult.disabled, true);
+
+    const reload = page.document.getElementById("roster-retry"); assert(reload instanceof page.window.HTMLButtonElement);
+    dispatchClick(reload); await flushAsync();
+    assert.equal(editTeams.hidden, false); assert.equal(editTeams.disabled, false);
+    assert.equal(correctResult.hidden, false); assert.equal(correctResult.disabled, false);
   } finally { page.dom.window.close(); }
 });
 

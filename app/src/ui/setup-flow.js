@@ -3379,11 +3379,11 @@
     }
 
     function canCorrectFinishedGoals() {
-      return !refreshAccountLocked && !refreshWriteLocked && currentLeagueRole === "admin" && finishedResultEditing;
+      return !refreshAccountLocked && !refreshWriteLocked && !rosterReloadRequired && currentLeagueRole === "admin" && finishedResultEditing;
     }
 
     function finishedRosterControlsLocked() {
-      return refreshWriteLocked || playerRemovalPending || Boolean(existingPlayerAttempt?.uncertain) || Boolean(playerRemovalAttempt?.uncertain) || !canManageRoster();
+      return refreshWriteLocked || rosterReloadRequired || playerRemovalPending || Boolean(existingPlayerAttempt?.uncertain) || Boolean(playerRemovalAttempt?.uncertain) || !canManageRoster();
     }
 
     function isLeagueOperator() {
@@ -3395,20 +3395,20 @@
     }
 
     function canScoreGame() {
-      return !refreshWriteLocked && !playerRemovalPending && !existingPlayerAttempt?.uncertain && !playerRemovalAttempt?.uncertain && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
+      return !refreshWriteLocked && !rosterReloadRequired && !playerRemovalPending && !existingPlayerAttempt?.uncertain && !playerRemovalAttempt?.uncertain && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
     }
 
     function canEditGame() {
-      return !refreshAccountLocked && !refreshWriteLocked && !playerRemovalPending && !existingPlayerAttempt?.uncertain && !playerRemovalAttempt?.uncertain && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
+      return !refreshAccountLocked && !refreshWriteLocked && !rosterReloadRequired && !playerRemovalPending && !existingPlayerAttempt?.uncertain && !playerRemovalAttempt?.uncertain && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
     }
 
     function syncGameCapabilities() {
       if (!isLeagueOperator()) closeActionMenu();
       const capabilities = {
-        admin: !refreshAccountLocked && Boolean(currentGame) && currentLeagueRole === "admin",
+        admin: !refreshAccountLocked && !rosterReloadRequired && Boolean(currentGame) && currentLeagueRole === "admin",
         roster: !refreshWriteLocked && canManageRoster(),
         score: canScoreGame(),
-        correct: !refreshAccountLocked && isGameFinished() && currentLeagueRole === "admin",
+        correct: !refreshAccountLocked && !rosterReloadRequired && isGameFinished() && currentLeagueRole === "admin",
       };
       for (const element of document.querySelectorAll("[data-game-capability]")) {
         if (!(element instanceof HTMLElement)) continue;
@@ -3439,17 +3439,18 @@
       }
       const correctionTeams = root.querySelector('[data-action="edit-finished-teams"]');
       if (correctionTeams instanceof HTMLElement) correctionTeams.hidden = !capabilities.correct || finishedRosterEditing;
-      if (correctionTeams instanceof HTMLButtonElement) correctionTeams.disabled = refreshWriteLocked;
+      if (correctionTeams instanceof HTMLButtonElement) correctionTeams.disabled = refreshWriteLocked || rosterReloadRequired;
       const correctionResult = root.querySelector('[data-action="correct-finished-result"]');
       if (correctionResult instanceof HTMLElement) correctionResult.hidden = !capabilities.correct || finishedResultEditing;
-      if (correctionResult instanceof HTMLButtonElement) correctionResult.disabled = refreshWriteLocked;
+      if (correctionResult instanceof HTMLButtonElement) correctionResult.disabled = refreshWriteLocked || rosterReloadRequired;
       setModeLabel("run", isGameFinished() && finishedResultEditing ? "Correction" : "Score game");
       // A remotely finished game must not remove the current destination or
       // silently enter correction mode. The draft remains here until navigation.
       const scoreTab = document.getElementById("game-mode-tab-run");
       if (scoreTab && !refreshAccountLocked && gameModePanels.some((panel) => panel.getAttribute("data-game-mode") === "run" && !panel.hidden)) scoreTab.hidden = false;
       const correctionActions = document.getElementById("finished-correction-actions");
-      if (correctionActions) correctionActions.hidden = !capabilities.correct || !finishedResultEditing;
+      if (correctionActions) correctionActions.hidden =
+        !finishedResultEditing || !isGameFinished() || refreshAccountLocked || currentLeagueRole !== "admin";
       const exit = root.querySelector('[data-action="exit-result-correction"]');
       const exitLocked = Boolean(goalOperation || clockOperation || goalMutationInFlight || timerMutationPending);
       if (exit instanceof HTMLButtonElement) exit.disabled = exitLocked;
@@ -3690,7 +3691,7 @@
         else field.removeAttribute("aria-describedby");
       }
       deleteButton.hidden = currentLeagueRole !== "admin";
-      deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
+      deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
       if (gameFinished) {
         deleteButton.setAttribute("aria-disabled", "true");
         deleteButton.setAttribute("aria-describedby", "game-delete-lock-reason");
@@ -5381,7 +5382,7 @@
         } else if (linkState === "linked") {
           const role = normalizeLeagueRole(access?.role);
           roleLabel = role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
-          const disabled = refreshAccountLocked || refreshWriteLocked || rosterMutationPending || playerCreatePending || playerRemovalPending ? " disabled" : "";
+          const disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || rosterMutationPending || playerCreatePending || playerRemovalPending ? " disabled" : "";
           if (role !== "admin") {
             if (role !== "scorekeeper") actions.push(`<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="scorekeeper"${disabled}>Make scorer</button>`);
             actions.push(`<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="admin"${disabled}>Make co-organiser</button>`);
@@ -5389,7 +5390,7 @@
         }
       }
       if (currentGame?.status === "scheduled" && registrationRevisionFor(player.playerId)) {
-        const disabled = refreshAccountLocked || refreshWriteLocked || rosterMutationPending || playerCreatePending || playerRemovalPending || playerRemovalAttempt?.uncertain ? " disabled" : "";
+        const disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || rosterMutationPending || playerCreatePending || playerRemovalPending || playerRemovalAttempt?.uncertain ? " disabled" : "";
         actions.push(`<button data-ui="row-action" data-tone="danger" type="button" data-action="open-player-removal" ${playerIdentityAttribute(player.playerId)}${disabled}>Remove from game</button>`);
       }
       const menu = actions.length ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
@@ -5420,7 +5421,7 @@
 
     function openPlayerRemovalDialog(playerId, trigger) {
       if (!usableEntityId(playerId) || currentGame?.status !== "scheduled" || !isLeagueOperator() ||
-          playerRemovalPending || playerRemovalAttempt?.uncertain) return;
+          rosterReloadRequired || playerRemovalPending || playerRemovalAttempt?.uncertain) return;
       const registrationRevision = registrationRevisionFor(playerId);
       if (!registrationRevision) return;
       const name = playerRemovalName(playerId);
@@ -5776,6 +5777,7 @@
       }
       renderRosterSetup();
       renderLiveScoring();
+      renderTimer();
 
       if (options.updateStatus !== false) {
         setStatus("");
@@ -6038,7 +6040,7 @@
     }
     function renderPicker() {
       const focusedPlayerId = pickerList.contains(document.activeElement) ? document.activeElement.getAttribute("data-player-id") : null;
-      const locked = !canManageRoster() || refreshWriteLocked || rosterMutationPending || playerCreatePending || Boolean(playerCreateAttempt);
+      const locked = !canManageRoster() || refreshWriteLocked || rosterReloadRequired || rosterMutationPending || playerCreatePending || Boolean(playerCreateAttempt);
       pickerList.replaceChildren();
       for (const player of pickerPlayers.values()) {
         const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
@@ -6154,7 +6156,7 @@
     });
     pickerList?.addEventListener("click", async event => {
       const button = event.target instanceof Element ? event.target.closest('[data-action="add-existing-player"]') : null;
-      if (!(button instanceof HTMLButtonElement) || button.disabled || rosterMutationPending || playerCreatePending || playerCreateAttempt || !canManageRoster() || refreshWriteLocked) return;
+      if (!(button instanceof HTMLButtonElement) || button.disabled || rosterMutationPending || playerCreatePending || playerCreateAttempt || !canManageRoster() || refreshWriteLocked || rosterReloadRequired) return;
       const selected = pickerPlayers.get(button.getAttribute("data-player-id"));
       if (!selected || selected.inGame) return;
       if (!existingPlayerAttempt) existingPlayerAttempt = { playerId: selected.playerId, nickname: selected.nickname, uncertain: false,
@@ -6337,7 +6339,7 @@
         }
       } finally {
         gameDeletionPending = false;
-        deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || isGameFinished();
+        deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin" || isGameFinished();
       }
     });
 
@@ -6517,7 +6519,7 @@
         return;
       }
       if (action === "edit-finished-teams" || action === "correct-finished-result") {
-        if (!isGameFinished() || refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin") return;
+        if (!isGameFinished() || refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin") return;
         if (action === "edit-finished-teams") finishedRosterEditing = true;
         else finishedResultEditing = true;
         manualGameModeSelected = true;
@@ -6747,7 +6749,7 @@
         }
 
         if (action === "grant-player-access") {
-          if (refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || rosterMutationPending || playerCreatePending || target.disabled) {
+          if (refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin" || rosterMutationPending || playerCreatePending || target.disabled) {
             return;
           }
 
@@ -7060,6 +7062,7 @@
     beforeGameWrite = (path, method) => {
       if (existingPlayerAttempt?.uncertain && path !== existingPlayerAttempt.path && path !== "/v1/auth/logout") throw new Error("Retry the unconfirmed player addition before making another change.");
       if (playerRemovalAttempt?.uncertain && path !== playerRemovalAttempt.path && path !== "/v1/auth/logout") throw new Error("Retry the unconfirmed player removal or reload the roster before making another change.");
+      if (rosterReloadRequired && path !== "/v1/auth/logout") throw new Error("Reload the roster before making another change.");
       if (refreshAccountLocked && path !== "/v1/auth/logout") throw new Error("Your account changed. Reload before making changes.");
       if (refreshWriteLocked && path !== "/v1/auth/logout") throw new Error("An earlier change is unconfirmed. Reload before making changes.");
       // Synchronous and before fetch, including writes made outside this root.
