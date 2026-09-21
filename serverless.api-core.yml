@@ -310,8 +310,14 @@ functions:
           method: POST
           path: /v1/games/{gameId}/players
       - httpApi:
+          method: DELETE
+          path: /v1/games/{gameId}/players/{playerId}
+      - httpApi:
           method: OPTIONS
           path: /v1/games/{gameId}/players
+      - httpApi:
+          method: OPTIONS
+          path: /v1/games/{gameId}/players/{playerId}
       - httpApi:
           method: GET
           path: /v1/games/{gameId}/roster

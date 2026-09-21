@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { TEAM_IDS } from "@3fc/contracts";
 import type { AuthSessionRecord } from "./auth/magic-link.js";
+import { idempotencyKeyHeaderSchema } from "./contracts/core-write.js";
 import { PlayerIdentityError } from "./data/player-identity.js";
 import { GameMutationStateError, type ThreeFcRepository } from "./data/repository.js";
 
 export type PlayerDirectoryRepository = Pick<ThreeFcRepository,
-  "listLeaguePlayers" | "createLeaguePlayer" | "addExistingLeaguePlayer">;
+  "listLeaguePlayers" | "createLeaguePlayer" | "addExistingLeaguePlayer" | "removeGamePlayer">;
 // Opaque historical IDs are not limited by an arbitrary shared byte cap.
 // The transaction planner checks the actual partition/sort keys for writes.
 const identifier = (prefix: string, limit = 2048) => z.string().min(1).refine(value => {
@@ -25,7 +26,8 @@ export const leaguePlayerPageSchema = z.object({ players: z.array(z.object({ pla
 
 export function isPlayerDirectoryRoute(method: string, route: string): boolean {
   return ((method === "GET" || method === "POST") && route === "/v1/league-players") ||
-    (method === "POST" && route === "/v1/game-player-registrations");
+    (method === "POST" && route === "/v1/game-player-registrations") ||
+    (method === "DELETE" && /^\/v1\/games\/[^/]+\/players\/[^/]+$/.test(route));
 }
 
 function queryFields(raw: string, allowed: readonly string[]): Record<string, string> {
@@ -47,6 +49,7 @@ function queryFields(raw: string, allowed: readonly string[]): Record<string, st
 
 export async function handlePlayerDirectoryRoute(input: {
   method: string; route: string; rawQueryString?: string; body: unknown;
+  idempotencyKey?: string;
   session: AuthSessionRecord | null; repository: PlayerDirectoryRepository;
 }): Promise<{ statusCode: number; payload: Record<string, unknown> }> {
   const { method, route, repository, session } = input;
@@ -81,6 +84,19 @@ export async function handlePlayerDirectoryRoute(input: {
       if (!body.success || !gameIdSchema.safeParse(fields.gameId).success) return invalid();
       const registration = await repository.addExistingLeaguePlayer({ ...body.data, gameId: fields.gameId, userIds });
       return { statusCode: 200, payload: { registration } };
+    }
+    const removal = /^\/v1\/games\/([^/]+)\/players\/([^/]+)$/.exec(route);
+    if (removal && method === "DELETE") {
+      let gameId: string; let playerId: string;
+      try { gameId = decodeURIComponent(removal[1]); playerId = decodeURIComponent(removal[2]); encodeURIComponent(gameId); encodeURIComponent(playerId); }
+      catch { return invalid(); }
+      if (!gameIdSchema.safeParse(gameId).success || !id.safeParse(playerId).success) return invalid();
+      const key = idempotencyKeyHeaderSchema.safeParse(input.idempotencyKey);
+      if (!key.success) return { statusCode: 400, payload: { error: "bad_request", message: "Idempotency-Key is required for player removal." } };
+      const removalResult = await repository.removeGamePlayer({ gameId, playerId, userIds, idempotencyKey: key.data });
+      return { statusCode: 200, payload: { removal: {
+        gameId: removalResult.gameId, playerId: removalResult.playerId, teamId: removalResult.teamId, removedAt: removalResult.removedAt,
+      } } };
     }
     return { statusCode: 404, payload: { error: "not_found", message: "Not found." } };
   } catch (error) {

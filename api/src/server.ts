@@ -3009,12 +3009,14 @@ export async function handleLocalPlayerDirectoryRoute(input: {
 }): Promise<number> {
   const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
   let body: unknown = {};
-  try { if (input.method !== "GET") body = await parseJsonBody(input.request); }
+  try { if (input.method !== "GET" && input.method !== "DELETE") body = await parseJsonBody(input.request); }
   catch {
     sendJsonWithCors(input.request, input.response, 400, { error: "bad_request", message: "Request body must be valid JSON." }, headers);
     return 400;
   }
-  const result = await handlePlayerDirectoryRoute({ ...input, body, repository: input.playerRepository ?? repository });
+  const result = await handlePlayerDirectoryRoute({ ...input, body,
+    idempotencyKey: readHeaderValue(input.request, "idempotency-key") ?? undefined,
+    repository: input.playerRepository ?? repository });
   sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
   return result.statusCode;
 }

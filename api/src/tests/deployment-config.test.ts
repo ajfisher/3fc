@@ -168,6 +168,19 @@ test("league player directory and invitation operations have deployed routes and
   assert.doesNotMatch(page, /claimedByUserId|email|gameCount|lastGameAt/);
 });
 
+test("scheduled-game player removal has deployed DELETE, preflight, and documented privacy-safe replay contract", () => {
+  const path = "/v1/games/{gameId}/players/{playerId}";
+  assertServerlessRoute("DELETE", path);
+  assertServerlessRoute("OPTIONS", path);
+  const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
+  const operation = contract.split(`  ${path}:\n`)[1]?.split(/\n  \/v1\//)[0];
+  assert.ok(operation);
+  assert.match(operation, /name: Idempotency-Key[\s\S]*required:\s*true/);
+  assert.match(operation, /no actor or account information/);
+  assert.match(operation, /no-store and no-referrer/);
+  for (const status of [200, 400, 401, 403, 404, 409, 500, 503]) assert.match(operation, new RegExp(`"${status}":`));
+});
+
 test("profile-link contracts cover recovery errors and expose only public player identities", () => {
   const contract = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
   const operations = [

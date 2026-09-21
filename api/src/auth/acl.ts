@@ -8,6 +8,7 @@ const ROUTES = {
   updateSeasonTeam: /^\/v1\/seasons\/([^/]+)\/teams\/([^/]+)$/,
   updateGameTeam: /^\/v1\/games\/([^/]+)\/teams\/([^/]+)$/,
   createGamePlayer: /^\/v1\/games\/([^/]+)\/players$/,
+  removeGamePlayer: /^\/v1\/games\/([^/]+)\/players\/([^/]+)$/,
   assignRosterPlayer: /^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/,
   startGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/,
   finishGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/,
@@ -29,6 +30,7 @@ export type ProtectedMutationOperation =
   | "updateSeasonTeam"
   | "updateGameTeam"
   | "createGamePlayer"
+  | "removeGamePlayer"
   | "managePlayerInvitation"
   | "assignRosterPlayer"
   | "startGameThird"
@@ -140,6 +142,12 @@ export function resolveProtectedMutationRoute(
       operation: "createGamePlayer",
       gameId: decodeRouteParam(createGamePlayerMatch[1]),
     };
+  }
+
+  const removeGamePlayerMatch = upperMethod === "DELETE" ? route.match(ROUTES.removeGamePlayer) : null;
+  if (removeGamePlayerMatch) {
+    decodeRouteParam(removeGamePlayerMatch[2]);
+    return { operation: "removeGamePlayer", gameId: decodeRouteParam(removeGamePlayerMatch[1]) };
   }
 
   const assignRosterPlayerMatch = upperMethod === "PUT" ? route.match(ROUTES.assignRosterPlayer) : null;

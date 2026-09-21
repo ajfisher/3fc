@@ -5233,9 +5233,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         }
         if (isPlayerDirectoryRoute(method, route)) {
           let body: unknown = {};
-          try { if (method !== "GET") body = parseJsonBody(event); }
+          try { if (method !== "GET" && method !== "DELETE") body = parseJsonBody(event); }
           catch { status = 400; return badRequest(origin, dependencies.corsAllowedOrigins, "Request body must be valid JSON."); }
-          const result = await handlePlayerDirectoryRoute({ method, route, body,
+          const result = await handlePlayerDirectoryRoute({ method, route, body, idempotencyKey: getHeader(event, "idempotency-key"),
             rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
           status = result.statusCode;
           return createJsonResponse(status, result.payload, { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),

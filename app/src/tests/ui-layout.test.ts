@@ -881,6 +881,11 @@ test("match overview is readable before intentional editing and roster entry is 
     assert.equal(document.querySelector("#player-pool-title")?.textContent, "Unassigned");
     assert.equal(document.querySelector("#player-pool")?.textContent, "");
     assert.equal(document.querySelector("#roster-teams")?.textContent, "");
+    const removalDialog = document.getElementById("player-removal-dialog");
+    assert.equal(removalDialog?.hasAttribute("hidden"), true);
+    assert.equal(removalDialog?.querySelector('[role="dialog"]')?.getAttribute("aria-labelledby"), "player-removal-title");
+    assert.match(removalDialog?.textContent ?? "", /This removes the player from this game only\. Their league profile and other match history will be kept\./);
+    assert.equal(removalDialog?.querySelector('[data-action="confirm-player-removal"]')?.textContent?.trim(), "Remove from game");
     assert.equal(document.querySelector('[data-action="edit-finished-teams"]')?.getAttribute("data-game-capability"), "correct");
     assert.equal(document.querySelector('[data-action="edit-finished-teams"]')?.hasAttribute("hidden"), true);
     for (const [selector, label] of [

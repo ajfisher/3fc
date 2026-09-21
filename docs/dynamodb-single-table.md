@@ -97,6 +97,14 @@ membership. Re-enabling linking cannot retroactively mint proof on replay.
 - Roster assignment:
   - `pk=GAME#{gameId}`
   - `sk=ROSTER#{teamId}#{playerId}`
+- Scheduled-game player removal receipt:
+  - `pk=GAME#{gameId}`
+  - `sk=ROSTER_REMOVAL#{sha256(idempotencyKey)}`
+  - stores the exact removed registration ID, former team, removal time, request hash,
+    actor role and a league-scoped hash of the actor identity; it never stores an
+    email address or the raw idempotency key
+  - is an immutable retry/audit receipt: replay returns the original settled result
+    and cannot remove a later registration of the same player
 - Session -> game index:
   - `pk=SESSION#{sessionId}`
   - `sk=GAME#{gameStartTs}#{gameId}`
@@ -151,6 +159,12 @@ by the shared identity key helpers. Never parse a digest as an original ID.
 Deletion tombstones retain scope needed to verify historical membership.
 Profiles, registrations, roster entries and goal events retain original IDs;
 canonical readers must resolve aliases without rewriting those historical keys.
+Removing a player from a scheduled game deletes only that exact
+`GAME#{gameId} / PLAYER#{originalId}` registration, any roster assignment and the
+matching `PLAYER#{originalId} / GAME#{digest}` reverse marker. The same transaction
+advances the league directory revision and fences the canonical identity revision.
+League/season reverse memberships, the directory profile, claims, aliases and
+other-game registrations remain intact.
 
 Consolidation proposals use `PLAYER_CONSOLIDATION#{proposalId} / PROPOSAL`, with
 an immutable proposal digest, exact selected roots/member snapshots, initiating
