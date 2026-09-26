@@ -104,6 +104,7 @@ export interface PlayerRecord {
 export interface GamePlayerRecord {
   gameId: string;
   playerId: string;
+  registrationRevision?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -136,6 +137,19 @@ export interface RosterAssignmentRecord {
   gameId: string;
   teamId: TeamId;
   playerId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RosterRemovalRecord {
+  gameId: string;
+  leagueId: string;
+  playerId: string;
+  teamId: TeamId | null;
+  removedAt: string;
+  requestHash: string;
+  actorRef: string;
+  actorRole: "admin" | "scorekeeper";
   createdAt: string;
   updatedAt: string;
 }
@@ -401,6 +415,14 @@ export interface AssignRosterInput {
   teamId: TeamId;
   playerId: string;
   allowFinished?: boolean;
+}
+
+export interface RemoveGamePlayerInput {
+  gameId: string;
+  playerId: string;
+  expectedRegistrationRevision: string;
+  userIds: readonly string[];
+  idempotencyKey: string;
 }
 
 export interface CreateGoalInput {

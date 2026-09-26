@@ -62,6 +62,7 @@ import {
   playerClaimSk,
   playerPk,
   profileSk,
+  rosterRemovalSk,
   rosterSk,
   scopedSeasonSessionSk,
   scopedSeasonTeamSk,
@@ -118,6 +119,8 @@ import type {
   PlayerProofPreview,
   PlayerProofRecord,
   RosterAssignmentRecord,
+  RemoveGamePlayerInput,
+  RosterRemovalRecord,
   SeasonRecord,
   SessionGameRecord,
   SessionRecord,
@@ -152,6 +155,7 @@ const ENTITY_TYPE = {
   leagueInvite: "leagueInvite",
   leagueInvitePointer: "leagueInvitePointer",
   roster: "roster",
+  rosterRemoval: "rosterRemoval",
   goal: "goal",
   goalEventId: "goalEventId",
   goalState: "goalState",
@@ -228,7 +232,7 @@ export class GoalCorrectionError extends Error {
 
 export class GameMutationStateError extends Error {
   constructor(
-    readonly code: "game_finished" | "game_state_changed",
+    readonly code: "game_finished" | "game_state_changed" | "game_not_scheduled",
     message: string,
   ) {
     super(message);
@@ -2185,6 +2189,7 @@ export class ThreeFcRepository {
     const linkPayload = {
       gameId: game.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
     const linkingUnavailable = Boolean(input.claimProof && this.playerClaimMode === "disabled");
     const issueProof = input.claimProof && !linkingUnavailable;
@@ -2355,6 +2360,7 @@ export class ThreeFcRepository {
       // The original no-proof outcome survives mode changes and lost replies.
       // Never mint a capability retroactively onto this registration.
       return { game: input.game, player, link: { gameId: link.gameId, playerId: link.playerId,
+        ...(link.registrationRevision ? { registrationRevision: link.registrationRevision } : {}),
         createdAt: link.createdAt, updatedAt: link.updatedAt }, linkingUnavailable: true };
     }
     if (input.claimProof) {
@@ -3518,12 +3524,170 @@ export class ThreeFcRepository {
       if (input.teamId && Buffer.byteLength(rosterSk(input.teamId, rootId)) > 1024) throw new PlayerIdentityError("player_roster_key_too_large", 400,
         "This legacy player profile cannot be assigned to this team. Ask the organiser for help.");
       actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), gamePlayerSk(rootId), ENTITY_TYPE.gamePlayer,
-        { gameId: input.gameId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
+        { gameId: input.gameId, playerId: rootId, registrationRevision: randomUUID() }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
       if (input.teamId) actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), rosterSk(input.teamId, rootId), ENTITY_TYPE.roster,
         { gameId: input.gameId, teamId: input.teamId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
     }
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }));
     return { playerId: membership.playerId, alreadyInGame };
+  }
+
+  async removeGamePlayer(input: RemoveGamePlayerInput): Promise<RosterRemovalRecord> {
+    requireNonEmpty("gameId", input.gameId); requireNonEmpty("playerId", input.playerId);
+    requireNonEmpty("expectedRegistrationRevision", input.expectedRegistrationRevision); requireNonEmpty("idempotencyKey", input.idempotencyKey);
+    const requestHash = createHash("sha256").update(JSON.stringify([
+      input.gameId, input.playerId, input.expectedRegistrationRevision,
+    ])).digest("hex");
+    const receiptKey = rosterRemovalSk(input.idempotencyKey);
+    let existingReceipt = await this.getEntity(gamePk(input.gameId), receiptKey, { consistentRead: true });
+    let receiptValue = existingReceipt?.data as Partial<Omit<RosterRemovalRecord, "createdAt" | "updatedAt">> | undefined;
+    let receiptLeagueId = typeof receiptValue?.leagueId === "string" && receiptValue.leagueId.trim() ? receiptValue.leagueId : null;
+    const initialGame = await this.readMutableGameEntity(input.gameId);
+    const game = initialGame?.entityType === ENTITY_TYPE.game ? normalizeGamePayload(initialGame.data) : null;
+    if (!game && !receiptLeagueId) {
+      // A retry can read just before the original removal commits, then see
+      // the game missing just after deletion commits. Re-read the durable
+      // receipt before returning 404 so that ordering still converges on the
+      // settled result without weakening its retained league authorization.
+      existingReceipt = await this.getEntity(gamePk(input.gameId), receiptKey, { consistentRead: true });
+      receiptValue = existingReceipt?.data as Partial<Omit<RosterRemovalRecord, "createdAt" | "updatedAt">> | undefined;
+      receiptLeagueId = typeof receiptValue?.leagueId === "string" && receiptValue.leagueId.trim() ? receiptValue.leagueId : null;
+      if (!receiptLeagueId) throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
+    }
+    if (game && receiptLeagueId && receiptLeagueId !== game.leagueId) {
+      throw new PlayerIdentityError("idempotency_conflict", 409, "This request key was already used for a different player removal.");
+    }
+    const leagueId = receiptLeagueId ?? game!.leagueId;
+    const authority = await this.leaguePlayerAuthority(leagueId, input.userIds);
+    const acl = authority.acl.data as LeagueAclRecord;
+    const actorRole = acl.role === "admin" ? "admin" as const : "scorekeeper" as const;
+    const actorRef = createHash("sha256").update(JSON.stringify(["roster-removal", leagueId, acl.userId])).digest("hex");
+    const settledReceipt = (stored: StoredEntity<unknown>): RosterRemovalRecord => {
+      const value = stored.data as Partial<Omit<RosterRemovalRecord, "createdAt" | "updatedAt">>;
+      if (stored.entityType !== ENTITY_TYPE.rosterRemoval || value.requestHash !== requestHash ||
+          value.gameId !== input.gameId || value.playerId !== input.playerId ||
+          (value.leagueId !== undefined && value.leagueId !== leagueId)) {
+        throw new PlayerIdentityError("idempotency_conflict", 409, "This request key was already used for a different player removal.");
+      }
+      return withTimestamps({ ...value, leagueId } as Omit<RosterRemovalRecord, "createdAt" | "updatedAt">,
+        stored.createdAt, stored.updatedAt);
+    };
+    const replayReceipt = async (stored: StoredEntity<unknown>): Promise<RosterRemovalRecord> => {
+      const result = settledReceipt(stored);
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        this.buildConditionalCheckFromStoredEntity(stored), this.buildConditionalCheckFromStoredEntity(authority.league)!,
+        this.buildConditionalCheckFromStoredEntity(authority.acl)!,
+      ] }));
+      return result;
+    };
+    if (existingReceipt) {
+      return replayReceipt(existingReceipt);
+    }
+    if (!initialGame || !game) {
+      throw new PlayerIdentityError("game_unavailable", 404, "This game is no longer available.");
+    }
+    try {
+    if (game.status !== "scheduled") {
+      throw new GameMutationStateError("game_not_scheduled", "Players can only be removed before scoring starts.");
+    }
+    const profile = await this.getPlayer(input.playerId, { consistentRead: true });
+    if (!profile) throw new PlayerIdentityError("player_not_in_game", 404, "This player is no longer in the game.");
+    const identity = await this.identities.resolve(input.playerId, profile.nickname);
+    const registeredPlayerId = await this.identities.registeredOriginal(identity, input.gameId);
+    if (registeredPlayerId !== input.playerId) {
+      throw new PlayerIdentityError("player_not_in_game", 404, "This player is no longer in the game.");
+    }
+    const registration = await this.getEntity(gamePk(input.gameId), gamePlayerSk(input.playerId), { consistentRead: true });
+    if (!registration || registration.entityType !== ENTITY_TYPE.gamePlayer ||
+        (registration.data as GamePlayerRecord).gameId !== input.gameId || (registration.data as GamePlayerRecord).playerId !== input.playerId) {
+      throw new PlayerIdentityError("player_not_in_game", 404, "This player is no longer in the game.");
+    }
+    if (this.gamePlayerRevision(registration) !== input.expectedRegistrationRevision) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "The player registration changed. Reload and try again.");
+    }
+    // A legacy registration can fit PLAYER#<id> while one or more longer
+    // ROSTER#<team>#<id> keys cannot exist in DynamoDB. Fence every
+    // representable slot and omit only structurally impossible keys.
+    const assignmentSlots = TEAM_IDS.map(teamId => ({ teamId, sk: rosterSk(teamId, input.playerId) }))
+      .filter(slot => Buffer.byteLength(slot.sk) <= 1024);
+    const assignments = await Promise.all(assignmentSlots.map(slot =>
+      this.getEntity(gamePk(input.gameId), slot.sk, { consistentRead: true })));
+    const existingAssignments = assignments.filter((item): item is StoredEntity<unknown> => item !== null);
+    for (const assignment of existingAssignments) {
+      const value = assignment.data as RosterAssignmentRecord;
+      if (assignment.entityType !== ENTITY_TYPE.roster || value.gameId !== input.gameId || value.playerId !== input.playerId || !TEAM_IDS.includes(value.teamId)) {
+        throw new PlayerIdentityError("player_registration_changed", 409, "The roster changed. Reload and try again.");
+      }
+    }
+    if (existingAssignments.length > 1) throw new PlayerIdentityError("player_registration_changed", 409,
+      "This player has conflicting team assignments. Reload and try again.");
+    const goalStateBefore = await this.getEntity(gamePk(input.gameId), goalStateSk(), { consistentRead: true });
+    if (goalStateBefore && goalStateBefore.entityType !== ENTITY_TYPE.goalState) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "Scoring history changed. Reload and try again.");
+    }
+    const [goals, goalAudit] = await Promise.all([
+      this.listGoalEventsWithConsistency(input.gameId, true),
+      this.listGoalAuditEntriesWithConsistency(input.gameId, true),
+    ]);
+    const goalState = await this.getEntity(gamePk(input.gameId), goalStateSk(), { consistentRead: true });
+    if (goalState && goalState.entityType !== ENTITY_TYPE.goalState) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "Scoring history changed. Reload and try again.");
+    }
+    const unchangedGoalState = goalStateBefore === null ? goalState === null :
+      goalState !== null && goalStateBefore.rawData === goalState.rawData && goalStateBefore.updatedAt === goalState.updatedAt;
+    if (!unchangedGoalState) {
+      throw new PlayerIdentityError("player_registration_changed", 409, "Scoring history changed. Reload and try again.");
+    }
+    const referencesPlayer = (value: unknown): boolean => {
+      if (!value || typeof value !== "object") return false;
+      if (Array.isArray(value)) return value.some(referencesPlayer);
+      return Object.entries(value as Record<string, unknown>).some(([key, entry]) =>
+        ((key === "scorerPlayerId" || key === "playerId") && entry === input.playerId) ||
+        (key === "assistPlayerIds" && Array.isArray(entry) && entry.includes(input.playerId)) || referencesPlayer(entry));
+    };
+    if (goals.some(referencesPlayer) || goalAudit.some(referencesPlayer)) {
+      throw new PlayerIdentityError("player_has_match_history", 409, "This player already has scoring history in the game and cannot be removed.");
+    }
+    const now = this.clock.now();
+    const teamId = existingAssignments.length === 1 ? (existingAssignments[0].data as RosterAssignmentRecord).teamId : null;
+    const receipt: Omit<RosterRemovalRecord, "createdAt" | "updatedAt"> = {
+      gameId: input.gameId, leagueId: game.leagueId, playerId: input.playerId, teamId, removedAt: now, requestHash, actorRef, actorRole,
+    };
+    const rosterDeletes = assignmentSlots.map((candidate, index): TransactWriteItem => assignments[index]
+      ? this.buildConditionalDeleteFromStoredEntity(assignments[index]!)
+      : { Delete: { TableName: this.tableName, Key: { pk: { S: gamePk(input.gameId) }, sk: { S: candidate.sk } },
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
+    const identityActions = await this.identities.planGameRemoval(identity, { gameId: game.gameId, leagueId: game.leagueId,
+      seasonId: game.seasonId, gameStartTs: game.gameStartTs, registeredPlayerId: input.playerId }, now);
+    const goalStateFence: TransactWriteItem = goalState
+      ? this.buildConditionalCheckFromStoredEntity(goalState)
+      : { ConditionCheck: { TableName: this.tableName,
+        Key: { pk: { S: gamePk(input.gameId) }, sk: { S: goalStateSk() } },
+        ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } };
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        ...identityActions, this.buildGameConditionCheck(input.gameId, initialGame),
+        this.buildConditionalCheckFromStoredEntity(authority.league)!, this.buildConditionalCheckFromStoredEntity(authority.acl)!,
+        goalStateFence, this.buildConditionalDeleteFromStoredEntity(registration), ...rosterDeletes,
+        { Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), receiptKey, ENTITY_TYPE.rosterRemoval, receipt, now),
+          ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
+      ]) }));
+    } catch (error) {
+      if (isConditionalWriteFailure(error)) {
+        throw new PlayerIdentityError("player_registration_changed", 409,
+          "The game or roster changed. Reload and try again.");
+      }
+      throw error;
+    }
+    return withTimestamps(receipt, now, now);
+    } catch (error) {
+      // Two identical first attempts may both plan before either receipt is
+      // visible. Whichever point the losing request reaches, converge on the
+      // immutable receipt while rechecking the exact authority snapshots.
+      const concurrentReceipt = await this.getEntity(gamePk(input.gameId), receiptKey, { consistentRead: true });
+      if (concurrentReceipt) return replayReceipt(concurrentReceipt);
+      throw error;
+    }
   }
 
   private playerProofKey(proofId: string): string {
@@ -3538,6 +3702,19 @@ export class ThreeFcRepository {
 
   private playerRevision(stored: StoredEntity<unknown>): string {
     return createHash("sha256").update(JSON.stringify([stored.rawData, stored.createdAt, stored.updatedAt])).digest("hex");
+  }
+
+  private gamePlayerRevision(stored: StoredEntity<unknown>): string {
+    const registration = stored.data as { gameId?: unknown; playerId?: unknown; registrationRevision?: unknown } | null;
+    const persisted = registration?.registrationRevision;
+    if (typeof persisted === "string" && persisted.length > 0 && persisted.length <= 128) return persisted;
+    // Legacy registrations predate explicit revision IDs. Their immutable
+    // stored snapshot remains a stable compatibility token until any writer
+    // replaces the row with a newly generated revision. Hash only ordered,
+    // defined fields because DynamoDB map attribute order is not significant.
+    return createHash("sha256").update(JSON.stringify([
+      stored.pk, stored.sk, registration?.gameId, registration?.playerId, stored.createdAt, stored.updatedAt,
+    ])).digest("hex");
   }
 
   private proofMetadata(proof: PlayerProofRecord): PlayerProofMetadata {
@@ -3982,6 +4159,7 @@ export class ThreeFcRepository {
     const payload = {
       gameId: input.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
 
     try {
@@ -4065,6 +4243,7 @@ export class ThreeFcRepository {
     const linkPayload = {
       gameId: input.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
 
     try {
@@ -4124,7 +4303,8 @@ export class ThreeFcRepository {
     requireNonEmpty("playerId", playerId);
     const item = await this.getEntity(gamePk(gameId), gamePlayerSk(playerId), { consistentRead: true });
     if (item?.entityType !== ENTITY_TYPE.gamePlayer) return null;
-    const link = withTimestamps(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
+    const link = withTimestamps({ ...(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">),
+      registrationRevision: this.gamePlayerRevision(item) }, item.createdAt, item.updatedAt);
     return link.gameId === gameId && link.playerId === playerId ? link : null;
   }
 
@@ -4136,13 +4316,8 @@ export class ThreeFcRepository {
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.gamePlayer)
-      .map((item) =>
-        withTimestamps(
-          item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">,
-          item.createdAt,
-          item.updatedAt,
-        ),
-      );
+      .map((item) => withTimestamps({ ...(item.data as Omit<GamePlayerRecord, "createdAt" | "updatedAt">),
+        registrationRevision: this.gamePlayerRevision(item) }, item.createdAt, item.updatedAt));
   }
 
   private async liveLeagueForAuthority(leagueId: string): Promise<StoredEntity<unknown>> {
@@ -4694,6 +4869,7 @@ export class ThreeFcRepository {
     const linkPayload = {
       gameId: input.gameId,
       playerId: input.playerId,
+      registrationRevision: randomUUID(),
     };
     const transactionItems: TransactWriteItem[] = [
       ...membership.actions,
@@ -5419,6 +5595,30 @@ export class ThreeFcRepository {
     return { scorerPlayerId: mapped.get(scorerPlayerId)!, assistPlayerIds: assistPlayerIds.map(id => mapped.get(id)!) };
   }
 
+  private async goalPlayerRegistrationChecks(
+    gameId: string,
+    playerIds: string[],
+    operation: "creation" | "correction",
+  ): Promise<TransactWriteItem[]> {
+    const uniquePlayerIds = [...new Set(playerIds)];
+    const registrations = await Promise.all(uniquePlayerIds.map(playerId =>
+      this.getEntity(gamePk(gameId), gamePlayerSk(playerId), { consistentRead: true })));
+    return registrations.map((registration, index) => {
+      const playerId = uniquePlayerIds[index];
+      const value = registration?.data as Partial<GamePlayerRecord> | undefined;
+      if (!registration || registration.entityType !== ENTITY_TYPE.gamePlayer ||
+          value?.gameId !== gameId || value.playerId !== playerId) {
+        if (operation === "creation") {
+          throw new GoalCreationError("scoreboard_state_changed", 409,
+            "A selected player is no longer registered in this game. Reload the game and try again.");
+        }
+        throw new GoalCorrectionError("goal_state_changed", 409,
+          "A selected player is no longer registered in this game. Reload the game and try again.");
+      }
+      return this.buildConditionalCheckFromStoredEntity(registration);
+    });
+  }
+
   async createGoal(input: CreateGoalInput): Promise<CreateGoalResult | null> {
     requireNonEmpty("gameId", input.gameId);
     requireNonEmpty("eventId", input.eventId);
@@ -5566,6 +5766,8 @@ export class ThreeFcRepository {
         );
       }
     }
+    const playerRegistrationChecks = await this.goalPlayerRegistrationChecks(input.gameId,
+      [input.scorerPlayerId, ...input.assistPlayerIds], "creation");
 
     const now = this.clock.now();
     const startedAtMs = activeThird?.startedAt ? Date.parse(activeThird.startedAt) : NaN;
@@ -5647,6 +5849,7 @@ export class ThreeFcRepository {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...playerRegistrationChecks,
             ...(updatedFinishedGame
               ? [
                   this.buildGamePutTransactionItem({
@@ -5782,7 +5985,7 @@ export class ThreeFcRepository {
     consistentRead: boolean,
   ): Promise<GoalEventRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "GOAL#", { consistentRead });
+    const items = await this.queryCompleteByPrefix(gamePk(gameId), "GOAL#", { consistentRead });
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.goal)
@@ -5797,8 +6000,12 @@ export class ThreeFcRepository {
   }
 
   async listGoalAuditEntries(gameId: string): Promise<GoalAuditRecord[]> {
+    return this.listGoalAuditEntriesWithConsistency(gameId, false);
+  }
+
+  private async listGoalAuditEntriesWithConsistency(gameId: string, consistentRead: boolean): Promise<GoalAuditRecord[]> {
     requireNonEmpty("gameId", gameId);
-    const items = await this.queryByPrefix(gamePk(gameId), "AUDIT#GOAL#");
+    const items = await this.queryCompleteByPrefix(gamePk(gameId), "AUDIT#GOAL#", { consistentRead });
 
     return items
       .filter((item) => item.entityType === ENTITY_TYPE.goalAudit)
@@ -5866,6 +6073,8 @@ export class ThreeFcRepository {
     );
     const roster = await this.listGameRoster(input.gameId);
     this.validateGoalRules(goal, teams, roster, "correction", previousGoal);
+    const playerRegistrationChecks = await this.goalPlayerRegistrationChecks(input.gameId,
+      [goal.scorerPlayerId, ...goal.assistPlayerIds], "correction");
 
     const now = this.clock.now();
     const updatedGoal = {
@@ -5913,6 +6122,7 @@ export class ThreeFcRepository {
       await this.client.send(
         new TransactWriteItemsCommand({
           TransactItems: [
+            ...playerRegistrationChecks,
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
             ...(updatedFinishedGame
               ? [
@@ -7044,6 +7254,36 @@ export class ThreeFcRepository {
         const key = JSON.stringify([cursor.pk?.S, cursor.sk?.S]);
         if (cursor.pk?.S !== gamePk(gameId) || !cursor.sk?.S?.startsWith(skPrefix) || seen.has(key)) {
           throw new Error("Roster continuation could not be confirmed.");
+        }
+        seen.add(key);
+      }
+    } while (cursor);
+    return items;
+  }
+
+  private async queryCompleteByPrefix(
+    pk: string,
+    skPrefix: string,
+    options: QueryByPrefixOptions = {},
+  ): Promise<Array<StoredEntity<unknown>>> {
+    const items: Array<StoredEntity<unknown>> = [];
+    let cursor: Record<string, AttributeValue> | undefined;
+    const seen = new Set<string>();
+    do {
+      const result = (await this.client.send(new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: "pk = :pk and begins_with(sk, :skPrefix)",
+        ConsistentRead: options.consistentRead,
+        ExpressionAttributeValues: { ":pk": { S: pk }, ":skPrefix": { S: skPrefix } },
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }))) as QueryCommandOutput;
+      items.push(...(result.Items ?? []).map((item) => parseStoredEntity(item)));
+      cursor = result.LastEvaluatedKey;
+      if (cursor && Object.keys(cursor).length === 0) cursor = undefined;
+      if (cursor) {
+        const key = JSON.stringify([cursor.pk?.S, cursor.sk?.S]);
+        if (cursor.pk?.S !== pk || !cursor.sk?.S?.startsWith(skPrefix) || seen.has(key)) {
+          throw new Error("Query continuation could not be confirmed.");
         }
         seen.add(key);
       }

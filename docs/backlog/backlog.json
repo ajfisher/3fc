@@ -3178,13 +3178,15 @@
         "Focused tests followed by serialized full validation, current-head GitHub Codex review, isolated QA acceptance and review:ready; no merge or production release without AJ authorisation."
       ],
       "delivery": {
-        "asOf": "2026-09-20",
+        "asOf": "2026-09-21",
         "wave": "reusable-players-follow-up",
-        "status": "planned",
+        "status": "in-progress",
         "githubIssue": 184,
+        "branch": "codex/player-game-removal",
         "notes": [
           "Requested by AJ after reusable-player assignment shipped.",
-          "This removes one game registration only. Safe cleanup of profiles orphaned by deleting an entire game remains tracked separately in #170."
+          "This removes one game registration only. Safe cleanup of profiles orphaned by deleting an entire game remains tracked separately in #170.",
+          "Implementation and independent review are in progress on codex/player-game-removal; no Terraform resource or migration change is required."
         ]
       }
     }

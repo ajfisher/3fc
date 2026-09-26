@@ -95,6 +95,10 @@ export function rosterSk(teamId: string, playerId: string): string {
   return `ROSTER#${teamId}#${playerId}`;
 }
 
+export function rosterRemovalSk(idempotencyKey: string): string {
+  return `ROSTER_REMOVAL#${createHash("sha256").update(idempotencyKey).digest("hex")}`;
+}
+
 export function gamePlayerSk(playerId: string): string {
   return `PLAYER#${playerId}`;
 }

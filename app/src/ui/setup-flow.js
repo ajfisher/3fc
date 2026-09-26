@@ -3260,6 +3260,11 @@
     const quickCreatePlayerButton = root.querySelector('[data-action="quick-create-player"]');
     const playerPoolElement = document.getElementById("player-pool");
     const rosterTeamsElement = document.getElementById("roster-teams");
+    const playerRemovalDialog = document.getElementById("player-removal-dialog");
+    const playerRemovalTitle = document.getElementById("player-removal-title");
+    const playerRemovalRecovery = document.getElementById("player-removal-recovery");
+    const playerRemovalRecoveryStatus = document.getElementById("player-removal-recovery-status");
+    const rosterRetryStatus = document.getElementById("roster-retry-status");
     const liveScoreboardElement = document.getElementById("live-scoreboard");
     const goalScoringTeamInput = document.getElementById("goal-scoring-team");
     const goalConcedingTeamInput = document.getElementById("goal-conceding-team");
@@ -3318,12 +3323,17 @@
     let gameDeletionPending = false;
     let timerMutationPending = false;
     let rosterMutationPending = false;
+    let rosterRefreshPending = false;
+    let playerRemovalPending = false;
+    let playerRemovalAttempt = null;
+    let playerRemovalPrompt = null;
     let playerCreatePending = false;
     let playerCreateAttempt = null;
     let rosterReadVersion = 0;
     let playersReadVersion = 0;
     let rosterDataLoaded = false;
     let playerDetailsState = "loading";
+    let rosterReloadRequired = false;
     let playerDetailsRecovery = { key: "", searched: new Set() };
     let playerNicknameGeneration = 0;
     const knownRosterPlayers = new Map();
@@ -3370,11 +3380,11 @@
     }
 
     function canCorrectFinishedGoals() {
-      return !refreshAccountLocked && !refreshWriteLocked && currentLeagueRole === "admin" && finishedResultEditing;
+      return !refreshAccountLocked && !refreshWriteLocked && !rosterReloadRequired && currentLeagueRole === "admin" && finishedResultEditing;
     }
 
     function finishedRosterControlsLocked() {
-      return refreshWriteLocked || Boolean(existingPlayerAttempt?.uncertain) || !canManageRoster();
+      return refreshWriteLocked || rosterReloadRequired || playerRemovalPending || Boolean(existingPlayerAttempt?.uncertain) || Boolean(playerRemovalAttempt?.uncertain) || !canManageRoster();
     }
 
     function isLeagueOperator() {
@@ -3386,20 +3396,20 @@
     }
 
     function canScoreGame() {
-      return !refreshWriteLocked && !existingPlayerAttempt?.uncertain && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
+      return !refreshWriteLocked && !rosterReloadRequired && !playerRemovalPending && !existingPlayerAttempt?.uncertain && !playerRemovalAttempt?.uncertain && Boolean(currentGame) && isLeagueOperator() && (!isGameFinished() || canCorrectFinishedGoals());
     }
 
     function canEditGame() {
-      return !refreshAccountLocked && !refreshWriteLocked && !existingPlayerAttempt?.uncertain && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
+      return !refreshAccountLocked && !refreshWriteLocked && !rosterReloadRequired && !playerRemovalPending && !existingPlayerAttempt?.uncertain && !playerRemovalAttempt?.uncertain && Boolean(currentGame) && currentLeagueRole === "admin" && !isGameFinished();
     }
 
     function syncGameCapabilities() {
-      if (currentLeagueRole !== "admin") closeActionMenu();
+      if (!isLeagueOperator()) closeActionMenu();
       const capabilities = {
-        admin: !refreshAccountLocked && Boolean(currentGame) && currentLeagueRole === "admin",
+        admin: !refreshAccountLocked && !rosterReloadRequired && Boolean(currentGame) && currentLeagueRole === "admin",
         roster: !refreshWriteLocked && canManageRoster(),
         score: canScoreGame(),
-        correct: !refreshAccountLocked && isGameFinished() && currentLeagueRole === "admin",
+        correct: !refreshAccountLocked && !rosterReloadRequired && isGameFinished() && currentLeagueRole === "admin",
       };
       for (const element of document.querySelectorAll("[data-game-capability]")) {
         if (!(element instanceof HTMLElement)) continue;
@@ -3430,17 +3440,18 @@
       }
       const correctionTeams = root.querySelector('[data-action="edit-finished-teams"]');
       if (correctionTeams instanceof HTMLElement) correctionTeams.hidden = !capabilities.correct || finishedRosterEditing;
-      if (correctionTeams instanceof HTMLButtonElement) correctionTeams.disabled = refreshWriteLocked;
+      if (correctionTeams instanceof HTMLButtonElement) correctionTeams.disabled = refreshWriteLocked || rosterReloadRequired;
       const correctionResult = root.querySelector('[data-action="correct-finished-result"]');
       if (correctionResult instanceof HTMLElement) correctionResult.hidden = !capabilities.correct || finishedResultEditing;
-      if (correctionResult instanceof HTMLButtonElement) correctionResult.disabled = refreshWriteLocked;
+      if (correctionResult instanceof HTMLButtonElement) correctionResult.disabled = refreshWriteLocked || rosterReloadRequired;
       setModeLabel("run", isGameFinished() && finishedResultEditing ? "Correction" : "Score game");
       // A remotely finished game must not remove the current destination or
       // silently enter correction mode. The draft remains here until navigation.
       const scoreTab = document.getElementById("game-mode-tab-run");
       if (scoreTab && !refreshAccountLocked && gameModePanels.some((panel) => panel.getAttribute("data-game-mode") === "run" && !panel.hidden)) scoreTab.hidden = false;
       const correctionActions = document.getElementById("finished-correction-actions");
-      if (correctionActions) correctionActions.hidden = !capabilities.correct || !finishedResultEditing;
+      if (correctionActions) correctionActions.hidden =
+        !finishedResultEditing || !isGameFinished() || refreshAccountLocked || currentLeagueRole !== "admin";
       const exit = root.querySelector('[data-action="exit-result-correction"]');
       const exitLocked = Boolean(goalOperation || clockOperation || goalMutationInFlight || timerMutationPending);
       if (exit instanceof HTMLButtonElement) exit.disabled = exitLocked;
@@ -3681,7 +3692,7 @@
         else field.removeAttribute("aria-describedby");
       }
       deleteButton.hidden = currentLeagueRole !== "admin";
-      deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
+      deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin" || gameFinished || gameDeletionPending;
       if (gameFinished) {
         deleteButton.setAttribute("aria-disabled", "true");
         deleteButton.setAttribute("aria-describedby", "game-delete-lock-reason");
@@ -3850,6 +3861,12 @@
 
     function assignmentByPlayerId(playerId) {
       return rosterAssignments.find((assignment) => assignment.playerId === playerId) ?? null;
+    }
+
+    function registrationRevisionFor(playerId) {
+      const value = assignmentByPlayerId(playerId)?.registrationRevision ??
+        rosterUnassignedPlayers?.find((player) => player.playerId === playerId)?.registrationRevision;
+      return typeof value === "string" && value.length > 0 && value.length <= 128 ? value : null;
     }
 
     function rosteredPlayers() {
@@ -5354,35 +5371,213 @@
     }
 
     function playerAccessPanel(player) {
-      if (currentLeagueRole !== "admin" || !verifiedAdminPlayers.has(player?.playerId)) {
-        return "";
+      if (!player?.playerId || !isLeagueOperator()) return "";
+      const actions = [];
+      let state = "unknown", roleLabel = "";
+      if (currentLeagueRole === "admin" && verifiedAdminPlayers.has(player.playerId)) {
+        const access = verifiedAdminPlayers.get(player.playerId)?.access;
+        const linkState = rosterLinkState(player);
+        state = linkState === "unlinked" ? "unclaimed" : linkState === "linked" ? "claimed" : "unknown";
+        if (linkState === "unlinked" && invitationPath("", player.playerId)) {
+          actions.push(`<button data-ui="row-action" type="button" data-action="invite-player-profile" ${playerIdentityAttribute(player.playerId)}>Invite to link profile</button>`);
+        } else if (linkState === "linked") {
+          const role = normalizeLeagueRole(access?.role);
+          roleLabel = role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
+          const disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || rosterMutationPending || playerCreatePending || playerRemovalPending ? " disabled" : "";
+          if (role !== "admin") {
+            if (role !== "scorekeeper") actions.push(`<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="scorekeeper"${disabled}>Make scorer</button>`);
+            actions.push(`<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="admin"${disabled}>Make co-organiser</button>`);
+          }
+        }
       }
-
-      const access = verifiedAdminPlayers.get(player.playerId)?.access;
-      const linkState = rosterLinkState(player);
-      if (linkState === "unknown") return "";
-      if (linkState === "unlinked") {
-        const invitePath = invitationPath("", player.playerId);
-        return `<div data-ui="player-access" data-testid="player-access" data-state="unclaimed">
-          ${invitePath ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
-            `<button data-ui="row-action" type="button" data-action="invite-player-profile" ${playerIdentityAttribute(player.playerId)}>Invite to link profile</button>`,
-            { "data-player-management": "" }) : '<small>Profile linking is unavailable for this player. Ask for help.</small>'}
-        </div>`;
+      if (currentGame?.status === "scheduled" && registrationRevisionFor(player.playerId)) {
+        const disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || rosterMutationPending || playerCreatePending || playerRemovalPending || playerRemovalAttempt?.uncertain ? " disabled" : "";
+        actions.push(`<button data-ui="row-action" data-tone="danger" type="button" data-action="open-player-removal" ${playerIdentityAttribute(player.playerId)}${disabled}>Remove from game</button>`);
       }
-
-      const role = normalizeLeagueRole(access.role);
-      const roleLabel =
-        role === "admin" ? "Co-organiser" : role === "scorekeeper" ? "Scorer" : "Claimed";
-      const pendingDisabled = refreshAccountLocked || refreshWriteLocked || rosterMutationPending || playerCreatePending ? " disabled" : "";
-      const actions = role === "admin" ? "" : renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname, `<div data-ui="access-actions">
-          ${role !== "scorekeeper" ? `<button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="scorekeeper"${pendingDisabled}>Make scorer</button>` : ""}
-          <button data-ui="row-action" type="button" data-action="grant-player-access" ${playerIdentityAttribute(player.playerId)} data-role="admin"${pendingDisabled}>Make co-organiser</button>
-        </div>`, { "data-player-management": "" });
-
-      return `<div data-ui="player-access" data-testid="player-access" data-state="claimed">
-        ${role === "admin" || role === "scorekeeper" ? `<span class="sr-only">${escapeHtml(roleLabel)}</span>` : ""}
-        ${actions}
+      const menu = actions.length ? renderClientActionMenu(`player-actions-${encodeURIComponent(player.playerId)}`, player.nickname,
+        `<div data-ui="access-actions">${actions.join("")}</div>`, { "data-player-management": "" }) : "";
+      return `<div data-ui="player-access" data-testid="player-access" data-state="${state}">
+        ${roleLabel ? `<span class="sr-only">${escapeHtml(roleLabel)}</span>` : ""}${menu}
       </div>`;
+    }
+
+    function playerRemovalName(playerId) {
+      return playerNickname(playerId) || "Player";
+    }
+
+    function focusPlayerAction(playerId) {
+      const row = [...root.querySelectorAll('[data-ui="roster-player"][data-player-id], [data-ui="roster-member"][data-player-id]')]
+        .find(element => element.getAttribute("data-player-id") === playerId);
+      const trigger = row?.querySelector('[data-action="toggle-action-menu"]');
+      if (trigger instanceof HTMLElement) trigger.focus({ preventScroll: true });
+    }
+
+    function closePlayerRemovalDialog({ restoreFocus = true } = {}) {
+      const prompt = playerRemovalPrompt;
+      playerRemovalPrompt = null;
+      if (playerRemovalDialog instanceof HTMLElement) playerRemovalDialog.hidden = true;
+      document.body.classList.remove("modal-open");
+      if (restoreFocus && prompt?.playerId) focusPlayerAction(prompt.playerId);
+    }
+
+    function openPlayerRemovalDialog(playerId, trigger) {
+      if (!usableEntityId(playerId) || currentGame?.status !== "scheduled" || !isLeagueOperator() ||
+          rosterReloadRequired || playerRemovalPending || playerRemovalAttempt?.uncertain) return;
+      const registrationRevision = registrationRevisionFor(playerId);
+      if (!registrationRevision) return;
+      const name = playerRemovalName(playerId);
+      closeActionMenu();
+      playerRemovalPrompt = { playerId, name, registrationRevision, trigger };
+      if (playerRemovalTitle) playerRemovalTitle.textContent = `Remove ${name} from this game?`;
+      if (playerRemovalDialog instanceof HTMLElement) playerRemovalDialog.hidden = false;
+      document.body.classList.add("modal-open");
+      playerRemovalDialog?.querySelector('[data-action="cancel-player-removal"]:not([data-ui="prompt-backdrop"])')?.focus();
+    }
+
+    function renderPlayerRemovalRecovery() {
+      if (!(playerRemovalRecovery instanceof HTMLElement)) return;
+      const visible = Boolean(playerRemovalAttempt?.uncertain);
+      playerRemovalRecovery.hidden = !visible;
+      const retry = playerRemovalRecovery.querySelector('[data-action="retry-player-removal"]');
+      const reload = playerRemovalRecovery.querySelector('[data-action="reload-after-player-removal"]');
+      if (retry instanceof HTMLButtonElement) retry.disabled = playerRemovalPending || !isLeagueOperator();
+      if (reload instanceof HTMLButtonElement) reload.disabled = playerRemovalPending;
+      if (visible && playerRemovalRecoveryStatus && !playerRemovalRecoveryStatus.textContent) {
+        playerRemovalRecoveryStatus.textContent = `Removal of ${playerRemovalAttempt.name} could not be confirmed.`;
+      }
+    }
+
+    function applyLocalPlayerRemoval(playerId) {
+      ++rosterReadVersion;
+      rosterAssignments = rosterAssignments.filter(assignment => assignment.playerId !== playerId);
+      if (Array.isArray(rosterUnassignedPlayers)) rosterUnassignedPlayers = rosterUnassignedPlayers.filter(player => player.playerId !== playerId);
+      pendingAssignments.delete(playerId);
+      pendingCreatedPlayers.delete(playerId);
+      renderRosterSetup();
+      renderLiveScoring();
+    }
+
+    function announceRosterStatus(message) {
+      if (!(rosterRetryStatus instanceof HTMLElement)) return;
+      rosterRetryStatus.hidden = false;
+      rosterRetryStatus.textContent = message;
+    }
+
+    function recordPlayerRemovalRosterTruth(attempt) {
+      const present = rosterAssignments.some(entry => entry.playerId === attempt.playerId) ||
+        (Array.isArray(rosterUnassignedPlayers) && rosterUnassignedPlayers.some(entry => entry.playerId === attempt.playerId));
+      attempt.lastObservedPresent = present;
+      return present;
+    }
+
+    async function executePlayerRemoval() {
+      const attempt = playerRemovalAttempt;
+      if (!attempt || playerRemovalPending || (!attempt.uncertain && currentGame?.status !== "scheduled") || !isLeagueOperator()) return;
+      const wasUncertain = attempt.uncertain;
+      const wasAssigned = rosterAssignments.some(entry => entry.playerId === attempt.playerId);
+      playerRemovalPending = true;
+      renderRosterSetup();
+      renderLiveScoring(); renderTimer();
+      renderPlayerRemovalRecovery();
+      clearError();
+      announceRosterStatus(`Removing ${attempt.name}…`);
+      if (!wasUncertain && rosterRetryStatus instanceof HTMLElement) {
+        rosterRetryStatus.tabIndex = -1;
+        rosterRetryStatus.focus({ preventScroll: true });
+      }
+      const finishFocus = trackInteractionFocus(wasUncertain ? playerRemovalRecovery : rosterRetryStatus);
+      let outcome = "uncertain";
+      let definitiveRefreshFailed = false;
+      try {
+        const response = await requestJsonOrThrow(attempt.path, attempt.request);
+        if (response?.removal?.gameId !== gameId || response.removal.playerId !== attempt.playerId ||
+            typeof response.removal.removedAt !== "string") throw new Error("Removal could not be confirmed.");
+        // A receipt replay confirms only the original removal. It cannot prove
+        // current absence: another client may have re-added the player after
+        // any earlier roster observation, whether that observation was present
+        // or absent. Preserve the complete last-observed projection until the
+        // following authoritative roster read succeeds.
+        const preserveLastObservedState = wasUncertain;
+        playerRemovalAttempt = null;
+        outcome = "committed";
+        announceRosterStatus(preserveLastObservedState
+          ? `${attempt.name}’s removal was confirmed. Checking the current roster…`
+          : `${attempt.name} removed from this game.`);
+        if (!preserveLastObservedState) applyLocalPlayerRemoval(attempt.playerId);
+        try {
+          if (!await loadRosterSetup({ updateStatus: false })) throw new Error("Roster refresh was superseded.");
+          const present = recordPlayerRemovalRosterTruth(attempt);
+          if (playerRemovalRecovery instanceof HTMLElement) playerRemovalRecovery.hidden = true;
+          announceRosterStatus(present
+            ? `${attempt.name}’s original removal was confirmed. ${attempt.name} is currently back in this game.`
+            : `${attempt.name} removed from this game.`);
+          // Claim/access enrichment is optional and must not roll back or delay
+          // the authoritative roster observation used by removal recovery.
+          try { await loadPlayerDetails(); } catch { /* retain roster truth */ }
+        } catch {
+          rosterReloadRequired = true;
+          announceRosterStatus(preserveLastObservedState
+            ? `${attempt.name}’s original removal was confirmed, but the latest roster could not be loaded. The page shows the last observed roster state; reload the roster to confirm whether ${attempt.name} is currently in this game.`
+            : `${attempt.name} removed from this game. The latest roster could not be loaded.`);
+          const retry = document.getElementById("roster-retry"); if (retry) retry.hidden = false;
+        }
+      } catch (error) {
+        const receiptAwareCode = new Set(["game_not_scheduled", "player_not_in_game", "player_registration_changed",
+          "player_has_match_history", "idempotency_conflict"]);
+        const definitive = isDefinitiveRequestRejection(error) && ![408, 429].includes(error.statusCode) &&
+          (!attempt.uncertain || receiptAwareCode.has(error.responseCode));
+        if (definitive) {
+          playerRemovalAttempt = null;
+          outcome = "definitive";
+          try {
+            await loadGame();
+            if (!await loadRosterSetup({ updateStatus: false })) throw new Error("Roster refresh was superseded.");
+          }
+          catch {
+            definitiveRefreshFailed = true;
+            rosterReloadRequired = true;
+            announceRosterStatus(`${attempt.name} was not removed. Reload the roster before trying again.`);
+          }
+          // Private claim/access enrichment is optional. Once roster truth has
+          // loaded, its failure must not falsely demand another roster reload.
+          if (!definitiveRefreshFailed) {
+            await loadPlayerDetails();
+            announceRosterStatus(`${attempt.name} was not removed. The latest roster is shown; review it and try again.`);
+          }
+          if (playerRemovalRecovery instanceof HTMLElement) playerRemovalRecovery.hidden = true;
+          const message = error.responseCode === "player_registration_changed" && !definitiveRefreshFailed
+            ? "This player’s game registration changed. The latest roster is shown; review it and try again."
+            : error instanceof Error ? error.message : "Player could not be removed.";
+          showError(message); setStatus("Player was not removed.", "error");
+        } else {
+          attempt.uncertain = true;
+          playerRemovalAttempt = attempt;
+          if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent = `Removal of ${attempt.name} could not be confirmed. Retry sends the same request, or reload the roster.`;
+          renderPlayerRemovalRecovery();
+        }
+      } finally {
+        playerRemovalPending = false;
+        renderRosterSetup();
+        renderLiveScoring(); renderTimer();
+        renderPlayerRemovalRecovery();
+        if (finishFocus()) {
+          if (outcome === "uncertain" && playerRemovalAttempt?.uncertain) {
+            playerRemovalRecovery?.querySelector('[data-action="retry-player-removal"]')?.focus();
+          } else if (outcome === "definitive" && definitiveRefreshFailed) {
+            const retry = document.getElementById("roster-retry");
+            if (retry instanceof HTMLElement) retry.focus({ preventScroll: true });
+          } else if (outcome === "definitive") {
+            focusPlayerAction(attempt.playerId);
+          } else if (outcome === "committed") {
+            const currentlyAssigned = rosterAssignments.some(entry => entry.playerId === attempt.playerId);
+            const currentlyUnassigned = Array.isArray(rosterUnassignedPlayers) &&
+              rosterUnassignedPlayers.some(entry => entry.playerId === attempt.playerId);
+            const heading = document.getElementById(currentlyAssigned ? "roster-board-title"
+              : currentlyUnassigned ? "player-pool-title" : wasAssigned ? "roster-board-title" : "player-pool-title");
+            if (heading instanceof HTMLElement) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+          }
+        }
+      }
     }
 
     function renderPlayerPool() {
@@ -5470,13 +5665,15 @@
 
     function renderRosterSetup() {
       syncGameCapabilities();
+      renderPlayerRemovalRecovery();
       const retry = document.getElementById("roster-retry");
       if (retry) {
         const failed = playerDetailsState === "unavailable" || (playerDetailsState !== "loading" && rosterUnassignedPlayers === null);
         // Public polling can discover a new player without private enrichment.
         // Keep an explicit recovery path without giving other roles admin reads.
-        retry.hidden = !isLeagueOperator() || !(failed || currentLeagueRole === "admin");
-        retry.textContent = failed ? "Retry loading players" : "Refresh player details";
+        retry.hidden = !isLeagueOperator() || !(rosterReloadRequired || failed || currentLeagueRole === "admin");
+        if (retry instanceof HTMLButtonElement) retry.disabled = playerRemovalPending || rosterRefreshPending;
+        retry.textContent = rosterReloadRequired ? "Reload roster" : failed ? "Retry loading players" : "Refresh player details";
       }
       const focus = captureRosterFocus();
       const active = document.activeElement;
@@ -5485,7 +5682,7 @@
         openTransferPlayerId = null;
       }
       if (quickCreatePlayerButton instanceof HTMLButtonElement) {
-        quickCreatePlayerButton.disabled = rosterLocked || playerCreatePending || rosterMutationPending;
+        quickCreatePlayerButton.disabled = rosterLocked || playerCreatePending || rosterMutationPending || playerRemovalPending;
       }
       if (playerNicknameInput instanceof HTMLInputElement) {
         playerNicknameInput.disabled = rosterLocked;
@@ -5555,7 +5752,7 @@
       rosterUnassignedPlayers = Array.isArray(publicPlayers) && publicPlayers.every((player) =>
         usableEntityId(player?.playerId) && typeof player.nickname === "string" && player.nickname.trim())
         ? [...new Map(publicPlayers.map((player) => [player.playerId, {
-            playerId: player.playerId, nickname: player.nickname,
+            playerId: player.playerId, nickname: player.nickname, registrationRevision: player.registrationRevision,
           }])).values()] : null;
       for (const player of rosterUnassignedPlayers ?? []) {
         // Public reads never establish claimed identity or administrator access.
@@ -5567,24 +5764,27 @@
     }
 
     async function loadRosterSetup(options = {}) {
-      if (!rosterControlsAvailable()) return;
+      if (!rosterControlsAvailable()) return false;
       const version = ++rosterReadVersion;
       const confirmedBeforeRead = new Map(pendingAssignments);
       const rosterPayload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/roster`, { method: "GET", cache: "no-store" });
-      if (version !== rosterReadVersion) return;
+      if (version !== rosterReadVersion) return false;
       // Preserve independently valid assignments and the existing search
       // fallback when only the optional complete-Unassigned DTO is unavailable.
       if (!refreshRosterValid(rosterPayload, { allowUnavailableUnassigned: true })) throw new Error("The latest roster could not be loaded.");
       applyRosterPayload(rosterPayload, confirmedBeforeRead);
+      rosterReloadRequired = false;
       if (scoreboardTeams.length === 0 || (goalTimeline.length === 0 && !isGameFinished())) {
         scoreboardTeams = normalizeScoreboardTeams(rosterTeams);
       }
       renderRosterSetup();
       renderLiveScoring();
+      renderTimer();
 
       if (options.updateStatus !== false) {
         setStatus("");
       }
+      return true;
     }
 
     async function loadPlayerDetails({ resolveMissing = false } = {}) {
@@ -5843,7 +6043,7 @@
     }
     function renderPicker() {
       const focusedPlayerId = pickerList.contains(document.activeElement) ? document.activeElement.getAttribute("data-player-id") : null;
-      const locked = !canManageRoster() || refreshWriteLocked || rosterMutationPending || playerCreatePending || Boolean(playerCreateAttempt);
+      const locked = !canManageRoster() || refreshWriteLocked || rosterReloadRequired || rosterMutationPending || playerCreatePending || Boolean(playerCreateAttempt);
       pickerList.replaceChildren();
       for (const player of pickerPlayers.values()) {
         const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
@@ -5959,7 +6159,7 @@
     });
     pickerList?.addEventListener("click", async event => {
       const button = event.target instanceof Element ? event.target.closest('[data-action="add-existing-player"]') : null;
-      if (!(button instanceof HTMLButtonElement) || button.disabled || rosterMutationPending || playerCreatePending || playerCreateAttempt || !canManageRoster() || refreshWriteLocked) return;
+      if (!(button instanceof HTMLButtonElement) || button.disabled || rosterMutationPending || playerCreatePending || playerCreateAttempt || !canManageRoster() || refreshWriteLocked || rosterReloadRequired) return;
       const selected = pickerPlayers.get(button.getAttribute("data-player-id"));
       if (!selected || selected.inGame) return;
       if (!existingPlayerAttempt) existingPlayerAttempt = { playerId: selected.playerId, nickname: selected.nickname, uncertain: false,
@@ -6142,7 +6342,7 @@
         }
       } finally {
         gameDeletionPending = false;
-        deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || isGameFinished();
+        deleteButton.disabled = refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin" || isGameFinished();
       }
     });
 
@@ -6322,7 +6522,7 @@
         return;
       }
       if (action === "edit-finished-teams" || action === "correct-finished-result") {
-        if (!isGameFinished() || refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin") return;
+        if (!isGameFinished() || refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin") return;
         if (action === "edit-finished-teams") finishedRosterEditing = true;
         else finishedResultEditing = true;
         manualGameModeSelected = true;
@@ -6350,27 +6550,39 @@
     if (rosterControlsAvailable()) {
       document.getElementById("roster-retry")?.addEventListener("click", async event => {
         const button = event.currentTarget;
-        if (button.disabled || !isLeagueOperator() || refreshAccountLocked) return;
+        if (button.disabled || rosterRefreshPending || !isLeagueOperator() || refreshAccountLocked) return;
         const status = document.getElementById("roster-retry-status");
-        button.disabled = true; status.hidden = false; status.textContent = "Loading players…";
+        rosterRefreshPending = true; button.disabled = true; status.hidden = false; status.textContent = "Loading players…";
         const finishFocus = trackInteractionFocus(button);
         try {
           const [rosterResult] = await Promise.allSettled([loadRosterSetup({ updateStatus: false }), loadPlayerDetails({ resolveMissing: true })]);
-          status.textContent = rosterResult.status === "rejected" ? "Players couldn’t be refreshed. The available list is still shown."
+          const rosterApplied = rosterResult.status === "fulfilled" && rosterResult.value === true;
+          status.textContent = !rosterApplied ? "Players couldn’t be refreshed. The available list is still shown."
             : rosterUnassignedPlayers === null || playerDetailsState === "unavailable"
             ? "Some player details are still unavailable. Retry loading players." : currentLeagueRole === "admin"
               && [...(rosterUnassignedPlayers ?? []), ...rosterAssignments].some(player => !verifiedAdminPlayers.has(player.playerId))
             ? "Some player details are still unavailable. The available list is still shown." : "Players updated.";
-          if (rosterResult.status === "rejected") button.hidden = false;
+          if (!rosterApplied) button.hidden = false;
         } catch {
           status.textContent = "Players couldn’t be refreshed. The available list is still shown.";
           button.hidden = false;
         } finally {
-          button.disabled = false;
+          rosterRefreshPending = false;
+          renderRosterSetup();
           if (finishFocus() && button.hidden) { status.tabIndex = -1; status.focus(); }
         }
       });
       root.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && playerRemovalDialog instanceof HTMLElement && !playerRemovalDialog.hidden) {
+          event.preventDefault(); closePlayerRemovalDialog(); return;
+        }
+        if (event.key === "Tab" && playerRemovalDialog instanceof HTMLElement && !playerRemovalDialog.hidden) {
+          const controls = [...playerRemovalDialog.querySelectorAll('button:not([disabled])')].filter(button => !button.hasAttribute("data-ui") || button.getAttribute("data-ui") !== "prompt-backdrop");
+          const first = controls[0], last = controls.at(-1);
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+          return;
+        }
         if (event.key !== "Escape" || !openTransferPlayerId) {
           return;
         }
@@ -6468,6 +6680,55 @@
         }
 
         const action = target.getAttribute("data-action");
+        if (action === "open-player-removal") {
+          if (target.disabled) return;
+          const playerId = target.getAttribute("data-player-id");
+          if (playerId) openPlayerRemovalDialog(playerId, target);
+          return;
+        }
+        if (action === "cancel-player-removal") {
+          if (!playerRemovalPending) closePlayerRemovalDialog();
+          return;
+        }
+        if (action === "confirm-player-removal") {
+          if (!playerRemovalPrompt || playerRemovalPending || playerRemovalAttempt?.uncertain) return;
+          const { playerId, name, registrationRevision } = playerRemovalPrompt;
+          // Confirmation is reachable only from a rendered roster row. Keep
+          // that visible state as the recovery baseline until an authoritative
+          // reload proves otherwise.
+          playerRemovalAttempt = { playerId, name, registrationRevision, uncertain: false, lastObservedPresent: true,
+            path: `/v1/games/${encodeURIComponent(gameId)}/player-registration?${new URLSearchParams({ playerId, registrationRevision })}`,
+            request: Object.freeze({ method: "DELETE", headers: Object.freeze({
+              "Idempotency-Key": createIdempotencyKey("remove-player", `${gameId}:${playerId}:${registrationRevision}`),
+            }) }) };
+          closePlayerRemovalDialog({ restoreFocus: false });
+          void executePlayerRemoval();
+          return;
+        }
+        if (action === "retry-player-removal") {
+          if (!target.disabled) void executePlayerRemoval();
+          return;
+        }
+        if (action === "reload-after-player-removal") {
+          if (target.disabled || !playerRemovalAttempt?.uncertain) return;
+          playerRemovalPending = true; renderPlayerRemovalRecovery(); renderLiveScoring(); renderTimer();
+          const attempt = playerRemovalAttempt;
+          if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent = "Reloading roster…";
+          try {
+            await loadGame();
+            if (!await loadRosterSetup({ updateStatus: false })) throw new Error("Roster refresh was superseded.");
+            const present = recordPlayerRemovalRosterTruth(attempt);
+            announceRosterStatus(present ? `${attempt.name} is currently in this game.` : `${attempt.name} is not currently in this game.`);
+            if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent =
+              `Removal of ${attempt.name} is still unconfirmed. Retry removal to settle the original request.`;
+            try { await loadPlayerDetails(); } catch { /* optional enrichment does not change roster truth */ }
+          } catch {
+            if (playerRemovalRecoveryStatus) playerRemovalRecoveryStatus.textContent = "The roster could not be reloaded. Retry removal or try reloading again.";
+          } finally {
+            playerRemovalPending = false; renderRosterSetup(); renderPlayerRemovalRecovery(); renderLiveScoring(); renderTimer();
+          }
+          return;
+        }
         if (action === "toggle-transfer") {
           if (finishedRosterControlsLocked() || rosterMutationPending || playerCreatePending || target.disabled) {
             return;
@@ -6494,7 +6755,7 @@
         }
 
         if (action === "grant-player-access") {
-          if (refreshAccountLocked || refreshWriteLocked || currentLeagueRole !== "admin" || rosterMutationPending || playerCreatePending || target.disabled) {
+          if (refreshAccountLocked || refreshWriteLocked || rosterReloadRequired || currentLeagueRole !== "admin" || rosterMutationPending || playerCreatePending || target.disabled) {
             return;
           }
 
@@ -6806,6 +7067,8 @@
 
     beforeGameWrite = (path, method) => {
       if (existingPlayerAttempt?.uncertain && path !== existingPlayerAttempt.path && path !== "/v1/auth/logout") throw new Error("Retry the unconfirmed player addition before making another change.");
+      if (playerRemovalAttempt?.uncertain && path !== playerRemovalAttempt.path && path !== "/v1/auth/logout") throw new Error("Retry the unconfirmed player removal or reload the roster before making another change.");
+      if (rosterReloadRequired && path !== "/v1/auth/logout") throw new Error("Reload the roster before making another change.");
       if (refreshAccountLocked && path !== "/v1/auth/logout") throw new Error("Your account changed. Reload before making changes.");
       if (refreshWriteLocked && path !== "/v1/auth/logout") throw new Error("An earlier change is unconfirmed. Reload before making changes.");
       // Synchronous and before fetch, including writes made outside this root.
@@ -6817,6 +7080,7 @@
         (clockOperation?.path === path && clockOperation.request.method === method) ||
         (playerCreateAttempt?.request.path === path && playerCreateAttempt.request.init.method === method) ||
         (existingPlayerAttempt?.path === path && method === "POST") ||
+        (playerRemovalAttempt?.path === path && method === "DELETE") ||
         playerInvitation.ownsRequest(path);
       return (result) => {
         // These writes already have an explicit recovery owner. A clock GET
@@ -6838,10 +7102,14 @@
     function localWriteOwnsState() {
       return Boolean(gameMetadataPending || gameDeletionPending || goalMutationInFlight || timerMutationPending ||
         rosterMutationPending || playerCreatePending || goalOperation || clockOperation || playerCreateAttempt ||
-        playerInvitation.hasPending() || existingPlayerAttempt || uncertainReadBarriers.size);
+        playerRemovalPending || playerRemovalAttempt || playerInvitation.hasPending() || existingPlayerAttempt || uncertainReadBarriers.size);
     }
 
-    function discardPrivateEnrichment() {
+    function discardPrivateEnrichment({ preservePlayerRemoval = false } = {}) {
+      closePlayerRemovalDialog({ restoreFocus: false });
+      if (!preservePlayerRemoval) {
+        playerRemovalAttempt = null; playerRemovalPending = false;
+      }
       playerInvitation.discard();
       cancelPickerRead();
       pickerVersion += 1; pickerPlayers.clear(); pickerList.replaceChildren(); pickerCursor = null; pickerMore.hidden = true;
@@ -6965,7 +7233,11 @@
         const role = normalizeLeagueRole(league.access.role);
         authorityRevision += 1;
         if (role !== currentLeagueRole) {
-          discardPrivateEnrichment();
+          // This refresh has already fenced the same authenticated session.
+          // A role change must purge role-specific enrichment without losing
+          // the exact request/key that owns an uncertain removal. Account
+          // changes still take the stronger lockRefreshAccount path above.
+          discardPrivateEnrichment({ preservePlayerRemoval: true });
           currentLeagueRole = role;
           renderRosterSetup();
           renderTimer();

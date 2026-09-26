@@ -74,6 +74,10 @@ test("resolveProtectedMutationRoute maps supported mutation endpoints", () => {
     operation: "assignRosterPlayer",
     gameId: "game-1",
   });
+  assert.deepEqual(resolveProtectedMutationRoute("DELETE", "/v1/games/game-1/player-registration"), {
+    operation: "removeGamePlayer",
+    gameId: "game-1",
+  });
   assert.deepEqual(resolveProtectedMutationRoute("POST", "/v1/games/game-1/thirds/1/start"), {
     operation: "startGameThird",
     gameId: "game-1",
@@ -335,6 +339,27 @@ test("game-scoped roster mutation allows scorekeepers", async () => {
     seasonId: "season-1",
     sessionId: "session-1",
   });
+});
+
+test("player removal defers league authority to receipt-aware repository handling", async () => {
+  const lookup = new InMemoryAclLookup({
+    games: { "game-1": { leagueId: "league-1", seasonId: "season-1", sessionId: "session-1", gameId: "game-1",
+      status: "scheduled", gameStartTs: "2026-02-23T10:00:00.000Z", ...defaultGameStateFields(),
+      createdAt: "2026-02-23T00:00:00.000Z", updatedAt: "2026-02-23T00:00:00.000Z" } },
+    seasons: { "season-1": { leagueId: "league-1", seasonId: "season-1", name: "Season 1", slug: null,
+      startsOn: null, endsOn: null, createdAt: "2026-02-23T00:00:00.000Z", updatedAt: "2026-02-23T00:00:00.000Z" } },
+    leagueAccess: { "league-1:scorekeeper-user": { leagueId: "league-1", userId: "scorekeeper-user", role: "scorekeeper",
+      grantedByUserId: "admin-user", createdAt: "2026-02-23T00:00:00.000Z", updatedAt: "2026-02-23T00:00:00.000Z" } },
+  });
+  const result = await authorizeProtectedMutation("DELETE", "/v1/games/game-1/player-registration", "scorekeeper-user", lookup);
+  assert.equal(result.allowed, true); assert.equal(result.operation, "removeGamePlayer");
+  assert.equal(result.scope, null);
+  const deletedGameReplay = await authorizeProtectedMutation("DELETE", "/v1/games/deleted-game/player-registration", "scorekeeper-user",
+    new InMemoryAclLookup({}));
+  assert.equal(deletedGameReplay.allowed, true); assert.equal(deletedGameReplay.operation, "removeGamePlayer");
+  assert.equal(deletedGameReplay.scope, null, "the repository rechecks authority using the retained receipt league scope");
+  const malformed = await authorizeProtectedMutation("DELETE", "/v1/games/%E0%A4/player-registration", "scorekeeper-user", lookup);
+  assert.equal(malformed.allowed, false); assert.equal(malformed.statusCode, 400); assert.equal(malformed.error?.code, "invalid_path");
 });
 
 test("game-scoped timer mutation allows scorekeepers", async () => {

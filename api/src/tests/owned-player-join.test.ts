@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BatchGetItemCommand, GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue } from "@aws-sdk/client-dynamodb";
 import { OwnedPlayerJoinService } from "../data/owned-player-join.js";
-import { PlayerIdentityPlanner, PlayerIdentityError, identityItem, identityDirectorySk, identityLeagueSk } from "../data/player-identity.js";
+import { PlayerIdentityPlanner, PlayerIdentityError, identityItem, identityDirectorySk, identityGameSk, identityLeagueSk } from "../data/player-identity.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "../data/player-claims-revision.js";
 import { playerClaimSk } from "../data/keys.js";
 
@@ -208,6 +208,20 @@ test("same-account join supports finished games, has immutable replay and create
   assert.deepEqual(client.item("PLAYER#a", "PROFILE"), profile);
   assert.equal([...client.items.values()].filter(i => i.entityType?.S === "gamePlayer").length, 1);
   await assert.rejects(service.join({ ...request, playerId: "b" }), PlayerIdentityError);
+});
+
+test("owned remove and rejoin assigns a fresh registration revision for stale-removal fencing", async () => {
+  const { client, service } = fixture();
+  await service.join(request);
+  const firstRevision = client.data("GAME#game", "PLAYER#a").registrationRevision;
+  assert.match(firstRevision, /^[0-9a-f-]{36}$/);
+  client.items.delete(client.key("GAME#game", "PLAYER#a"));
+  client.items.delete(client.key("PLAYER#a", identityGameSk("game")));
+
+  await service.join({ ...request, idempotencyKey: "request-after-removal" });
+  const secondRevision = client.data("GAME#game", "PLAYER#a").registrationRevision;
+  assert.match(secondRevision, /^[0-9a-f-]{36}$/);
+  assert.notEqual(secondRevision, firstRevision, "a stale confirmation must not match the rejoined registration");
 });
 
 test("concurrent distinct keys converge on one registration", async () => {

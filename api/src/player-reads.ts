@@ -66,13 +66,44 @@ export async function readJoinPlayerContext(repository: PlayerReadRepository, ra
 
 export async function readRosterPlayerData(repository: PlayerReadRepository, gameId: string) {
   const options = { complete: true, consistentRead: true };
-  const roster = await repository.listGameRoster(gameId, options);
-  const links = await repository.listGamePlayers(gameId, options);
-  if (roster.some((entry) => entry.gameId !== gameId) || links.some((entry) => entry.gameId !== gameId)) {
+  const registrationSnapshot = (links: GamePlayerRecord[]) => {
+    if (links.some((entry) => entry.gameId !== gameId)) return null;
+    const distinct = new Map<string, readonly [string, string, string, string]>();
+    for (const entry of links) {
+      const row = [entry.playerId, entry.registrationRevision ?? "", entry.createdAt, entry.updatedAt] as const;
+      const previous = distinct.get(entry.playerId);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(row)) return null;
+      distinct.set(entry.playerId, row);
+    }
+    const rows = [...distinct.values()].sort((left, right) => left[0].localeCompare(right[0]));
+    return JSON.stringify(rows);
+  };
+  let roster: RosterAssignmentRecord[] | null = null;
+  let links: GamePlayerRecord[] | null = null;
+  // A transfer atomically changes both the assignment and registration
+  // revision. Bracket the roster query with complete, strongly consistent
+  // registration reads so one response can never pair an old assignment with
+  // the revision that authorises deletion of its replacement.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const before = await repository.listGamePlayers(gameId, options);
+    const beforeSnapshot = registrationSnapshot(before);
+    const candidateRoster = await repository.listGameRoster(gameId, options);
+    const after = await repository.listGamePlayers(gameId, options);
+    const afterSnapshot = registrationSnapshot(after);
+    if (beforeSnapshot !== null && beforeSnapshot === afterSnapshot) {
+      roster = candidateRoster;
+      links = after;
+      break;
+    }
+  }
+  if (!roster || !links || roster.some((entry) => entry.gameId !== gameId)) {
     throw new Error("Roster membership could not be confirmed.");
   }
   const assignedIds = new Set(roster.map((entry) => entry.playerId));
   const linkedIds = new Set(links.map((entry) => entry.playerId));
+  const registrationRevisions = new Map(links.flatMap((entry) =>
+    typeof entry.registrationRevision === "string" && entry.registrationRevision.length > 0
+      ? [[entry.playerId, entry.registrationRevision] as const] : []));
   const ids = [...new Set([...assignedIds, ...linkedIds])];
   const playersById = new Map<string, PublicPlayer>();
   let next = 0;
@@ -101,7 +132,8 @@ export async function readRosterPlayerData(repository: PlayerReadRepository, gam
   }));
   if (failed) throw new Error("Roster player details could not be loaded.");
   const unassignedPlayers = [...linkedIds].filter((id) => !assignedIds.has(id))
-    .map((id) => playersById.get(id)!)
+    .map((id) => ({ ...playersById.get(id)!, ...(registrationRevisions.has(id)
+      ? { registrationRevision: registrationRevisions.get(id)! } : {}) }))
     .sort((left, right) => left.nickname.localeCompare(right.nickname) || left.playerId.localeCompare(right.playerId));
-  return { roster, playersById, unassignedPlayers };
+  return { roster, playersById, registrationRevisions, unassignedPlayers };
 }

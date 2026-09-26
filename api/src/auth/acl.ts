@@ -8,6 +8,7 @@ const ROUTES = {
   updateSeasonTeam: /^\/v1\/seasons\/([^/]+)\/teams\/([^/]+)$/,
   updateGameTeam: /^\/v1\/games\/([^/]+)\/teams\/([^/]+)$/,
   createGamePlayer: /^\/v1\/games\/([^/]+)\/players$/,
+  removeOpaqueGamePlayer: /^\/v1\/games\/([^/]+)\/player-registration$/,
   assignRosterPlayer: /^\/v1\/games\/([^/]+)\/roster\/([^/]+)$/,
   startGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/start$/,
   finishGameThird: /^\/v1\/games\/([^/]+)\/thirds\/([^/]*)\/finish$/,
@@ -29,6 +30,7 @@ export type ProtectedMutationOperation =
   | "updateSeasonTeam"
   | "updateGameTeam"
   | "createGamePlayer"
+  | "removeGamePlayer"
   | "managePlayerInvitation"
   | "assignRosterPlayer"
   | "startGameThird"
@@ -140,6 +142,11 @@ export function resolveProtectedMutationRoute(
       operation: "createGamePlayer",
       gameId: decodeRouteParam(createGamePlayerMatch[1]),
     };
+  }
+
+  const removeOpaqueGamePlayerMatch = upperMethod === "DELETE" ? route.match(ROUTES.removeOpaqueGamePlayer) : null;
+  if (removeOpaqueGamePlayerMatch) {
+    return { operation: "removeGamePlayer", gameId: decodeRouteParam(removeOpaqueGamePlayerMatch[1]) };
   }
 
   const assignRosterPlayerMatch = upperMethod === "PUT" ? route.match(ROUTES.assignRosterPlayer) : null;
@@ -372,6 +379,21 @@ export async function authorizeProtectedMutation(
   }
 
   if (resolvedRoute.operation === "claimPlayer") {
+    return {
+      allowed: true,
+      statusCode: 200,
+      operation: resolvedRoute.operation,
+      scope: null,
+      error: null,
+    };
+  }
+
+  if (resolvedRoute.operation === "removeGamePlayer") {
+    // The repository owns this authorization boundary because an exact-key
+    // retry must remain replayable after the scheduled game metadata has been
+    // deleted. New attempts still resolve the live game and verify current
+    // league authority; settled receipts carry their immutable league scope
+    // and are replayed only after the same authority check.
     return {
       allowed: true,
       statusCode: 200,

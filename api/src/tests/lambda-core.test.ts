@@ -32,6 +32,7 @@ import {
   GoalCreationError,
   LeagueInviteError,
   PlayerClaimError,
+  type ThreeFcRepository,
 } from "../data/repository.js";
 
 test("directory read envelopes preserve valid long ASCII and Unicode historical IDs", async () => {
@@ -262,6 +263,7 @@ interface HarnessConfig {
   onLeagueAccessRead?: () => void;
   resumeLeagueDeletion?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
   deleteLeagueOverride?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
+  removeGamePlayerOverride?: ThreeFcRepository["removeGamePlayer"];
   sessionCookieSecure?: boolean;
   sessions?: Record<string, MockSessionRecord>;
   leagueAccess?: Record<string, MockLeagueAccessRecord>;
@@ -1029,6 +1031,10 @@ function createHarness(config: HarnessConfig = {}) {
       async commitPlayerConsolidation() { throw new PlayerIdentityError("consolidation_disabled", 503, "Combining profiles is temporarily unavailable."); },
       async createLeaguePlayer() { throw new Error("Player directory writes require a real repository fixture."); },
       async addExistingLeaguePlayer() { throw new Error("Player registration requires a real repository fixture."); },
+      async removeGamePlayer(input) {
+        if (config.removeGamePlayerOverride) return config.removeGamePlayerOverride(input);
+        throw new Error("Player removal requires a real repository fixture.");
+      },
       async previewPlayerProof() { throw new Error("Proof preview requires a real repository fixture."); },
       async createPlayerInvitation() { throw new Error("Invitation writes require a real repository fixture."); },
       async getPlayerInvitation() { throw new Error("Invitation reads require a real repository fixture."); },
@@ -2261,6 +2267,75 @@ test("Lambda returning-player routes require a session and retain private disabl
     assert.equal(response.headers?.["referrer-policy"], "no-referrer");
     assert.doesNotMatch(response.body, /owner@example/);
   }
+});
+
+test("Lambda player removal enforces session, league role, state, key, and privacy-safe response parity", async () => {
+  const stamp = "2026-02-23T00:00:00.000Z";
+  const session = (id: string): MockSessionRecord => ({ sessionId: id, subject: id, email: `${id}@example.com`,
+    createdAt: stamp, expiresAt: "2026-03-03T00:00:00.000Z" });
+  const games = Object.fromEntries((["scheduled", "live", "finished"] as const).map(status => [`game-${status}`, {
+    gameId: `game-${status}`, leagueId: "league-removal", seasonId: "season", sessionId: "session", status,
+    gameStartTs: stamp, createdAt: stamp, updatedAt: stamp,
+  }]));
+  const calls: Array<{ gameId: string; playerId: string; expectedRegistrationRevision: string;
+    userIds: readonly string[]; idempotencyKey: string }> = [];
+  const { handler } = createHarness({
+    sessions: Object.fromEntries(["admin", "scorer", "viewer", "cross"].map(id => [id, session(id)])), games,
+    leagues: { "league-removal": { leagueId: "league-removal", name: "Removal", slug: null, createdByUserId: "admin",
+      createdAt: stamp, updatedAt: stamp } },
+    seasons: { season: { leagueId: "league-removal", seasonId: "season", name: "Season", slug: null,
+      startsOn: null, endsOn: null, createdAt: stamp, updatedAt: stamp } },
+    leagueAccess: {
+      "league-removal:admin": { leagueId: "league-removal", userId: "admin", role: "admin", grantedByUserId: "admin", createdAt: stamp, updatedAt: stamp },
+      "league-removal:scorer": { leagueId: "league-removal", userId: "scorer", role: "scorekeeper", grantedByUserId: "admin", createdAt: stamp, updatedAt: stamp },
+      "league-removal:viewer": { leagueId: "league-removal", userId: "viewer", role: "viewer", grantedByUserId: "admin", createdAt: stamp, updatedAt: stamp },
+      "other:cross": { leagueId: "other", userId: "cross", role: "admin", grantedByUserId: "cross", createdAt: stamp, updatedAt: stamp },
+    },
+    async removeGamePlayerOverride(input) {
+      calls.push(input);
+      if (!input.userIds.some(userId => userId === "admin" || userId === "scorer")) {
+        throw new PlayerIdentityError("league_access_required", 403, "League organiser or scorer access is required.");
+      }
+      if (input.gameId === "game-deleted") {
+        return { gameId: input.gameId, leagueId: "league-removal", playerId: input.playerId, teamId: null, removedAt: stamp,
+          requestHash: "private-request", actorRef: "private-actor", actorRole: "scorekeeper", createdAt: stamp, updatedAt: stamp };
+      }
+      if (input.gameId !== "game-scheduled") throw new GameMutationStateError("game_not_scheduled", "Players can only be removed before scoring starts.");
+      return { gameId: input.gameId, leagueId: "league-removal", playerId: input.playerId, teamId: "blue", removedAt: stamp,
+        requestHash: "private-request", actorRef: "private-actor", actorRole: "scorekeeper", createdAt: stamp, updatedAt: stamp };
+    },
+  });
+  const playerId = "opaque/#% player";
+  const request = (gameId: string, account?: string, withKey = true) => {
+    const event = createEvent({ method: "DELETE",
+      path: `/v1/games/${gameId}/player-registration`, cookies: account ? [`threefc_session=${account}`] : undefined,
+      headers: { Origin: "https://qa.3fc.football", ...(withKey ? { "Idempotency-Key": "remove-fixture-key" } : {}) } });
+    event.rawQueryString = new URLSearchParams({ playerId, registrationRevision: "registration-revision" }).toString();
+    return event;
+  };
+  assert.equal((await handler(request("game-scheduled"))).statusCode, 401);
+  assert.equal((await handler(request("game-scheduled", "viewer"))).statusCode, 403);
+  assert.equal((await handler(request("game-scheduled", "cross"))).statusCode, 403);
+  assert.equal((await handler(request("game-scheduled", "admin", false))).statusCode, 400);
+  for (const account of ["admin", "scorer"]) {
+    const response = await handler(request("game-scheduled", account));
+    assert.equal(response.statusCode, 200); assert.equal(response.headers?.["cache-control"], "no-store");
+    assert.equal(response.headers?.["referrer-policy"], "no-referrer");
+    assert.deepEqual(JSON.parse(response.body), { removal: { gameId: "game-scheduled", playerId, teamId: "blue", removedAt: stamp } });
+    assert.doesNotMatch(response.body, /private-request|private-actor|example\.com/);
+  }
+  for (const gameId of ["game-live", "game-finished"]) {
+    const response = await handler(request(gameId, "admin"));
+    assert.equal(response.statusCode, 409); assert.equal(JSON.parse(response.body).code, "game_not_scheduled");
+  }
+  const deletedReplay = await handler(request("game-deleted", "admin"));
+  assert.equal(deletedReplay.statusCode, 200);
+  assert.deepEqual(JSON.parse(deletedReplay.body), { removal: { gameId: "game-deleted", playerId, teamId: null, removedAt: stamp } });
+  assert.equal(calls.length, 7);
+  assert(calls.every(call => call.playerId === playerId));
+  assert(calls.every(call => call.expectedRegistrationRevision === "registration-revision"));
+  assert(calls.some(call => call.userIds.includes("admin") && call.idempotencyKey === "remove-fixture-key"));
+  assert(calls.some(call => call.userIds.includes("scorer")));
 });
 
 test("Lambda consolidation routes enter authenticated dispatch and preserve private disabled responses", async () => {

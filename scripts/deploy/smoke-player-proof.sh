@@ -24,6 +24,10 @@ if [ "$SURFACE" = api ]; then
       -H "origin: ${APP_ORIGIN}" "${API_ORIGIN}/v1/${ROUTE}")"
     test "$CODE" = 401
   done
+  CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' -X DELETE \
+    -H "origin: ${APP_ORIGIN}" -H 'idempotency-key: unsigned-player-removal-smoke' \
+    "${API_ORIGIN}/v1/games/smoke-game/player-registration?playerId=smoke-player")"
+  test "$CODE" = 401
 elif [ "$SURFACE" = site ]; then
   for ROUTE in /link-player /link-player/; do
     PAGE="$(curl --max-time 20 -fsS "${APP_ORIGIN}${ROUTE}")"
