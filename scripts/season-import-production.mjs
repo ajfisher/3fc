@@ -16,8 +16,8 @@ const run = (binary, args) => execFileSync(binary, args, { encoding: "utf8", tim
 const log = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 export function productionArguments(args) {
   const [command] = args, opt = {};
-  need(["observe", "prepare", "apply"].includes(command), "choose observe, prepare or apply");
-  const allowed = { observe: ["--config", "--out"], prepare: ["--config", "--out", "--observation"],
+  need(["baseline", "observe", "prepare", "apply"].includes(command), "choose baseline, observe, prepare or apply");
+  const allowed = { baseline: ["--config", "--out"], observe: ["--config", "--out"], prepare: ["--config", "--out", "--observation"],
     apply: ["--config", "--out", "--manifest", "--approved-digest", "--apply"] }[command];
   for (let i = 1; i < args.length; i += 2) {
     need(allowed.includes(args[i]) && !Object.hasOwn(opt, args[i]) && args[i + 1], "invalid or duplicate option");
@@ -38,14 +38,37 @@ export function verifyBackup(description, table, frozenAt) {
     source.TableId === table.id && Date.parse(details.BackupCreationDateTime) >= Date.parse(frozenAt) + 905000 &&
     Date.parse(details.BackupCreationDateTime) <= Date.now(), "available on-demand backup of the exact table, taken after drain, required");
 }
-export function verifyWriter(f, deployment, env, accountId, tableName) {
+export function verifyWriter(f, deployment, env, accountId, tableName, baseline) {
   const expected = deployment.functionFingerprint, functionName = `3fc-${env}-api-core`;
   need(f.arn === `arn:aws:lambda:${region}:${accountId}:function:${functionName}` && f.name === functionName &&
     f.name === expected?.functionName && f.hash === deployment.packageCodeSha256 && f.hash === expected.codeSha256 &&
-    f.revision === expected.revisionId && f.state === "Active" && f.update === "Successful" && f.table === tableName &&
+    typeof expected.revisionId === "string" && expected.revisionId.length > 0 &&
+    typeof f.revision === "string" && f.revision.length > 0 && f.state === "Active" && f.update === "Successful" && f.table === tableName &&
     f.claim === "proof" && f.claim === expected.playerClaimMode && ["true", "false"].includes(f.returning) &&
     f.returning === expected.returningJoinEnabled && f.consolidation === expected.consolidationEnabled &&
     ["true", "false"].includes(f.consolidation) && (env !== "prod" || f.returning === "true"), "accepted deployed writer or player feature mismatch");
+  if (f.revision !== expected.revisionId) {
+    // Put/DeleteFunctionConcurrency change RevisionId without changing the
+    // deployed code or LastModified. Require the independently captured original
+    // accepted fingerprint, not an edited deployment manifest or a wildcard.
+    const original = baseline?.environments?.[env], observedAt = Date.parse(baseline?.at);
+    need(baseline?.accountId === accountId && original?.acceptedDeploymentSha === deployment.gitCommit &&
+      original.live?.revision === expected.revisionId && Number.isFinite(observedAt) && observedAt <= Date.now() &&
+      observedAt >= Date.parse(deployment.deployedAtUtc) && Date.parse(original.live.modified) <= observedAt &&
+      digest({ ...original.live, revision: f.revision }) === digest(f), "revision changed without a matching accepted pre-maintenance fingerprint");
+  }
+}
+export function writerBaseline(live, deployments, accountId, previous, at = new Date().toISOString()) {
+  const environments = {};
+  for (const env of ["qa", "prod"]) {
+    const f = live[env].function, d = deployments[env];
+    verifyWriter(f, d, env, accountId, live[env].table.name, previous);
+    // After an abandoned window, retain the original accepted anchor only if
+    // verification above proved that solely its concurrency revision changed.
+    environments[env] = { acceptedDeploymentSha: d.gitCommit,
+      live: f.revision === d.functionFingerprint.revisionId ? f : previous.environments[env].live };
+  }
+  return { accountId, at, environments };
 }
 function cleanHead() {
   need(resolve(process.cwd()) === resolve(root) && !run("git", ["status", "--porcelain", "--untracked-files=normal"]).trim(), "run from a clean repository checkout");
@@ -58,6 +81,7 @@ async function main(args) {
   need(config.exclusiveWriterFreeze === true, "operator must attest all manual, local, versioned and service writers are excluded");
   need(!Object.keys(process.env).some(k => k.startsWith("AWS_ENDPOINT_URL") && process.env[k]), "custom AWS endpoints unsupported");
   const deployments = { qa: await loadPrivate(config.qaDeployment), prod: await loadPrivate(config.prodDeployment) };
+  const writerProof = config.writerBaseline ? await loadPrivate(config.writerBaseline) : undefined;
   const aws = (...a) => JSON.parse(run("aws", [...a, "--profile", config.profile, "--region", region, "--output", "json"]));
   const gh = path => JSON.parse(run("gh", ["api", path]));
   need(aws("sts", "get-caller-identity").Account === config.accountId, "AWS account mismatch");
@@ -84,8 +108,8 @@ async function main(args) {
         need(Table?.TableStatus === "ACTIVE" && Table.TableArn === `arn:aws:dynamodb:${region}:${config.accountId}:table/${tableName}` && Table.TableId, "table provenance mismatch");
         const f = aws("lambda", "get-function-configuration", "--function-name", functionName, "--query",
           "{name:FunctionName,arn:FunctionArn,hash:CodeSha256,revision:RevisionId,state:State,update:LastUpdateStatus,modified:LastModified,table:Environment.Variables.DYNAMODB_TABLE,claim:Environment.Variables.PLAYER_CLAIM_MODE,returning:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,consolidation:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED}");
-        verifyWriter(f, d, env, config.accountId, tableName);
-        need(aws("lambda", "get-function-concurrency", "--function-name", functionName).ReservedConcurrentExecutions === 0, "both APIs must remain at reserved concurrency zero");
+        verifyWriter(f, d, env, config.accountId, tableName, writerProof);
+        if (command !== "baseline") need(aws("lambda", "get-function-concurrency", "--function-name", functionName).ReservedConcurrentExecutions === 0, "both APIs must remain at reserved concurrency zero");
         need((aws("lambda", "list-aliases", "--function-name", functionName).Aliases ?? []).length === 0 &&
           (aws("lambda", "list-event-source-mappings", "--function-name", functionName).EventSourceMappings ?? []).length === 0, "unexpected alias or queued event source");
         const workflow = `repos/ajfisher/3fc/actions/workflows/deploy-${env}.yml`;
@@ -96,6 +120,10 @@ async function main(args) {
       return live;
     };
     const live = await readFreeze();
+    if (command === "baseline") {
+      await privateFile(`${out}/writer-baseline.json`, writerBaseline(live, deployments, config.accountId, writerProof));
+      log({ stage: "accepted-writers-recorded-no-writes" }); return;
+    }
     if (command === "observe") {
       await privateFile(`${out}/observation.json`, { at: new Date().toISOString(), live, toolSha });
       log({ stage: "freeze-observed", waitSeconds: 905 }); return;
@@ -105,7 +133,8 @@ async function main(args) {
       validateCutover(manifest);
       need(manifest.digest === opt["--approved-digest"] && manifest.provenance.toolSha === toolSha &&
         manifest.provenance.accountId === config.accountId && manifest.provenance.reviewedPlan === config.reviewedPlan &&
-        manifest.provenance.scopeDigest === digest(config.scope), "approval, checkout, account or scope mismatch");
+        manifest.provenance.scopeDigest === digest(config.scope) && manifest.provenance.writerBaselineDigest === digest(writerProof ?? null),
+      "approval, checkout, account, writer baseline or scope mismatch");
     }
     const observation = manifest?.provenance.observation ?? await loadPrivate(opt["--observation"]);
     need(observation.toolSha === toolSha, "tooling changed since freeze observation");
@@ -121,7 +150,7 @@ async function main(args) {
       need(inventoryDigest(await scan(client, sourceTable, true)) === plan.sourceDigest, "source changed during capture");
       verifyFreeze(observation, await readFreeze(), Date.now());
       const prepared = cutoverManifest(plan, baseline, { toolSha, accountId: config.accountId, reviewedPlan: config.reviewedPlan,
-        scopeDigest: digest(config.scope), observation, backups });
+        scopeDigest: digest(config.scope), writerBaselineDigest: digest(writerProof ?? null), observation, backups });
       await privateFile(`${out}/manifest.json`, prepared);
       log({ stage: "prepared-no-writes", digest: prepared.digest, summary: plan.summary }); return;
     }

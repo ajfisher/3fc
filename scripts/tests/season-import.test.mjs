@@ -4,7 +4,7 @@ import { buildPlan, validatePlan, envelope, decode, subject, projection, invento
 import { assertDisposable, assertOwned, assertDestinationEmptyOfBusiness, writeItems, scan, readOnlyRepositoryClient, collectOwnedPlayers } from "../season-import-rehearsal.mjs";
 import { BatchGetItemCommand, GetItemCommand, PutItemCommand, TransactWriteItemsCommand } from "@aws-sdk/client-dynamodb";
 import { SeasonImportExecutor, cutoverManifest, validateCutover, isControl } from "../season-import-executor.mjs";
-import { productionArguments, verifyFreeze, verifyBackup, verifyWriter } from "../season-import-production.mjs";
+import { productionArguments, verifyFreeze, verifyBackup, verifyWriter, writerBaseline } from "../season-import-production.mjs";
 import { key, digest } from "../season-import-plan.mjs";
 
 const at = "2026-10-03T00:00:00Z", name = "3fc-import-rehearsal-12345678-1234-1234-1234-123456789012";
@@ -355,6 +355,8 @@ test("production CLI requires an explicit mode and approved manifest digest, nev
   assert.equal(productionArguments([...base, "--approved-digest", "a".repeat(64), "--apply", "production-season-import"]).command, "apply");
   assert.throws(() => productionArguments(["observe", "--config", "x", "--out", "x", "--table", "other"]), /invalid/);
   assert.throws(() => productionArguments(["prepare", "--config", "x", "--out", "x", "--observation", "x", "--apply", "anything"]), /invalid/);
+  assert.equal(productionArguments(["baseline", "--config", "x", "--out", "new"]).command, "baseline");
+  assert.throws(() => productionArguments(["baseline", "--config", "x", "--out", "new", "--apply", "anything"]), /invalid/);
 });
 
 test("freeze drain and physical-table backups must be current, complete and match", () => {
@@ -378,10 +380,48 @@ test("accepted writer pins account, physical endpoint, revision and player featu
   const deployment = { packageCodeSha256: live.hash, functionFingerprint: { functionName: live.name, codeSha256: live.hash,
     revisionId: live.revision, playerClaimMode: "proof", returningJoinEnabled: "true", consolidationEnabled: "false" } };
   verifyWriter(live, deployment, "prod", "123456789012", "3fc-prod-app");
-  for (const mutation of [{ revision: "changed" }, { hash: "changed" }, { arn: "different-account" }, { table: "3fc-qa-app" },
+  assert.throws(() => verifyWriter({ ...live, revision: "changed" }, deployment, "prod", "123456789012", "3fc-prod-app"), /pre-maintenance fingerprint/);
+  for (const mutation of [{ hash: "changed" }, { arn: "different-account" }, { table: "3fc-qa-app" },
     { claim: "disabled" }, { returning: "false" }, { consolidation: "true" }]) {
     assert.throws(() => verifyWriter({ ...live, ...mutation }, deployment, "prod", "123456789012", "3fc-prod-app"), /writer or player feature/);
   }
   const disabled = structuredClone(deployment); disabled.functionFingerprint.returningJoinEnabled = "false";
   assert.throws(() => verifyWriter({ ...live, returning: "false" }, disabled, "prod", "123456789012", "3fc-prod-app"), /writer or player feature/);
+});
+
+test("concurrency revision changes require the original accepted baseline; runtime and observation drift still fail", () => {
+  const account = "123456789012", live = {}, deployments = {};
+  for (const env of ["qa", "prod"]) {
+    const f = { name: `3fc-${env}-api-core`, arn: `arn:aws:lambda:ap-southeast-2:${account}:function:3fc-${env}-api-core`,
+      hash: "accepted-package", revision: `accepted-${env}`, state: "Active", update: "Successful", modified: "2026-09-01T00:00:00Z",
+      table: `3fc-${env}-app`, claim: "proof", returning: "true", consolidation: "false" };
+    live[env] = { function: f, table: { name: f.table } };
+    deployments[env] = { gitCommit: env === "qa" ? "a".repeat(40) : "b".repeat(40), deployedAtUtc: "2026-09-01T00:01:00Z", packageCodeSha256: f.hash,
+      functionFingerprint: { functionName: f.name, codeSha256: f.hash, revisionId: f.revision, playerClaimMode: "proof", returningJoinEnabled: "true", consolidationEnabled: "false" } };
+  }
+  const baseline = writerBaseline(live, deployments, account, undefined, "2026-09-02T00:00:00Z");
+  const paused = structuredClone(live);
+  for (const env of ["qa", "prod"]) {
+    paused[env].function.revision = `paused-${env}`;
+    verifyWriter(paused[env].function, deployments[env], env, account, live[env].table.name, baseline);
+  }
+  const resumedBaseline = writerBaseline(paused, deployments, account, baseline, "2026-09-03T00:00:00Z");
+  assert.equal(resumedBaseline.environments.prod.live.revision, "accepted-prod", "keep original provenance after an abandoned window");
+  const missingRevision = structuredClone(deployments.prod), missingAnchor = structuredClone(baseline);
+  delete missingRevision.functionFingerprint.revisionId; delete missingAnchor.environments.prod.live.revision;
+  assert.throws(() => verifyWriter(paused.prod.function, missingRevision, "prod", account, "3fc-prod-app", missingAnchor), /writer or player feature/);
+  for (const mutate of [
+    b => { b.accountId = "999999999999"; },
+    b => { b.environments.prod.acceptedDeploymentSha = "c".repeat(40); },
+    b => { b.environments.prod.live.revision = "invented-original"; },
+    b => { b.at = "invalid"; }, b => { b.at = "2026-08-31T00:00:00Z"; }, b => { b.at = "2999-01-01T00:00:00Z"; },
+  ]) {
+    const invalid = structuredClone(baseline); mutate(invalid);
+    assert.throws(() => verifyWriter(paused.prod.function, deployments.prod, "prod", account, "3fc-prod-app", invalid), /pre-maintenance fingerprint/);
+  }
+  assert.throws(() => verifyWriter({ ...paused.prod.function, modified: "2026-09-02T00:00:01Z" }, deployments.prod, "prod", account, "3fc-prod-app", baseline), /pre-maintenance fingerprint/);
+  assert.throws(() => verifyWriter({ ...paused.prod.function, returning: "false" }, deployments.prod, "prod", account, "3fc-prod-app", baseline), /feature mismatch/);
+  const observed = { at: "2026-09-03T00:00:00Z", live: paused }, changed = structuredClone(paused);
+  changed.prod.function.revision = "another-change-after-freeze";
+  assert.throws(() => verifyFreeze(observed, changed, Date.parse(observed.at) + 905000), /writer changed/);
 });
