@@ -30,7 +30,10 @@ const claimKey = id => Buffer.byteLength(`PLAYER#${id}`) <= 1024 ? `PLAYER#${id}
 export function buildPlan(source, scope, options = {}) {
   const at = options.at ?? new Date().toISOString(), nonce = options.nonce ?? randomUUID();
   const code = options.code ?? freshCode;
-  const { leagueId, seasonId, excludedGameIds, adminEmails = [], adminPlayerIds = [] } = scope;
+  const { leagueId, seasonId, excludedGameIds, adminEmails = [], adminPlayerIds = [], ownershipMappings = [] } = scope;
+  need(Array.isArray(ownershipMappings) && ownershipMappings.every(t => t && typeof t.playerId === "string" &&
+    /^magic-link:[A-Za-z0-9_-]{43}$/.test(t.expectedOwner ?? "") && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t.toEmail ?? "")), "invalid_ownership_transfer");
+  need(new Set(ownershipMappings.map(t => t.playerId)).size === ownershipMappings.length, "duplicate_ownership_transfer");
   need([leagueId, seasonId].every(x => typeof x === "string" && x.length > 0), "invalid_scope");
   need(Array.isArray(excludedGameIds) && new Set(excludedGameIds).size === excludedGameIds.length, "invalid_exclusions");
   need(Array.isArray(adminEmails) && Array.isArray(adminPlayerIds) && adminEmails.length + adminPlayerIds.length === 2 &&
@@ -152,7 +155,31 @@ export function buildPlan(source, scope, options = {}) {
     need(id === identity.rootId || identity.members.length === 0, "alias_members");
     need(root.members.every(member => decode(get(`PLAYER#${member}`, "IDENTITY", "playerIdentity")).rootId === root.playerId), "identity_backreference");
     identities.set(id, identity); roots.add(identity.rootId);
-    copy(`PLAYER#${id}`, "PROFILE", "player"); copy(`PLAYER#${id}`, "IDENTITY", "playerIdentity");
+    copy(`PLAYER#${id}`, "IDENTITY", "playerIdentity");
+  }
+  // Account repair is explicit and conditional on the observed canonical owner.
+  // Preserve unclaimed aliases; transfer every claimed member in this group so
+  // no historical alias can retain authority for the former account.
+  const transfers = new Map();
+  for (const transfer of ownershipMappings) {
+    need(roots.has(transfer.playerId), "transfer_requires_selected_root");
+    const owner = decode(get(`PLAYER#${transfer.playerId}`, "PROFILE", "player")).claimedByUserId;
+    const next = subject(transfer.toEmail);
+    need(owner === transfer.expectedOwner, "transfer_owner_precondition");
+    need(owner === next || !rows.some(r => r.type === "player" && r.d.claimedByUserId === next &&
+      !identities.get(transfer.playerId).members.includes(r.d.playerId)), "transfer_destination_already_claimed");
+    need(![...transfers.values()].some(t => t.to === next), "duplicate_transfer_destination");
+    need(identities.get(transfer.playerId).members.every(id => {
+      const current = decode(get(`PLAYER#${id}`, "PROFILE", "player")).claimedByUserId;
+      return current === null || current === owner;
+    }), "conflicting_claim_owners");
+    transfers.set(transfer.playerId, { from: owner, to: next });
+  }
+  const targetProfile = id => decode(output.get(JSON.stringify([`PLAYER#${id}`, "PROFILE"])));
+  for (const id of ids) {
+    const row = get(`PLAYER#${id}`, "PROFILE", "player"), d = decode(row), transfer = transfers.get(identities.get(id).rootId);
+    if (transfer && transfer.from !== transfer.to && d.claimedByUserId !== null) add({ ...row, updatedAt: { S: at }, data: { S: JSON.stringify({ ...d, claimedByUserId: transfer.to }) } });
+    else add(row, true);
   }
   // A player shared with unselected scope needs a separate reviewed plan.
   for (const r of rows.filter(r => ids.has(r.d.playerId))) {
@@ -179,8 +206,8 @@ export function buildPlan(source, scope, options = {}) {
       formerNames: identity.formerNames, active, seasonIds: hasSeason ? [seasonId] : [], hasMoreSeasons: false });
     if (active) {
       create(`PLAYER#${id}`, projection("LEAGUE", leagueId), "playerLeagueMembership", { playerId: id, leagueId });
-      const owner = decode(get(`PLAYER#${id}`, "PROFILE", "player")).claimedByUserId;
-      need(identity.members.every(member => { const other = decode(get(`PLAYER#${member}`, "PROFILE", "player")).claimedByUserId; return other === null || other === owner; }), "conflicting_claim_owners");
+      const owner = targetProfile(id).claimedByUserId;
+      need(identity.members.every(member => { const other = targetProfile(member).claimedByUserId; return other === null || other === owner; }), "conflicting_claim_owners");
       if (owner !== null) {
         // This rehearsal is for the current magic-link identity scheme only.
         need(/^magic-link:[A-Za-z0-9_-]{43}$/.test(owner), "unsupported_claim_owner");
@@ -194,6 +221,7 @@ export function buildPlan(source, scope, options = {}) {
   const accounts = emails.map(email => [subject(email), email]);
   for (const playerId of adminPlayerIds) {
     need(roots.has(playerId), "admin_player_not_selected_root");
+    need(!transfers.has(playerId) || transfers.get(playerId).from === transfers.get(playerId).to, "transferred_admin_requires_explicit_email");
     const owner = decode(get(`PLAYER#${playerId}`, "PROFILE", "player")).claimedByUserId;
     need(typeof owner === "string" && owner.length > 0, "admin_player_unclaimed"); accounts.push([owner]);
   }
@@ -212,7 +240,8 @@ export function buildPlan(source, scope, options = {}) {
   const items = [...output.values()].sort((a, b) => key(a).localeCompare(key(b), "en"));
   const plan = { version: 1, purpose: "disposable-rehearsal-only", at, nonce, scope: { leagueId, seasonId, excludedGameIds },
     sourceDigest: inventoryDigest(source), items, copiedKeys: [...copiedKeys].sort(), transformedKeys: [...transformedKeys].sort(),
-    admins, summary: { games: games.length, sessions: sessionIds.size, goals: selected.filter(r => r.type === "goal").length,
+    ownershipBindings: [...transfers].map(([playerId, t]) => ({ playerId, ...t })),
+    admins, summary: { ownershipTransfers: [...transfers.values()].filter(t => t.from !== t.to).length, verifiedOwnershipBindings: transfers.size, games: games.length, sessions: sessionIds.size, goals: selected.filter(r => r.type === "goal").length,
       historicalPlayerIds: ids.size, directlyReferencedPlayerIds: directlyReferenced, canonicalPlayers: roots.size, claimedAccounts: owners.size, adminGrants: admins.length,
       copiedRows: copiedKeys.size, generatedOrTransformedRows: transformedKeys.size, totalRows: items.length } };
   validatePlan(plan);

@@ -15,8 +15,9 @@ release approval.
 - Exactly 2 source admin grants retained, identified by the requested email and
   the uniquely claimed Xavier profile. Other source admin grants were omitted.
 - 2 claimed accounts retained their existing ownership. Admin access selection
-  does not change player ownership. AJ's optional requested-account choice must
-  be settled separately before any production ownership change.
+  does not change player ownership. The follow-up live check confirms AJ already owns the canonical profile through
+  the requested Gmail account; the earlier conversational attribution to another
+  address was incorrect. No ownership transfer is needed for this snapshot.
 - 1,611 rows imported: 1,107 copied exactly and 504 generated/transformed records
   (membership/directory/claim projections, rotated join lookup codes and game
   metadata, fresh control and reconstructed legacy session addresses).
