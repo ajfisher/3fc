@@ -34,6 +34,7 @@ provider:
     PLAYER_PROFILES_ENABLED: ${env:PLAYER_PROFILES_ENABLED, 'false'}
     PLAYER_ACHIEVEMENTS_ENABLED: ${env:PLAYER_ACHIEVEMENTS_ENABLED, 'false'}
     PLAYER_OWNER_EDITING_ENABLED: ${env:PLAYER_OWNER_EDITING_ENABLED, 'false'}
+    HISTORY_PROCESSING_ENABLED: ${env:HISTORY_PROCESSING_ENABLED, 'false'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS, '3'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS, '900'}
     MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS, '20'}
@@ -333,6 +334,15 @@ functions:
       - httpApi:
           method: POST
           path: /v1/player-proofs/preview
+      - httpApi:
+          method: GET
+          path: /v1/owner-player-profile
+      - httpApi:
+          method: PATCH
+          path: /v1/owner-player-profile
+      - httpApi:
+          method: OPTIONS
+          path: /v1/owner-player-profile
       - httpApi:
           method: GET
           path: /v1/player-access

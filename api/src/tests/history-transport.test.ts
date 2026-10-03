@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createHistoryDispatcher, createHistoryWorker, historyQueueReferenceSchema, processHistorySteps,
-  type HistoryQueueReference } from '../history-transport.js';
+import { createHistoryDispatcher, createHistoryWorker, historyQueueReferenceSchema, workQueueReferenceSchema, processHistorySteps,
+  type HistoryQueueReference, type WorkQueueReference } from '../history-transport.js';
 import { historyHash } from '../data/player-history-model.js';
 
 const revision = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -27,7 +27,7 @@ function replaceData(record: ReturnType<typeof stream>, fields: Record<string, u
 }
 
 test('stream dispatcher publishes only strict work/player references and omits stored checkpoint/private data', async () => {
-  const sent: Array<{ reference: HistoryQueueReference; delay: number | undefined }> = [];
+  const sent: Array<{ reference: WorkQueueReference; delay: number | undefined }> = [];
   const handler = createHistoryDispatcher({ enabled: () => true, send: async (reference, delay) => { sent.push({ reference, delay }); } });
   const modified = stream('player', '125'); modified.eventName = 'MODIFY';
   assert.deepEqual(await handler({ Records: [stream(), stream('player', '124'), modified] }), { batchItemFailures: [] });
@@ -71,7 +71,7 @@ test('dispatcher retries only failed queue sends using SequenceNumber rather tha
 });
 
 test('worker re-reads validated references, continues unfinished checkpoints and acknowledges completed work', async () => {
-  const processed: HistoryQueueReference[] = [], sent: Array<[HistoryQueueReference, number | undefined]> = [];
+  const processed: WorkQueueReference[] = [], sent: Array<[WorkQueueReference, number | undefined]> = [];
   const handler = createHistoryWorker({ enabled: () => true, process: async reference => {
     processed.push(reference); return { done: reference.kind === 'player' };
   }, send: async (reference, delay) => { sent.push([reference, delay]); } });
@@ -207,7 +207,7 @@ function directoryStream(sequence = '456') {
 }
 
 test('directory inserts and modifications queue only their league/key reference, preserving opaque league IDs', async () => {
-  const sent: Array<[HistoryQueueReference, number | undefined]> = [];
+  const sent: Array<[WorkQueueReference, number | undefined]> = [];
   const handler = createHistoryDispatcher({ enabled: () => true, send: async (reference, delay) => { sent.push([reference, delay]); } });
   const modified = directoryStream('457'); modified.eventName = 'MODIFY';
   replaceData(modified, { revision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' });
@@ -240,10 +240,10 @@ test('directory stream records reject malformed revisions and forged namespace, 
 });
 
 test('directory references remain strict through worker continuations, send failures and disabled processing', async () => {
-  const processed: HistoryQueueReference[] = [], sent: HistoryQueueReference[] = [];
-  const dependencies = { enabled: () => true, process: async (reference: HistoryQueueReference) => {
+  const processed: WorkQueueReference[] = [], sent: WorkQueueReference[] = [];
+  const dependencies = { enabled: () => true, process: async (reference: WorkQueueReference) => {
     processed.push(reference); return { done: false };
-  }, send: async (reference: HistoryQueueReference, delay?: number) => {
+  }, send: async (reference: WorkQueueReference, delay?: number) => {
     assert.equal(delay, 1); sent.push(reference); throw new Error('send failed');
   } };
   assert.deepEqual(await createHistoryWorker(dependencies)({ Records: [sqs(directory, 'directory-message')] }),
@@ -264,4 +264,66 @@ test('directory dispatcher send failures retain the stream sequence for retry', 
     assert.deepEqual(reference, directory); throw new Error('queue unavailable');
   } });
   assert.deepEqual(await handler({ Records: [directoryStream('987')] }), { batchItemFailures: [{ itemIdentifier: '987' }] });
+});
+
+const profile: WorkQueueReference = { version: 1, kind: 'profile', playerHash: historyHash('player/opaque#λ'), key: `NAME#${revision}` };
+function profileStream(sequence = '700') {
+  const record = stream('work', sequence);
+  record.dynamodb.Keys.pk.S = `PLAYER_PROFILE_WORK#${historyHash('player/opaque#λ')}`;
+  record.dynamodb.Keys.sk.S = profile.key;
+  record.dynamodb.NewImage.pk.S = record.dynamodb.Keys.pk.S;
+  record.dynamodb.NewImage.sk.S = profile.key;
+  record.dynamodb.NewImage.entityType.S = 'playerProfileNameWork';
+  record.dynamodb.NewImage.data.S = JSON.stringify({ version: 1, jobId: revision, playerId: 'player/opaque#λ',
+    nameRevision: revision, displayName: 'New private presentation', members: ['player/opaque#λ', 'alias'], memberIndex: 0,
+    cursor: null, status: 'pending', createdAt: '2026-10-04T00:00:00Z', updatedAt: '2026-10-04T00:00:00Z' });
+  return record;
+}
+
+test('profile name work dispatches only hashed references on inserts and pending checkpoints', async () => {
+  const sent: WorkQueueReference[] = [];
+  const handler = createHistoryDispatcher({ enabled: () => true, send: async ref => { sent.push(ref); } });
+  const modified = replaceData(profileStream('701'), { memberIndex: 1 }); modified.eventName = 'MODIFY';
+  const done = replaceData(profileStream('702'), { status: 'done', completionReason: 'completed' }); done.eventName = 'MODIFY';
+  const removed = profileStream('703'); removed.eventName = 'REMOVE';
+  assert.deepEqual(await handler({ Records: [profileStream(), modified, done, removed] }), { batchItemFailures: [] });
+  assert.deepEqual(sent, [profile, profile]);
+  assert.doesNotMatch(JSON.stringify(sent), /player\/opaque|private presentation|alias|members|cursor|displayName/);
+  assert.equal(historyQueueReferenceSchema.safeParse(profile).success, false, 'history coordinator contract does not widen');
+  assert.equal(workQueueReferenceSchema.safeParse(profile).success, true);
+});
+
+test('profile stream namespace, hash, revision, status and private extensions must match the stored work model', async () => {
+  const malformed = [replaceData(profileStream(), { playerId: 'other' }), replaceData(profileStream(), { nameRevision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }),
+    replaceData(profileStream(), { jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }), replaceData(profileStream(), { version: 2 }),
+    replaceData(profileStream(), { status: 'unknown' }), replaceData(profileStream(), { email: 'private@example.test' })];
+  const wrongType = profileStream(); wrongType.dynamodb.NewImage.entityType.S = 'player'; malformed.push(wrongType);
+  for (const [pk, sk] of [['PLAYER#player/opaque#λ', profile.key], ['PLAYER_PROFILE_WORK#bad-hash', profile.key],
+    [`PLAYER_PROFILE_WORK#${historyHash('player/opaque#λ')}`, `NAME#bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb`]]) {
+    const record = profileStream(); record.dynamodb.Keys.pk.S = pk; record.dynamodb.NewImage.pk.S = pk;
+    record.dynamodb.Keys.sk.S = sk; record.dynamodb.NewImage.sk.S = sk; malformed.push(record);
+  }
+  const handler = createHistoryDispatcher({ enabled: () => true, send: async () => { assert.fail('malformed profile work queued'); } });
+  for (const record of malformed) assert.deepEqual(await handler({ Records: [record] }), { batchItemFailures: [{ itemIdentifier: '700' }] });
+});
+
+test('profile continuations preserve identity, retry original messages on failure and reject payload extensions', async () => {
+  const processed: WorkQueueReference[] = [], sent: WorkQueueReference[] = [];
+  const dependencies = { enabled: () => true, process: async (ref: WorkQueueReference) => { processed.push(ref); return { done: false }; },
+    send: async (ref: WorkQueueReference, delay?: number) => { sent.push(ref); assert.equal(delay, 1); throw new Error('send failed'); } };
+  assert.deepEqual(await createHistoryWorker(dependencies)({ Records: [sqs(profile, 'profile-original')] }),
+    { batchItemFailures: [{ itemIdentifier: 'profile-original' }] });
+  assert.deepEqual(processed, [profile]); assert.deepEqual(sent, [profile]);
+  for (const ref of [{ ...profile, playerId: 'injected' }, { ...profile, leagueId: 'league' }, { ...profile, displayName: 'Private' },
+    { ...profile, playerHash: 'bad' }, { ...profile, key: work.key }, { ...profile, version: 2 }]) {
+    assert.equal(workQueueReferenceSchema.safeParse(ref).success, false);
+    assert.deepEqual(await createHistoryWorker(dependencies)({ Records: [sqs(ref, 'malformed')] }), { batchItemFailures: [{ itemIdentifier: 'malformed' }] });
+  }
+  assert.deepEqual(await createHistoryWorker({ ...dependencies, enabled: () => false })({ Records: [sqs(profile, 'disabled')] }),
+    { batchItemFailures: [{ itemIdentifier: 'disabled' }] });
+  assert.deepEqual(await createHistoryDispatcher({ enabled: () => false, send: dependencies.send })({ Records: [profileStream()] }),
+    { batchItemFailures: [{ itemIdentifier: '700' }] });
+  assert.equal(processed.length, 1); assert.equal(sent.length, 1);
+  assert.deepEqual(await createHistoryDispatcher({ enabled: () => true, send: async ref => { assert.deepEqual(ref, profile); throw new Error('failed'); } })
+    ({ Records: [profileStream('709')] }), { batchItemFailures: [{ itemIdentifier: '709' }] });
 });

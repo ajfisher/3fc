@@ -17,6 +17,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerConsolidationService } from "./player-consolidation.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
+import { OwnerPlayerProfileService } from "./owner-player-profile.js";
 import { PlayerProfileAccess } from "./player-profile-access.js";
 import { PlayerProfileReadService } from "./player-profile-read.js";
 import { OwnedPlayerJoinService } from "./owned-player-join.js";
@@ -1063,6 +1064,12 @@ function withTimestamps<T extends object>(
 }
 
 export class ThreeFcRepository {
+  private ownerProfileService(): OwnerPlayerProfileService {
+    if (process.env.PLAYER_OWNER_EDITING_ENABLED !== "true") throw new PlayerIdentityError("owner_profile_disabled", 503, "Player editing is temporarily unavailable.");
+    return new OwnerPlayerProfileService(this.client, this.tableName, { now: () => this.clock.now() });
+  }
+  getOwnerPlayerProfile(input: Parameters<OwnerPlayerProfileService["read"]>[0]) { return this.ownerProfileService().read(input); }
+  renameOwnerPlayerProfile(input: Parameters<OwnerPlayerProfileService["rename"]>[0]) { return this.ownerProfileService().rename(input); }
   private profileReadService(): PlayerProfileReadService {
     return new PlayerProfileReadService(this.client, this.tableName, undefined, {
       profiles: process.env.PLAYER_PROFILES_ENABLED === "true",

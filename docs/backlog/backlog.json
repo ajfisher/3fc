@@ -3405,11 +3405,12 @@
         "Local and Lambda endpoints, private media storage, CSP and deployment paths have evidence."
       ],
       "delivery": {
-        "asOf": "2026-10-03",
-        "status": "planned",
+        "asOf": "2026-10-04",
+        "status": "in_progress",
         "wave": "player-profiles-achievements",
         "notes": [
-          "Approved Club Card build plan; retain existing issue IDs and dependencies."
+          "Approved Club Card build plan; retain existing issue IDs and dependencies.",
+          "Owner-only name and private-details API with atomic directory work is in progress; portrait storage and owner UI remain subsequent reviewed stack slices."
         ],
         "githubIssue": 202
       }

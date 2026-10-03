@@ -14,6 +14,10 @@ export const historyFilters = [
     Keys: { pk: { S: [{ prefix: 'LEAGUE#' }] }, sk: { S: ['PLAYER_DIRECTORY'] } },
     NewImage: { entityType: { S: ['playerDirectoryRevision'] } }
   } },
+  { eventName: ['INSERT', 'MODIFY'], dynamodb: {
+    Keys: { pk: { S: [{ prefix: 'PLAYER_PROFILE_WORK#' }] } },
+    NewImage: { entityType: { S: ['playerProfileNameWork'] } }
+  } },
 ];
 
 export function verifyHistorySnapshot(intent, snapshot) {

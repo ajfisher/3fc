@@ -224,3 +224,19 @@ no growing cursor. Seven focused cases, all16 access cases and76 related profile
 identity, consolidation and returning-join tests pass (group33280 exit0,
 peak81248KiB, no children). API test compilation passes. Fresh current-head CI,
 QA and review-gate evidence is required before owner editing begins.
+
+
+Corrected PR #209 head `8f11120dc15aa60af23dd431a66fe86d5b3de728` passed
+CI37128427357, QA37128427395 and actual current-head review-gate111218443808.
+Both independent delta reviews passed; cloud review found no major issues
+(comment5969975941). The owner-name child began after these gates.
+
+Slice7: `codex/player-owner-name`, based on PR #209. Adds verified-owner private
+reads and canonical name changes with atomic durable directory work. Independent
+owner/API, transport/privacy and worker reviews passed after a cursor-validation
+fix. All46 focused tests and517 affected regression tests pass (group34766 exit0,
+peak250048KiB, no children). Full build, backlog validation/export, OpenAPI parsing,
+shell syntax, Terraform fmt/validate and diff check pass. QA Terraform applied one
+scoped worker IAM policy change, zero additions/deletions (group36759 exit0,
+peak731184KiB, no children). Portraits and owner UI remain separate next slices;
+this does not close #202. Remote current-head gates are required before proceeding.

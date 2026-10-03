@@ -147,7 +147,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `M3-10` | player-profiles-achievements | in-progress | [#200](https://github.com/ajfisher/3fc/issues/200) | - |
 | `M3-11` | player-profiles-achievements | in-progress | [#201](https://github.com/ajfisher/3fc/issues/201) | codex/achievement-evaluator |
 | `M3-12` | player-profiles-achievements | planned | [#203](https://github.com/ajfisher/3fc/issues/203) | - |
-| `M3-13` | player-profiles-achievements | planned | [#202](https://github.com/ajfisher/3fc/issues/202) | - |
+| `M3-13` | player-profiles-achievements | in_progress | [#202](https://github.com/ajfisher/3fc/issues/202) | - |
 | `M3-14` | player-profiles-achievements | review-ready | [#199](https://github.com/ajfisher/3fc/issues/199) | codex/player-profiles |
 
 ## Global Test Scenarios

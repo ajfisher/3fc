@@ -102,6 +102,11 @@ test('mapping drift, duplicate consumers, queue policy changes and missing evide
     live => { live.mappings.worker.push(structuredClone(live.mappings.worker[0])); },
     live => { live.mappings.dispatch[0].FilterCriteria.Filters.pop(); },
     live => {
+      const filter = JSON.parse(live.mappings.dispatch[0].FilterCriteria.Filters[3].Pattern);
+      filter.dynamodb.Keys.pk.S = [{ prefix: 'PLAYER#' }];
+      live.mappings.dispatch[0].FilterCriteria.Filters[3].Pattern = JSON.stringify(filter);
+    },
+    live => {
       const filter = JSON.parse(live.mappings.dispatch[0].FilterCriteria.Filters[2].Pattern);
       delete filter.dynamodb.Keys;
       live.mappings.dispatch[0].FilterCriteria.Filters[2].Pattern = JSON.stringify(filter);
@@ -140,9 +145,9 @@ test('worker IAM separates bounded source reads from derived puts and requires p
   const statements = [...worker.matchAll(/\{\s*Sid\s*=\s*"([^"]+)"([\s\S]*?)\n    \}/g)];
   assert.deepEqual(statements.map(match => match[1]), ['HistoryReadAndCheck', 'HistoryWriteDerived']);
   const expected = [
-    { actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:ConditionCheckItem'],
-      keys: ['PLAYER#*', 'GAME#*', 'LEAGUE#*', 'PLAYER_HISTORY#*', 'PLAYER_HISTORY', 'PLAYER_IDENTITY', 'PLAYER_IDENTITY_TOMBSTONE'] },
-    { actions: ['dynamodb:PutItem'], keys: ['PLAYER_HISTORY#*', 'LEAGUE#*'] }
+    { actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem', 'dynamodb:Query', 'dynamodb:ConditionCheckItem'],
+      keys: ['PLAYER#*', 'GAME#*', 'LEAGUE#*', 'PLAYER_HISTORY#*', 'PLAYER_HISTORY', 'PLAYER_IDENTITY', 'PLAYER_IDENTITY_TOMBSTONE', 'PLAYER_PROFILE_WORK#*'] },
+    { actions: ['dynamodb:PutItem'], keys: ['PLAYER_HISTORY#*', 'LEAGUE#*', 'PLAYER_PROFILE_WORK#*'] }
   ];
   for (const [index, match] of statements.entries()) {
     const statement = match[2];
@@ -170,7 +175,11 @@ test('history deployment stays in serialized jobs and requires separately provis
   assert.doesNotMatch(service, /httpApi:/);
   const patterns = [...service.matchAll(/- Pattern: '([^']+)'/g)].map(match => JSON.parse(match[1]));
   assert.deepEqual(patterns, historyFilters);
-  assert.equal(patterns.length, 3);
+  assert.equal(patterns.length, 4);
+  assert.deepEqual(patterns[3], { eventName: ['INSERT', 'MODIFY'], dynamodb: {
+    Keys: { pk: { S: [{ prefix: 'PLAYER_PROFILE_WORK#' }] } },
+    NewImage: { entityType: { S: ['playerProfileNameWork'] } }
+  } });
   assert.deepEqual(patterns[2], { eventName: ['INSERT', 'MODIFY'], dynamodb: {
     Keys: { pk: { S: [{ prefix: 'LEAGUE#' }] }, sk: { S: ['PLAYER_DIRECTORY'] } },
     NewImage: { entityType: { S: ['playerDirectoryRevision'] } }

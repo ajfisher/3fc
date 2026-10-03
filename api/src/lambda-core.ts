@@ -1,3 +1,4 @@
+import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, parseOwnerProfileBody, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
 import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -191,7 +192,7 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository,
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository, OwnerPlayerProfileRepository,
   Pick<ThreeFcRepository, "getPlayerView"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
@@ -5210,6 +5211,22 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        if (isOwnerPlayerProfileRoute(method, route)) {
+          const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store", "referrer-policy": "no-referrer" };
+          let body: unknown;
+          if (method === "PATCH" && session && process.env.PLAYER_OWNER_EDITING_ENABLED === "true") {
+            try { body = parseOwnerProfileBody(event.body ?? ""); }
+            catch (error) {
+              status = error instanceof RangeError ? 413 : 400;
+              return createJsonResponse(status, { error: status === 413 ? "payload_too_large" : "bad_request",
+                message: status === 413 ? "Request body must be at most 8 KiB." : "Request body must be valid JSON." }, headers);
+            }
+          }
+          const keys = Object.entries(event.headers ?? {}).filter(([name]) => name.toLowerCase() === "idempotency-key");
+          const result = await handleOwnerPlayerProfileRoute({ method, route, body, rawQueryString: event.rawQueryString ?? "",
+            idempotencyKey: keys.length === 1 ? keys[0][1] : undefined, session, repository: dependencies.repository });
+          status = result.statusCode; return createJsonResponse(status, result.payload, headers);
+        }
         if (isPlayerProfileRoute(method, route)) {
           const result = await handlePlayerProfileRoute({ method, route, rawQueryString: event.rawQueryString ?? "",
             session, repository: dependencies.repository });

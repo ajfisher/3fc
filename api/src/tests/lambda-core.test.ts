@@ -1,3 +1,4 @@
+import type { OwnerPlayerProfileRepository } from "../owner-player-profile-routes.js";
 import type { PlayerProfileRepository } from "../player-profile-routes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -260,6 +261,7 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  ownerProfiles?: Partial<OwnerPlayerProfileRepository>;
   profileReads?: Partial<PlayerProfileRepository>;
   onLeagueAccessRead?: () => void;
   resumeLeagueDeletion?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
@@ -1028,6 +1030,9 @@ function createHarness(config: HarnessConfig = {}) {
       async getPlayerUnlocks() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
       async listPlayerAccess() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
       ...config.profileReads,
+      async getOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
+      async renameOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
+      ...config.ownerProfiles,
       async listOwnedJoinPlayers() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async joinOwnedPlayer() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
@@ -8496,5 +8501,43 @@ test("profile Lambda routes share session binding, safe responses and independen
     assert.equal(calls.length, 2);
   } finally {
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+});
+
+test("owner profile Lambda routes enforce session and origin, keep email private, and bound rename input", async () => {
+  const previous = process.env.PLAYER_OWNER_EDITING_ENABLED;
+  const calls: Array<{ method: string; input: any }> = [];
+  const revision = "a".repeat(64), details = { playerId: "canonical", displayName: "Player", hasPortrait: false, revision };
+  try {
+    process.env.PLAYER_OWNER_EDITING_ENABLED = "true";
+    const { handler } = createHarness({ sessions: { owner: { sessionId: "owner", subject: "verified-owner", email: "private@example.test",
+      createdAt: "2026-10-03T00:00:00.000Z", expiresAt: "2026-10-11T00:00:00.000Z" } }, ownerProfiles: {
+      async getOwnerPlayerProfile(input) { calls.push({ method: "read", input }); return details; },
+      async renameOwnerPlayerProfile(input) { calls.push({ method: "rename", input }); return { ...details, displayName: input.displayName }; },
+    } });
+    const request = (method = "GET", overrides: Partial<ApiGatewayHttpEvent> = {}) => handler({ ...createEvent({ method,
+      path: "/v1/owner-player-profile", headers: { origin: "https://qa.3fc.football", "idempotency-key": "save:1" },
+      cookies: ["threefc_session=owner"], ...(method === "PATCH" ? { body: { displayName: "New name", expectedRevision: revision } } : {}) }),
+      rawQueryString: "playerId=alias%2F%252F", ...overrides });
+    assert.equal((await request("GET", { cookies: [] })).statusCode, 401); assert.deepEqual(calls, []);
+    const read = await request(); assert.equal(read.statusCode, 200);
+    assert.deepEqual(JSON.parse(read.body), { ...details, email: "private@example.test" });
+    assert.equal(read.headers?.["cache-control"], "no-store"); assert.equal(read.headers?.["referrer-policy"], "no-referrer");
+    const saved = await request("PATCH"); assert.equal(saved.statusCode, 200); assert(!saved.body.includes("private@example"));
+    assert.deepEqual(calls, [{ method: "read", input: { playerId: "alias/%2F", userId: "verified-owner", userIds: ["verified-owner", "private@example.test"] } },
+      { method: "rename", input: { playerId: "alias/%2F", userId: "verified-owner", userIds: ["verified-owner", "private@example.test"],
+        displayName: "New name", expectedRevision: revision, idempotencyKey: "save:1" } }]);
+    assert.equal((await request("PATCH", { headers: { origin: "https://evil.example", "idempotency-key": "save:1" } })).statusCode, 403);
+    assert.equal((await request("PATCH", { body: "{" })).statusCode, 400);
+    assert.equal((await request("PATCH", { body: JSON.stringify({ displayName: "é".repeat(5000), expectedRevision: revision }) })).statusCode, 413);
+    assert.equal((await request("PATCH", { headers: { origin: "https://qa.3fc.football", "Idempotency-Key": "one", "idempotency-key": "two" } })).statusCode, 400);
+    assert.equal((await request("PATCH", { headers: { origin: "https://qa.3fc.football", "idempotency-key": "one,two" } })).statusCode, 400);
+    assert.equal((await request("PATCH", { rawQueryString: "playerId=alias&userId=attacker" })).statusCode, 400);
+    assert.equal(calls.length, 2);
+    process.env.PLAYER_OWNER_EDITING_ENABLED = "false";
+    assert.equal((await request("GET")).statusCode, 404); assert.equal((await request("PATCH", { body: "{" })).statusCode, 404);
+    assert.equal(calls.length, 2);
+  } finally {
+    if (previous === undefined) delete process.env.PLAYER_OWNER_EDITING_ENABLED; else process.env.PLAYER_OWNER_EDITING_ENABLED = previous;
   }
 });

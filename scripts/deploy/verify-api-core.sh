@@ -22,14 +22,15 @@ jq -e --arg head "$EXPECTED_HEAD" --arg environment "$DEPLOY_ENV" '
   (.functionFingerprint.returningJoinEnabled == "true" or .functionFingerprint.returningJoinEnabled == "false") and
   (.functionFingerprint.profilesEnabled == "true" or .functionFingerprint.profilesEnabled == "false") and
   (.functionFingerprint.achievementsEnabled == "true" or .functionFingerprint.achievementsEnabled == "false") and
-  (.functionFingerprint.ownerEditingEnabled == "true" or .functionFingerprint.ownerEditingEnabled == "false")
+  (.functionFingerprint.ownerEditingEnabled == "true" or .functionFingerprint.ownerEditingEnabled == "false") and
+  (.functionFingerprint.historyProcessingEnabled == "true" or .functionFingerprint.historyProcessingEnabled == "false")
 ' "$MANIFEST_PATH" >/dev/null
 
 DEPLOY_REGION="$(jq -r '.region' "$MANIFEST_PATH")"
 # Select only provenance and nonsecret switches, never the full Lambda environment.
 LIVE_FINGERPRINT="$(aws lambda get-function-configuration \
   --function-name "3fc-${DEPLOY_ENV}-api-core" --region "$DEPLOY_REGION" \
-  --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED}' \
+  --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED,historyProcessingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED}' \
   --output json)"
 jq -e --argjson live "$LIVE_FINGERPRINT" '
   .functionFingerprint as $expected |
@@ -42,6 +43,7 @@ jq -e --argjson live "$LIVE_FINGERPRINT" '
   $live.returningJoinEnabled == $expected.returningJoinEnabled and
   $live.profilesEnabled == $expected.profilesEnabled and
   $live.achievementsEnabled == $expected.achievementsEnabled and
-  $live.ownerEditingEnabled == $expected.ownerEditingEnabled
+  $live.ownerEditingEnabled == $expected.ownerEditingEnabled and
+  $live.historyProcessingEnabled == $expected.historyProcessingEnabled
 ' "$MANIFEST_PATH" >/dev/null
 echo "[deploy] Final API fingerprint matches the accepted deployment."

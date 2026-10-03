@@ -128,3 +128,10 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/unknown"), false);
   assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/unknown"), false);
 });
+
+test("owner profile GET and PATCH require sessions without opening unsupported methods", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-profile"), true);
+  assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/owner-player-profile"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/owner-player-profile"), false);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-profile/other"), false);
+});

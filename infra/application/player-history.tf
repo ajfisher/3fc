@@ -77,10 +77,10 @@ resource "aws_iam_role_policy" "player_history_worker" {
     {
       Sid      = "HistoryReadAndCheck"
       Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:ConditionCheckItem"]
+      Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query", "dynamodb:ConditionCheckItem"]
       Resource = aws_dynamodb_table.app[0].arn
       Condition = {
-        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["PLAYER#*", "GAME#*", "LEAGUE#*", "PLAYER_HISTORY#*", "PLAYER_HISTORY", "PLAYER_IDENTITY", "PLAYER_IDENTITY_TOMBSTONE"] }
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["PLAYER#*", "GAME#*", "LEAGUE#*", "PLAYER_HISTORY#*", "PLAYER_HISTORY", "PLAYER_IDENTITY", "PLAYER_IDENTITY_TOMBSTONE", "PLAYER_PROFILE_WORK#*"] }
         Null                      = { "dynamodb:LeadingKeys" = "false" }
       }
     },
@@ -92,7 +92,7 @@ resource "aws_iam_role_policy" "player_history_worker" {
       # Jobs/sweeps/acknowledgements share LEAGUE partitions with source rows.
       # LeadingKeys cannot restrict sort keys; runtime code owns that boundary.
       Condition = {
-        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["PLAYER_HISTORY#*", "LEAGUE#*"] }
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["PLAYER_HISTORY#*", "LEAGUE#*", "PLAYER_PROFILE_WORK#*"] }
         Null                      = { "dynamodb:LeadingKeys" = "false" }
       }
     },

@@ -1,3 +1,4 @@
+import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, parseOwnerProfileBody, OWNER_PROFILE_BODY_LIMIT, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
 import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -3020,6 +3021,49 @@ export async function handleLocalPlayerDirectoryRoute(input: {
   return result.statusCode;
 }
 
+/** Bounded streaming input for owner edits. Oversized streams are drained
+ * without retaining further chunks; Connection: close prevents request reuse. */
+async function readOwnerProfileBody(request: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []; let size = 0;
+    const cleanup = () => { request.off("data", data); request.off("end", end); request.off("error", failure); request.off("aborted", aborted); };
+    const failure = (error: Error) => { cleanup(); reject(error); };
+    const aborted = () => failure(new Error("Request aborted"));
+    const data = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > OWNER_PROFILE_BODY_LIMIT) { cleanup(); chunks.length = 0; request.resume(); reject(new RangeError("Body too large")); return; }
+      chunks.push(chunk);
+    };
+    const end = () => { cleanup(); try { resolve(parseOwnerProfileBody(Buffer.concat(chunks).toString("utf8"))); } catch (error) { reject(error); } };
+    request.on("data", data); request.on("end", end); request.on("error", failure); request.on("aborted", aborted);
+  });
+}
+export async function handleLocalOwnerPlayerProfileRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: OwnerPlayerProfileRepository;
+}): Promise<number> {
+  const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  let body: unknown;
+  // Do not buffer unauthenticated/disabled requests; the shared handler owns
+  // their stable 401/404 response and never invokes a repository method.
+  if (input.method === "PATCH" && input.session && process.env.PLAYER_OWNER_EDITING_ENABLED === "true") {
+    try { body = await readOwnerProfileBody(input.request); }
+    catch (error) {
+      const status = error instanceof RangeError ? 413 : 400;
+      sendJsonWithCors(input.request, input.response, status, { error: status === 413 ? "payload_too_large" : "bad_request",
+        message: status === 413 ? "Request body must be at most 8 KiB." : "Request body must be valid JSON." }, { ...headers, "connection": "close" });
+      return status;
+    }
+  }
+  const keys: string[] = [];
+  for (let index = 0; index < input.request.rawHeaders.length; index += 2)
+    if (input.request.rawHeaders[index].toLowerCase() === "idempotency-key") keys.push(input.request.rawHeaders[index + 1]);
+  const result = await handleOwnerPlayerProfileRoute({ ...input, body, idempotencyKey: keys.length === 1 ? keys[0] : undefined,
+    repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, headers);
+  return result.statusCode;
+}
+
 export async function handleLocalPlayerProfileRoute(input: {
   request: IncomingMessage; response: ServerResponse; method: string; route: string;
   rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerProfileRepository;
@@ -5078,6 +5122,11 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isOwnerPlayerProfileRoute(method, route)) {
+        status = await handleLocalOwnerPlayerProfileRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
       if (isPlayerProfileRoute(method, route)) {
         status = await handleLocalPlayerProfileRoute({ request, response, method, route,
           rawQueryString: requestUrl.search.slice(1), session: authGate.session });

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { historyHash } from './data/player-history-model.js';
 import { historyWorkSchema } from './data/player-history-work.js';
+import { profileNameWorkSchema, profileWorkReference, profileWorkReferenceSchema } from './data/player-profile-work.js';
 
 const identifier = z.string().min(1).refine(value => value.trim().length > 0);
 const leagueId = identifier.refine(value => Buffer.byteLength(`LEAGUE#${value}`, 'utf8') <= 2048);
@@ -13,18 +14,20 @@ export const historyQueueReferenceSchema = z.discriminatedUnion('kind', [
     key: z.literal('PLAYER_DIRECTORY') }).strict()
 ]);
 export type HistoryQueueReference = z.infer<typeof historyQueueReferenceSchema>;
+export const workQueueReferenceSchema = z.union([historyQueueReferenceSchema, profileWorkReferenceSchema]);
+export type WorkQueueReference = z.infer<typeof workQueueReferenceSchema>;
 export interface HistoryBatchResult { batchItemFailures: Array<{ itemIdentifier: string }> }
 interface DispatchDependencies {
   enabled: () => boolean;
-  send: (reference: HistoryQueueReference, delaySeconds?: number) => Promise<void>;
+  send: (reference: WorkQueueReference, delaySeconds?: number) => Promise<void>;
 }
 interface WorkerDependencies extends DispatchDependencies {
-  process: (reference: HistoryQueueReference) => Promise<{ done: boolean }>;
+  process: (reference: WorkQueueReference) => Promise<{ done: boolean }>;
 }
 
 /** Advance a few durable checkpoints per delivery, sequentially. Budgets are
  * checked between steps; an in-flight transaction always settles before return. */
-export async function processHistorySteps(reference: HistoryQueueReference,
+export async function processHistorySteps(reference: WorkQueueReference,
   process: WorkerDependencies['process'], options: { now?: () => number; remaining?: () => number } = {}): Promise<{ done: boolean }> {
   const now = options.now ?? (() => performance.now()), remaining = options.remaining ?? (() => Infinity);
   const startedAt = now();
@@ -65,11 +68,19 @@ function sqsIdentifier(record: unknown): string {
   return identifier.parse(object.parse(record).messageId);
 }
 
-function streamReference(value: unknown): HistoryQueueReference | null {
+function streamReference(value: unknown): WorkQueueReference | null {
   const record = streamRecordSchema.parse(value);
   if (record.eventName === 'REMOVE') return null;
   const image = imageSchema.parse(record.dynamodb.NewImage), keys = record.dynamodb.Keys;
   if (keys.pk.S !== image.pk.S || keys.sk.S !== image.sk.S) throw new Error('history_stream_key_mismatch');
+  if (image.entityType.S === 'playerProfileNameWork') {
+    const data = profileNameWorkSchema.parse(JSON.parse(image.data.S));
+    const reference = profileWorkReference(data.playerId, data.nameRevision);
+    if (keys.pk.S !== `PLAYER_PROFILE_WORK#${reference.playerHash}` || keys.sk.S !== reference.key)
+      throw new Error('profile_stream_scope_mismatch');
+    return data.status === 'pending' ? reference : null;
+  }
+  if (keys.pk.S.startsWith('PLAYER_PROFILE_WORK#')) throw new Error('profile_stream_entity_mismatch');
   const work = image.entityType.S === 'playerHistoryWork', job = image.entityType.S === 'playerHistoryJob';
   const directory = image.entityType.S === 'playerDirectoryRevision';
   if (!work && !job && !directory) {
@@ -124,7 +135,7 @@ export function createHistoryWorker(dependencies: WorkerDependencies) {
     for (const [index, record] of batch.entries()) {
       try {
         if (!enabled) throw new Error('history_processing_disabled');
-        const parsed = sqsRecordSchema.parse(record), reference = historyQueueReferenceSchema.parse(JSON.parse(parsed.body));
+        const parsed = sqsRecordSchema.parse(record), reference = workQueueReferenceSchema.parse(JSON.parse(parsed.body));
         const result = await dependencies.process(reference);
         if (!result || typeof result.done !== 'boolean') throw new Error('history_invalid_processing_result');
         if (!result.done) await dependencies.send(reference, 1);

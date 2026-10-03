@@ -80,6 +80,7 @@ resources:
             - Pattern: '{"eventName":["INSERT"],"dynamodb":{"NewImage":{"entityType":{"S":["playerHistoryWork"]}}}}'
             - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"NewImage":{"entityType":{"S":["playerHistoryJob"]}}}}'
             - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"LEAGUE#"}]},"sk":{"S":["PLAYER_DIRECTORY"]}},"NewImage":{"entityType":{"S":["playerDirectoryRevision"]}}}}'
+            - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"PLAYER_PROFILE_WORK#"}]}},"NewImage":{"entityType":{"S":["playerProfileNameWork"]}}}}'
     HistoryWorkMapping:
       Type: AWS::Lambda::EventSourceMapping
       Properties:

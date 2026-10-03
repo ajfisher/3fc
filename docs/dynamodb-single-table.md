@@ -315,3 +315,18 @@ projection, scoped to history source and readiness revisions. The bounded season
 selects metadata by startsOn (creation date fallback), creation timestamp and stable ID.
 Readers never infer a latest season from opaque key order or a truncated directory sample.
 See [ADR 0007](decisions/0007-player-profile-read-boundary.md).
+
+### Owner presentation and name work
+
+`PLAYER#<canonicalPlayerId> / PRESENTATION` holds the owner presentation revision.
+Only a verified-owner mutation writes it. A name save atomically changes canonical
+presentation and creates `PLAYER_PROFILE_WORK#<hash(canonicalPlayerId)> / NAME#<uuid>`.
+This worker-owned job checkpoints a bounded traversal of member league references;
+it never changes historical IDs or source game facts.
+
+`PLAYER_PROFILE_WORK#<hash(submittedPlayerId)> / RECEIPT#<hash(actor,key)>` is an
+API-owned immutable retry receipt with a request digest and safe response. Worker
+constructors write only `NAME#` jobs; IAM constrains its partition family but cannot
+distinguish receipt and job sort keys. Queue messages carry the partition hash and
+job key, with no raw legacy player ID, name or account identifier. See
+[ADR 0008](decisions/0008-owner-profile-name-and-directory-work.md).

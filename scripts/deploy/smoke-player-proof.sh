@@ -19,11 +19,15 @@ if [ "$SURFACE" = api ]; then
       -d '{}' "${API_ORIGIN}/v1/${ROUTE}")"
     test "$CODE" = 401
   done
-  for ROUTE in league-players player-proofs/league-invitation games/smoke-game/players/smoke-player/profile-invitation; do
+  for ROUTE in league-players player-proofs/league-invitation games/smoke-game/players/smoke-player/profile-invitation owner-player-profile; do
     CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' \
       -H "origin: ${APP_ORIGIN}" "${API_ORIGIN}/v1/${ROUTE}")"
     test "$CODE" = 401
   done
+  CODE="$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' -X PATCH \
+    -H "origin: ${APP_ORIGIN}" -H 'content-type: application/json' \
+    -d '{}' "${API_ORIGIN}/v1/owner-player-profile?playerId=smoke-player")"
+  test "$CODE" = 401
 elif [ "$SURFACE" = site ]; then
   for ROUTE in /link-player /link-player/; do
     PAGE="$(curl --max-time 20 -fsS "${APP_ORIGIN}${ROUTE}")"

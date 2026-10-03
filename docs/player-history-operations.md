@@ -234,3 +234,31 @@ node scripts/player-history.mjs step --manifest /path/to/local-history.json \
   --local-table threefc_local --league '<league-id>' --kind work \
   --key 'HISTORY_WORK#<returned-revision>' --pages 10 --apply reviewed-history
 ```
+
+## Owner name propagation
+
+Name saves require owner editing and processing enabled in the API, plus activated
+history readiness. The existing worker performs bounded directory updates. Its
+queue messages contain only a player hash and immutable work key. Current canonical
+ownership is checked by the save service; operator recovery is not an owner API.
+
+Use the same guarded `history_qa` wrapper and reviewed manifests above:
+
+```sh
+history_qa profile-status --player '<player-id>'
+history_qa profile-status --player '<player-id>' --cursor '<returned-cursor>'
+history_qa profile-step --player '<player-id>' --key 'NAME#<returned-uuid>' \
+  --pages 10 --apply reviewed-history
+```
+
+Status remains readable with processing paused. Follow every continuation, even
+when a page has no pending jobs. Resume the same work key after a failed delivery;
+checkpoint and directory writes are atomic. Completed or superseded work is a
+no-op. `profile-step` is limited to1–100 steps and retains the cloud deployment
+freeze/provenance checks. Local development uses the same commands with
+`--manifest /path/to/local-history.json --local-table threefc_local` instead of
+the cloud wrapper, after local activation. It never requires a production queue.
+
+Monitor the worker/DLQ alarms for failed propagation. Disable owner editing or
+processing to stop new saves, preserve pending jobs, repair the source/permissions,
+then resume. Disabling achievements alone does not stop name work.

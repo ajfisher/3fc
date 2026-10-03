@@ -11,6 +11,122 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  "/v1/owner-player-profile":
+    "get":
+      "operationId": "getOwnerPlayerProfile"
+      "summary": "Read private player settings"
+      "description": "Requires a verified session and current canonical player claim. League roles do not grant ownership. Unknown/duplicate query parameters are rejected; opaque IDs are decoded once. Handler responses use no-store and no-referrer. Owner editing must be enabled. Email is read-only and taken from the verified session after ownership checks. Processing may be paused."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryPlayerId"
+      "responses":
+        "200":
+          "description": "Private details"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/OwnerPrivatePlayerDetails"
+        "400":
+          "description": "Invalid request"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "401":
+          "description": "Sign in required"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "403":
+          "description": "Not the canonical owner"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "404":
+          "description": "Feature disabled"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "409":
+          "description": "Changed identity, presentation, request or full name history"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "503":
+          "description": "Unavailable or processing paused"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+    "patch":
+      "operationId": "renameOwnerPlayerProfile"
+      "summary": "Change your canonical player name"
+      "description": "Requires a verified session and current canonical player claim. League roles do not grant ownership. Unknown/duplicate query parameters are rejected; opaque IDs are decoded once. Handler responses use no-store and no-referrer. Owner editing must be enabled. Requires enabled processing and activated readiness. The save atomically records retry-safe work; directory updates are asynchronous. Current ownership is checked again before receipt replay. Request bodies are limited to 8192 bytes. A changed expected revision or reused key with a different body returns409."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryPlayerId"
+        -
+          "name": "Idempotency-Key"
+          "in": "header"
+          "required": true
+          "schema":
+            "type": "string"
+            "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+      "responses":
+        "200":
+          "description": "Safe saved presentation; never includes email"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/OwnerPlayerDetails"
+        "400":
+          "description": "Invalid request"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "401":
+          "description": "Sign in required"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "403":
+          "description": "Not the canonical owner"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "404":
+          "description": "Feature disabled"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "409":
+          "description": "Changed identity, presentation, request or full name history"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "503":
+          "description": "Unavailable or processing paused"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ErrorResponse"
+        "413":
+          "description": "Request exceeds8192 bytes"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/RenameOwnerPlayer"
   "/v1/player-access":
     "get":
       "operationId": "listPlayerAccess"
@@ -2330,6 +2446,66 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    "OwnerPlayerDetails":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "playerId"
+        - "displayName"
+        - "hasPortrait"
+        - "revision"
+      "properties":
+        "playerId":
+          "type": "string"
+          "minLength": 1
+        "displayName":
+          "type": "string"
+          "minLength": 1
+        "hasPortrait":
+          "type": "boolean"
+        "revision":
+          "type": "string"
+          "pattern": "^[a-f0-9]{64}$"
+    "OwnerPrivatePlayerDetails":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "playerId"
+        - "displayName"
+        - "hasPortrait"
+        - "revision"
+        - "email"
+      "properties":
+        "playerId":
+          "type": "string"
+          "minLength": 1
+        "displayName":
+          "type": "string"
+          "minLength": 1
+        "hasPortrait":
+          "type": "boolean"
+        "revision":
+          "type": "string"
+          "pattern": "^[a-f0-9]{64}$"
+        "email":
+          "type": "string"
+          "format": "email"
+          "readOnly": true
+    "RenameOwnerPlayer":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "displayName"
+        - "expectedRevision"
+      "properties":
+        "displayName":
+          "type": "string"
+          "minLength": 1
+          "maxLength": 80
+          "description": "Trimmed; no control characters. Existing former-name history is bounded to twenty names."
+        "expectedRevision":
+          "type": "string"
+          "pattern": "^[a-f0-9]{64}$"
     "PlayerProjectionFreshness":
       "type": "object"
       "additionalProperties": false
