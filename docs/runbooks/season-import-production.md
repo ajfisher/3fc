@@ -38,6 +38,7 @@ The private configuration extends [the rehearsal configuration](season-import-re
   "reviewedPlan": "https://github.com/ajfisher/3fc/pull/REVIEWED_NUMBER",
   "qaDeployment": "/private/operator/accepted-qa-api-manifest.json",
   "prodDeployment": "/private/operator/accepted-prod-api-manifest.json",
+  "writerBaseline": "/private/operator/new-baseline/writer-baseline.json",
   "exclusiveWriterFreeze": true,
   "backups": {
     "qa": "verified-source-backup-arn",
@@ -58,8 +59,9 @@ The manifest includes the complete selected data and pre-import system baseline.
    with AJ's authority. Run from a clean checkout at the approved tooling commit.
    Obtain the unmodified accepted QA and production API deployment manifests.
    Their runtime sources (`api`, `packages/contracts`, lockfile) must match this
-   checkout, and their code hashes, revisions and player feature flags must match
-   both live functions. Production must have returning-player discovery enabled
+   checkout, and their code hashes and player feature flags must match both live
+   functions. The original revision must match directly or through the verified
+   pre-maintenance baseline described below. Production must have returning-player discovery enabled
    and both environments must enforce claim proofs.
    If not, stop for a separately reviewed compatible deployment. Do not edit a
    manifest to match an arbitrary live Lambda.
@@ -72,12 +74,15 @@ The manifest includes the complete selected data and pre-import system baseline.
    no independent writers or detect an unobserved temporary unfreeze.
 3. Record the original reserved concurrency and workflow states. Disable both
    `deploy-qa.yml` and `deploy-prod.yml`; drain all queued/running/waiting runs.
-   Set both `3fc-qa-api-core` and `3fc-prod-api-core` reserved concurrency to zero.
+   Before changing API concurrency, run the read-only `baseline` command below
+   and set `writerBaseline` in the private config to its output file. Omit that
+   config field for the first capture when live revisions still match the
+   accepted manifests. Set both `3fc-qa-api-core` and `3fc-prod-api-core` reserved concurrency to zero.
    This takes both APIs offline, including sign-in and reads. The frontend may
    remain visible but API operations will be unavailable. Keep production
    unpublished as the active league space until acceptance completes.
 4. Run the read-only `observe` command below. It checks both disabled workflows,
-   no pending deployment runs, concurrency zero, exact accepted Lambda revisions,
+   no pending deployment runs, concurrency zero, accepted Lambda provenance,
    no aliases/event mappings, and physical table IDs. Wait at least **905 seconds
    after this observation** for the longest possible old invocation to drain.
    If any writer or deployment was enabled during that interval, restart the
@@ -119,6 +124,10 @@ process-group guard (4 GiB ceiling). No command is an instruction to execute now
 Use a different new output directory for every invocation, including retries.
 
 ```sh
+node scripts/season-import-production.mjs baseline \
+  --config /private/operator/config.json \
+  --out /private/operator/new-baseline
+
 node scripts/season-import-production.mjs observe \
   --config /private/operator/config.json \
   --out /private/operator/new-observation
@@ -136,7 +145,7 @@ node scripts/season-import-production.mjs apply \
   --out /private/operator/new-execution
 ```
 
-`observe` and `prepare` only read AWS/GitHub and write private local artifacts.
+`baseline`, `observe` and `prepare` only read AWS/GitHub and write private local artifacts.
 `apply` can write only `3fc-prod-app` through this CLI. The shared transaction
 engine also accepts a strictly named disposable table for rehearsal; the
 production CLI has no configurable target, skip-check or force option. It does
@@ -194,3 +203,39 @@ freeze loss, failed acceptance and bad approvals/backups. It does **not** exerci
 production maintenance, restore a backup, send magic links or prove final browser
 sign-in. These remain explicit operational acceptance steps during the approved
 window. Passing CI/review is not permission to execute them.
+
+## Lambda concurrency revisions
+
+The first real preparation attempt on October 3 demonstrated that both
+PutFunctionConcurrency and DeleteFunctionConcurrency change Lambda RevisionId.
+The selected code/configuration fingerprint, including LastModified, remained
+unchanged. Exact equality with the deployment revision therefore blocked the
+required pause before any backup or import. Both APIs and deployment workflows
+were restored to their recorded original settings; no data import ran.
+
+Do not edit the accepted deployment manifest to replace its revision. `baseline`
+captures an owner-only record of the accepted fingerprint before the pause.
+It requires disabled/drained deployment workflows but does not require API
+concurrency zero. For each environment the record binds the account, accepted
+deployment commit and original revision. If the current revision later differs,
+the guard requires every other captured field to match exactly, including
+LastModified, code hash, function ARN/name, table, state/status and player flags.
+Missing, future, pre-deployment, wrong-account or wrong-commit baselines fail.
+The AWS field meanings are documented in
+[FunctionConfiguration](https://docs.aws.amazon.com/lambda/latest/api/API_FunctionConfiguration.html).
+
+The approved import manifest pins the baseline digest. The freeze observation
+pins the new paused revision as well: any subsequent revision or fingerprint
+change still fails `verifyFreeze` and requires a new observation/drain. The
+baseline is operator-controlled evidence, not a signed AWS attestation. Maintain
+the documented exclusion of all competing writers; never invent its values.
+
+After an abandoned window, a previously captured baseline can be retained only
+while its original accepted revision/commit still matches the selected artifact
+and the current fingerprint differs solely in revision. `baseline` then retains
+that original anchor instead of falsely relabelling the current revision as
+the accepted deployment. A newer accepted deployment matching the live revision
+gets a fresh anchor. The original October 3 owner-only pre-maintenance record has
+the same `accountId`, `at`, `environments[env].acceptedDeploymentSha` and
+`environments[env].live` schema and was independently verified against both
+accepted manifests before the first pause; it can bootstrap the recovery capture.
