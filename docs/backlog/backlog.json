@@ -3267,7 +3267,7 @@
         "status": "in-progress",
         "wave": "player-profiles-achievements",
         "notes": [
-          "Canonical paginated source adapter and revision-fenced immutable history generations in progress on codex/player-history-foundation. Durable source markers, Streams/SQS worker and backfill follow before runtime exposure."
+          "PR #206 provides canonical paginated source reads and revision-fenced immutable history generations. Atomic source revisions/work markers are in progress on codex/player-history-writers; Streams/SQS worker and backfill follow before runtime exposure."
         ],
         "githubIssue": 200
       }

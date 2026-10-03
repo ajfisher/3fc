@@ -29,9 +29,10 @@ at fa7e775 found no newer profile/history implementation to duplicate.
 2. Pure evaluator for all 23 classes (#201): ready for AJ's final review in PR #205;
    excludes persistence, source adapters and workers.
 3. Complete canonical history and generation persistence (#139 foundation, #200,
-   remainder of #201): in progress on `codex/player-history-foundation`.
-   Durable source markers, Streams/SQS delivery, worker and resumable backfill
-   follow in the next child, before any runtime reader is enabled.
+   remainder of #201): ready for AJ's final review in PR #206.
+   Durable source markers are in progress on `codex/player-history-writers`.
+   Streams/SQS delivery, worker and resumable backfill follow before any runtime
+   reader is enabled.
 4. Authorised profile/history routes and owner name/photo/media (#37, #202): pending.
 5. Profile UI, card/export and achievement gallery (#37, #203): pending.
 6. Serialised QA coverage verification and feature activation: pending.
@@ -64,7 +65,8 @@ and review-gate check 111177243508. Cloud review completed with no major issues
 on 3 October 2026. The history child started after these gates. PR #205 remains
 unmerged for AJ.
 
-Slice 3: `codex/player-history-foundation`, based on PR #205. Implements raw
+Slice 3: [PR #206](https://github.com/ajfisher/3fc/pull/206),
+`codex/player-history-foundation`, based on PR #205. Implements raw
 paginated source reads, canonical fact assembly and immutable history generations.
 Independent source/store reviews resolved uncertain legacy timing, exact-completion
 provenance and mismatched source-revision findings. Cloud review then identified
@@ -76,8 +78,12 @@ All 59 focused contracts,
 evaluator, source and store tests pass after fixes, including concurrent evaluation,
 lost acknowledgements and interrupted milestone staging (owned group 8221, exit 0,
 peak 515360 KiB, no remaining children). API test compilation and backlog
-validation/export pass. Remote gates must pass before the worker child begins.
-No runtime reader or worker is enabled by this foundation.
+validation/export pass. Corrected head `f2f64784847bd507ab895ed2a9b4a176cc4daddb`
+passed CI 37118843772, QA 37118843773 and current-head review-gate check
+111190835269. Cloud review completed with no major issues at that head (comment
+5968621134); both accepted review threads are resolved. PR remains unmerged for AJ.
+The writer child resumed after these gates. No runtime reader or worker is enabled
+by this foundation.
 
 AJ retains merge and production-release authority. All new capabilities remain
 behind separate profiles, owner-editing and achievements flags until coverage and
@@ -94,3 +100,13 @@ facts. Every milestone has durable evidence and correction history.
 Owner writes are separate from league management. Private account fields never
 enter performance projections or exports. Portraits are validated, re-encoded
 and held in private storage. See [ADR 0002](../decisions/0002-player-profile-authority-and-achievements.md).
+
+Slice 4: `codex/player-history-writers`, based on PR #206. Adds atomic source
+revisions and work markers to completion, goal/roster/kickoff corrections, identity
+consolidation and scope deletion. Two independent reviews resolved omitted legacy
+normalization/repair paths, then passed the final diff. Five focused repair cases,
+the complete writer file and the broader helper/writer/consolidation/repository
+suites passed in sequence: 230 tests, group 11012 exit 0, peak 187936 KiB, no
+remaining children. Contracts build, API compilation, backlog validation/export
+and diff check pass. Remote current-head checks are pending. Streams/SQS delivery,
+backfill and runtime feature exposure remain separate subsequent slices.

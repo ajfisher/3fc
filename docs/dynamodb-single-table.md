@@ -38,8 +38,12 @@ request-time scan is required. The internal store confers no read authority.
 
 `LEAGUE#{leagueId} / HISTORY_SOURCE` (`playerHistorySource`) is the versioned
 source-writer prerequisite `{leagueId, version: 1, revision}`. The following delivery
-slice must change this revision atomically with relevant source mutations and
-durable work markers. This foundation does not install writers or enable readers.
+slice installs revision-aware source writers: relevant mutations atomically replace
+the token and insert `LEAGUE#{leagueId} / HISTORY_WORK#{revision}`
+(`playerHistoryWork`). Each immutable marker holds `{version:1, leagueId, reason,
+revision, createdAt}` plus the relevant game, season or canonical-player identifier.
+The token is not a coverage assertion. Queue delivery/processing and reader
+activation remain subsequent rollout steps; pending markers must be recoverable.
 Publication conditions include the captured source, identity, identity-control,
 league and deletion boundaries, the completed generation and previous publication.
 

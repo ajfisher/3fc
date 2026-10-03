@@ -18,6 +18,7 @@ import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerConsolidationService } from "./player-consolidation.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
 import { OwnedPlayerJoinService } from "./owned-player-join.js";
+import { historyMutationItems } from "./player-history-work.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
   identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
 import { directoryGameSamples, type DirectoryGameSample } from "./player-directory-games.js";
@@ -615,6 +616,7 @@ function normalizeGoalEventPayload(data: unknown): Omit<GoalEventRecord, "create
       ? raw.assistPlayerIds.filter((playerId): playerId is string => typeof playerId === "string")
       : [],
     ownGoal: raw.ownGoal ?? false,
+    ...(raw.timingProvenance ? { timingProvenance: raw.timingProvenance } : {}),
   };
 }
 
@@ -657,6 +659,7 @@ function normalizeGoalAuditSnapshot(data: unknown): GoalAuditSnapshotRecord | nu
       ? raw.assistPlayerIds.filter((playerId): playerId is string => typeof playerId === "string")
       : [],
     ownGoal: typeof raw.ownGoal === "boolean" ? raw.ownGoal : false,
+    ...(raw.timingProvenance ? { timingProvenance: raw.timingProvenance } : {}),
   };
 }
 
@@ -812,6 +815,60 @@ function isCompleteGameResult(result: GameResult | null): result is GameResult {
   );
 }
 
+// Result timestamps and team presentation do not change achievement inputs. Compare
+// raw fields too: normalisation can otherwise conceal legacy data repaired by a write.
+function historyResultSignature(value: unknown): string {
+  if (!value || typeof value !== "object") return JSON.stringify(null);
+  const result = value as Partial<GameResult>;
+  return JSON.stringify({
+    winnerTeamId: result.winnerTeamId,
+    outcome: result.outcome,
+    comparator: result.comparator,
+    teams: Array.isArray(result.teams) ? result.teams.map((team) => ({
+      teamId: team?.teamId, scored: team?.scored, conceded: team?.conceded,
+      rank: team?.rank, outcome: team?.outcome,
+    })).sort((left, right) => String(left.teamId).localeCompare(String(right.teamId))) : null,
+  });
+}
+
+function historyThirdsSignature(value: unknown): string {
+  if (!Array.isArray(value)) return JSON.stringify(null);
+  return JSON.stringify(value.map((segment) => ({
+    third: segment?.third, startedAt: segment?.startedAt, finishedAt: segment?.finishedAt,
+  })).sort((left, right) => String(left.third).localeCompare(String(right.third))));
+}
+
+function historyGoalSignature(value: unknown): string {
+  const goal = value as Partial<GoalEventRecord>;
+  return JSON.stringify({
+    third: goal.third, elapsedSeconds: goal.elapsedSeconds, gameMinute: goal.gameMinute, thirdMinute: goal.thirdMinute,
+    scoringTeamId: goal.scoringTeamId, concedingTeamId: goal.concedingTeamId, scorerPlayerId: goal.scorerPlayerId,
+    assistPlayerIds: goal.assistPlayerIds, ownGoal: goal.ownGoal, timingProvenance: goal.timingProvenance,
+  });
+}
+
+function repairsFinishedHistory(
+  stored: StoredEntity<unknown>,
+  previous: Pick<GameRecord, "finishedAt" | "result">,
+  next: Pick<GameRecord, "finishedAt" | "result" | "thirdLengthMinutes" | "thirds">,
+): boolean {
+  const raw = stored.data as Partial<GameRecord>;
+  return previous.finishedAt !== next.finishedAt
+    || raw.thirdLengthMinutes !== next.thirdLengthMinutes
+    || historyThirdsSignature(raw.thirds) !== historyThirdsSignature(next.thirds)
+    || historyResultSignature(previous.result) !== historyResultSignature(next.result)
+    || historyResultSignature(raw.result) !== historyResultSignature(next.result);
+}
+
+function repairsTeamHistory(nextTeams: readonly GameTeamRecord[], states: ReadonlyMap<TeamId, { rawData: string }>): boolean {
+  return nextTeams.some((team) => {
+    const stored = states.get(team.teamId);
+    if (!stored) return true;
+    const raw = JSON.parse(stored.rawData) as Partial<GameTeamRecord>;
+    return raw.scored !== team.scored || raw.conceded !== team.conceded;
+  });
+}
+
 function compareGoalEvents(
   left: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "createdAt" | "eventId">,
   right: Pick<GoalEventRecord, "third" | "gameMinute" | "elapsedSeconds" | "createdAt" | "eventId">,
@@ -864,6 +921,33 @@ function goalAuditSnapshot(goal: GoalEventRecord): GoalAuditSnapshotRecord {
     scorerPlayerId: goal.scorerPlayerId,
     assistPlayerIds: goal.assistPlayerIds,
     ownGoal: goal.ownGoal,
+    ...(goal.timingProvenance ? { timingProvenance: goal.timingProvenance } : {}),
+  };
+}
+
+// Timing evidence belongs to derived-history processing, not the existing scoring API.
+// Project only at public return boundaries so correction receipts and audits retain it.
+function publicGoal<T extends GoalEventRecord | GoalAuditSnapshotRecord>(goal: T): T {
+  const { timingProvenance: _timingProvenance, ...visible } = goal;
+  return visible as T;
+}
+
+function publicGoalAudit(audit: GoalAuditRecord): GoalAuditRecord {
+  return {
+    ...audit,
+    before: audit.before ? publicGoal(audit.before) : null,
+    after: audit.after ? publicGoal(audit.after) : null,
+  };
+}
+
+function publicGoalResult<T extends CreateGoalResult | UpdateGoalResult | DeleteGoalResult>(result: T): T {
+  return {
+    ...result,
+    timeline: result.timeline.map(publicGoal),
+    ...('goal' in result ? { goal: publicGoal(result.goal) } : {}),
+    ...('previousGoal' in result ? { previousGoal: publicGoal(result.previousGoal) } : {}),
+    ...('deletedGoal' in result ? { deletedGoal: publicGoal(result.deletedGoal) } : {}),
+    ...('audit' in result ? { audit: publicGoalAudit(result.audit) } : {}),
   };
 }
 
@@ -1539,6 +1623,8 @@ export class ThreeFcRepository {
         finishedAt: hasAllResultTeams ? game.finishedAt ?? now : game.finishedAt,
         result: hasAllResultTeams ? buildGameResult(nextTeams, now) : null,
       };
+      const repairsHistory = repairsTeamHistory(nextTeams, teamStatesById)
+        || repairsFinishedHistory(gameItem, game, updatedGame);
       const existingTeamPutItems = this.buildTeamPutTransactionItems(
         nextTeams.filter((team) => teamStatesById.has(team.teamId)),
         teamStatesById,
@@ -1566,7 +1652,7 @@ export class ThreeFcRepository {
       try {
         await this.client.send(
           new TransactWriteItemsCommand({
-            TransactItems: [
+            TransactItems: boundedIdentityTransaction([
               this.buildGamePutTransactionItem({
                 game: updatedGame,
                 stored: gameItem,
@@ -1574,7 +1660,9 @@ export class ThreeFcRepository {
               }),
               ...existingTeamPutItems,
               ...missingTeamPutItems,
-            ],
+              ...(repairsHistory ? historyMutationItems(this.tableName, { leagueId: game.leagueId,
+                gameId: game.gameId, seasonId: game.seasonId, reason: 'game-finished' }, now) : []),
+            ]),
           }),
         );
       } catch (error) {
@@ -2658,6 +2746,20 @@ export class ThreeFcRepository {
       try {
         await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
           this.identities.planCoverageInvalidation(control, now), update,
+          ...(existing.status === 'finished' ? historyMutationItems(this.tableName, { leagueId: existing.leagueId,
+            gameId: existing.gameId, seasonId: existing.seasonId, reason: 'kickoff-changed' }, now) : []),
+        ]) }));
+        gameUpdated = true;
+      } catch (error) {
+        if (!isConditionalWriteFailure(error)) throw error;
+        gameUpdated = false;
+      }
+    } else if (existing.status === 'finished' && repairsFinishedHistory(gameItem, existing, updatedPayload)) {
+      try {
+        await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+          this.buildGamePutTransactionItem({ game: updatedPayload, stored: gameItem, now }),
+          ...historyMutationItems(this.tableName, { leagueId: existing.leagueId, gameId: existing.gameId,
+            seasonId: existing.seasonId, reason: 'game-finished' }, now),
         ]) }));
         gameUpdated = true;
       } catch (error) {
@@ -2888,19 +2990,15 @@ export class ThreeFcRepository {
         result: isCompleteGameResult(existing.result) ? existing.result : buildGameResult(teams, now),
       };
 
-      const repairApplied = await this.putEntityWithTimestampsIfUnchanged(
-        gamePk(existing.gameId),
-        metadataSk(),
-        ENTITY_TYPE.game,
-        repairedGame,
-        gameItem.createdAt,
-        now,
-        {
-          updatedAt: gameItem.updatedAt,
-          rawData: gameItem.rawData,
-        },
-      );
-      if (!repairApplied) {
+      try {
+        await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+          this.buildGamePutTransactionItem({ game: repairedGame, stored: gameItem, now }),
+          ...this.buildTeamConditionChecks(teams, teamStatesById),
+          ...historyMutationItems(this.tableName, { leagueId: existing.leagueId, gameId: existing.gameId,
+            seasonId: existing.seasonId, reason: 'game-finished' }, now),
+        ]) }));
+      } catch (error) {
+        if (!isConditionalWriteFailure(error)) throw error;
         throw new GameTimerTransitionError(
           "game_state_changed",
           "Game changed while finishing. Reload the game and try again.",
@@ -2948,14 +3046,16 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
+          TransactItems: boundedIdentityTransaction([
             this.buildGamePutTransactionItem({
               game: updatedPayload,
               stored: gameItem,
               now,
             }),
             ...this.buildTeamConditionChecks(teams, teamStatesById),
-          ],
+            ...historyMutationItems(this.tableName, { leagueId: existing.leagueId, gameId: existing.gameId,
+              seasonId: existing.seasonId, reason: 'game-finished' }, now),
+          ]),
         }),
       );
     } catch (error) {
@@ -3007,6 +3107,8 @@ export class ThreeFcRepository {
       ...await this.identities.planDeletion("game", [gameId], this.clock.now(), {
         gameId, leagueId: game.leagueId, seasonId: game.seasonId, gameStartTs: game.gameStartTs,
       }, identityControl),
+      ...historyMutationItems(this.tableName, { leagueId: game.leagueId, gameId, seasonId: game.seasonId,
+        reason: 'game-deleted' }, this.clock.now()),
       {
         Delete: {
           TableName: this.tableName,
@@ -3059,7 +3161,7 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: transactionItems,
+          TransactItems: boundedIdentityTransaction(transactionItems),
         }),
       );
     } catch (error) {
@@ -3190,6 +3292,7 @@ export class ThreeFcRepository {
 
       const deleteItems: TransactWriteItem[] = [
         ...await this.identities.planDeletion("season", [options.leagueId, seasonId], this.clock.now(), undefined, identityControl),
+        ...historyMutationItems(this.tableName, { leagueId: options.leagueId, seasonId, reason: 'season-deleted' }, this.clock.now()),
         {
           Delete: {
             TableName: this.tableName,
@@ -3242,7 +3345,7 @@ export class ThreeFcRepository {
       try {
         await this.client.send(
           new TransactWriteItemsCommand({
-            TransactItems: deleteItems,
+            TransactItems: boundedIdentityTransaction(deleteItems),
           }),
         );
       } catch (error) {
@@ -3258,6 +3361,7 @@ export class ThreeFcRepository {
     const scoped = await this.getEntity(leaguePk(resolvedSeason.leagueId), seasonSk(seasonId), { consistentRead: true });
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       ...await this.identities.planDeletion("season", [resolvedSeason.leagueId, seasonId], this.clock.now(), undefined, identityControl),
+      ...historyMutationItems(this.tableName, { leagueId: resolvedSeason.leagueId, seasonId, reason: 'season-deleted' }, this.clock.now()),
       this.buildConditionalDeleteFromStoredEntity(globalSeasonItem!),
       ...(scoped ? [this.buildConditionalDeleteFromStoredEntity(scoped)] : []),
     ]) }));
@@ -3296,6 +3400,7 @@ export class ThreeFcRepository {
     }
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       ...await this.identities.planDeletion("league", [leagueId], this.clock.now(), undefined, identityControl), this.buildConditionalDeleteFromStoredEntity(league),
+      ...historyMutationItems(this.tableName, { leagueId, reason: 'league-deleted' }, this.clock.now()),
       cleanup.start(leagueId, userIds), ...(authority ? [this.buildConditionalCheckFromStoredEntity(authority)!] : []),
     ]) }));
     return cleanup.resume(leagueId, userIds);
@@ -3521,6 +3626,8 @@ export class ThreeFcRepository {
         { gameId: input.gameId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
       if (input.teamId) actions.push({ Put: { TableName: this.tableName, Item: buildItem(gamePk(input.gameId), rosterSk(input.teamId, rootId), ENTITY_TYPE.roster,
         { gameId: input.gameId, teamId: input.teamId, playerId: rootId }, now), ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } });
+      if (input.teamId && game.status === 'finished') actions.push(...historyMutationItems(this.tableName,
+        { leagueId: game.leagueId, gameId: game.gameId, seasonId: game.seasonId, playerId: rootId, reason: 'roster-changed' }, now));
     }
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }));
     return { playerId: membership.playerId, alreadyInGame };
@@ -4698,6 +4805,8 @@ export class ThreeFcRepository {
     const transactionItems: TransactWriteItem[] = [
       ...membership.actions,
       this.buildGameConditionCheck(input.gameId, gameItem),
+      ...(game.status === 'finished' ? historyMutationItems(this.tableName, { leagueId: game.leagueId,
+        gameId: game.gameId, seasonId: game.seasonId, playerId: membership.identity.root.value.playerId, reason: 'roster-changed' }, now) : []),
       ...currentAssignmentsForPlayer.filter(assignment => assignment.teamId !== input.teamId).map((assignment) => ({
         Delete: {
           TableName: this.tableName,
@@ -5397,7 +5506,7 @@ export class ThreeFcRepository {
       );
     }
 
-    return existingOperation.result as T;
+    return publicGoalResult(existingOperation.result as T);
   }
 
   private async originalGoalPlayerIds(gameId: string, scorerPlayerId: string, assistPlayerIds: string[]): Promise<{
@@ -5597,6 +5706,7 @@ export class ThreeFcRepository {
       scorerPlayerId: input.scorerPlayerId,
       assistPlayerIds: input.assistPlayerIds,
       ownGoal: input.ownGoal,
+      timingProvenance: { version: 1 as const, kind: allowFinished ? 'post_completion' as const : 'live' as const },
     };
 
     const nextTeams = teams.map((team) => {
@@ -5646,7 +5756,9 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
+          TransactItems: boundedIdentityTransaction([
+            ...(game.status === 'finished' ? historyMutationItems(this.tableName,
+              { leagueId: game.leagueId, gameId: game.gameId, seasonId: game.seasonId, reason: 'goal-changed' }, now) : []),
             ...(updatedFinishedGame
               ? [
                   this.buildGamePutTransactionItem({
@@ -5728,7 +5840,7 @@ export class ThreeFcRepository {
             },
             this.buildGoalStateWrite(input.gameId, goal, goalSortKey, now, existingGoalState),
             this.buildGoalAuditPut(audit),
-          ],
+          ]),
         }),
       );
     } catch (error) {
@@ -5760,17 +5872,17 @@ export class ThreeFcRepository {
 
     const persistedTimeline = await this.listGoalEventsForWrite(input.gameId);
 
-    return {
+    return publicGoalResult({
       goal,
       scoreboard: {
         teams: sortGameTeams(nextTeams),
       },
       timeline: persistedTimeline,
-    };
+    });
   }
 
   async listGoalEvents(gameId: string): Promise<GoalEventRecord[]> {
-    return this.listGoalEventsWithConsistency(gameId, true);
+    return (await this.listGoalEventsWithConsistency(gameId, true)).map(publicGoal);
   }
 
   private async listGoalEventsForWrite(gameId: string): Promise<GoalEventRecord[]> {
@@ -5808,7 +5920,7 @@ export class ThreeFcRepository {
           item.createdAt,
           item.updatedAt,
         ),
-      );
+      ).map(publicGoalAudit);
   }
 
   async updateGoal(input: UpdateGoalInput): Promise<UpdateGoalResult | null> {
@@ -5860,6 +5972,9 @@ export class ThreeFcRepository {
     // before mapping; retries retain the request the caller actually submitted.
     const goal = { ...requestedGoal, ...await this.originalGoalPlayerIds(input.gameId,
       requestedGoal.scorerPlayerId, requestedGoal.assistPlayerIds) };
+    const changesHistory = goal.scoringTeamId !== previousGoal.scoringTeamId
+      || goal.concedingTeamId !== previousGoal.concedingTeamId || goal.scorerPlayerId !== previousGoal.scorerPlayerId
+      || goal.ownGoal !== previousGoal.ownGoal || JSON.stringify(goal.assistPlayerIds) !== JSON.stringify(previousGoal.assistPlayerIds);
     const { teams, teamStatesById } = await this.readGoalTeamStates(
       input.gameId,
       { consistentRead: true },
@@ -5908,11 +6023,18 @@ export class ThreeFcRepository {
             result: buildGameResult(nextTeams, now),
           }
         : null;
+    const repairsHistory = updatedFinishedGame !== null && (
+      repairsFinishedHistory(gameItem, game, updatedFinishedGame)
+      || repairsTeamHistory(nextTeams, teamStatesById)
+      || historyGoalSignature(existing.stored.data) !== historyGoalSignature(updatedGoal)
+    );
 
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
+          TransactItems: boundedIdentityTransaction([
+            ...(game.status === 'finished' && (changesHistory || repairsHistory) ? historyMutationItems(this.tableName,
+              { leagueId: game.leagueId, gameId: game.gameId, seasonId: game.seasonId, reason: 'goal-changed' }, now) : []),
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
             ...(updatedFinishedGame
               ? [
@@ -5944,6 +6066,7 @@ export class ThreeFcRepository {
                     scorerPlayerId: updatedGoal.scorerPlayerId,
                     assistPlayerIds: updatedGoal.assistPlayerIds,
                     ownGoal: updatedGoal.ownGoal,
+                    ...(updatedGoal.timingProvenance ? { timingProvenance: updatedGoal.timingProvenance } : {}),
                   },
                   updatedGoal.createdAt,
                   now,
@@ -5974,7 +6097,7 @@ export class ThreeFcRepository {
                   }),
                 ]
               : []),
-          ],
+          ]),
         }),
       );
     } catch (error) {
@@ -5995,7 +6118,7 @@ export class ThreeFcRepository {
       );
     }
 
-    return result;
+    return publicGoalResult(result);
   }
 
   async deleteGoal(input: DeleteGoalInput): Promise<DeleteGoalResult | null> {
@@ -6110,7 +6233,9 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: [
+          TransactItems: boundedIdentityTransaction([
+            ...(game.status === 'finished' ? historyMutationItems(this.tableName,
+              { leagueId: game.leagueId, gameId: game.gameId, seasonId: game.seasonId, reason: 'goal-changed' }, now) : []),
             ...this.buildTeamPutTransactionItems(nextTeams, teamStatesById, now),
             ...(updatedFinishedGame
               ? [
@@ -6163,7 +6288,7 @@ export class ThreeFcRepository {
                   }),
                 ]
               : []),
-          ],
+          ]),
         }),
       );
     } catch (error) {
@@ -6184,7 +6309,7 @@ export class ThreeFcRepository {
       );
     }
 
-    return result;
+    return publicGoalResult(result);
   }
 
   async undoLastGoal(input: UndoLastGoalInput): Promise<DeleteGoalResult | null> {
@@ -6592,6 +6717,9 @@ export class ThreeFcRepository {
         stored: input.stored,
         now,
       }),
+      ...(input.game.status === 'finished' && repairsFinishedHistory(input.stored, input.game, repairedGame)
+        ? historyMutationItems(this.tableName, { leagueId: input.game.leagueId, gameId: input.game.gameId,
+          seasonId: input.game.seasonId, reason: 'game-finished' }, now) : []),
     ];
 
     if (input.joinCodeItem) {
@@ -6642,7 +6770,7 @@ export class ThreeFcRepository {
     try {
       await this.client.send(
         new TransactWriteItemsCommand({
-          TransactItems: transactionItems,
+          TransactItems: boundedIdentityTransaction(transactionItems),
         }),
       );
     } catch (error) {

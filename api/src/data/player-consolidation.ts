@@ -6,6 +6,7 @@ import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identity
   identityGameSk, identityLeagueSk, boundedIdentityTransaction, validPlayerIdentityId,
   type IdentityClient, type IdentitySnapshot, type PlayerIdentity, type IdentityControl } from "./player-identity.js";
 import { playerClaimSk } from "./keys.js";
+import { historyMutationItems } from "./player-history-work.js";
 
 type Item = Record<string, AttributeValue>;
 type RecordData = Record<string, unknown>;
@@ -342,6 +343,11 @@ export class PlayerConsolidationService {
       directoryBefore: context.members.map(m => m.directory.value), indexesBefore,
       indexesAfter: p.ownerId ? [{ userId: p.ownerId, playerId: retained.id }] : [] };
     actions.push(identityPut(this.tableName, { pk: stored.pk, sk: "AUDIT", item: null, value: {} }, "playerConsolidationAudit", audit, now));
+    // The same transaction invalidates derived history and records durable work.
+    // Retained identity is canonical; historical member rows remain unchanged.
+    actions.push(...historyMutationItems(this.tableName, {
+      leagueId: p.leagueId, playerId: p.retainedPlayerId, reason: "identity-consolidated",
+    }, now));
     return boundedIdentityTransaction(actions);
   }
   async commit(input: { proposalId: string; userIds: readonly string[] }): Promise<ConsolidationView> {

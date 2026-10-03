@@ -154,6 +154,7 @@ export interface GoalEventRecord {
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+  timingProvenance?: { version: 1; kind: 'live' | 'post_completion' };
   createdAt: string;
   updatedAt: string;
 }
@@ -177,6 +178,7 @@ export interface GoalAuditSnapshotRecord {
   scorerPlayerId: string;
   assistPlayerIds: string[];
   ownGoal: boolean;
+  timingProvenance?: { version: 1; kind: 'live' | 'post_completion' };
 }
 
 export interface GoalAuditRecord {

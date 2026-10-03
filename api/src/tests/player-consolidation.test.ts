@@ -33,6 +33,9 @@ class FixtureClient {
       const actions = command.input.TransactItems!; this.transactions.push(structuredClone(actions));
       for (const action of actions) {
         const op = action.Put ?? action.Delete ?? action.ConditionCheck!;
+        // History source revision is an unconditional replacement inside the
+        // enclosing atomic transaction, not a second global CAS precondition.
+        if (!op.ConditionExpression) continue;
         const key = action.Put?.Item ?? action.Delete?.Key ?? action.ConditionCheck!.Key!;
         const current = this.read(key!.pk!.S!, key!.sk!.S!);
         const missing = op.ConditionExpression?.includes("attribute_not_exists") === true;
@@ -78,6 +81,80 @@ function fixture(owner: string | null = null, ids = ["a", "b"]) {
     retainedPlayerId: ids[0], nickname: "Retained", userIds: ["admin"] };
   return { client, service, input };
 }
+
+function consolidationWork(client: FixtureClient): Item[] {
+  return [...client.items.values()].filter(item => {
+    const value = JSON.parse(item.data?.S ?? "null") as { reason?: string } | null;
+    return value?.reason === "identity-consolidated";
+  });
+}
+
+test("history source invalidation and canonical work commit atomically with consolidation, not preview", async () => {
+  const { client, service, input } = fixture("private-owner@example.invalid");
+  await service.preview(input);
+  assert.equal(client.read("LEAGUE#league", "HISTORY_SOURCE"), undefined);
+  assert.deepEqual(consolidationWork(client), []);
+  await service.decide({ proposalId: input.proposalId, decision: "approve", userIds: ["private-owner@example.invalid"] });
+  assert.equal(client.read("LEAGUE#league", "HISTORY_SOURCE"), undefined);
+  await service.commit({ proposalId: input.proposalId, userIds: ["admin"] });
+  const source = client.data("LEAGUE#league", "HISTORY_SOURCE");
+  assert.equal(source.leagueId, "league"); assert.equal(typeof source.revision, "string"); assert(source.revision);
+  const work = consolidationWork(client);
+  assert.equal(work.length, 1);
+  const payload = JSON.parse(work[0].data!.S!);
+  assert.equal(payload.playerId, "a"); assert.equal(payload.leagueId, "league");
+  assert.equal(payload.revision, source.revision); assert.equal(work[0].entityType.S, "playerHistoryWork");
+  assert.deepEqual(Object.keys(payload).sort(), ["createdAt", "leagueId", "playerId", "reason", "revision", "version"]);
+  assert(!JSON.stringify(work).includes("private-owner")); assert(!JSON.stringify(work).includes("Retained"));
+  const committed = client.transactions.at(-1)!;
+  assert(committed.some(action => action.Put?.Item?.sk?.S === "HISTORY_SOURCE"));
+  assert(committed.some(action => action.Put?.Item?.pk?.S === work[0].pk.S && action.Put?.Item?.sk?.S === work[0].sk.S));
+  assert(committed.some(action => action.Put?.Item?.entityType?.S === "playerIdentity"));
+  assert(committed.some(action => action.Put?.Item?.pk?.S === `PLAYER_CONSOLIDATION#${input.proposalId}` && action.Put?.Item?.sk?.S === "PROPOSAL"));
+  const beforeReplay = JSON.stringify([...client.items]), transactionCount = client.transactions.length;
+  assert.equal((await service.commit({ proposalId: input.proposalId, userIds: ["admin"] })).status, "committed");
+  assert.equal(client.transactions.length, transactionCount);
+  assert.equal(JSON.stringify([...client.items]), beforeReplay);
+});
+
+test("failed consolidation condition preserves the prior history revision and writes no work", async () => {
+  const { client, service, input } = fixture();
+  client.seed("LEAGUE#league", "HISTORY_SOURCE", "playerHistorySource", { leagueId: "league", version: 1, revision: "prior" });
+  await service.preview(input);
+  const prior = structuredClone(client.read("LEAGUE#league", "HISTORY_SOURCE"));
+  client.beforeTransaction = () => client.seed("PLAYER#b", "IDENTITY", "playerIdentity", {
+    ...client.data("PLAYER#b", "IDENTITY"), writeVersion: "concurrent-registration",
+  });
+  await assert.rejects(service.commit({ proposalId: input.proposalId, userIds: ["admin"] }), /changed/);
+  assert.deepEqual(client.read("LEAGUE#league", "HISTORY_SOURCE"), prior);
+  assert.deepEqual(consolidationWork(client), []);
+  assert.equal(client.data("PLAYER#b", "IDENTITY").rootId, "b");
+  assert.equal(client.data(`PLAYER_CONSOLIDATION#${input.proposalId}`, "PROPOSAL").state, "ready");
+});
+
+test("lost commit response recovers the same receipt without a second history event", async () => {
+  const { client, service, input } = fixture();
+  await service.preview(input);
+  client.loseNextTransactionResponse = true;
+  await assert.rejects(service.commit({ proposalId: input.proposalId, userIds: ["admin"] }), /Committed response lost/);
+  assert.equal(consolidationWork(client).length, 1);
+  const prior = JSON.stringify([...client.items]), transactions = client.transactions.length;
+  assert.equal((await service.commit({ proposalId: input.proposalId, userIds: ["admin"] })).status, "committed");
+  assert.equal(client.transactions.length, transactions); assert.equal(JSON.stringify([...client.items]), prior);
+});
+
+test("independent history revision movement adds no global CAS failure to consolidation", async () => {
+  const { client, service, input } = fixture();
+  await service.preview(input);
+  client.beforeTransaction = () => client.seed("LEAGUE#league", "HISTORY_SOURCE", "playerHistorySource", {
+    leagueId: "league", version: 1, revision: "another-game-finished",
+  });
+  assert.equal((await service.commit({ proposalId: input.proposalId, userIds: ["admin"] })).status, "committed");
+  assert.notEqual(client.data("LEAGUE#league", "HISTORY_SOURCE").revision, "another-game-finished");
+  const sourceActions = client.transactions.at(-1)!.filter(action => action.Put?.Item?.sk?.S === "HISTORY_SOURCE" || action.ConditionCheck?.Key?.sk?.S === "HISTORY_SOURCE");
+  assert.equal(sourceActions.length, 1); assert.equal(sourceActions[0].Put?.ConditionExpression, undefined);
+  assert.equal(consolidationWork(client).length, 1);
+});
 
 test("unclaimed consolidation preserves historical rows and replays exactly once", async () => {
   const { client, service, input } = fixture();
