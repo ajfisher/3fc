@@ -9,14 +9,14 @@ const goalSchema = z.object({
   eventId: identifier, scorerPlayerId: identifier, assistPlayerIds: z.array(identifier),
   scoringTeamId: z.enum(TEAM_IDS).nullable(), concedingTeamId: z.enum(TEAM_IDS), ownGoal: z.boolean(),
   third: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable(), elapsedSeconds: seconds.nullable(),
-  createdAt: instant, timing: z.enum(['live', 'post_completion', 'unknown'])
+  createdAt: instant.nullable(), timing: z.enum(['live', 'post_completion', 'unknown'])
 }).strict().superRefine((goal, context) => {
   try { validateAssistPlayerIds(goal.scorerPlayerId, goal.assistPlayerIds); }
   catch { context.addIssue({ code: 'custom', message: 'Invalid credited assists' }); }
   if (goal.ownGoal ? goal.scoringTeamId !== null : goal.scoringTeamId === null || goal.scoringTeamId === goal.concedingTeamId)
     context.addIssue({ code: 'custom', message: 'Invalid goal team context' });
-  if (goal.timing === 'live' && (goal.third === null || goal.elapsedSeconds === null))
-    context.addIssue({ code: 'custom', message: 'Live timing requires a third and elapsed time' });
+  if (goal.timing === 'live' && (goal.third === null || goal.elapsedSeconds === null || goal.createdAt === null))
+    context.addIssue({ code: 'custom', message: 'Live timing requires a third, elapsed time and creation timestamp' });
 });
 
 /** Normalised canonical completed-match facts. Raw storage records are not this interface.
@@ -38,7 +38,7 @@ export const matchFactsSchema = z.object({
   for (const goal of match.goals) {
     if (goal.timing !== 'live' || goal.third === null || goal.elapsedSeconds === null) continue;
     const end = match.thirdEndsSeconds[goal.third - 1];
-    if (end === null || goal.elapsedSeconds > end || goal.createdAt > match.finishedAt)
+    if (end === null || goal.elapsedSeconds > end || goal.createdAt === null || goal.createdAt > match.finishedAt)
       context.addIssue({ code: 'custom', message: 'Live timing must be evidenced within a completed third' });
   }
 });

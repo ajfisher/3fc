@@ -185,3 +185,42 @@ test('unusable audit timestamp evidence cannot discard valid aggregate statistic
     assert.equal(scorer.counts['message-sent'], 0, scenario); assert.equal(scorer.counts.clutch, 0, scenario);
   }
 });
+
+test('unknown goal creation time preserves credited statistics and cannot qualify as live', () => {
+  for (const createdAt of [undefined, 'legacy-time', '2026-99-99T00:00:00Z']) {
+    const input = fixture();
+    if (createdAt === undefined) delete input.goals[0].createdAt;
+    else input.goals[0].createdAt = { S: createdAt };
+    change(input.goals[0], { timingProvenance: { version: 1, kind: 'live' } });
+    const facts = assembleMatchFacts(input)!;
+    assert.equal(facts.goals[0].createdAt, null); assert.equal(facts.goals[0].timing, 'unknown');
+    assert.equal(facts.goals[0].third, null); assert.equal(facts.goals[0].elapsedSeconds, null);
+    assert.deepEqual(facts.goals[0].assistPlayerIds, ['blue-root']);
+    const state = applyAppearance(emptyAccumulator(), facts, 'root', 'career').state;
+    assert.equal(state.totals.goals, 1); assert.equal(state.totals.wins, 1);
+    assert.equal(state.counts['message-sent'], 0); assert(state.uncertain.includes('message-sent'));
+    change(input.goals[0], { timingProvenance: { version: 1, kind: 'post_completion' } });
+    assert.equal(assembleMatchFacts(input)!.goals[0].timing, 'post_completion');
+  }
+});
+
+test('unusable or duplicate creation audit snapshots remain ambiguous evidence', () => {
+  for (const scenario of ['missing-after', 'scalar-after', 'damaged-duplicate']) {
+    const input = fixture();
+    if (scenario === 'missing-after') {
+      const raw = JSON.parse(input.audits[0].data!.S!); delete raw.after;
+      input.audits[0].data = { S: JSON.stringify(raw) };
+    }
+    if (scenario === 'scalar-after') change(input.audits[0], { after: 'legacy-snapshot' });
+    if (scenario === 'damaged-duplicate') {
+      const duplicate = structuredClone(input.audits[0]);
+      change(duplicate, { auditId: 'duplicate' });
+      duplicate.sk = { S: goalAuditSk('legacy-time', 'duplicate') };
+      duplicate.createdAt = { S: 'legacy-time' };
+      input.audits.push(duplicate);
+    }
+    const facts = assembleMatchFacts(input)!;
+    assert.equal(facts.goals[0].timing, 'unknown', scenario);
+    assert.equal(applyAppearance(emptyAccumulator(), facts, 'root', 'career').state.totals.goals, 1, scenario);
+  }
+});

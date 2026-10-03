@@ -70,10 +70,12 @@ Independent source/store reviews resolved uncertain legacy timing, exact-complet
 provenance and mismatched source-revision findings. Cloud review then identified
 unusable legacy audit timestamps rejecting valid aggregates; the fix preserves
 credit while excluding the audit from timing proof and passed independent review.
-All 57 focused contracts,
+The same boundary now handles missing goal creation time, unusable audit snapshots
+and damaged duplicate creation evidence without inventing timestamps or certainty.
+All 59 focused contracts,
 evaluator, source and store tests pass after fixes, including concurrent evaluation,
-lost acknowledgements and interrupted milestone staging (owned group 7879, exit 0,
-peak 518992 KiB, no remaining children). API test compilation and backlog
+lost acknowledgements and interrupted milestone staging (owned group 8221, exit 0,
+peak 515360 KiB, no remaining children). API test compilation and backlog
 validation/export pass. Remote gates must pass before the worker child begins.
 No runtime reader or worker is enabled by this foundation.
 

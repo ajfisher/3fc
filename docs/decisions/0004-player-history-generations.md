@@ -55,6 +55,10 @@ timing fields and recorded third intervals. New writers will record explicit
 versioned live/post-completion provenance and preserve it on correction/import.
 Missing, contradictory or synthetic timing cannot become a timed unlock. An event
 inserted after completion remains excluded even if its aggregate credit is valid.
+An unavailable original goal creation timestamp remains null; it is never replaced
+by the import or calculation time. Live evidence requires a real creation instant.
+Unusable audit dates or snapshots cannot discard valid aggregate credit, and damaged
+duplicate creation audits still prevent a claim of unique original timing evidence.
 
 ## Alternatives and consequences
 

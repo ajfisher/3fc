@@ -152,17 +152,20 @@ export function assembleMatchFacts(input: {
     const elapsed = Math.floor((Date.parse(third.finishedAt) - Date.parse(third.startedAt)) / 1000);
     return elapsed;
   }) as [number | null, number | null, number | null];
-  const creationAudits = new Map<string, { createdAt: string; after: Record<string, unknown> }[]>();
+  const creationAudits = new Map<string, { createdAt: string | null; after: Record<string, unknown> | null }[]>();
   for (const item of input.audits) {
     const value = z.object({ auditId: text, gameId: text, eventId: text, action: z.enum(['goal_created', 'goal_updated', 'goal_deleted', 'goal_undo_last']),
-      after: z.record(z.string(), z.unknown()).nullable() }).parse(historyBody(item, pk, item.sk!.S!, 'goalAudit'));
+      after: z.unknown().optional() }).parse(historyBody(item, pk, item.sk!.S!, 'goalAudit'));
     if (value.gameId !== metadata.gameId || !item.sk?.S?.startsWith('AUDIT#GOAL#') || !item.sk.S.endsWith(`#${value.auditId}`)) fail('Malformed goal audit.');
     // Audits are optional timing evidence. A damaged legacy timestamp cannot
     // invalidate otherwise consistent goal credit and final aggregate statistics.
     const parsedAt = instant.safeParse(item.createdAt?.S);
-    if (!parsedAt.success || item.sk.S !== goalAuditSk(item.createdAt!.S!, value.auditId)) continue;
-    const createdAt = parsedAt.data;
-    if (value.action === 'goal_created' && value.after) creationAudits.set(value.eventId, [...(creationAudits.get(value.eventId) ?? []), { createdAt, after: value.after }]);
+    const createdAt = parsedAt.success && item.sk.S === goalAuditSk(item.createdAt!.S!, value.auditId) ? parsedAt.data : null;
+    const after = z.record(z.string(), z.unknown()).safeParse(value.after);
+    // Count damaged creation records too: a second unusable creation audit must
+    // not make another record appear to be unique original timing evidence.
+    if (value.action === 'goal_created') creationAudits.set(value.eventId, [...(creationAudits.get(value.eventId) ?? []),
+      { createdAt, after: after.success ? after.data : null }]);
   }
   const goals: MatchGoal[] = input.goals.map(item => {
     const raw = rawGoalSchema.parse(historyBody(item, pk, item.sk!.S!, 'goal'));
@@ -172,19 +175,21 @@ export function assembleMatchFacts(input: {
     const thirdMinute = nonnegative.safeParse(raw.thirdMinute);
     const keyTimingProof = thirdNumber !== null && elapsed.success && gameMinute.success
       && item.sk.S === goalSk(thirdNumber, gameMinute.data, elapsed.data, raw.eventId);
-    const createdAt = instant.parse(item.createdAt?.S);
+    const parsedCreatedAt = instant.safeParse(item.createdAt?.S);
+    const createdAt = parsedCreatedAt.success ? parsedCreatedAt.data : null;
     const audits = creationAudits.get(raw.eventId) ?? [];
     const audit = audits.length === 1 ? audits[0] : null;
+    const auditAfter = audit?.after;
     const third = thirdNumber ? thirds[thirdNumber - 1] : null;
-    const intervalProof = keyTimingProof && third && elapsed.success
+    const intervalProof = keyTimingProof && third && elapsed.success && createdAt !== null
       && createdAt >= third.startedAt && createdAt <= third.finishedAt
       && Math.floor((Date.parse(createdAt) - Date.parse(third.startedAt)) / 1000) === elapsed.data;
-    const auditProof = thirdMinute.success && audit && audit.createdAt === createdAt && audit.after.eventId === raw.eventId
+    const auditProof = thirdMinute.success && audit && createdAt !== null && audit.createdAt === createdAt && auditAfter && auditAfter.eventId === raw.eventId
       && ['third', 'elapsedSeconds', 'gameMinute', 'thirdMinute'].every(key =>
-        raw[key as keyof typeof raw] !== undefined && audit.after[key] === raw[key as keyof typeof raw]);
-    const timing = raw.timingProvenance?.kind === 'post_completion' || createdAt > metadata.finishedAt! ? 'post_completion'
+        raw[key as keyof typeof raw] !== undefined && auditAfter[key] === raw[key as keyof typeof raw]);
+    const timing = raw.timingProvenance?.kind === 'post_completion' || (createdAt !== null && createdAt > metadata.finishedAt!) ? 'post_completion'
       // A legacy creation at the exact completion instant may be a finished-game insertion.
-      : intervalProof && (raw.timingProvenance?.kind === 'live' || (createdAt < metadata.finishedAt! && auditProof)) ? 'live' : 'unknown';
+      : intervalProof && (raw.timingProvenance?.kind === 'live' || (createdAt !== null && createdAt < metadata.finishedAt! && auditProof)) ? 'live' : 'unknown';
     return { eventId: raw.eventId, scorerPlayerId: canonical(raw.scorerPlayerId), assistPlayerIds: raw.assistPlayerIds.map(canonical),
       scoringTeamId: raw.scoringTeamId, concedingTeamId: raw.concedingTeamId, ownGoal: raw.ownGoal,
       createdAt, timing, third: timing === 'live' ? thirdNumber : null, elapsedSeconds: timing === 'live' && elapsed.success ? elapsed.data : null };

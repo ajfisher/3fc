@@ -69,7 +69,7 @@ export function applyAppearance(previous: AchievementAccumulator, rawMatch: Matc
   if (!membership) return { state, appearance: null, unlocks: [] };
   const team = membership.teamId, final = emptyScores();
   const goals = [...match.goals].sort((a, b) => (a.third ?? 4) - (b.third ?? 4)
-    || (a.elapsedSeconds ?? 0) - (b.elapsedSeconds ?? 0) || a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
+    || (a.elapsedSeconds ?? 0) - (b.elapsedSeconds ?? 0) || (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.eventId.localeCompare(b.eventId));
   for (const goal of goals) addGoal(final, goal);
   const winners = leaders(final), outcome = winners.includes(team) ? winners.length === 1 ? 'win' : 'draw' : 'loss';
   const personal = goals.filter(goal => goal.scorerPlayerId === playerId && !goal.ownGoal);

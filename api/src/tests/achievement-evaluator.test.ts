@@ -281,6 +281,7 @@ test('invalid canonical facts fail before awarding or mutating the checkpoint', 
     match([goal('duplicate'), goal('duplicate')]), match([goal('missing-time', { elapsedSeconds: null })]),
     match([goal('missing-end')], { thirdEndsSeconds: [null, 1260, 1260] }),
     match([goal('late-live', { createdAt: '2026-01-02T10:00:00.000Z' })]),
+    match([goal('missing-live-creation', { createdAt: null })]),
     match([goal('self-assist', { assistPlayerIds: [player] })]),
     match([goal('same-team', { concedingTeamId: 'red' })]), match([goal('bad-og', { ownGoal: true })]),
     match([], { finishedAt: '2026-01-01T09:00:00.000Z' })
