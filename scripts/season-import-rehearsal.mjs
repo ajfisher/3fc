@@ -10,7 +10,7 @@ import { DynamoDBClient, ScanCommand, DescribeTableCommand, CreateTableCommand, 
   ListTagsOfResourceCommand, TransactWriteItemsCommand } from "@aws-sdk/client-dynamodb";
 import { buildPlan, validatePlan, decode, key, inventoryDigest, excludedTypes, envelope } from "./season-import-plan.mjs";
 
-import { cutoverManifest, SeasonImportExecutor } from "./season-import-executor.mjs";
+import { cutoverManifest, SeasonImportExecutor, isDisabledHistory } from "./season-import-executor.mjs";
 
 export const sourceTable = "3fc-qa-app", productionTable = "3fc-prod-app", region = "ap-southeast-2";
 export function assertDisposable(name) {
@@ -39,7 +39,7 @@ export async function scan(client, TableName, businessOnly = false) {
   return items;
 }
 export function assertDestinationEmptyOfBusiness(items) {
-  if (items.some(i => !((i.pk?.S === "PLAYER_IDENTITY" && i.sk?.S === "CONTROL" && i.entityType?.S === "playerIdentityControl") ||
+  if (items.some(i => !(isDisabledHistory(i) || (i.pk?.S === "PLAYER_IDENTITY" && i.sk?.S === "CONTROL" && i.entityType?.S === "playerIdentityControl") ||
     (i.pk?.S?.startsWith("PLAYER_MIGRATION#") && i.entityType?.S === "playerIdentityMigration")))) {
     throw new Error("Production contains business or unexpected records; revisit collision planning.");
   }

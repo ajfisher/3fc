@@ -3267,7 +3267,7 @@
         "status": "in-progress",
         "wave": "player-profiles-achievements",
         "notes": [
-          "PR #206 provides canonical paginated source reads and revision-fenced immutable history generations. Atomic source revisions/work markers are in progress on codex/player-history-writers; Streams/SQS worker and backfill follow before runtime exposure."
+          "PR #206 supplies immutable history generations; PR #207 adds atomic source/work writers. The worker child adds bounded Streams/SQS processing, explicit activation, resumable backfill, career-summary dry-run comparison and recovery. Runtime readers and QA coverage activation follow."
         ],
         "githubIssue": 200
       }
@@ -3314,7 +3314,7 @@
         "wave": "player-profiles-achievements",
         "notes": [
           "Approved Club Card build plan; retain existing issue IDs and dependencies.",
-          "Pure evaluator child starts after PR #204 current-head gates; durable ledger, source adapters and worker/backfill responsibilities remain incomplete."
+          "PR #205 supplies all 23 evaluators; PR #206 retains every milestone in immutable generations; PR #207 records corrections atomically. Worker/backfill delivery follows in the current child before authorised reads and QA activation."
         ],
         "githubIssue": 201,
         "branch": "codex/achievement-evaluator"

@@ -335,10 +335,12 @@ resource "aws_dynamodb_table" "app" {
   count = var.create_baseline_resources ? 1 : 0
 
   # Baseline datastore scaffold for the single-table model introduced in M1.
-  name         = "${local.name_prefix}-${var.dynamodb_table_suffix}"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pk"
-  range_key    = "sk"
+  name             = "${local.name_prefix}-${var.dynamodb_table_suffix}"
+  billing_mode     = "PAY_PER_REQUEST"
+  hash_key         = "pk"
+  range_key        = "sk"
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
 
   attribute {
     name = "pk"
@@ -778,7 +780,7 @@ data "aws_iam_policy_document" "github_actions_deploy_permissions" {
     actions = [
       "iam:GetRole",
     ]
-    resources = [aws_iam_role.lambda_exec[0].arn]
+    resources = [aws_iam_role.lambda_exec[0].arn, aws_iam_role.player_history_dispatch[0].arn, aws_iam_role.player_history_worker[0].arn]
   }
 
   statement {
@@ -787,7 +789,7 @@ data "aws_iam_policy_document" "github_actions_deploy_permissions" {
     actions = [
       "iam:PassRole",
     ]
-    resources = [aws_iam_role.lambda_exec[0].arn]
+    resources = [aws_iam_role.lambda_exec[0].arn, aws_iam_role.player_history_dispatch[0].arn, aws_iam_role.player_history_worker[0].arn]
 
     condition {
       test     = "StringEquals"

@@ -15,7 +15,7 @@ help:
 	@echo "  make dev                                Start local Docker Compose stack"
 	@echo "  make dev-down                           Stop local Docker Compose stack"
 	@echo "  make dev-logs                           Follow local Docker Compose logs"
-	@echo "  make deploy ENV=qa|prod [SERVICE=name]   Build and deploy a target (api-health, api-core, site)"
+	@echo "  make deploy ENV=qa|prod [SERVICE=name]   Build and deploy a target (api-health, api-core, player-history, site)"
 	@echo ""
 	@echo "Backlog targets:"
 	@echo "  make backlog-validate                   Validate backlog JSON"

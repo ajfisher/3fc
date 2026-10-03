@@ -1,3 +1,4 @@
+import { disableHistoryReadiness } from './player-history-readiness.js';
 import { GetItemCommand, QueryCommand, ScanCommand, TransactWriteItemsCommand, type AttributeValue,
   type GetItemCommandOutput, type QueryCommandOutput, type ScanCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
@@ -126,6 +127,7 @@ export class PlayerIdentityMigration {
       inventory: emptyTotals(), verification: emptyTotals(), issueCount: 0, issues: [] };
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       identityPut(this.manifest.tableName, control, "playerIdentityControl", { ...control.value, mode: "paused", coverage: "unknown", epoch: pausedEpoch }, now),
+      disableHistoryReadiness(this.manifest.tableName, "identity-migration", now),
       identityPut(this.manifest.tableName, { pk: `PLAYER_MIGRATION#${this.manifest.migrationId}`, sk: "AUDIT", item: null, value }, "playerIdentityMigration", value, now),
     ]) }));
     return value;
@@ -355,6 +357,7 @@ export class PlayerIdentityMigration {
     // do not erase profiles, revisions, aliases or partially built projections.
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       identityPut(this.manifest.tableName, control, "playerIdentityControl", { ...control.value, epoch: next.pausedEpoch }, now),
+      disableHistoryReadiness(this.manifest.tableName, "identity-migration-restart", now),
       identityPut(this.manifest.tableName, audit, "playerIdentityMigration", next, now),
       identityPut(this.manifest.tableName, { pk: audit.pk, sk: `ATTEMPT#${audit.value.pausedEpoch}`, item: null, value: audit.value },
         "playerIdentityMigrationAttempt", audit.value, now),

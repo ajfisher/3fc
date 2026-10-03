@@ -266,7 +266,7 @@ export class PlayerHistoryStore {
     if (current.phase !== 'complete') unavailable('History generation coverage is not complete.');
     const previous = current.previousPublication ? JSON.parse(current.previousPublication) as HistoryPublication : null;
     const publication: HistoryPublication = { generation: spec.generation, leagueId: spec.context.leagueId, playerId: spec.context.playerId,
-      sourceRevision: spec.context.sourceRevision, identityWriteVersion: spec.context.identityWriteVersion, identityEpoch: spec.context.identityEpoch,
+      sourceRevision: spec.context.sourceRevision, readinessRevision: spec.context.readinessRevision, ruleVersion: spec.context.ruleVersion, identityWriteVersion: spec.context.identityWriteVersion, identityEpoch: spec.context.identityEpoch,
       calculatedAt: spec.calculatedAt, latest: current.latest, seasons: current.seasons,
       previousGeneration: previous?.generation ?? null };
     const Item = this.row(snapshot.pk, 'PUBLISHED', 'playerHistoryPublication', publication);
@@ -279,6 +279,12 @@ export class PlayerHistoryStore {
         ConditionExpression: 'attribute_not_exists(pk)' } }
     ]);
     return publication;
+  }
+  /** Operator comparison only: never exposed as a live profile before publish. */
+  async previewCareer(spec: HistoryGeneration): Promise<HistorySummary> {
+    const snapshot = await this.snapshot(spec);
+    if (!['complete', 'published'].includes(snapshot.value.phase)) unavailable('Comparison history is incomplete.');
+    return { state: await this.state(snapshot, snapshot.value.summaryKeys.CAREER) };
   }
   async getPublication(leagueId: string, playerId: string): Promise<HistoryPublication | null> {
     const pk = historyPartition(leagueId, playerId), item = await this.read(pk, 'PUBLISHED');

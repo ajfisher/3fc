@@ -65,6 +65,13 @@ jobs:
           PLAYER_RETURNING_JOIN_ENABLED: ${{ vars.PLAYER_RETURNING_JOIN_ENABLED || 'false' }}
         run: make deploy ENV=qa SERVICE=api-core
 
+      # Infrastructure is provisioned separately from the reviewed local Terraform plan.
+      - name: Deploy player history to qa
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
+        run: make deploy ENV=qa SERVICE=player-history
+
       - name: Smoke test deployed QA core endpoints
         run: |
           MANIFEST_PATH="out/deploy/qa/api-core-deploy-manifest.json"
@@ -312,11 +319,18 @@ jobs:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/deploy/verify-api-core.sh qa "$EXPECTED_HEAD"
 
+      - name: Verify history deployment after acceptance
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/deploy/verify-player-history.mjs qa "$EXPECTED_HEAD"
+
       - name: Preserve exact-head API deployment evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: qa-api-core-deployment
-          path: out/deploy/qa/api-core-deploy-manifest.json
+          path: |
+            out/deploy/qa/api-core-deploy-manifest.json
+            out/deploy/qa/player-history-deploy-manifest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -326,7 +340,7 @@ jobs:
             echo "## QA deploy complete"
             echo "- PR: #${{ github.event.pull_request.number }}"
             echo "- Commit: ${{ github.event.pull_request.head.sha }}"
-            echo "- Services: site, api-health, api-core"
+            echo "- Services: site, api-health, api-core, player-history"
             echo "- Site URL: ${SITE_URL}"
             echo "- Site root status: HTTP ${SITE_ROOT_HTTP_CODE}"
             echo "- Site sign-in status: HTTP ${SITE_SIGNIN_HTTP_CODE}"

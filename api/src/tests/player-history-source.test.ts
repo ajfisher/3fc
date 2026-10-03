@@ -9,6 +9,10 @@ import { applyAppearance, emptyAccumulator } from '../achievements/evaluate.js';
 
 const context: HistoryContext = { leagueId: 'league', playerId: 'root', members: ['root', 'alias'], displayName: 'Player',
   sourceRevision: 'r1', identityWriteVersion: 'w1', identityEpoch: 'e1', checks: [] };
+const readiness = { version: 1, enabled: true, revision: '11111111-1111-4111-8111-111111111111', ruleVersion: 1,
+  activatedAt: '2026-01-01T00:00:00.000Z', manifest: { version: 1, writerVersion: 1, writerSha: 'a'.repeat(40),
+    tableName: 'table', accountId: '123456789012', region: 'ap-southeast-2', reviewedPlan: 'https://github.com/ajfisher/3fc/pull/207',
+    drainedAt: '2026-01-01T00:00:00.000Z', ruleVersion: 1 } };
 const row = (pk: string, sk: string, type: string, data: unknown, at = '2026-01-01T10:05:00.000Z'): HistoryItem =>
   ({ ...historyRow(pk, sk, type, data), createdAt: { S: at }, updatedAt: { S: at } });
 const reference = (gameId: string, leagueId = 'league') => row('PLAYER#alias', identityGameSk(gameId), 'playerGameMembership',
@@ -38,6 +42,7 @@ test('captures canonical alias root and immutable source/control/league publicat
   const records = new Map<string, HistoryItem>();
   const add = (item: HistoryItem) => records.set(`${item.pk!.S}/${item.sk!.S}`, item);
   add(row('PLAYER_IDENTITY', 'CONTROL', 'playerIdentityControl', { mode: 'fenced', epoch: 'e1', coverage: 'verified', writerVersion: 1 }));
+  add(row('PLAYER_HISTORY', 'CONTROL', 'playerHistoryReadiness', readiness));
   for (const id of ['root', 'alias']) add(row(`PLAYER#${id}`, 'IDENTITY', 'playerIdentity', { playerId: id, rootId: 'root',
     members: id === 'root' ? ['root', 'alias'] : [], identityVersion: 1, writeVersion: 'w1', displayName: 'Player', formerNames: [] }));
   add(row('LEAGUE#league', 'METADATA', 'league', { leagueId: 'league' }));
@@ -48,7 +53,13 @@ test('captures canonical alias root and immutable source/control/league publicat
   } }, 'table');
   const captured = await source.captureContext('league', 'alias');
   assert.equal(captured.playerId, 'root'); assert.deepEqual(captured.members, ['root', 'alias']);
-  assert.equal(captured.checks.length, 6); assert.equal(captured.sourceRevision, 'r1');
+  assert.equal(captured.checks.length, 7); assert.equal(captured.sourceRevision, 'r1');
+  add(row('PLAYER_IDENTITY', 'CONTROL', 'playerIdentityControl', { mode: 'fenced', epoch: 'e2', coverage: 'unknown', writerVersion: 1 }));
+  assert.equal((await source.captureContext('league', 'alias')).identityEpoch, 'e2', 'deletion invalidates merge coverage, not retained history associations');
+  add(row('PLAYER_HISTORY', 'CONTROL', 'playerHistoryReadiness', { version: 1, enabled: false, revision: 'ready2' }));
+  await assert.rejects(source.captureContext('league', 'alias'));
+  records.delete('PLAYER_HISTORY/CONTROL'); await assert.rejects(source.captureContext('league', 'alias'), /not been activated/);
+  add(row('PLAYER_HISTORY', 'CONTROL', 'playerHistoryReadiness', readiness));
   add(row('PLAYER_IDENTITY_TOMBSTONE', identityTombstoneSk('league', ['league']), 'playerIdentityTombstone', { kind: 'league', ids: ['league'] }));
   await assert.rejects(source.captureContext('league', 'alias'), /no longer available/);
 });

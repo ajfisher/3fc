@@ -5,7 +5,7 @@ import { historyRow, historySourceKey, historySourceVersion } from './player-his
 
 const identifier = z.string().min(1).refine(value => value.trim().length > 0);
 export const historyMutationReasons = ['game-finished', 'goal-changed', 'roster-changed', 'kickoff-changed',
-  'game-deleted', 'season-deleted', 'league-deleted', 'identity-consolidated'] as const;
+  'game-deleted', 'season-deleted', 'league-deleted', 'identity-consolidated', 'history-rebuild'] as const;
 export type HistoryMutationReason = typeof historyMutationReasons[number];
 export interface HistoryMutationInput {
   leagueId: string;
@@ -18,7 +18,7 @@ const mutationFields = { leagueId: identifier, reason: z.enum(historyMutationRea
   gameId: identifier.optional(), seasonId: identifier.optional(), playerId: identifier.optional() };
 function validateMutation(value: HistoryMutationInput, context: z.RefinementCtx): void {
     const required = value.reason === 'identity-consolidated' ? 'playerId'
-      : value.reason === 'season-deleted' ? 'seasonId' : value.reason === 'league-deleted' ? null : 'gameId';
+      : value.reason === 'season-deleted' ? 'seasonId' : ['league-deleted', 'history-rebuild'].includes(value.reason) ? null : 'gameId';
     if (required && !value[required]) context.addIssue({ code: 'custom', message: `History mutation requires ${required}` });
 }
 const mutationSchema = z.object(mutationFields).strict().superRefine(validateMutation);

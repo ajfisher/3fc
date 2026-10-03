@@ -19,6 +19,8 @@ export interface HistoryContext {
   members: string[];
   displayName: string;
   sourceRevision: string;
+  readinessRevision?: string;
+  ruleVersion?: number;
   identityWriteVersion: string;
   identityEpoch: string;
   /** Conditions are server-built from strongly consistent authoritative reads, never queue/client input. */
@@ -34,6 +36,8 @@ export interface HistoryPublication {
   leagueId: string;
   playerId: string;
   sourceRevision: string;
+  readinessRevision?: string;
+  ruleVersion?: number;
   identityWriteVersion: string;
   identityEpoch: string;
   calculatedAt: string;

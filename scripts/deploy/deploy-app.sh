@@ -67,6 +67,42 @@ fi
 echo "[deploy] Building workspaces"
 make build >/dev/null
 
+# Background history transport has dedicated roles and no HTTP API dependency.
+if [[ "$SERVICE" == "player-history" ]]; then
+  HISTORY_PROCESSING_ENABLED="${HISTORY_PROCESSING_ENABLED:-false}"
+  case "$HISTORY_PROCESSING_ENABLED" in true|false) ;; *) echo "HISTORY_PROCESSING_ENABLED must be true or false" >&2; exit 1 ;; esac
+  DYNAMODB_TABLE="${DYNAMODB_TABLE:-3fc-${ENV}-app}"
+  if [[ "$DYNAMODB_TABLE" != "3fc-${ENV}-app" ]]; then
+    echo "Player history must target the selected environment's application table." >&2
+    exit 1
+  fi
+  HISTORY_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+  if [[ "$HISTORY_ACCOUNT_ID" != "${EXPECTED_AWS_ACCOUNT_ID:-301691475109}" ]]; then
+    echo "Player history deployment account differs from the reviewed account." >&2
+    exit 1
+  fi
+  HISTORY_STREAM_ARN="$(aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" --region "$AWS_REGION" \
+    --query 'Table.LatestStreamArn' --output text)"
+  HISTORY_QUEUE_URL="$(aws sqs get-queue-url --queue-name "3fc-${ENV}-player-history" --region "$AWS_REGION" --query QueueUrl --output text)"
+  HISTORY_QUEUE_ARN="$(aws sqs get-queue-attributes --queue-url "$HISTORY_QUEUE_URL" --attribute-names QueueArn --region "$AWS_REGION" --query Attributes.QueueArn --output text)"
+  HISTORY_DEAD_QUEUE_ARN="$(aws sqs get-queue-attributes --queue-url "${HISTORY_QUEUE_URL}-dead" --attribute-names QueueArn --region "$AWS_REGION" --query Attributes.QueueArn --output text)"
+  HISTORY_DISPATCH_DEAD_QUEUE_ARN="$(aws sqs get-queue-attributes --queue-url "${HISTORY_QUEUE_URL}-dispatch-dead" --attribute-names QueueArn --region "$AWS_REGION" --query Attributes.QueueArn --output text)"
+  HISTORY_DISPATCH_ROLE_ARN="$(aws iam get-role --role-name "3fc-${ENV}-player-history-dispatch" --query Role.Arn --output text)"
+  HISTORY_WORKER_ROLE_ARN="$(aws iam get-role --role-name "3fc-${ENV}-player-history-worker" --query Role.Arn --output text)"
+  for history_input in HISTORY_STREAM_ARN HISTORY_QUEUE_URL HISTORY_QUEUE_ARN HISTORY_DEAD_QUEUE_ARN HISTORY_DISPATCH_DEAD_QUEUE_ARN HISTORY_DISPATCH_ROLE_ARN HISTORY_WORKER_ROLE_ARN; do
+    if [[ -z "${!history_input}" || "${!history_input}" == "None" ]]; then
+      echo "Missing $history_input. Apply the reviewed environment Terraform before deploying history." >&2
+      exit 1
+    fi
+  done
+  export AWS_REGION DYNAMODB_TABLE HISTORY_ACCOUNT_ID HISTORY_PROCESSING_ENABLED HISTORY_STREAM_ARN HISTORY_QUEUE_URL HISTORY_QUEUE_ARN
+  export HISTORY_DEAD_QUEUE_ARN HISTORY_DISPATCH_DEAD_QUEUE_ARN HISTORY_DISPATCH_ROLE_ARN HISTORY_WORKER_ROLE_ARN
+  echo "[deploy] Deploying player history; processing=${HISTORY_PROCESSING_ENABLED}"
+  npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+  node scripts/deploy/verify-player-history.mjs "$ENV" "$(git rev-parse HEAD)" --capture
+  exit 0
+fi
+
 HTTP_API_ID="${HTTP_API_ID:-}"
 LAMBDA_EXECUTION_ROLE_ARN="${LAMBDA_EXECUTION_ROLE_ARN:-}"
 

@@ -24,10 +24,10 @@ test('source revision and durable work share one fresh token in exactly two boun
 test('all source-change reasons require enough identity to schedule bounded reconciliation', () => {
   for (const reason of historyMutationReasons) {
     const context = reason === 'identity-consolidated' ? { playerId: 'canonical' }
-      : reason === 'season-deleted' ? { seasonId: 'winter' } : reason === 'league-deleted' ? {} : { gameId: 'game' };
+      : reason === 'season-deleted' ? { seasonId: 'winter' } : ['league-deleted', 'history-rebuild'].includes(reason) ? {} : { gameId: 'game' };
     const actions = historyMutationItems('table', { leagueId: 'league', reason, ...context }, at);
     assert.equal(historyWorkSchema.parse(JSON.parse(actions[1].Put!.Item!.data.S!)).reason, reason);
-    if (reason !== 'league-deleted') assert.throws(() => historyMutationItems('table', { leagueId: 'league', reason }, at));
+    if (!['league-deleted', 'history-rebuild'].includes(reason)) assert.throws(() => historyMutationItems('table', { leagueId: 'league', reason }, at));
   }
 });
 

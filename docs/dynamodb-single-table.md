@@ -52,6 +52,30 @@ invalidation and reinstatement. They have no TTL. Incomplete/stale work cannot
 replace an active publication. See [ADR 0004](decisions/0004-player-history-generations.md)
 for rollout and rollback responsibilities.
 
+## History work, activation and recovery
+
+`PLAYER_HISTORY / CONTROL` stores a validated writer/rule activation manifest,
+readiness revision and enabled state. It is not a source coverage inference.
+Identity migration disables it atomically; imports preserve only a disabled
+record. See [ADR 0006](decisions/0006-player-history-worker-and-activation.md).
+
+Within `LEAGUE#{leagueId}`:
+
+| Sort key | Ownership and access |
+| --- | --- |
+| `HISTORY_SWEEP` | Coalesced directory fanout/verification checkpoint, source/readiness fences |
+| `HISTORY_JOB#{playerDigest}` | Canonical player generation and pending/done/failed state |
+| `HISTORY_ACK#{revision}` | Strict receipt proving a marker satisfied by a completed sweep or scope deletion |
+| `HISTORY_COMPARE#{comparisonId}` | Resumable isolated career-summary comparison; never changes publication |
+
+Within the player-history generation, `COLLECT#{memberDigest}#…` contains
+immutable cursor receipts, paginated raw/resolved rows and canonical mappings.
+Caches bind the generation, member and captured identity/source/readiness context.
+A cursor is progress, never authorization. Stream/SQS payloads contain only strict
+scope references; workers re-read these records and apply the same source fences.
+The dispatcher and worker have separate roles. Queue delivery does not remove
+work obligations; operator recovery uses bounded keyed queries, never table scans.
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable

@@ -4,7 +4,8 @@ import { TEAM_IDS, type TeamId } from '@3fc/contracts';
 import { leaders, type MatchFacts, type MatchGoal } from '../achievements/evaluate.js';
 import { matchFactsSchema } from '../achievements/facts.js';
 import { goalSk, goalAuditSk } from './keys.js';
-import { PlayerIdentityPlanner, identityCondition, identityGameSk, type IdentitySnapshot } from './player-identity.js';
+import { readHistoryReadiness } from './player-history-readiness.js';
+import { PlayerIdentityPlanner, identityCondition, identityGameSk, identityTombstoneSk, type IdentitySnapshot } from './player-identity.js';
 import { historyBody, historyHash, historyKey, historySourceKey, historySourceVersion,
   PlayerHistoryError, type HistoryClient, type HistoryContext, type HistoryItem, type HistoryPage } from './player-history-model.js';
 
@@ -33,7 +34,8 @@ export class HistorySource {
   async captureContext(leagueId: string, playerId: string): Promise<HistoryContext> {
     text.parse(leagueId); text.parse(playerId);
     const planner = new PlayerIdentityPlanner(this.client, this.tableName);
-    const control = await planner.readControl(); planner.requireCoverage(control);
+    const control = await planner.readControl(); planner.requireDirectory(control);
+    const readiness = await readHistoryReadiness(this.client, this.tableName);
     const identity = await planner.resolve(playerId);
     const pk = `LEAGUE#${leagueId}`, league = await this.get(pk, 'METADATA');
     if (!league || historyBody<{ leagueId: string }>(league, pk, 'METADATA', 'league').leagueId !== leagueId) fail('League is unavailable.');
@@ -46,10 +48,12 @@ export class HistorySource {
     const snapshot = (item: HistoryItem, value: unknown): IdentitySnapshot<unknown> => ({ pk: item.pk!.S!, sk: item.sk!.S!, item, value });
     return { leagueId, playerId: identity.root.value.playerId, members: [...identity.root.value.members],
       displayName: identity.root.value.displayName, sourceRevision: revision.revision,
+      readinessRevision: readiness.value.revision, ruleVersion: readiness.value.ruleVersion,
       identityWriteVersion: identity.root.value.writeVersion, identityEpoch: control.value.epoch,
       checks: [identityCondition(this.tableName, control), identityCondition(this.tableName, identity.root),
         ...(identity.original.pk === identity.root.pk ? [] : [identityCondition(this.tableName, identity.original)]),
-        identityCondition(this.tableName, snapshot(league, null)), live, identityCondition(this.tableName, snapshot(source, revision))] };
+        identityCondition(this.tableName, snapshot(league, null)), live, identityCondition(this.tableName, snapshot(source, revision)),
+        identityCondition(this.tableName, readiness)] };
   }
 
   private async page(pk: string, prefix: string, entityType: string, binding: string, cursor: string | undefined, limit: number): Promise<HistoryPage<HistoryItem>> {
@@ -99,6 +103,33 @@ export class HistorySource {
   }
 
   gameMetadata(gameId: string): Promise<HistoryItem | null> { text.parse(gameId); return this.get(`GAME#${gameId}`, 'METADATA'); }
+
+  /** Reverse references preserve association, not live timestamps or existence. */
+  async disposition(reference: HistoryGameReference): Promise<{ kind: 'skip' } | { kind: 'finished'; game: HistoryItem }> {
+    const ref = referenceSchema.parse(reference);
+    let deleted = false;
+    for (const [kind, ids] of [['league', [ref.leagueId]], ['season', [ref.leagueId, ref.seasonId]], ['game', [ref.gameId]]] as const) {
+      const sk = identityTombstoneSk(kind, [...ids]), item = await this.get('PLAYER_IDENTITY_TOMBSTONE', sk);
+      if (!item) continue;
+      const value = z.object({ kind: z.literal(kind), ids: z.array(text), game: z.unknown().optional() })
+        .parse(historyBody(item, 'PLAYER_IDENTITY_TOMBSTONE', sk, 'playerIdentityTombstone'));
+      if (JSON.stringify(value.ids) !== JSON.stringify(ids)) fail('Tombstone scope mismatch.');
+      if (kind === 'game') {
+        const context = z.object({ gameId: text, leagueId: text, seasonId: text, gameStartTs: instant }).parse(value.game);
+        if (context.gameId !== ref.gameId || context.leagueId !== ref.leagueId || context.seasonId !== ref.seasonId)
+          fail('Deleted game scope mismatch.');
+      }
+      deleted = true;
+    }
+    if (deleted) return { kind: 'skip' };
+    const game = await this.gameMetadata(ref.gameId);
+    if (!game) fail('Referenced game is missing without deletion evidence.');
+    const value = z.object({ gameId: text, leagueId: text, seasonId: text, gameStartTs: instant,
+      status: z.enum(['scheduled', 'live', 'finished']) }).parse(historyBody(game, `GAME#${ref.gameId}`, 'METADATA', 'game'));
+    if (value.gameId !== ref.gameId || value.leagueId !== ref.leagueId || value.seasonId !== ref.seasonId)
+      fail('Referenced game scope mismatch.');
+    return value.status === 'finished' ? { kind: 'finished', game } : { kind: 'skip' };
+  }
   async gamePartitionPage(gameId: string, part: HistoryGamePart, cursor?: string, limit = 50): Promise<HistoryPage<HistoryItem>> {
     text.parse(gameId);
     if (!Object.hasOwn(parts, part)) fail('Unknown game source partition.');

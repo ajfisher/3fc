@@ -30,7 +30,7 @@ at fa7e775 found no newer profile/history implementation to duplicate.
    excludes persistence, source adapters and workers.
 3. Complete canonical history and generation persistence (#139 foundation, #200,
    remainder of #201): ready for AJ's final review in PR #206.
-   Durable source markers are in progress on `codex/player-history-writers`.
+   Durable source markers are ready for AJ in PR #207.
    Streams/SQS delivery, worker and resumable backfill follow before any runtime
    reader is enabled.
 4. Authorised profile/history routes and owner name/photo/media (#37, #202): pending.
@@ -108,7 +108,7 @@ normalization/repair paths, then passed the final diff. Five focused repair case
 the complete writer file and the broader helper/writer/consolidation/repository
 suites passed in sequence: 230 tests, group 11012 exit 0, peak 187936 KiB, no
 remaining children. Contracts build, API compilation, backlog validation/export
-and diff check pass. Remote current-head checks are pending. Streams/SQS delivery,
+and diff check pass. Final current-head evidence follows below. Streams/SQS delivery,
 backfill and runtime feature exposure remain separate subsequent slices.
 
 
@@ -117,5 +117,23 @@ shared league revisions. The accepted fix adds three bounded jittered retries fo
 explicit no-commit conflicts only; conditional and ambiguous failures retain their
 existing recovery. Two independent reviews pass. Five focused cases, both affected
 files and all 235 helper/writer/consolidation/repository tests pass (group 12900,
-exit 0, no remaining children). The revised head requires fresh CI/QA/review gates
-before worker implementation resumes.
+exit 0, no remaining children). Corrected head `5661e8c4b19e594f22a7230b0154abd551622fd7` passed CI
+37120894205, QA 37120894153 and current-head review-gate check 111196642239.
+Cloud review reported no major issues (comment 5968908908). Worker implementation
+resumed after those gates. PR #207 remains unmerged for AJ.
+
+
+Slice 5: `codex/player-history-worker`, based on PR #207. Implements resumable
+source collection, durable directory fanout/verification, bounded Streams/SQS
+processing, readiness activation, isolated career-summary comparison and recovery.
+Two independent collector/transport reviews and a full privacy/infra review pass.
+All 349 affected tests pass after batching refinements (group 15929, exit 0, peak
+179120 KiB, no remaining children). API test compilation and the 47 focused cases
+pass (group 15823, exit 0, peak 555888 KiB). Backlog validation/export and diff check
+pass. QA Terraform init/validation and reviewed plan/apply succeeded: 15 additions,
+3 updates, zero deletions (apply group 16007, exit 0, peak 744464 KiB). Consumers
+remain disabled. Local Serverless packaging could not authenticate; the existing
+credentialed QA workflow must verify actual packaging, deployment and fingerprints.
+Full `make build` passed (group 16586, exit 0, peak 622096 KiB, no children).
+Remote current-head checks are pending. Readers, owner media and app UI follow;
+this slice does not claim user-visible feature completion.
