@@ -6,7 +6,7 @@ import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identity
   identityGameSk, identityLeagueSk, boundedIdentityTransaction, validPlayerIdentityId,
   type IdentityClient, type IdentitySnapshot, type PlayerIdentity, type IdentityControl } from "./player-identity.js";
 import { playerClaimSk } from "./keys.js";
-import { historyMutationItems } from "./player-history-work.js";
+import { historyMutationItems, sendHistoryTransaction } from "./player-history-work.js";
 
 type Item = Record<string, AttributeValue>;
 type RecordData = Record<string, unknown>;
@@ -360,7 +360,7 @@ export class PlayerConsolidationService {
     const context = await this.current(p);
     const actions = await this.commitPlan(context, stored);
     if (Date.parse(p.expiresAt) <= Date.parse(this.now())) fail("proposal_expired", "This proposal has expired. Prepare a new proposal.");
-    try { await this.client.send(new TransactWriteItemsCommand({ TransactItems: actions })); }
+    try { await sendHistoryTransaction(this.client, new TransactWriteItemsCommand({ TransactItems: actions })); }
     catch (error) {
       if (!cancelled(error)) throw error;
       const latest = await this.proposal(p.proposalId);

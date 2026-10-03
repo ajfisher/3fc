@@ -16,6 +16,7 @@ class WriterClient {
   items = new Map<string, Item>();
   transactions: TransactWriteItem[][] = [];
   failHistory = false;
+  conflictHistory = 0;
   seed(pk: string, sk: string, type: string, data: unknown) { const item = identityItem(pk, sk, type, data, at); this.items.set(key(item), item); }
   read(pk: string, sk: string) { return this.items.get(JSON.stringify([pk, sk])); }
   conditions(expression: string | undefined, item: Item | undefined, names: Record<string, string> = {}, values: Record<string, AttributeValue> = {}) {
@@ -60,6 +61,14 @@ class WriterClient {
       const itemKey = action.Put?.Item ?? action.Delete?.Key ?? action.ConditionCheck?.Key;
       assert(itemKey); return key(itemKey);
     })).size, actions.length);
+    if (this.conflictHistory > 0 && actions.some(action => action.Put?.Item?.entityType?.S === 'playerHistoryWork')) {
+      this.conflictHistory--;
+      throw Object.assign(new Error('Independent league writer contended'), {
+        name: 'TransactionCanceledException', CancellationReasons: actions.map(action => ({
+          Code: action.Put?.Item?.entityType?.S === 'playerHistorySource' ? 'TransactionConflict' : 'None'
+        }))
+      });
+    }
     const valid = actions.every(action => {
       const op = action.Put ?? action.Delete ?? action.ConditionCheck!;
       const itemKey = action.Put?.Item ?? action.Delete?.Key ?? action.ConditionCheck!.Key;
@@ -378,4 +387,17 @@ test('normalizing raw goal timing publishes work even when credited players and 
     assert.equal(body(client.read('GAME#game', 'TEAM#red')!).scored, 1);
     await repository.updateGoal(input); assert.equal(client.work().length, 2);
   }
+});
+
+
+test('finished source writes retry transient league revision contention without duplicate work', async () => {
+  const { repository, client } = harness();
+  client.conflictHistory = 2;
+  assertPublic(await repository.createGoal(goalInput));
+  const attempts = client.transactions.filter(actions => actions.some(action => action.Put?.Item?.entityType?.S === 'playerHistoryWork'));
+  assert.equal(attempts.length, 3);
+  assert.deepEqual(attempts[0], attempts[1]); assert.deepEqual(attempts[1], attempts[2]);
+  assert.equal(client.work().length, 1);
+  assert.equal((await repository.listGoalEvents('game')).length, 1);
+  assertAtomic(client, 'goal-changed', 'goal');
 });

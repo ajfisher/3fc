@@ -110,3 +110,12 @@ suites passed in sequence: 230 tests, group 11012 exit 0, peak 187936 KiB, no
 remaining children. Contracts build, API compilation, backlog validation/export
 and diff check pass. Remote current-head checks are pending. Streams/SQS delivery,
 backfill and runtime feature exposure remain separate subsequent slices.
+
+
+PR #207 cloud review identified transient cross-game transaction contention on
+shared league revisions. The accepted fix adds three bounded jittered retries for
+explicit no-commit conflicts only; conditional and ambiguous failures retain their
+existing recovery. Two independent reviews pass. Five focused cases, both affected
+files and all 235 helper/writer/consolidation/repository tests pass (group 12900,
+exit 0, no remaining children). The revised head requires fresh CI/QA/review gates
+before worker implementation resumes.

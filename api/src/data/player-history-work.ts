@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { TransactWriteItem } from '@aws-sdk/client-dynamodb';
+import { TransactWriteItemsCommand, type TransactWriteItem } from '@aws-sdk/client-dynamodb';
 import { z } from 'zod';
 import { historyRow, historySourceKey, historySourceVersion } from './player-history-model.js';
 
@@ -25,6 +25,41 @@ const mutationSchema = z.object(mutationFields).strict().superRefine(validateMut
 export const historyWorkSchema = z.object({ ...mutationFields, version: z.literal(1),
   revision: z.string().uuid(), createdAt: z.string().datetime({ offset: true }) }).strict().superRefine(validateMutation);
 export interface HistoryWork extends HistoryMutationInput { version: 1; revision: string; createdAt: string }
+
+interface HistoryTransactionClient { send(command: unknown): Promise<unknown> }
+interface HistoryTransactionRetryOptions {
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
+}
+
+function isTransactionConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { name, CancellationReasons: reasons } = error as { name?: unknown; CancellationReasons?: unknown };
+  if (name === 'TransactionConflictException') return true;
+  if (name !== 'TransactionCanceledException' || !Array.isArray(reasons) || !reasons.length) return false;
+  return reasons.some(reason => reason?.Code === 'TransactionConflict') && reasons.every(reason =>
+    reason !== null && typeof reason === 'object' && (reason.Code === 'None' || reason.Code === 'TransactionConflict'));
+}
+
+/** Independent matches briefly contend on the shared league revision. Retry only
+ * explicit transaction conflicts: ambiguous delivery and domain-condition failures
+ * retain the caller's existing recovery path. Reuse the command, token and marker. */
+export async function sendHistoryTransaction(client: HistoryTransactionClient, command: unknown,
+  options: HistoryTransactionRetryOptions = {}): Promise<unknown> {
+  const hasWork = command instanceof TransactWriteItemsCommand && command.input.TransactItems?.some(item =>
+    item.Put?.Item?.entityType?.S === 'playerHistoryWork');
+  if (!hasWork) return client.send(command);
+  const sleep = options.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
+  const random = options.random ?? Math.random;
+  for (let attempt = 0; ; attempt++) {
+    try { return await client.send(command); }
+    catch (error) {
+      if (attempt >= 3 || !isTransactionConflict(error)) throw error;
+      // Bounded jitter avoids synchronising independent scorekeepers on the retry.
+      await sleep(Math.round(25 * 2 ** attempt * (0.75 + random() * 0.5)));
+    }
+  }
+}
 
 /** A constant-size outbox appended to the SAME transaction as a source change.
  * Fresh UUID tokens avoid ABA without adding a league-wide read/CAS conflict to

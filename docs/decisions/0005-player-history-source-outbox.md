@@ -18,7 +18,12 @@ deletion and idempotency conditions still arbitrate the domain change. A global
 league compare-and-swap would add conflicts between unrelated games without
 improving correctness: DynamoDB serialises the atomic commits, every committed
 change has its marker, and a generation can publish only against its captured
-source revision. Generate a new UUID on each mutation attempt; do not reuse a
+source revision. Transactions still share a physical source item and can conflict.
+A bounded helper retries only DynamoDB's explicit no-commit transaction-conflict
+errors, with three jittered backoffs and the identical transaction. Domain
+condition failures, throttling, validation errors and ambiguous network failures
+are not retried by this helper. Non-history transactions pass through unchanged.
+Generate a new UUID on each mutation attempt; do not reuse a
 previously committed token for a new mutation, even at an identical clock time.
 
 Record work for completed-game finish/legacy repair, goal creation/correction/

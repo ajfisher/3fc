@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { historyMutationItems, historyMutationReasons, historyWorkSchema, type HistoryMutationInput } from '../data/player-history-work.js';
+import { GetItemCommand, TransactWriteItemsCommand } from '@aws-sdk/client-dynamodb';
+import { historyMutationItems, historyMutationReasons, historyWorkSchema, sendHistoryTransaction, type HistoryMutationInput } from '../data/player-history-work.js';
 
 const at = '2026-10-03T21:00:00+11:00';
 test('source revision and durable work share one fresh token in exactly two bounded transaction actions', () => {
@@ -42,4 +43,74 @@ test('malformed or private marker fields fail before constructing source writes'
   const work = JSON.parse(historyMutationItems('table', { leagueId: 'league', reason: 'league-deleted' }, at)[1].Put!.Item!.data.S!);
   assert.equal(historyWorkSchema.safeParse({ ...work, email: 'private@example.test' }).success, false);
   assert.equal(historyWorkSchema.safeParse({ ...work, revision: 'reused-token' }).success, false);
+});
+
+function historyCommand() {
+  return new TransactWriteItemsCommand({
+    ClientRequestToken: 'stable-request-token',
+    TransactItems: historyMutationItems('table', { leagueId: 'league', reason: 'goal-changed', gameId: 'game' }, at)
+  });
+}
+const conflict = () => Object.assign(new Error('cancelled'), { name: 'TransactionCanceledException',
+  CancellationReasons: [{ Code: 'None' }, { Code: 'TransactionConflict' }] });
+
+test('history transactions retry transient contention using the exact command, source revision and idempotency token', async () => {
+  const command = historyCommand(), original = structuredClone(command.input), seen: unknown[] = [], delays: number[] = [];
+  const result = { committed: true };
+  const client = { async send(value: unknown) {
+    seen.push(value);
+    if (seen.length === 1) throw conflict();
+    if (seen.length === 2) throw Object.assign(new Error('conflict'), { name: 'TransactionConflictException' });
+    return result;
+  } };
+  assert.equal(await sendHistoryTransaction(client, command, { sleep: async ms => { delays.push(ms); }, random: () => 0.5 }), result);
+  assert.deepEqual(delays, [25, 50]);
+  assert.equal(seen.length, 3);
+  assert.ok(seen.every(value => value === command));
+  assert.deepEqual(command.input, original, 'retries cannot allocate a fresh source revision or marker');
+});
+
+test('history transaction conflict recovery stops after three retries and preserves the final error', async () => {
+  const error = conflict(), delays: number[] = []; let attempts = 0;
+  await assert.rejects(sendHistoryTransaction({ async send() { attempts++; throw error; } }, historyCommand(), {
+    sleep: async ms => { delays.push(ms); }, random: () => 0.5
+  }), value => value === error);
+  assert.equal(attempts, 4);
+  assert.deepEqual(delays, [25, 50, 100]);
+});
+
+test('history transaction retries never mask conditions, other cancellations, malformed reasons or ambiguous delivery', async () => {
+  const errors = [
+    ...['ConditionalCheckFailed', 'ProvisionedThroughputExceeded', 'ValidationError', 'ThrottlingError'].map(Code =>
+      Object.assign(new Error(Code), { name: 'TransactionCanceledException', CancellationReasons: [{ Code: 'TransactionConflict' }, { Code }] })),
+    Object.assign(new Error('condition'), { name: 'TransactionCanceledException', CancellationReasons: [{ Code: 'ConditionalCheckFailed' }] }),
+    Object.assign(new Error('unknown'), { name: 'TransactionCanceledException' }),
+    Object.assign(new Error('empty'), { name: 'TransactionCanceledException', CancellationReasons: [] }),
+    Object.assign(new Error('malformed'), { name: 'TransactionCanceledException', CancellationReasons: [{ Code: 'TransactionConflict' }, null] }),
+    Object.assign(new Error('missing code'), { name: 'TransactionCanceledException', CancellationReasons: [{ Code: 'TransactionConflict' }, {}] }),
+    Object.assign(new Error('lost ack'), { name: 'TimeoutError' }),
+    Object.assign(new Error('validation'), { name: 'ValidationException' }),
+    new Error('network connection reset')
+  ];
+  for (const error of errors) {
+    let attempts = 0;
+    await assert.rejects(sendHistoryTransaction({ async send() { attempts++; throw error; } }, historyCommand(), {
+      sleep: async () => { assert.fail('non-conflict must not be retried'); }
+    }), value => value === error);
+    assert.equal(attempts, 1, error.message);
+  }
+});
+
+test('non-history transactions and other SDK commands preserve existing single-send behavior', async () => {
+  for (const command of [
+    new TransactWriteItemsCommand({ TransactItems: [] }),
+    new TransactWriteItemsCommand({ TransactItems: [{ Put: { TableName: 'table', Item: { entityType: { S: 'goal' } } } }] }),
+    new GetItemCommand({ TableName: 'table', Key: { pk: { S: 'LEAGUE#league' } } })
+  ]) {
+    const error = conflict(); let attempts = 0;
+    await assert.rejects(sendHistoryTransaction({ async send(value: unknown) {
+      attempts++; assert.equal(value, command); throw error;
+    } }, command, { sleep: async () => { assert.fail('non-history send must not be retried'); } }), value => value === error);
+    assert.equal(attempts, 1);
+  }
 });

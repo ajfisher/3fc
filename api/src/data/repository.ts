@@ -18,7 +18,7 @@ import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerConsolidationService } from "./player-consolidation.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
 import { OwnedPlayerJoinService } from "./owned-player-join.js";
-import { historyMutationItems } from "./player-history-work.js";
+import { historyMutationItems, sendHistoryTransaction } from "./player-history-work.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
   identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
 import { directoryGameSamples, type DirectoryGameSample } from "./player-directory-games.js";
@@ -1136,12 +1136,12 @@ export class ThreeFcRepository {
           acl?.entityType !== ENTITY_TYPE.acl || access?.leagueId !== input.leagueId || access?.userId !== input.createdByUserId || access?.role !== "admin") throw conflict();
       // A lost-response retry may read the original result, never recreate a
       // revoked ACL or overwrite an existing league owned by someone else.
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [fence,
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [fence,
         this.buildConditionalCheckFromStoredEntity(existing), this.buildConditionalCheckFromStoredEntity(acl)] }));
       return withTimestamps(data, existing.createdAt, existing.updatedAt);
     }
     try {
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
         this.identities.planStructureChange(control, now), await this.identities.liveScope("league", [input.leagueId]),
         { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), metadataSk(), ENTITY_TYPE.league, payload, now),
           ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
@@ -1250,7 +1250,7 @@ export class ThreeFcRepository {
       }
       // Default-team setup happens after metadata creation. An exact retry must
       // be able to complete it without replacing the original season or dates.
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [
         this.identities.writableControl(control), this.buildConditionalCheckFromStoredEntity(existing),
         await this.identities.liveScope("league", [input.leagueId]),
         await this.identities.liveScope("season", [input.leagueId, input.seasonId]),
@@ -1264,7 +1264,7 @@ export class ThreeFcRepository {
       { Put: { TableName: this.tableName, Item: buildItem(seasonPk(input.seasonId), metadataSk(), ENTITY_TYPE.season, payload, now),
         ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } };
     try {
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
         structure, await this.identities.liveScope("league", [input.leagueId]),
         await this.identities.liveScope("season", [input.leagueId, input.seasonId]),
         { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), seasonSk(input.seasonId), ENTITY_TYPE.season, payload, now),
@@ -1406,7 +1406,7 @@ export class ThreeFcRepository {
       ];
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: transactionItems,
           }),
@@ -1465,7 +1465,7 @@ export class ThreeFcRepository {
     };
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: [
             this.buildConditionalCheckFromStoredEntity(legacySeasonItem),
@@ -1650,7 +1650,7 @@ export class ThreeFcRepository {
           ];
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: boundedIdentityTransaction([
               this.buildGamePutTransactionItem({
@@ -1688,7 +1688,7 @@ export class ThreeFcRepository {
     }
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: [
             this.buildGameConditionCheck(input.gameId, gameItem),
@@ -1852,7 +1852,7 @@ export class ThreeFcRepository {
           ].filter((item): item is TransactWriteItem => item !== null);
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: [
               {
@@ -1907,7 +1907,7 @@ export class ThreeFcRepository {
       return withTimestamps(payload, now, now);
     }
 
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       ...identityChecks,
       { Put: { TableName: this.tableName, Item: buildItem(seasonPk(input.seasonId), sessionSk(input.sessionId), ENTITY_TYPE.session, payload, now) } },
       { Put: { TableName: this.tableName, Item: buildItem(sessionPk(input.sessionId), metadataSk(), ENTITY_TYPE.session, payload, now) } },
@@ -2094,7 +2094,7 @@ export class ThreeFcRepository {
       transactionItems.push(...identityChecks);
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: transactionItems,
           }),
@@ -2292,7 +2292,7 @@ export class ThreeFcRepository {
     } : undefined;
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction([
             ...membership.actions,
@@ -2512,7 +2512,7 @@ export class ThreeFcRepository {
     };
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: [
             ...(guardedGameItem ? [this.buildGameConditionCheck(input.gameId, guardedGameItem)] : []),
@@ -2744,7 +2744,7 @@ export class ThreeFcRepository {
       update.Put!.Item = buildItemWithTimestamps(gamePk(existing.gameId), metadataSk(), ENTITY_TYPE.game,
         updatedPayload, gameItem.createdAt, now);
       try {
-        await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
           this.identities.planCoverageInvalidation(control, now), update,
           ...(existing.status === 'finished' ? historyMutationItems(this.tableName, { leagueId: existing.leagueId,
             gameId: existing.gameId, seasonId: existing.seasonId, reason: 'kickoff-changed' }, now) : []),
@@ -2756,7 +2756,7 @@ export class ThreeFcRepository {
       }
     } else if (existing.status === 'finished' && repairsFinishedHistory(gameItem, existing, updatedPayload)) {
       try {
-        await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
           this.buildGamePutTransactionItem({ game: updatedPayload, stored: gameItem, now }),
           ...historyMutationItems(this.tableName, { leagueId: existing.leagueId, gameId: existing.gameId,
             seasonId: existing.seasonId, reason: 'game-finished' }, now),
@@ -2991,7 +2991,7 @@ export class ThreeFcRepository {
       };
 
       try {
-        await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+        await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
           this.buildGamePutTransactionItem({ game: repairedGame, stored: gameItem, now }),
           ...this.buildTeamConditionChecks(teams, teamStatesById),
           ...historyMutationItems(this.tableName, { leagueId: existing.leagueId, gameId: existing.gameId,
@@ -3044,7 +3044,7 @@ export class ThreeFcRepository {
     };
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction([
             this.buildGamePutTransactionItem({
@@ -3159,7 +3159,7 @@ export class ThreeFcRepository {
     }
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction(transactionItems),
         }),
@@ -3343,7 +3343,7 @@ export class ThreeFcRepository {
       }
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: boundedIdentityTransaction(deleteItems),
           }),
@@ -3359,7 +3359,7 @@ export class ThreeFcRepository {
     }
 
     const scoped = await this.getEntity(leaguePk(resolvedSeason.leagueId), seasonSk(seasonId), { consistentRead: true });
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       ...await this.identities.planDeletion("season", [resolvedSeason.leagueId, seasonId], this.clock.now(), undefined, identityControl),
       ...historyMutationItems(this.tableName, { leagueId: resolvedSeason.leagueId, seasonId, reason: 'season-deleted' }, this.clock.now()),
       this.buildConditionalDeleteFromStoredEntity(globalSeasonItem!),
@@ -3398,7 +3398,7 @@ export class ThreeFcRepository {
       }
       if (!authority) throw new PlayerIdentityError("league_cleanup_forbidden", 403, "Only a league organiser can remove this league.");
     }
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       ...await this.identities.planDeletion("league", [leagueId], this.clock.now(), undefined, identityControl), this.buildConditionalDeleteFromStoredEntity(league),
       ...historyMutationItems(this.tableName, { leagueId, reason: 'league-deleted' }, this.clock.now()),
       cleanup.start(leagueId, userIds), ...(authority ? [this.buildConditionalCheckFromStoredEntity(authority)!] : []),
@@ -3427,7 +3427,7 @@ export class ThreeFcRepository {
     const control = await this.identities.readControl();
     const identity = await this.identities.resolve(input.playerId, input.nickname);
     if (identity.root.item) throw new PlayerIdentityError("player_identity_unavailable", 503, "This player record needs organiser support.");
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       this.identities.writableControl(control), ...this.identities.planRevision(identity, now, payload.claimedByUserId !== null),
       { Put: { TableName: this.tableName, Item: buildItem(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player, payload, now),
         ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
@@ -3467,7 +3467,7 @@ export class ThreeFcRepository {
       throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
     }
     try {
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
         identityCondition(this.tableName, identity.root), identityCondition(this.tableName, identity.original),
         this.buildConditionalCheckFromStoredEntity(original), this.buildConditionalCheckFromStoredEntity(canonical),
       ]) }));
@@ -3543,7 +3543,7 @@ export class ThreeFcRepository {
     }
     // Do not disclose a page obtained while the caller's league authority was
     // revoked. This read-only transaction checks the exact initial ACL snapshot.
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [
       this.buildConditionalCheckFromStoredEntity(authority.league)!, this.buildConditionalCheckFromStoredEntity(authority.acl)!,
       ...(gameSamples?.checks ?? []),
       ...(game ? [this.buildConditionalCheckFromStoredEntity(game)] : []),
@@ -3567,7 +3567,7 @@ export class ThreeFcRepository {
           receipt.rawData !== JSON.stringify({ ...request, actor: committed.actor })) {
         throw new PlayerIdentityError("player_creation_changed", 409, "Start a new player entry.");
       }
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
         this.identities.writableControl(control), this.buildConditionalCheckFromStoredEntity(authority.league)!,
         this.buildConditionalCheckFromStoredEntity(authority.acl)!, this.buildConditionalCheckFromStoredEntity(receipt)!,
       ]) }));
@@ -3578,7 +3578,7 @@ export class ThreeFcRepository {
     if (identity.root.item || await this.getPlayer(input.playerId, { consistentRead: true })) {
       throw new PlayerIdentityError("player_already_exists", 409, "Choose the existing player or start a new player entry.");
     }
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
       this.identities.writableControl(control), ...this.identities.planRevision(identity, now),
       ...await this.identities.planDirectory(identity, input.leagueId, now),
       await this.identities.liveScope("league", [input.leagueId]),
@@ -3629,7 +3629,7 @@ export class ThreeFcRepository {
       if (input.teamId && game.status === 'finished') actions.push(...historyMutationItems(this.tableName,
         { leagueId: game.leagueId, gameId: game.gameId, seasonId: game.seasonId, playerId: rootId, reason: 'roster-changed' }, now));
     }
-    await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }));
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }));
     return { playerId: membership.playerId, alreadyInGame };
   }
 
@@ -3804,7 +3804,7 @@ export class ThreeFcRepository {
     const proof = this.storedPlayerProof(stored);
     try {
       const context = await this.readProofContext(proof);
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [
         ...context.checks, this.buildConditionalCheckFromStoredEntity(context.player),
         identityCondition(this.tableName, context.control), identityCondition(this.tableName, context.identity.root),
         this.buildConditionalCheckFromStoredEntity(stored),
@@ -3877,7 +3877,7 @@ export class ThreeFcRepository {
     };
     pointerWrite.Put!.Item = pointerItem;
     try {
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [
         ...Object.values(context).filter((item): item is StoredEntity<unknown> => Boolean(item)).map((item) => this.buildConditionalCheckFromStoredEntity(item)),
         this.identities.writableControl(control), ...this.identities.planRevision(identity, now),
         this.proofWrite(proof, now), pointerWrite,
@@ -3941,7 +3941,7 @@ export class ThreeFcRepository {
     }
     const now = this.clock.now();
     try {
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [
         ...Object.values(context).filter((value): value is StoredEntity<unknown> => Boolean(value)).map((value) => this.buildConditionalCheckFromStoredEntity(value)),
         this.identities.writableControl(control), ...this.identities.planRevision(identity, now),
         this.buildConditionalCheckFromStoredEntity(pointer!),
@@ -4002,7 +4002,7 @@ export class ThreeFcRepository {
     playerWrite.Put!.Item = buildItemWithTimestamps(playerPk(input.playerId), profileSk(), ENTITY_TYPE.player,
       payload, context.player.createdAt, now);
     try {
-      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [
         this.identities.writableControl(context.control), ...this.identities.planRevision(context.identity, now, true),
         advancePlayerClaimsRevision(this.tableName, claimsRevision, now),
         ...context.checks, playerWrite,
@@ -4092,7 +4092,7 @@ export class ThreeFcRepository {
     };
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction([
             ...membership.actions,
@@ -4203,7 +4203,7 @@ export class ThreeFcRepository {
         });
       }
 
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction(transactionItems),
         }),
@@ -4293,7 +4293,7 @@ export class ThreeFcRepository {
       };
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({ TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!, { Put: {
             TableName: this.tableName,
             Item: buildItemWithTimestamps(
@@ -4396,7 +4396,7 @@ export class ThreeFcRepository {
       };
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({ TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!, { Put: {
             TableName: this.tableName,
             Item: buildItem(leagueInvitePk(inviteCode), metadataSk(), ENTITY_TYPE.leagueInvite, payload, now),
@@ -4472,7 +4472,7 @@ export class ThreeFcRepository {
       };
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: [this.buildConditionalCheckFromStoredEntity(league)!,
               {
@@ -4724,7 +4724,7 @@ export class ThreeFcRepository {
       }
 
       try {
-        await this.client.send(
+        await sendHistoryTransaction(this.client,
           new TransactWriteItemsCommand({
             TransactItems: transactionItems,
           }),
@@ -4844,7 +4844,7 @@ export class ThreeFcRepository {
     ];
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction(transactionItems),
         }),
@@ -5754,7 +5754,7 @@ export class ThreeFcRepository {
         : null;
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction([
             ...(game.status === 'finished' ? historyMutationItems(this.tableName,
@@ -6030,7 +6030,7 @@ export class ThreeFcRepository {
     );
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction([
             ...(game.status === 'finished' && (changesHistory || repairsHistory) ? historyMutationItems(this.tableName,
@@ -6231,7 +6231,7 @@ export class ThreeFcRepository {
         : null;
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction([
             ...(game.status === 'finished' ? historyMutationItems(this.tableName,
@@ -6768,7 +6768,7 @@ export class ThreeFcRepository {
     }
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction(transactionItems),
         }),
@@ -7060,7 +7060,7 @@ export class ThreeFcRepository {
     }
 
     try {
-      await this.client.send(
+      await sendHistoryTransaction(this.client,
         new TransactWriteItemsCommand({
           TransactItems: uniqueTargets.map((target) =>
             this.buildConditionalDeleteFromStoredEntity(target),
