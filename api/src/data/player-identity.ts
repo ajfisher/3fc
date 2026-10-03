@@ -112,6 +112,12 @@ export function identityPut(tableName: string, snapshot: IdentitySnapshot<unknow
   return { Put: { ...condition, Item: identityItem(snapshot.pk, snapshot.sk, entityType, value, now, snapshot.item?.createdAt?.S ?? now) } };
 }
 
+function identityDelete(tableName: string, snapshot: IdentitySnapshot<unknown>): TransactWriteItem {
+  const check = identityCondition(tableName, snapshot).ConditionCheck!;
+  const { Key, ...condition } = check;
+  return { Delete: { ...condition, Key } };
+}
+
 // Refuse conflicting actions instead of accidentally updating a root twice in
 // one DynamoDB transaction. Identical condition checks may be shared by plans.
 export function boundedIdentityTransaction(actions: TransactWriteItem[]): TransactWriteItem[] {
@@ -227,6 +233,52 @@ export class PlayerIdentityPlanner {
     }
     if (matches.length > 1) return invalid("This player has conflicting registrations. Ask the organiser for help.");
     return matches[0] ?? null;
+  }
+
+  async planGameRemoval(identity: ResolvedPlayerIdentity, input: MembershipContext & { registeredPlayerId: string }, now: string): Promise<TransactWriteItem[]> {
+    if (!text(input.gameId) || !text(input.leagueId) || !text(input.seasonId) || !date(input.gameStartTs) ||
+        !identity.root.value.members.includes(input.registeredPlayerId)) return invalid();
+    const control = await this.readControl();
+    // Global coverage becomes unknown after ordinary game deletion even though
+    // surviving row-local identity membership remains authoritative. Require
+    // the fenced directory plus every exact retained marker below rather than
+    // making this operation depend on a new whole-table migration.
+    this.requireDirectory(control);
+    if (!identity.root.item || !identity.original.item) throw new PlayerIdentityError("player_membership_unavailable", 503,
+      "This player registration could not be checked. Try again.");
+    const marker = await this.record<{ playerId: string; gameId: string; leagueId: string; seasonId: string; gameStartTs: string }>(
+      `PLAYER#${input.registeredPlayerId}`, identityGameSk(input.gameId), "playerGameMembership",
+      { ...input, playerId: input.registeredPlayerId },
+    );
+    if (!marker.item || marker.value.playerId !== input.registeredPlayerId || marker.value.gameId !== input.gameId ||
+        marker.value.leagueId !== input.leagueId || marker.value.seasonId !== input.seasonId || marker.value.gameStartTs !== input.gameStartTs) {
+      throw new PlayerIdentityError("player_membership_unavailable", 503, "This player registration could not be checked. Try again.");
+    }
+    const directory = await this.record<PlayerDirectoryEntry>(`LEAGUE#${input.leagueId}`,
+      identityDirectorySk(identity.root.value.playerId), "leaguePlayer", {
+        playerId: identity.root.value.playerId, nickname: identity.root.value.displayName,
+        formerNames: identity.root.value.formerNames, active: true, seasonIds: [], hasMoreSeasons: false,
+      });
+    const entry = directoryEntry(directory.value, identity.root.value.playerId);
+    if (!directory.item || !entry.active) throw new PlayerIdentityError("player_membership_unavailable", 503,
+      "This player registration could not be checked. Try again.");
+    const league = await this.record<{ playerId: string; leagueId: string }>(`PLAYER#${identity.root.value.playerId}`,
+      identityLeagueSk(input.leagueId), "playerLeagueMembership", { playerId: identity.root.value.playerId, leagueId: input.leagueId });
+    if (!league.item || league.value.playerId !== identity.root.value.playerId || league.value.leagueId !== input.leagueId) {
+      throw new PlayerIdentityError("player_membership_unavailable", 503, "This player registration could not be checked. Try again.");
+    }
+    const season = await this.record<{ playerId: string; leagueId: string; seasonId: string }>(`PLAYER#${input.registeredPlayerId}`,
+      identitySeasonKey(input.leagueId, input.seasonId), "playerSeasonMembership",
+      { playerId: input.registeredPlayerId, leagueId: input.leagueId, seasonId: input.seasonId });
+    if (!season.item || season.value.playerId !== input.registeredPlayerId || season.value.leagueId !== input.leagueId ||
+        season.value.seasonId !== input.seasonId) {
+      throw new PlayerIdentityError("player_membership_unavailable", 503, "This player registration could not be checked. Try again.");
+    }
+    const revision = await this.record(`LEAGUE#${input.leagueId}`, "PLAYER_DIRECTORY", "playerDirectoryRevision", { revision: "legacy" });
+    if (!revision.item || !text(revision.value.revision)) return invalid();
+    return [this.writableControl(control), ...this.planRevision(identity, now), identityDelete(this.tableName, marker),
+      identityCondition(this.tableName, league), identityCondition(this.tableName, season),
+      identityPut(this.tableName, revision, "playerDirectoryRevision", { revision: randomUUID() }, now)];
   }
 
   async directoryPage(input: { leagueId: string; seasonId?: string; gameId?: string; query?: string; cursor?: string; limit?: number },

@@ -1225,8 +1225,15 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       </form>
     </div>
     ${renderPlayerInvitationPanel()}
-    <p id="roster-retry-status" data-ui="status-note" role="status" hidden></p>
+    <p id="roster-retry-status" data-ui="status-note" role="status" aria-live="polite" hidden></p>
     ${renderButton("Retry loading players", "secondary", { type: "button", id: "roster-retry", hidden: "" })}
+    <section id="player-removal-recovery" data-ui="recovery-actions" aria-labelledby="player-removal-recovery-status" hidden>
+      <p id="player-removal-recovery-status" data-ui="status-note" role="status" aria-live="polite"></p>
+      <div data-ui="button-row">
+        ${renderButton("Retry removal", "danger", { type: "button", "data-action": "retry-player-removal" })}
+        ${renderButton("Reload roster", "secondary", { type: "button", "data-action": "reload-after-player-removal" })}
+      </div>
+    </section>
     <div data-ui="roster-workspace" data-testid="roster-workspace">
       <section data-ui="player-pool" aria-labelledby="player-pool-title">
         <h3 id="player-pool-title">Unassigned</h3>
@@ -1235,6 +1242,17 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
       <section data-ui="roster-board" aria-labelledby="roster-board-title">
         <h3 id="roster-board-title">Teams</h3>
         <div id="roster-teams" data-ui="roster-grid" data-testid="roster-teams"></div>
+      </section>
+    </div>
+    <div data-ui="prompt-overlay" id="player-removal-dialog" hidden>
+      <button data-ui="prompt-backdrop" type="button" data-action="cancel-player-removal" aria-label="Cancel player removal"></button>
+      <section data-ui="prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="player-removal-title" aria-describedby="player-removal-message">
+        <h3 id="player-removal-title">Remove player from this game?</h3>
+        <p id="player-removal-message">This removes the player from this game only. Their league profile and other match history will be kept.</p>
+        <div data-ui="prompt-actions">
+          ${renderButton("Cancel", "secondary", { type: "button", "data-action": "cancel-player-removal" })}
+          ${renderButton("Remove from game", "danger", { type: "button", "data-action": "confirm-player-removal" })}
+        </div>
       </section>
     </div>`,
     "",

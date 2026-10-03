@@ -1,5 +1,5 @@
 import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type GetItemCommandOutput, type QueryCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { TEAM_IDS, type TeamId } from "@3fc/contracts";
 import { identityCondition, identityPut, identityDirectorySk, identityLeagueSk, boundedIdentityTransaction,
   PlayerIdentityPlanner, PlayerIdentityError, validPlayerIdentityId, type IdentityClient, type IdentitySnapshot,
@@ -238,7 +238,8 @@ export class OwnedPlayerJoinService {
         alreadyRegistered: original !== null, team: await this.team(scope.value.gameId, original) };
       const actions = [...plan.actions, ...baseChecks,
         identityPut(this.tableName, { pk, sk, item: null, value: {} }, "ownedPlayerJoinReceipt", { userId: input.userId, requestHash: fingerprint, result }, now)];
-      if (!original) actions.push(identityPut(this.tableName, { pk, sk: `PLAYER#${registered}`, item: null, value: {} }, "gamePlayer", { gameId: scope.value.gameId, playerId: registered }, now));
+      if (!original) actions.push(identityPut(this.tableName, { pk, sk: `PLAYER#${registered}`, item: null, value: {} }, "gamePlayer",
+        { gameId: scope.value.gameId, playerId: registered, registrationRevision: randomUUID() }, now));
       try { await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) })); return result; }
       catch (error) { if (conditional(error)) continue; throw error; }
     }

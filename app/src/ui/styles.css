@@ -1792,6 +1792,12 @@ body {
   }
 }
 
+[data-ui="recovery-actions"] {
+  display: grid;
+  gap: 0.65rem;
+  margin-block: 0.75rem;
+}
+
 [data-ui="player-list"] {
   display: grid;
   gap: 0.5rem;
@@ -2449,6 +2455,9 @@ body {
     border-radius: var(--radius-lg);
     padding: 1rem;
     width: min(24rem, 92vw);
+    max-block-size: calc(100dvh - 2rem);
+    overflow-y: auto;
+    overflow-wrap: anywhere;
     background: var(--surface-elevated);
 
 
@@ -2464,8 +2473,13 @@ body {
   [data-ui="prompt-actions"] {
     margin-top: 0.85rem;
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.45rem;
+
+    > * {
+      flex: 1 1 9rem;
+    }
   }
 }
 

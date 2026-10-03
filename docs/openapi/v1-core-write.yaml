@@ -1884,6 +1884,59 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/games/{gameId}/player-registration:
+    delete:
+      summary: Remove a player registration from a scheduled game
+      operationId: removeGamePlayer
+      description: >-
+        Requires league organiser or scorer access and a scheduled game. Atomically removes the exact game registration,
+        any team assignment and its reverse game-membership marker while retaining the reusable league player, claim,
+        season membership and registrations in other games. Exact retries replay the settled result; an old replay cannot
+        remove a later registration. Responses expose no actor or account information and are no-store and no-referrer.
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: playerId
+          in: query
+          required: true
+          description: Opaque identifier, URL-encoded and decoded exactly once so reserved path characters remain data.
+          schema: { type: string, minLength: 1 }
+        - name: registrationRevision
+          in: query
+          required: true
+          description: Opaque revision returned with the roster row being removed. Stale revisions fail without mutation.
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: Settled game-player removal result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removal]
+                properties:
+                  removal:
+                    $ref: "#/components/schemas/GamePlayerRemoval"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
 components:
   parameters:
     OwnedJoinCode:
@@ -3051,6 +3104,11 @@ components:
         playerId:
           type: string
           minLength: 1
+        registrationRevision:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Opaque game-registration revision, present only in roster reads that support stale-removal protection.
         nickname:
           type: string
           minLength: 1
@@ -3312,6 +3370,11 @@ components:
             - yellow
         playerId:
           type: string
+        registrationRevision:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Opaque revision of the corresponding game registration, supplied by roster reads.
         player:
           anyOf:
             - $ref: "#/components/schemas/Player"
@@ -3320,6 +3383,25 @@ components:
           type: string
           format: date-time
         updatedAt:
+          type: string
+          format: date-time
+    GamePlayerRemoval:
+      type: object
+      additionalProperties: false
+      required: [gameId, playerId, teamId, removedAt]
+      properties:
+        gameId:
+          type: string
+        playerId:
+          type: string
+          description: Exact historical registration identifier that was removed.
+        teamId:
+          oneOf:
+            - type: string
+              enum: [red, blue, yellow]
+            - type: "null"
+          description: Team assignment immediately before removal, or null when Unassigned.
+        removedAt:
           type: string
           format: date-time
     GameRosterResponse:

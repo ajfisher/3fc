@@ -16,6 +16,9 @@ test("directory and league invitation HTTP adapters parse real request streams a
     } : player], cursor: null }; },
     async createLeaguePlayer(input) { calls.push("create"); return { ...player, playerId: input.playerId, nickname: input.nickname }; },
     async addExistingLeaguePlayer(input) { calls.push("register"); return { playerId: input.playerId, alreadyInGame: false }; },
+    async removeGamePlayer(input) { assert.equal(input.expectedRegistrationRevision, "registration-revision"); calls.push("remove"); return { entityType: "rosterRemoval", gameId: input.gameId, leagueId: "league/#%",
+      playerId: input.playerId, teamId: "blue", removedAt: "2026-09-21T01:02:03.000Z", requestHash: "private",
+      actorRef: "private", actorRole: "scorekeeper", createdAt: "2026-09-21T01:02:03.000Z", updatedAt: "2026-09-21T01:02:03.000Z" }; },
   };
   const proofs = { async getPlayerInvitation(input: Parameters<PlayerProofRepository["getPlayerInvitation"]>[0]) {
     assert.equal(input.scope, "league"); assert.equal(input.leagueId, "league/#%"); assert.equal(input.playerId, player.playerId);
@@ -54,6 +57,18 @@ test("directory and league invitation HTTP adapters parse real request streams a
     assert.equal(created.status, 201); await created.arrayBuffer();
     const registration = await fetch(`${base}/v1/game-player-registrations?gameId=game`, { headers, method: "POST", body: JSON.stringify({ playerId: player.playerId }) });
     assert.equal(registration.status, 200); await registration.arrayBuffer();
+    const removalUrl = new URL(`${base}/v1/games/game/player-registration`);
+    removalUrl.searchParams.set("playerId", player.playerId);
+    removalUrl.searchParams.set("registrationRevision", "registration-revision");
+    const removal = await fetch(removalUrl, { headers: { ...headers,
+      "idempotency-key": "removal-fixture-0001" }, method: "DELETE" });
+    assert.equal(removal.status, 200); assert.deepEqual(await removal.json(), { removal: { gameId: "game", playerId: player.playerId,
+      teamId: "blue", removedAt: "2026-09-21T01:02:03.000Z" } });
+    const missingKey = await fetch(removalUrl, { headers, method: "DELETE" });
+    assert.equal(missingKey.status, 400); await missingKey.arrayBuffer();
+    const missingRevision = new URL(removalUrl); missingRevision.searchParams.delete("registrationRevision");
+    const staleUnsafe = await fetch(missingRevision, { headers: { ...headers, "idempotency-key": "unsafe-without-revision" }, method: "DELETE" });
+    assert.equal(staleUnsafe.status, 400); await staleUnsafe.arrayBuffer();
     const malformed = await fetch(`${base}/v1/league-players?${query}`, { headers, method: "POST", body: "{" });
     assert.equal(malformed.status, 400); await malformed.arrayBuffer();
     query.set("playerId", player.playerId);
@@ -62,7 +77,7 @@ test("directory and league invitation HTTP adapters parse real request streams a
     assert.equal(invitation.headers.get("cache-control"), "no-store");
     const invalid = await fetch(`${base}/v1/player-proofs/league-invitation?${query}&gameId=foreign`, { headers });
     assert.equal(invalid.status, 400); await invalid.arrayBuffer();
-    assert.deepEqual(calls, ["list", "list", "create", "register", "invitation"]);
+    assert.deepEqual(calls, ["list", "list", "create", "register", "remove", "invitation"]);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

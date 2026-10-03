@@ -100,6 +100,7 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/games/game-1/goals/goal-1"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/games/game-1/goals/undo-last"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/players/player-1/claim"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/games/game-1/player-registration"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/access"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/leagues/league-1/organiser-invites"), true);
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/invites/ABCD2345/accept"), true);
