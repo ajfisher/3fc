@@ -241,6 +241,10 @@ Name saves require owner editing and processing enabled in the API, plus activat
 history readiness. The existing worker performs bounded directory updates. Its
 queue messages contain only a player hash and immutable work key. Current canonical
 ownership is checked by the save service; operator recovery is not an owner API.
+Exact committed requests can replay their receipt while processing is paused,
+after rechecking current canonical ownership. Deploy compatible worker code and
+stream filters before enabling the API producer; the shared workflows enforce this
+order so an old filter cannot skip a new work record.
 
 Use the same guarded `history_qa` wrapper and reviewed manifests above:
 

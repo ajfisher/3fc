@@ -193,9 +193,19 @@ test('history deployment stays in serialized jobs and requires separately provis
   assert(deploy.indexOf('if [[ "$SERVICE" == "player-history" ]]') < deploy.indexOf('HTTP_API_ID="${HTTP_API_ID:-}"'));
   assert.match(deploy, /EXPECTED_AWS_ACCOUNT_ID:-301691475109/);
   assert.match(deploy, /verify-player-history\.mjs.*--capture/);
+  const workerBranch = deploy.slice(deploy.indexOf('if [[ "$SERVICE" == "player-history" ]]'), deploy.indexOf('HTTP_API_ID="${HTTP_API_ID:-}"'));
+  assert.match(workerBranch, /verify-player-history\.mjs[^\n]*--capture\n  exit 0/);
+  assert.doesNotMatch(workerBranch, /api-core-deploy-manifest|verify-api-core|HTTP_API_ID|LAMBDA_EXECUTION_ROLE_ARN/);
   for (const environment of ['qa', 'prod']) {
     const workflow = read(`.github/workflows/deploy-${environment}.yml`);
-    assert(workflow.indexOf(`SERVICE=player-history`) > workflow.indexOf(`SERVICE=api-core`));
+    const steps = workflow.split(/^      - name: /m).slice(1);
+    const consumer = steps.findIndex(step => step.includes(`run: make deploy ENV=${environment} SERVICE=player-history`));
+    const producer = steps.findIndex(step => step.includes(`run: make deploy ENV=${environment} SERVICE=api-core`));
+    assert(consumer >= 0 && producer > consumer, `${environment}: verified compatible consumer must precede new producers`);
+    for (const index of [consumer, producer]) {
+      assert.doesNotMatch(steps[index], /^        (?:if|continue-on-error):/m, 'consumer failure must prevent producer deployment');
+      assert.match(steps[index], /HISTORY_PROCESSING_ENABLED: \$\{\{ vars.HISTORY_PROCESSING_ENABLED \|\| 'false' \}\}/);
+    }
     assert(workflow.indexOf(`verify-player-history.mjs ${environment}`) > workflow.indexOf(`verify-api-core.sh ${environment}`));
     assert.match(workflow, /HISTORY_PROCESSING_ENABLED: \$\{\{ vars.HISTORY_PROCESSING_ENABLED \|\| 'false' \}\}/);
     assert.match(workflow, new RegExp(`out/deploy/${environment}/player-history-deploy-manifest.json`));

@@ -33,6 +33,8 @@ work record. Historical player IDs, goals and game entries do not change. A no-o
 save records its receipt without unnecessary directory work. Reusing a key for a
 different request conflicts. A lost acknowledgement re-enters current canonical
 ownership before replaying the saved response; it never reapplies an old name.
+An exact committed receipt remains replayable during a processing/readiness pause;
+only genuinely new saves need those gates. Current ownership is always rechecked.
 
 ## Durable propagation
 
@@ -58,6 +60,8 @@ deployed paths use the same service and worker. The guarded history CLI provides
 `profile-status` and bounded `profile-step` recovery; cloud runs retain exact-code,
 account/table and deployment-freeze checks. Delivery failures remain retryable and
 visible through the worker/DLQ monitoring already in place.
+Deploy the compatible history consumer and stream filters before the API producer.
+This prevents an old filter from advancing past a newly introduced work type.
 
 ## Rollback and remaining scope
 

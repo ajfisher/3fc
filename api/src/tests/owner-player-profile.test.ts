@@ -111,6 +111,26 @@ test('lost acknowledgement and exact retries replay one immutable receipt withou
   await assert.rejects(service.rename({ ...request, displayName: 'Different request' }), error => (error as any).code === 'owner_profile_request_conflict');
 });
 
+test('committed retries survive processing/readiness pauses while new writes and revoked owners remain blocked', async () => {
+  for (const pause of ['environment', 'disabled-readiness', 'missing-readiness']) {
+    const { client, service, update } = fixture();
+    const request = { ...input, displayName: 'Committed name', expectedRevision: (await service.read(input)).revision, idempotencyKey: 'saved' };
+    const saved = await service.rename(request);
+    const writesBefore = client.transactions.filter(actions => actions.some(action => action.Put)).length;
+    if (pause === 'disabled-readiness') update('PLAYER_HISTORY', 'CONTROL', { enabled: false });
+    if (pause === 'missing-readiness') client.remove('PLAYER_HISTORY', 'CONTROL');
+    const paused = new OwnerPlayerProfileService(client, 'table', { now: () => at, processingEnabled: () => pause !== 'environment' });
+    assert.deepEqual(await paused.rename(request), saved);
+    await assert.rejects(paused.rename({ ...request, displayName: 'Different payload' }), error => (error as any).code === 'owner_profile_request_conflict');
+    await assert.rejects(paused.rename({ ...request, displayName: 'New write', expectedRevision: saved.revision, idempotencyKey: 'new' }),
+      error => ['owner_profile_unavailable', 'history_unavailable'].includes((error as any).code));
+    update('PLAYER#root', 'PROFILE', { claimedByUserId: 'stranger' });
+    await assert.rejects(paused.rename(request), error => (error as any).status === 403);
+    assert.equal(client.transactions.filter(actions => actions.some(action => action.Put)).length, writesBefore);
+    assert.equal(rowsOf(client, 'playerProfileNameWork').length, 1);
+  }
+});
+
 test('ownership is rechecked for alias requests, every replay and concurrent mutations', async () => {
   const { client, service, update } = fixture(); update('PLAYER#root', 'IDENTITY', { members: ['root', 'alias'] });
   client.seed('PLAYER#alias', 'IDENTITY', 'playerIdentity', { playerId: 'alias', rootId: 'root', members: [], identityVersion: 1, writeVersion: 'a', displayName: 'Alias', formerNames: [] });

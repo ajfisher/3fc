@@ -65,7 +65,7 @@ paths:
     "patch":
       "operationId": "renameOwnerPlayerProfile"
       "summary": "Change your canonical player name"
-      "description": "Requires a verified session and current canonical player claim. League roles do not grant ownership. Unknown/duplicate query parameters are rejected; opaque IDs are decoded once. Handler responses use no-store and no-referrer. Owner editing must be enabled. Requires enabled processing and activated readiness. The save atomically records retry-safe work; directory updates are asynchronous. Current ownership is checked again before receipt replay. Request bodies are limited to 8192 bytes. A changed expected revision or reused key with a different body returns409."
+      "description": "Requires a verified session and current canonical player claim. League roles do not grant ownership. Unknown/duplicate query parameters are rejected; opaque IDs are decoded once. Handler responses use no-store and no-referrer. Owner editing must be enabled. New saves require enabled processing and activated readiness; exact committed receipts remain replayable while processing is paused after ownership is rechecked. The save atomically records retry-safe work; directory updates are asynchronous. Current ownership is checked again before receipt replay. Request bodies are limited to 8192 bytes. A changed expected revision or reused key with a different body returns409."
       "parameters":
         -
           "$ref": "#/components/parameters/DirectoryPlayerId"

@@ -57,6 +57,15 @@ jobs:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
         run: make deploy ENV=qa SERVICE=api-health
 
+      # Infrastructure is provisioned separately from the reviewed local Terraform plan.
+      # Install and verify compatible consumers before the API can emit new work types.
+      # Older stream filters can permanently skip new records, even if they are updated later.
+      - name: Deploy player history to qa
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
+        run: make deploy ENV=qa SERVICE=player-history
+
       - name: Deploy API core service to QA
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
@@ -68,13 +77,6 @@ jobs:
           PLAYER_OWNER_EDITING_ENABLED: ${{ vars.PLAYER_OWNER_EDITING_ENABLED || 'false' }}
           HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
         run: make deploy ENV=qa SERVICE=api-core
-
-      # Infrastructure is provisioned separately from the reviewed local Terraform plan.
-      - name: Deploy player history to qa
-        env:
-          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
-          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
-        run: make deploy ENV=qa SERVICE=player-history
 
       - name: Smoke test deployed QA core endpoints
         run: |

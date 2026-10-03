@@ -240,3 +240,13 @@ shell syntax, Terraform fmt/validate and diff check pass. QA Terraform applied o
 scoped worker IAM policy change, zero additions/deletions (group36759 exit0,
 peak731184KiB, no children). Portraits and owner UI remain separate next slices;
 this does not close #202. Remote current-head gates are required before proceeding.
+
+
+Slice7 is [PR #210](https://github.com/ajfisher/3fc/pull/210). Initial head9408e28
+passed CI37129966862 and QA37129988516. Cloud review found two rollout/retry issues:
+consumer/filter deployment must precede the API producer, and exact committed
+requests must replay during processing pauses after current ownership checks.
+Both fixes passed independent review, three focused tests, all16 affected-file
+cases and518 related regressions (group37846 exit0, peak266288KiB, no children).
+API compilation passes. Live QA IAM simulation passed70 expected boundary cases
+(group37129 exit0, no children). Fresh current-head remote gates are required.

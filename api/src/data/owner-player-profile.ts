@@ -86,19 +86,23 @@ export class OwnerPlayerProfileService {
     const name = ownerDisplayNameSchema.safeParse(input.displayName), revision = ownerProfileRevisionSchema.safeParse(input.expectedRevision);
     if (!name.success || !revision.success || !ownerProfileIdempotencyKeySchema.safeParse(input.idempotencyKey).success)
       throw new PlayerIdentityError('owner_profile_invalid', 400, 'Check the player name and try again.');
-    if (!this.processingEnabled()) return unavailable();
     const receiptPk = profileWorkPartition(input.playerId), receiptSk = `RECEIPT#${hash([input.userId, input.idempotencyKey])}`;
     const requestHash = hash([input.playerId, name.data, revision.data]);
     for (let attempt = 0; attempt < 3; attempt++) {
-      const context = await this.context(input), readiness = await readHistoryReadiness(this.client, this.tableName);
+      const context = await this.context(input);
       const receipt = await this.snapshot(this.client, receiptPk, receiptSk, 'playerProfileReceipt');
-      const base = [...context.checks, identityCondition(this.tableName, readiness)];
       if (receipt.value) {
         const saved = receiptSchema.parse(receipt.value); if (saved.requestHash !== requestHash) return conflict();
-        try { await this.fence([...base, identityCondition(this.tableName, receipt)]); }
+        // Replaying a completed mutation does not create processing work. It
+        // remains available during a processing pause, after current canonical
+        // ownership and the immutable receipt have both been fenced.
+        try { await this.fence([...context.checks, identityCondition(this.tableName, receipt)]); }
         catch (error) { if (conditional(error) && attempt < 2) continue; if (conditional(error)) return changed(); throw error; }
         return saved.result;
       }
+      if (!this.processingEnabled()) return unavailable();
+      const readiness = await readHistoryReadiness(this.client, this.tableName);
+      const base = [...context.checks, identityCondition(this.tableName, readiness)];
       if (context.result.revision !== revision.data) return changed();
       const now = z.string().datetime({ offset: true }).parse(this.now()), root = context.identity.root;
       let result = context.result;
