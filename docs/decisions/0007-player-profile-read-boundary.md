@@ -17,6 +17,12 @@ ownership checks. Its cursor binds the account, claims revision, league director
 identity-control snapshot. Empty filtered pages retain their continuation. Returned
 players contain display identity only. Claims indexes and nickname matches never
 constitute ownership proof. No caller-supplied account identifier is accepted.
+Each page enumerates at most twenty raw claim rows. A bounded lookup selects one
+representative claim per canonical player across the verified account identifiers:
+prefer a canonical-root claim, otherwise a stable alias claim from the root's
+at-most-twenty members. Only that representative emits the player, including across
+page and namespace boundaries. Claims-revision and root-closure fences cover these
+lookups; the cursor never grows with the number of previously returned players.
 
 Performance, history and achievement responses are strict allowlists. Canonical
 claim records, account identifiers, transaction fences and raw history staging stay

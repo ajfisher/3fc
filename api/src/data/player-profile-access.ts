@@ -101,7 +101,7 @@ export class PlayerProfileAccess {
         { pk: `LEAGUE#${leagueId}`, sk: identityDirectorySk(root) });
     }
     await scope.cache.prefetch(keys);
-    const result = new Map<string, { playerId: string; displayName: string; ownerId: string | null; inLeague: boolean; checks: TransactWriteItem[] }>();
+    const result = new Map<string, { playerId: string; members: string[]; displayName: string; ownerId: string | null; inLeague: boolean; checks: TransactWriteItem[] }>();
     for (const id of originals) {
       const identity = await scope.planner.resolve(id), root = identity.root.value.playerId;
       const profile = await this.read(scope.cache, `PLAYER#${root}`, 'PROFILE', 'player');
@@ -115,7 +115,7 @@ export class PlayerProfileAccess {
       if (active && !membership.item) return unavailable();
       // Root closure changes are atomic with the root identity revision. Fencing
       // that root covers all bounded alias lookups without 400 transaction checks.
-      result.set(id, { playerId: root, displayName: identity.root.value.displayName, ownerId: value.claimedByUserId,
+      result.set(id, { playerId: root, members: identity.root.value.members, displayName: identity.root.value.displayName, ownerId: value.claimedByUserId,
         inLeague: active && Boolean(membership.item), checks: [identityCondition(this.tableName, identity.root),
           identityCondition(this.tableName, profile), identityCondition(this.tableName, directory), identityCondition(this.tableName, membership)] });
     }
@@ -136,6 +136,36 @@ export class PlayerProfileAccess {
       league: { leagueId: input.leagueId, name: scope.league.value.name as string }, owner, checks };
   }
   private deadline(deadline: number): void { if (Date.now() >= deadline) unavailable(); }
+  private async representatives(scope: Awaited<ReturnType<PlayerProfileAccess['scope']>>, accounts: string[],
+    players: Awaited<ReturnType<PlayerProfileAccess['players']>>) {
+    const roots = new Map([...players.values()].filter(player => player.inLeague && player.ownerId !== null && accounts.includes(player.ownerId))
+      .map(player => [player.playerId, player]));
+    const selected = new Map<string, { account: string; playerId: string }>();
+    const candidates = (ids: readonly string[]) => ids.flatMap(playerId => accounts.map(account => ({ account, playerId })));
+    const read = async (root: string, values: Array<{ account: string; playerId: string }>) => {
+      for (const candidate of values) {
+        const claim = await this.read(scope.cache, `USER#${candidate.account}`, playerClaimSk(candidate.playerId), 'playerClaim');
+        if (!claim.item) continue;
+        if (claim.value.userId !== candidate.account || claim.value.playerId !== candidate.playerId) return unavailable();
+        if (!selected.has(root)) selected.set(root, candidate);
+      }
+    };
+    // Prefer a root claim, even when its namespace/account is visited later.
+    // Only groups without one need the bounded (20 members x two accounts)
+    // legacy alias search. Inspect every fetched record before returning a page.
+    await scope.cache.prefetch([...roots.keys()].flatMap(id => candidates([id]))
+      .map(value => ({ pk: `USER#${value.account}`, sk: playerClaimSk(value.playerId) })));
+    for (const root of roots.keys()) await read(root, candidates([root]));
+    const aliases = [...roots.values()].filter(player => !selected.has(player.playerId)).map(player => ({ root: player.playerId,
+      values: candidates(player.members.filter(id => id !== player.playerId).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) }));
+    await scope.cache.prefetch(aliases.flatMap(group => group.values)
+      .map(value => ({ pk: `USER#${value.account}`, sk: playerClaimSk(value.playerId) })));
+    for (const group of aliases) await read(group.root, group.values);
+    // Claims revisions fence both presence and absence across all inspected
+    // account rows; root checks fence the bounded alias closure. No seen-ID
+    // list or additional per-candidate transaction actions are necessary.
+    return selected;
+  }
   async discover(input: { leagueId: string; userId: string; userIds?: readonly string[]; cursor?: string; limit?: number }): Promise<PlayerAccessPage> {
     const accounts = this.accounts(input), scope = await this.scope(input.leagueId, accounts, true), limit = input.limit ?? 20;
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) return badCursor();
@@ -166,12 +196,15 @@ export class PlayerProfileAccess {
       return claim.playerId;
     });
     const resolved = await this.players(scope, input.leagueId, claims), players: PlayerAccessPage['players'] = [], seen = new Set<string>();
+    const representatives = await this.representatives(scope, accounts, resolved);
     const checks = [...scope.checks];
-    for (const player of resolved.values()) {
+    for (const [claimedId, player] of resolved) {
       // Fence excluded stale claims too: account/league eligibility must not
       // change while this bounded discovery page is being assembled.
       checks.push(...player.checks);
       if (!player.inLeague || player.ownerId === null || !accounts.includes(player.ownerId) || seen.has(player.playerId)) continue;
+      const representative = representatives.get(player.playerId);
+      if (!representative || representative.account !== accounts[accountIndex] || representative.playerId !== claimedId) continue;
       seen.add(player.playerId); players.push({ playerId: player.playerId, displayName: player.displayName });
     }
     const continuation = page.LastEvaluatedKey;

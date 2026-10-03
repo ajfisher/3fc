@@ -82,6 +82,22 @@ function claimRoot(client: MemoryClient, id: string, owner: string | null) {
   const row = client.items.get(itemKey(historyKey(`PLAYER#${id}`, 'PROFILE')))!;
   row.data = { S: JSON.stringify({ ...data(row), claimedByUserId: owner }) };
 }
+function addAliases(client: MemoryClient, rootId: string, aliases: string[]) {
+  const root = client.items.get(itemKey(historyKey(`PLAYER#${rootId}`, 'IDENTITY')))!;
+  root.data = { S: JSON.stringify({ ...data(root), members: [rootId, ...aliases] }) };
+  for (const alias of aliases) client.seed(`PLAYER#${alias}`, 'IDENTITY', 'playerIdentity', { playerId: alias, rootId,
+    members: [], writeVersion: 'w1', identityVersion: 1, displayName: alias, formerNames: [] });
+}
+async function discoverAll(access: PlayerProfileAccess, caller: { leagueId: string; userId: string; userIds: string[] }, limit = 1) {
+  const found: string[] = []; let cursor: string | undefined;
+  for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
+    const page = await access.discover({ ...caller, cursor, limit });
+    found.push(...page.players.map(player => player.playerId));
+    if (!page.cursor) return found;
+    cursor = page.cursor;
+  }
+  assert.fail('discovery did not terminate');
+}
 
 test('a verified canonical participant can read another profile without gaining owner authority', async () => {
   const { client, access, caller } = fixture();
@@ -161,16 +177,16 @@ test('discovery paginates both claim namespaces and trusted identities while pre
   const { client, access, caller } = fixture();
   const long = 'x'.repeat(1020), opaque = 'email-owned/λ%'; addPlayer(client, long, account); addPlayer(client, opaque, email);
   assert.equal((await access.authorize({ ...caller, playerId: opaque })).owner, true, 'legacy email claim belongs to the verified account alias');
-  let cursor: string | undefined, pages = 0; const found = new Set<string>();
+  let cursor: string | undefined, pages = 0; const found: string[] = [];
   do {
     const page = await access.discover({ ...caller, limit: 1, cursor });
     assert.equal(page.leagueId, 'league'); assert.equal(page.hasLeagueAcl, false); assert.equal(page.complete, page.cursor === null);
-    page.players.forEach(player => found.add(player.playerId)); pages++;
+    page.players.forEach(player => found.push(player.playerId)); pages++;
     assert(!JSON.stringify(page).includes(email)); assert(!JSON.stringify(page).includes('never-return'));
     if (page.cursor) assert(!Buffer.from(page.cursor, 'base64url').toString().includes(email));
     cursor = page.cursor ?? undefined;
   } while (cursor && pages < 10);
-  assert.equal(cursor, undefined); assert.deepEqual([...found].sort(), ['owner', long, opaque].sort());
+  assert.equal(cursor, undefined); assert.deepEqual(found.sort(), ['owner', long, opaque].sort());
   assert.equal(client.queries.length, pages, 'exactly one bounded claims query per page');
   assert(client.queries.some(query => query.ExpressionAttributeValues![':prefix'].S === 'PLAYER_HASH#'));
 });
@@ -198,7 +214,7 @@ test('twenty full canonical alias closures use bounded batch reads and fit one a
   }
   const page = await access.discover(caller);
   assert.equal(page.players.length, 20); assert.equal(client.queries.length, 1);
-  assert.equal(client.batches.length, 7, 'scope + roots + five bounded metadata/alias batches');
+  assert.equal(client.batches.length, 8, 'scope + roots + five metadata/alias batches + canonical claims');
   assert(client.batches.every(batch => batch.RequestItems!.table.Keys!.length <= 100));
   assert.equal(client.transactions.length, 1); assert(client.transactions[0].length <= 90);
 });
@@ -215,6 +231,77 @@ test('discovery cursors bind account set, league, claim revision, directory and 
     if (change === 'directory') client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'd2' });
     if (change === 'epoch') client.seed('PLAYER_IDENTITY', 'CONTROL', 'playerIdentityControl', { mode: 'fenced', coverage: 'unknown', epoch: 'e2', writerVersion: 1 });
     await assert.rejects(access.discover(input), error => (error as { code?: string }).code === 'invalid_player_cursor');
+  }
+});
+
+test('discovery emits each canonical player once across aliases, accounts, namespaces and page boundaries', async () => {
+  const { client, access, caller } = fixture();
+  const longRoot = 'z'.repeat(1020), legacyRoot = 'legacy-root', longAlias = 'a'.repeat(1020);
+  addPlayer(client, longRoot, email); addAliases(client, longRoot, ['early-alias']);
+  for (const userId of [account, email]) client.seed(`USER#${userId}`, playerClaimSk('early-alias'), 'playerClaim', { userId, playerId: 'early-alias' });
+  // Canonical claims win over earlier alias pages; the first trusted account
+  // wins when duplicate canonical claims exist in both account partitions.
+  client.seed(`USER#${account}`, playerClaimSk('owner'), 'playerClaim', { userId: account, playerId: 'owner' });
+  client.seed(`USER#${email}`, playerClaimSk('owner'), 'playerClaim', { userId: email, playerId: 'owner' });
+  addPlayer(client, legacyRoot, account); client.remove(`USER#${account}`, playerClaimSk(legacyRoot));
+  addAliases(client, legacyRoot, [longAlias, 'z-alias', 'absent-alias']);
+  for (const playerId of [longAlias, 'z-alias']) for (const userId of [account, email])
+    client.seed(`USER#${userId}`, playerClaimSk(playerId), 'playerClaim', { userId, playerId });
+  // The lexically first present alias is hashed and visited after the ordinary
+  // PLAYER# aliases. Missing alias claims must not suppress the representative.
+  const found = await discoverAll(access, caller);
+  assert.deepEqual(found.sort(), ['owner', longRoot, legacyRoot].sort());
+  assert(client.queries.every(query => query.Limit === 1));
+  assert(client.transactions.every(actions => actions.length <= 100));
+});
+
+test('legacy representative lookups have a fixed 800-key bound for twenty full groups', async () => {
+  const { client, access, caller } = fixture(); client.remove(`USER#${account}`, playerClaimSk('owner'));
+  for (let group = 0; group < 20; group++) {
+    const root = `group-${String(group).padStart(2, '0')}`, aliases = Array.from({ length: 19 }, (_, index) => `${root}-alias-${index}`);
+    addPlayer(client, root, account); client.remove(`USER#${account}`, playerClaimSk(root)); addAliases(client, root, aliases);
+    client.seed(`USER#${account}`, playerClaimSk(aliases[18]), 'playerClaim', { userId: account, playerId: aliases[18] });
+  }
+  const page = await access.discover(caller);
+  assert.equal(page.players.length, 20); assert.equal(client.queries.length, 1);
+  const claimKeys = client.batches.flatMap(batch => batch.RequestItems!.table.Keys!)
+    .filter(key => key.pk.S!.startsWith('USER#') && (key.sk.S!.startsWith('PLAYER#') || key.sk.S!.startsWith('PLAYER_HASH#')));
+  assert.equal(claimKeys.length, 800, 'twenty roots x twenty members x two accounts, including absent candidates');
+  assert(client.batches.every(batch => batch.RequestItems!.table.Keys!.length <= 100));
+  assert.equal(client.transactions.length, 1); assert(client.transactions[0].length <= 90);
+});
+
+test('representative claim presence, ownership and closure races fail the page fence', async () => {
+  for (const change of ['insert-root', 'remove-alias', 'ownership', 'closure']) {
+    const { client, access, caller } = fixture();
+    client.remove(`USER#${account}`, playerClaimSk('owner')); addAliases(client, 'owner', ['alias']);
+    client.seed(`USER#${email}`, playerClaimSk('alias'), 'playerClaim', { userId: email, playerId: 'alias' });
+    // Advance to the email PLAYER# page while the same claims revision holds.
+    const first = await access.discover(caller), second = await access.discover({ ...caller, cursor: first.cursor! });
+    client.beforeCommit = () => {
+      client.beforeCommit = null;
+      if (change === 'insert-root') client.seed(`USER#${account}`, playerClaimSk('owner'), 'playerClaim', { userId: account, playerId: 'owner' });
+      if (change === 'remove-alias') client.remove(`USER#${email}`, playerClaimSk('alias'));
+      if (change === 'insert-root' || change === 'remove-alias') client.seed(`USER#${change === 'insert-root' ? account : email}`, 'PLAYER_CLAIMS_REVISION', 'playerClaimsRevision', { revision: 'c2' });
+      if (change === 'ownership') claimRoot(client, 'owner', 'stranger');
+      if (change === 'closure') {
+        const root = client.items.get(itemKey(historyKey('PLAYER#owner', 'IDENTITY')))!;
+        root.data = { S: JSON.stringify({ ...data(root), writeVersion: 'changed' }) };
+      }
+    };
+    await assert.rejects(access.discover({ ...caller, cursor: second.cursor! }), error => (error as { code?: string }).code === 'player_profile_changed');
+  }
+});
+
+test('unqueried canonical and fallback claim candidates must have valid record type and exact account/player', async () => {
+  for (const malformed of ['type', 'account', 'player', 'alias']) {
+    const { client, access, caller } = fixture(); addAliases(client, 'owner', ['early-alias', 'later-alias']);
+    client.seed(`USER#${account}`, playerClaimSk('early-alias'), 'playerClaim', { userId: account, playerId: 'early-alias' });
+    if (malformed === 'alias') client.remove(`USER#${account}`, playerClaimSk('owner'));
+    const id = malformed === 'alias' ? 'later-alias' : 'owner';
+    client.seed(`USER#${email}`, playerClaimSk(id), malformed === 'type' ? 'wrongType' : 'playerClaim', {
+      userId: malformed === 'account' ? 'stranger' : email, playerId: malformed === 'player' || malformed === 'alias' ? 'wrong' : id });
+    await assert.rejects(access.discover({ ...caller, limit: 1 }));
   }
 });
 

@@ -15,7 +15,7 @@ paths:
     "get":
       "operationId": "listPlayerAccess"
       "summary": "Discover verified player identities for profile viewing"
-      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Examines at most twenty claim rows per call; deduplicate canonical player IDs across pages. An ACL grants read access only. Follow all cursors to finish discovery."
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Enumerates at most twenty claim rows per call, with bounded representative-claim lookups across at most twenty canonical members and two verified accounts per player. Each canonical player is emitted once across a complete cursor traversal. An ACL grants read access only. Follow all cursors to finish discovery."
       "parameters":
         -
           "$ref": "#/components/parameters/DirectoryLeagueId"

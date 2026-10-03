@@ -213,3 +213,14 @@ cases and all31 read/store/route cases passed, followed by 525 affected regressi
 (group30386, exit0, peak189872KiB, no children). Full build and backlog
 validation/export passed (group31717, exit0, peak716400KiB, no children). OpenAPI YAML
 parses successfully. Current-head remote gates follow before owner-editing work.
+
+
+Slice 6 is [PR #209](https://github.com/ajfisher/3fc/pull/209), based on
+`codex/player-history-worker`. Initial head `6502bca` passed CI37127444524 and
+QA37127829482. Cloud review found duplicate canonical players across discovery
+pages. The accepted fix deterministically selects one representative claim per
+canonical root across bounded member/account lookups, with revision fences and
+no growing cursor. Seven focused cases, all16 access cases and76 related profile,
+identity, consolidation and returning-join tests pass (group33280 exit0,
+peak81248KiB, no children). API test compilation passes. Fresh current-head CI,
+QA and review-gate evidence is required before owner editing begins.
