@@ -85,7 +85,9 @@ saved finish is absent or null, the source adapter uses the recorded end of the
 third third only if all three uniquely numbered thirds have valid, chronological,
 non-overlapping completed intervals. An absent result is derived with the normal
 conceded/scored comparator only after the complete goal stream reconciles with
-all three stored team totals. Present malformed or contradictory metadata still
+all three stored team totals. Legacy absent counters can mean zero only after
+exhausting an empty current goal stream with all three valid team rows; a
+nonempty stream requires every stored counter. Present malformed or contradictory metadata still
 fails closed. Neither fallback rewrites source records or substitutes processing
 time for the achievement date. Existing event timing evidence requirements remain
 unchanged; aggregate recovery cannot invent timed achievements.

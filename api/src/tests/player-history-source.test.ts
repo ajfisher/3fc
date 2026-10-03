@@ -321,3 +321,55 @@ test('derived legacy finish preserves timing proof and excludes post-end goals',
   change(equal.goals[0], { timingProvenance: { version: 1, kind: 'live' } });
   assert.equal(assembleMatchFacts(equal)!.goals[0].timing, 'live');
 });
+
+function emptyLegacyMatch() {
+  const input = fixture();
+  change(input.game, { finishedAt: null, result: null });
+  input.goals = []; input.audits = [];
+  input.teams.forEach(item => change(item, { scored: undefined, conceded: undefined }));
+  return input;
+}
+
+test('empty legacy goal stream proves absent team counters without inventing events or dates', () => {
+  for (const scenario of ['all-absent', 'mixed-zero', 'deleted-event']) {
+    const input = emptyLegacyMatch();
+    if (scenario === 'mixed-zero') change(input.teams[0], { scored: 0 });
+    if (scenario === 'deleted-event') input.audits = fixture().audits;
+    const original = structuredClone(input), facts = assembleMatchFacts(input)!;
+    const result = applyAppearance(emptyAccumulator(), facts, 'root', 'career');
+    assert.equal(result.state.totals.played, 1); assert.equal(result.state.totals.draws, 1);
+    assert.equal(result.state.totals.goals, 0); assert.equal(result.state.totals.assists, 0); assert.equal(result.state.totals.ownGoals, 0);
+    assert.equal(result.state.counts.defence, 3); assert.equal(result.state.counts.lockdown, 1);
+    assert.deepEqual(result.state.uncertain, []);
+    assert(result.unlocks.every(award => award.earnedAt === '2026-01-01T11:00:00.000Z'));
+    assert.deepEqual(input, original);
+  }
+});
+
+test('empty legacy goals cannot excuse invalid counters or incomplete team evidence', () => {
+  for (const field of ['scored', 'conceded']) for (const value of [null, '0', -1, 0.5, 1]) {
+    const input = emptyLegacyMatch(); change(input.teams[0], { [field]: value });
+    assert.throws(() => assembleMatchFacts(input), `${field}: ${JSON.stringify(value)}`);
+  }
+  for (const scenario of ['missing', 'duplicate', 'wrong-game', 'wrong-key', 'contradictory-result']) {
+    const input = emptyLegacyMatch();
+    if (scenario === 'missing') input.teams.pop();
+    if (scenario === 'duplicate') input.teams[2] = structuredClone(input.teams[0]);
+    if (scenario === 'wrong-game') change(input.teams[0], { gameId: 'another' });
+    if (scenario === 'wrong-key') input.teams[0].sk = { S: 'TEAM#invalid' };
+    if (scenario === 'contradictory-result') change(input.game, { result: JSON.parse(fixture().game.data!.S!).result });
+    assert.throws(() => assembleMatchFacts(input), scenario);
+  }
+});
+
+test('nonempty goal streams always require every stored counter including own-goal-only matches', () => {
+  for (const ownGoal of [false, true]) for (let index = 0; index < 3; index++) for (const field of ['scored', 'conceded']) {
+    const input = fixture(); change(input.game, { result: null });
+    if (ownGoal) {
+      change(input.goals[0], { ownGoal: true, scoringTeamId: null, concedingTeamId: 'red', assistPlayerIds: [] });
+      input.teams.forEach(item => change(item, { scored: 0, conceded: JSON.parse(item.data!.S!).teamId === 'red' ? 1 : 0 }));
+    }
+    change(input.teams[index], { [field]: undefined });
+    assert.throws(() => assembleMatchFacts(input));
+  }
+});

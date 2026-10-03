@@ -234,7 +234,11 @@ export function assembleMatchFacts(input: {
   const totals: Record<TeamId, { scored: number; conceded: number }> = { red: { scored: 0, conceded: 0 }, blue: { scored: 0, conceded: 0 }, yellow: { scored: 0, conceded: 0 } };
   for (const goal of goals) { totals[goal.concedingTeamId].conceded++; if (!goal.ownGoal && goal.scoringTeamId) totals[goal.scoringTeamId].scored++; }
   const storedTeams = input.teams.map(item => {
-    const value = z.object({ gameId: text, teamId: team, scored: nonnegative, conceded: nonnegative }).parse(historyBody(item, pk, item.sk!.S!, 'gameTeam'));
+    // Legacy teams were created before counters existed. An exhausted empty
+    // current goal stream proves zero, but cannot excuse a present bad value
+    // or reconstruct missing counters in a match containing scored events.
+    const counter = goals.length === 0 ? nonnegative.default(0) : nonnegative;
+    const value = z.object({ gameId: text, teamId: team, scored: counter, conceded: counter }).parse(historyBody(item, pk, item.sk!.S!, 'gameTeam'));
     if (value.gameId !== metadata.gameId || item.sk?.S !== `TEAM#${value.teamId}`) fail('Malformed team record.');
     return value;
   });
