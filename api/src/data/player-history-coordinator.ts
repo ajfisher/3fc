@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { scopedSeasonSessionSk, scopedSeasonTeamSk } from './keys.js';
 import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type QueryCommandOutput, type TransactWriteItem } from '@aws-sdk/client-dynamodb';
 import { z } from 'zod';
 import { ACHIEVEMENT_RULE_VERSION } from '@3fc/contracts';
@@ -12,18 +13,23 @@ import { historyBody, historyHash, historyKey, historyRow, historyPartition, Pla
   type HistoryClient, type HistoryContext, type HistoryGeneration, type HistoryItem, type HistoryPublication } from './player-history-model.js';
 import { readHistoryReadiness } from './player-history-readiness.js';
 import { historyMutationItems, historyWorkSchema, sendHistoryTransaction } from './player-history-work.js';
+import { profileSeasonCandidateSchema, profileSeasonCandidateFromItem, latestProfileSeasonCandidate,
+  type ProfileSeasonCandidate, type ProfileSeasonDefault } from './player-profile-season.js';
 
 const text = z.string().min(1).refine(value => value.trim().length > 0);
 const jobSchema = z.object({ version: z.literal(1), leagueId: text, playerId: text, status: z.enum(['pending', 'done', 'failed']),
   requestedRevision: text, spec: z.unknown().nullable(), updatedAt: z.string().datetime({ offset: true }), errorCode: text.optional() }).strict();
 interface Job extends Omit<z.infer<typeof jobSchema>, 'spec'> { spec: HistoryGeneration | null }
 interface Sweep { version: 1; id: string; leagueId: string; revision: string; readinessRevision: string;
-  directoryData: string | null; phase: 'fanout' | 'verify' | 'complete'; cursor: string | null;
+  directoryData: string | null; phase: 'seasons' | 'fanout' | 'verify' | 'complete'; cursor: string | null;
+  seasonCatalogueVersion?: 1; seasonCandidate?: ProfileSeasonCandidate | null;
   enqueued: number; checked: number; startedAt: string; completedAt: string | null }
 const sweepSchema = z.object({ version: z.literal(1), id: z.string().uuid(), leagueId: text, revision: text,
-  readinessRevision: text, directoryData: z.string().nullable(), phase: z.enum(['fanout', 'verify', 'complete']),
+  readinessRevision: text, directoryData: z.string().nullable(), phase: z.enum(['seasons', 'fanout', 'verify', 'complete']),
+  seasonCatalogueVersion: z.literal(1).optional(), seasonCandidate: profileSeasonCandidateSchema.nullable().optional(),
   cursor: text.nullable(), enqueued: z.number().int().nonnegative(), checked: z.number().int().nonnegative(),
-  startedAt: z.string().datetime({ offset: true }), completedAt: z.string().datetime({ offset: true }).nullable() }).strict();
+  startedAt: z.string().datetime({ offset: true }), completedAt: z.string().datetime({ offset: true }).nullable() }).strict().refine(value =>
+    value.seasonCatalogueVersion === undefined || value.seasonCandidate !== undefined, 'Missing season catalogue checkpoint');
 const ackSchema = z.discriminatedUnion('disposition', [
   z.object({ version: z.literal(1), leagueId: text, revision: z.string().uuid(), disposition: z.literal('league-deleted'), completedAt: z.string().datetime({ offset: true }) }).strict(),
   z.object({ version: z.literal(1), leagueId: text, revision: z.string().uuid(), disposition: z.literal('reconciled'), satisfiedBy: text, sweepId: z.string().uuid(), completedAt: z.string().datetime({ offset: true }) }).strict()
@@ -34,6 +40,7 @@ const directoryReceiptSchema = (leagueId: string) => z.object({ version: z.liter
 export const historyJobKey = (playerId: string) => `HISTORY_JOB#${historyHash(playerId)}`;
 const semanticAchievements = (state: AchievementAccumulator | null) => state ? {
   counts: state.counts, uncertain: [...state.uncertain].sort(), runs: state.runs,
+  first: state.first === undefined ? null : Object.entries(state.first).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, award]) => [id, publicUnlock(award!)]),
   highest: Object.entries(state.highest).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, award]) => [id, publicUnlock(award!)])
 } : null;
 const failure = (message: string): never => { throw new PlayerHistoryError('history_unavailable', message); };
@@ -87,13 +94,13 @@ export class HistoryCoordinator {
     if (items.length > limit) failure('Oversized history work page.');
     for (const item of items) {
       const sk = item.sk?.S;
-      if (item.pk?.S !== pk || !sk?.startsWith(prefix) || (previous && sk <= previous)) failure('Malformed history work page.');
+      if (item.pk?.S !== pk || !sk?.startsWith(prefix) || (previous && Buffer.compare(Buffer.from(sk), Buffer.from(previous)) <= 0)) failure('Malformed history work page.');
       previous = sk!;
     }
     const key = response.LastEvaluatedKey;
     if (!key || !Object.keys(key).length) return { items, cursor: null };
     const cursor = key.sk?.S;
-    if (key.pk?.S !== pk || !cursor?.startsWith(prefix) || (after && cursor <= after) || (previous && cursor < previous))
+    if (key.pk?.S !== pk || !cursor?.startsWith(prefix) || (after && Buffer.compare(Buffer.from(cursor), Buffer.from(after)) <= 0) || (previous && Buffer.compare(Buffer.from(cursor), Buffer.from(previous)) < 0))
       failure('Nonadvancing history work cursor.');
     return { items, cursor: cursor! };
   }
@@ -241,13 +248,44 @@ export class HistoryCoordinator {
     }
     const scope = await this.leagueSnapshot(ref.leagueId), sweepItem = await this.get(pk, 'HISTORY_SWEEP');
     let sweep = sweepItem ? sweepSchema.parse(historyBody(sweepItem, pk, 'HISTORY_SWEEP', 'playerHistorySweep')) : null;
-    if (!sweep || sweep.revision !== scope.revision || sweep.readinessRevision !== scope.readinessRevision || sweep.directoryData !== (scope.directory?.data?.S ?? null)) {
+    if (!sweep || sweep.seasonCatalogueVersion !== 1 || sweep.revision !== scope.revision || sweep.readinessRevision !== scope.readinessRevision || sweep.directoryData !== (scope.directory?.data?.S ?? null)) {
       sweep = { version: 1, id: randomUUID(), leagueId: ref.leagueId, revision: scope.revision, readinessRevision: scope.readinessRevision,
-        directoryData: scope.directory?.data?.S ?? null, phase: 'fanout', cursor: null, enqueued: 0, checked: 0, startedAt: this.now(), completedAt: null };
+        directoryData: scope.directory?.data?.S ?? null, phase: 'seasons', seasonCatalogueVersion: 1, seasonCandidate: null, cursor: null, enqueued: 0, checked: 0, startedAt: this.now(), completedAt: null };
       await this.transact([...scope.checks, this.put(sweepItem, pk, 'HISTORY_SWEEP', 'playerHistorySweep', sweep)]);
       return { done: false };
     }
     if (sweep.leagueId !== ref.leagueId) failure('History sweep scope mismatch.');
+    if (sweep.phase === 'seasons') {
+      const page = await this.page(pk, 'SEASON#', sweep.cursor, 20);
+      let candidate = sweep.seasonCandidate ?? null;
+      for (const row of page.items) {
+        // Scoped team/template rows share this prefix. Identify metadata by type,
+        // never by splitting an opaque season ID containing '#'.
+        if (row.entityType?.S !== 'season') {
+          const type = row.entityType?.S;
+          if (type !== 'team' && type !== 'session') failure('Unrecognised scoped season record.');
+          const nested = z.object({ leagueId: z.literal(ref.leagueId), seasonId: text,
+            teamId: text.optional(), sessionId: text.optional() }).parse(historyBody(row, pk, row.sk!.S!, type!));
+          const expected = type === 'team' ? scopedSeasonTeamSk(nested.seasonId, text.parse(nested.teamId))
+            : scopedSeasonSessionSk(nested.seasonId, text.parse(nested.sessionId));
+          if (row.sk?.S !== expected) failure('Nested season record scope mismatch.');
+          continue;
+        }
+        candidate = latestProfileSeasonCandidate(candidate, profileSeasonCandidateFromItem(row, ref.leagueId));
+      }
+      const next: Sweep = { ...sweep, cursor: page.cursor, seasonCandidate: candidate };
+      const actions: TransactWriteItem[] = [...scope.checks];
+      if (page.cursor === null) {
+        const prior = await this.get(pk, 'PROFILE_SEASON_DEFAULT');
+        const value: ProfileSeasonDefault = { version: 1, leagueId: ref.leagueId, sourceRevision: scope.revision,
+          readinessRevision: scope.readinessRevision, computedAt: this.now(), season: candidate };
+        actions.push(this.put(prior, pk, 'PROFILE_SEASON_DEFAULT', 'playerProfileSeasonDefault', value));
+        next.phase = 'fanout';
+      }
+      actions.push(this.put(sweepItem, pk, 'HISTORY_SWEEP', 'playerHistorySweep', next));
+      await this.transact(actions);
+      return { done: false };
+    }
     if (sweep.phase === 'complete') {
       await this.transact([...scope.checks, this.check(sweepItem, pk, 'HISTORY_SWEEP'), this.put(null, pk, ackKey, 'playerHistoryAcknowledgement',
         { version: 1, leagueId: ref.leagueId, revision: work.revision, disposition: 'reconciled', satisfiedBy: sweep.revision, sweepId: sweep.id, completedAt: this.now() })]);
@@ -324,7 +362,7 @@ export class HistoryCoordinator {
       const after = await this.store.previewCareer(spec);
       const current = await this.store.getPublication(leagueId, value.playerId);
       if (current?.generation !== publication?.generation) throw new PlayerHistoryError('history_changed', 'Published comparison source changed.');
-      const result = { comparisonScope: 'career-summary', comparisonIncludes: ['totals', 'progress', 'assessability', 'streaks', 'highest-milestones'], priorGeneration: publication?.generation ?? null, comparisonGeneration: comparisonId,
+      const result = { comparisonScope: 'career-summary', comparisonIncludes: ['totals', 'progress', 'assessability', 'streaks', 'first-unlocks', 'highest-milestones'], priorGeneration: publication?.generation ?? null, comparisonGeneration: comparisonId,
         totalsChanged: JSON.stringify(before?.state.totals ?? null) !== JSON.stringify(after.state.totals),
         achievementsChanged: JSON.stringify(semanticAchievements(before?.state ?? null)) !== JSON.stringify(semanticAchievements(after.state)),
         before: before?.state ?? null, after: after.state };

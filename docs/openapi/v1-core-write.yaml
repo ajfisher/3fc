@@ -11,6 +11,261 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  "/v1/player-access":
+    "get":
+      "operationId": "listPlayerAccess"
+      "summary": "Discover verified player identities for profile viewing"
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Examines at most twenty claim rows per call; deduplicate canonical player IDs across pages. An ACL grants read access only. Follow all cursors to finish discovery."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryLeagueId"
+        -
+          "name": "cursor"
+          "in": "query"
+          "schema":
+            "type": "string"
+            "maxLength": 8192
+          "description": "Opaque scope-bound continuation; changed history returns an explicit error. Follow even empty filtered pages."
+        -
+          "name": "limit"
+          "in": "query"
+          "schema":
+            "type": "integer"
+            "minimum": 1
+            "maximum": 20
+            "default": 20
+      "responses":
+        "200":
+          "description": "Validated safe response. Null data means unavailable or updating; empty data is confirmed only with complete freshness."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PlayerAccessPage"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "503":
+          "$ref": "#/components/responses/PlayerDirectoryUnavailable"
+  "/v1/player-profile":
+    "get":
+      "operationId": "getPlayerPerformance"
+      "summary": "Read safe league-scoped identity and authoritative totals"
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Requires verified league participation or existing league ACL. Private account fields never enter this response. Missing/stale history remains null with explicit freshness rather than fabricated zero totals. Profiles and achievement reads have separate opt-in exposure switches. Default season: supplied league season, latest played season, then worker-published latest league season. Career is within this league only."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryLeagueId"
+        -
+          "$ref": "#/components/parameters/DirectoryPlayerId"
+        -
+          "name": "viewerPlayerId"
+          "in": "query"
+          "required": false
+          "schema":
+            "type": "string"
+            "minLength": 1
+          "description": "Optional owned-player lookup hint. Canonical ownership and league membership are verified on every request; this never grants owner-editing rights."
+        -
+          "$ref": "#/components/parameters/DirectorySeasonId"
+      "responses":
+        "200":
+          "description": "Validated safe response. Null data means unavailable or updating; empty data is confirmed only with complete freshness."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PlayerPerformance"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "503":
+          "$ref": "#/components/responses/PlayerDirectoryUnavailable"
+  "/v1/player-history":
+    "get":
+      "operationId": "getPlayerHistory"
+      "summary": "Read twenty completed appearances, newest first"
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Requires verified league participation or existing league ACL. Private account fields never enter this response. Missing/stale history remains null with explicit freshness rather than fabricated zero totals. Profiles and achievement reads have separate opt-in exposure switches."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryLeagueId"
+        -
+          "$ref": "#/components/parameters/DirectoryPlayerId"
+        -
+          "name": "viewerPlayerId"
+          "in": "query"
+          "required": false
+          "schema":
+            "type": "string"
+            "minLength": 1
+          "description": "Optional owned-player lookup hint. Canonical ownership and league membership are verified on every request; this never grants owner-editing rights."
+        -
+          "$ref": "#/components/parameters/DirectorySeasonId"
+        -
+          "name": "cursor"
+          "in": "query"
+          "schema":
+            "type": "string"
+            "maxLength": 8192
+          "description": "Opaque scope-bound continuation; changed history returns an explicit error. Follow even empty filtered pages."
+      "responses":
+        "200":
+          "description": "Validated safe response. Null data means unavailable or updating; empty data is confirmed only with complete freshness."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PlayerHistoryPage"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "503":
+          "$ref": "#/components/responses/PlayerDirectoryUnavailable"
+  "/v1/player-achievements":
+    "get":
+      "operationId": "getPlayerAchievements"
+      "summary": "Read confirmed achievement progress and selected honours"
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Requires verified league participation or existing league ACL. Private account fields never enter this response. Missing/stale history remains null with explicit freshness rather than fabricated zero totals. Profiles and achievement reads have separate opt-in exposure switches."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryLeagueId"
+        -
+          "$ref": "#/components/parameters/DirectoryPlayerId"
+        -
+          "name": "viewerPlayerId"
+          "in": "query"
+          "required": false
+          "schema":
+            "type": "string"
+            "minLength": 1
+          "description": "Optional owned-player lookup hint. Canonical ownership and league membership are verified on every request; this never grants owner-editing rights."
+        -
+          "$ref": "#/components/parameters/DirectorySeasonId"
+        -
+          "name": "scope"
+          "in": "query"
+          "required": true
+          "schema":
+            "enum":
+              - "season"
+              - "career"
+          "description": "Season requires seasonId; career rejects seasonId."
+      "responses":
+        "200":
+          "description": "Validated safe response. Null data means unavailable or updating; empty data is confirmed only with complete freshness."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PlayerAchievements"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "503":
+          "$ref": "#/components/responses/PlayerDirectoryUnavailable"
+  "/v1/player-unlocks":
+    "get":
+      "operationId": "getPlayerUnlocks"
+      "summary": "Read every active milestone unlock with pagination"
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. Requires verified league participation or existing league ACL. Private account fields never enter this response. Missing/stale history remains null with explicit freshness rather than fabricated zero totals. Profiles and achievement reads have separate opt-in exposure switches."
+      "parameters":
+        -
+          "$ref": "#/components/parameters/DirectoryLeagueId"
+        -
+          "$ref": "#/components/parameters/DirectoryPlayerId"
+        -
+          "name": "viewerPlayerId"
+          "in": "query"
+          "required": false
+          "schema":
+            "type": "string"
+            "minLength": 1
+          "description": "Optional owned-player lookup hint. Canonical ownership and league membership are verified on every request; this never grants owner-editing rights."
+        -
+          "$ref": "#/components/parameters/DirectorySeasonId"
+        -
+          "name": "scope"
+          "in": "query"
+          "required": true
+          "schema":
+            "enum":
+              - "season"
+              - "career"
+          "description": "Season requires seasonId; career rejects seasonId."
+        -
+          "name": "cursor"
+          "in": "query"
+          "schema":
+            "type": "string"
+            "maxLength": 8192
+          "description": "Opaque scope-bound continuation; changed history returns an explicit error. Follow even empty filtered pages."
+      "responses":
+        "200":
+          "description": "Validated safe response. Null data means unavailable or updating; empty data is confirmed only with complete freshness."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PlayerUnlockPage"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "503":
+          "$ref": "#/components/responses/PlayerDirectoryUnavailable"
+  "/v1/achievement-catalogue":
+    "get":
+      "operationId": "getAchievementCatalogue"
+      "summary": "Browse all 23 enabled achievements and their rules"
+      "description": "Authenticated session cookie required. Unknown or duplicate query parameters are rejected; opaque identifiers are decoded once. Handler responses use Cache-Control: no-store and Referrer-Policy: no-referrer; the outer unauthenticated session gate also uses no-store. No query parameters or player context. Requires achievements exposure enabled."
+      "parameters": []
+      "responses":
+        "200":
+          "description": "Validated safe response. Null data means unavailable or updating; empty data is confirmed only with complete freshness."
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PlayerAchievementCatalogue"
+        "400":
+          "$ref": "#/components/responses/BadRequest"
+        "401":
+          "$ref": "#/components/responses/Unauthorized"
+        "403":
+          "$ref": "#/components/responses/Forbidden"
+        "404":
+          "$ref": "#/components/responses/NotFound"
+        "409":
+          "$ref": "#/components/responses/Conflict"
+        "503":
+          "$ref": "#/components/responses/PlayerDirectoryUnavailable"
   /v1/join/{joinCode}/linked-players:
     get:
       operationId: listOwnedJoinPlayers
@@ -2075,6 +2330,735 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    "PlayerProjectionFreshness":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "status"
+        - "coverage"
+        - "revision"
+        - "computedAt"
+      "properties":
+        "status":
+          "enum":
+            - "ready"
+            - "updating"
+            - "unavailable"
+        "coverage":
+          "enum":
+            - "complete"
+            - "partial"
+            - "unknown"
+        "revision":
+          "anyOf":
+            -
+              "type": "string"
+              "minLength": 1
+            -
+              "type": "null"
+        "computedAt":
+          "anyOf":
+            -
+              "type": "string"
+              "format": "date-time"
+            -
+              "type": "null"
+    "PlayerPerformanceTotals":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "played"
+        - "goals"
+        - "assists"
+        - "ownGoals"
+        - "wins"
+        - "draws"
+        - "losses"
+        - "goalsPerGame"
+      "properties":
+        "played":
+          "type": "integer"
+          "minimum": 0
+        "goals":
+          "type": "integer"
+          "minimum": 0
+        "assists":
+          "type": "integer"
+          "minimum": 0
+        "ownGoals":
+          "type": "integer"
+          "minimum": 0
+        "wins":
+          "type": "integer"
+          "minimum": 0
+        "draws":
+          "type": "integer"
+          "minimum": 0
+        "losses":
+          "type": "integer"
+          "minimum": 0
+        "goalsPerGame":
+          "type": "number"
+          "minimum": 0
+    "PlayerAppearance":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "gameId"
+        - "seasonId"
+        - "kickoffAt"
+        - "finishedAt"
+        - "teamId"
+        - "outcome"
+        - "goals"
+        - "assists"
+        - "ownGoals"
+        - "scored"
+        - "conceded"
+      "properties":
+        "gameId":
+          "type": "string"
+          "minLength": 1
+        "seasonId":
+          "type": "string"
+          "minLength": 1
+        "kickoffAt":
+          "type": "string"
+          "format": "date-time"
+        "finishedAt":
+          "type": "string"
+          "format": "date-time"
+        "teamId":
+          "enum":
+            - "red"
+            - "blue"
+            - "yellow"
+        "outcome":
+          "enum":
+            - "win"
+            - "draw"
+            - "loss"
+        "goals":
+          "type": "integer"
+          "minimum": 0
+        "assists":
+          "type": "integer"
+          "minimum": 0
+        "ownGoals":
+          "type": "integer"
+          "minimum": 0
+        "scored":
+          "type": "integer"
+          "minimum": 0
+        "conceded":
+          "type": "integer"
+          "minimum": 0
+    "PlayerPerformance":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "player"
+        - "league"
+        - "seasons"
+        - "selectedSeasonId"
+        - "latest"
+        - "season"
+        - "career"
+        - "freshness"
+        - "capabilities"
+      "properties":
+        "player":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "playerId"
+            - "displayName"
+            - "hasPortrait"
+          "properties":
+            "playerId":
+              "type": "string"
+              "minLength": 1
+            "displayName":
+              "type": "string"
+              "minLength": 1
+            "hasPortrait":
+              "type": "boolean"
+        "league":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "leagueId"
+            - "name"
+          "properties":
+            "leagueId":
+              "type": "string"
+              "minLength": 1
+            "name":
+              "type": "string"
+              "minLength": 1
+        "seasons":
+          "type": "array"
+          "items":
+            "type": "object"
+            "additionalProperties": false
+            "required":
+              - "seasonId"
+              - "name"
+            "properties":
+              "seasonId":
+                "type": "string"
+                "minLength": 1
+              "name":
+                "type": "string"
+                "minLength": 1
+          "maxItems": 258
+        "selectedSeasonId":
+          "anyOf":
+            -
+              "type": "string"
+              "minLength": 1
+            -
+              "type": "null"
+        "latest":
+          "anyOf":
+            -
+              "$ref": "#/components/schemas/PlayerAppearance"
+            -
+              "type": "null"
+        "season":
+          "anyOf":
+            -
+              "$ref": "#/components/schemas/PlayerPerformanceTotals"
+            -
+              "type": "null"
+        "career":
+          "anyOf":
+            -
+              "$ref": "#/components/schemas/PlayerPerformanceTotals"
+            -
+              "type": "null"
+        "freshness":
+          "$ref": "#/components/schemas/PlayerProjectionFreshness"
+        "capabilities":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "editProfile"
+            - "achievements"
+          "properties":
+            "editProfile":
+              "type": "boolean"
+            "achievements":
+              "type": "boolean"
+    "PlayerHistoryPage":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "matches"
+        - "cursor"
+        - "freshness"
+      "properties":
+        "matches":
+          "type":
+            - "array"
+            - "null"
+          "items":
+            "$ref": "#/components/schemas/PlayerAppearance"
+          "maxItems": 20
+        "cursor":
+          "anyOf":
+            -
+              "type": "string"
+              "minLength": 1
+            -
+              "type": "null"
+        "freshness":
+          "$ref": "#/components/schemas/PlayerProjectionFreshness"
+    "PlayerAchievementUnlock":
+      "oneOf":
+        -
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "id"
+            - "achievementId"
+            - "ordinal"
+            - "threshold"
+            - "earnedAt"
+            - "gameId"
+            - "scope"
+            - "seasonId"
+          "properties":
+            "id":
+              "type": "string"
+              "minLength": 1
+            "achievementId":
+              "enum":
+                - "goal"
+                - "played"
+                - "assist"
+                - "wins"
+                - "draw"
+                - "own-goal"
+                - "defence"
+                - "desperate-defence"
+                - "momentum-play"
+                - "clutch"
+                - "hail-mary"
+                - "speedy"
+                - "message-sent"
+                - "hat-trick"
+                - "master-provider"
+                - "double-threat"
+                - "triple-threat"
+                - "lockdown"
+                - "comeback-crew"
+                - "team-engine"
+                - "on-fire"
+                - "helping-hand"
+                - "unbeaten-run"
+            "ordinal":
+              "type": "integer"
+              "minimum": 1
+            "threshold":
+              "type": "integer"
+              "minimum": 1
+            "earnedAt":
+              "type": "string"
+              "format": "date-time"
+            "gameId":
+              "type": "string"
+              "minLength": 1
+            "scope":
+              "const": "season"
+            "seasonId":
+              "type": "string"
+              "minLength": 1
+        -
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "id"
+            - "achievementId"
+            - "ordinal"
+            - "threshold"
+            - "earnedAt"
+            - "gameId"
+            - "scope"
+            - "seasonId"
+          "properties":
+            "id":
+              "type": "string"
+              "minLength": 1
+            "achievementId":
+              "enum":
+                - "goal"
+                - "played"
+                - "assist"
+                - "wins"
+                - "draw"
+                - "own-goal"
+                - "defence"
+                - "desperate-defence"
+                - "momentum-play"
+                - "clutch"
+                - "hail-mary"
+                - "speedy"
+                - "message-sent"
+                - "hat-trick"
+                - "master-provider"
+                - "double-threat"
+                - "triple-threat"
+                - "lockdown"
+                - "comeback-crew"
+                - "team-engine"
+                - "on-fire"
+                - "helping-hand"
+                - "unbeaten-run"
+            "ordinal":
+              "type": "integer"
+              "minimum": 1
+            "threshold":
+              "type": "integer"
+              "minimum": 1
+            "earnedAt":
+              "type": "string"
+              "format": "date-time"
+            "gameId":
+              "type": "string"
+              "minLength": 1
+            "scope":
+              "const": "career"
+            "seasonId":
+              "type": "null"
+    "PlayerAchievementProgress":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "achievementId"
+        - "count"
+        - "ordinal"
+        - "nextThreshold"
+        - "assessability"
+        - "currentRun"
+        - "highest"
+      "properties":
+        "achievementId":
+          "enum":
+            - "goal"
+            - "played"
+            - "assist"
+            - "wins"
+            - "draw"
+            - "own-goal"
+            - "defence"
+            - "desperate-defence"
+            - "momentum-play"
+            - "clutch"
+            - "hail-mary"
+            - "speedy"
+            - "message-sent"
+            - "hat-trick"
+            - "master-provider"
+            - "double-threat"
+            - "triple-threat"
+            - "lockdown"
+            - "comeback-crew"
+            - "team-engine"
+            - "on-fire"
+            - "helping-hand"
+            - "unbeaten-run"
+        "count":
+          "type": "integer"
+          "minimum": 0
+        "ordinal":
+          "type": "integer"
+          "minimum": 0
+        "nextThreshold":
+          "type": "integer"
+          "minimum": 1
+        "assessability":
+          "enum":
+            - "complete"
+            - "partial"
+        "currentRun":
+          "anyOf":
+            -
+              "type": "integer"
+              "minimum": 0
+            -
+              "type": "null"
+        "highest":
+          "anyOf":
+            -
+              "$ref": "#/components/schemas/PlayerAchievementUnlock"
+            -
+              "type": "null"
+    "PlayerAchievements":
+      "oneOf":
+        -
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "playerId"
+            - "leagueId"
+            - "scope"
+            - "seasonId"
+            - "progress"
+            - "honours"
+            - "firstUnlocks"
+            - "latestUnlocks"
+            - "freshness"
+          "properties":
+            "playerId":
+              "type": "string"
+              "minLength": 1
+            "leagueId":
+              "type": "string"
+              "minLength": 1
+            "scope":
+              "const": "season"
+            "seasonId":
+              "type": "string"
+              "minLength": 1
+            "progress":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementProgress"
+              "minItems": 23
+              "maxItems": 23
+            "honours":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementUnlock"
+              "maxItems": 23
+            "firstUnlocks":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementUnlock"
+              "maxItems": 23
+            "latestUnlocks":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementUnlock"
+              "maxItems": 46
+            "freshness":
+              "$ref": "#/components/schemas/PlayerProjectionFreshness"
+        -
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "playerId"
+            - "leagueId"
+            - "scope"
+            - "seasonId"
+            - "progress"
+            - "honours"
+            - "firstUnlocks"
+            - "latestUnlocks"
+            - "freshness"
+          "properties":
+            "playerId":
+              "type": "string"
+              "minLength": 1
+            "leagueId":
+              "type": "string"
+              "minLength": 1
+            "scope":
+              "const": "career"
+            "seasonId":
+              "type": "null"
+            "progress":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementProgress"
+              "minItems": 23
+              "maxItems": 23
+            "honours":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementUnlock"
+              "maxItems": 23
+            "firstUnlocks":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementUnlock"
+              "maxItems": 23
+            "latestUnlocks":
+              "type":
+                - "array"
+                - "null"
+              "items":
+                "$ref": "#/components/schemas/PlayerAchievementUnlock"
+              "maxItems": 46
+            "freshness":
+              "$ref": "#/components/schemas/PlayerProjectionFreshness"
+    "PlayerUnlockPage":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "unlocks"
+        - "cursor"
+        - "freshness"
+      "properties":
+        "unlocks":
+          "type":
+            - "array"
+            - "null"
+          "items":
+            "$ref": "#/components/schemas/PlayerAchievementUnlock"
+          "maxItems": 20
+        "cursor":
+          "anyOf":
+            -
+              "type": "string"
+              "minLength": 1
+            -
+              "type": "null"
+        "freshness":
+          "$ref": "#/components/schemas/PlayerProjectionFreshness"
+    "PlayerAccessPage":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "leagueId"
+        - "hasLeagueAcl"
+        - "players"
+        - "cursor"
+        - "complete"
+      "properties":
+        "leagueId":
+          "type": "string"
+          "minLength": 1
+        "hasLeagueAcl":
+          "type": "boolean"
+        "players":
+          "type": "array"
+          "items":
+            "type": "object"
+            "additionalProperties": false
+            "required":
+              - "playerId"
+              - "displayName"
+            "properties":
+              "playerId":
+                "type": "string"
+                "minLength": 1
+              "displayName":
+                "type": "string"
+                "minLength": 1
+          "maxItems": 20
+        "cursor":
+          "anyOf":
+            -
+              "type": "string"
+              "minLength": 1
+            -
+              "type": "null"
+        "complete":
+          "type": "boolean"
+    "PlayerAchievementCatalogue":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "ruleVersion"
+        - "achievements"
+        - "milestones"
+        - "conditions"
+      "properties":
+        "ruleVersion":
+          "const": 1
+        "achievements":
+          "type": "array"
+          "items":
+            "type": "object"
+            "additionalProperties": false
+            "required":
+              - "id"
+              - "name"
+              - "rarity"
+              - "rule"
+              - "icon"
+            "properties":
+              "id":
+                "enum":
+                  - "goal"
+                  - "played"
+                  - "assist"
+                  - "wins"
+                  - "draw"
+                  - "own-goal"
+                  - "defence"
+                  - "desperate-defence"
+                  - "momentum-play"
+                  - "clutch"
+                  - "hail-mary"
+                  - "speedy"
+                  - "message-sent"
+                  - "hat-trick"
+                  - "master-provider"
+                  - "double-threat"
+                  - "triple-threat"
+                  - "lockdown"
+                  - "comeback-crew"
+                  - "team-engine"
+                  - "on-fire"
+                  - "helping-hand"
+                  - "unbeaten-run"
+              "name":
+                "type": "string"
+                "minLength": 1
+              "rarity":
+                "enum":
+                  - "Common"
+                  - "Rare"
+                  - "Legendary"
+                  - "Epic"
+              "rule":
+                "type": "string"
+                "minLength": 1
+              "icon":
+                "type": "string"
+                "description": "Trusted catalogue SVG fragment; never user-supplied SVG."
+          "maxItems": 23
+        "milestones":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "common"
+            - "rare"
+            - "commonRepeatEvery"
+            - "rareRepeatEvery"
+            - "legendaryRepeatEvery"
+            - "epicRepeatEvery"
+          "properties":
+            "common":
+              "type": "array"
+              "items":
+                "type": "integer"
+                "minimum": 0
+            "rare":
+              "type": "array"
+              "items":
+                "type": "integer"
+                "minimum": 0
+            "commonRepeatEvery":
+              "const": 100
+            "rareRepeatEvery":
+              "const": 10
+            "legendaryRepeatEvery":
+              "const": 1
+            "epicRepeatEvery":
+              "const": 1
+        "conditions":
+          "type": "object"
+          "additionalProperties": false
+          "required":
+            - "openingSecondsExclusive"
+            - "closingSecondsBeforeRegulationEnd"
+            - "defenceDeficitExclusive"
+            - "hatTrickGoals"
+            - "masterProviderAssists"
+            - "streakAppearances"
+          "properties":
+            "openingSecondsExclusive":
+              "const": 120
+            "closingSecondsBeforeRegulationEnd":
+              "const": 60
+            "defenceDeficitExclusive":
+              "const": 2
+            "hatTrickGoals":
+              "const": 3
+            "masterProviderAssists":
+              "const": 3
+            "streakAppearances":
+              "type": "object"
+              "additionalProperties": false
+              "required":
+                - "on-fire"
+                - "helping-hand"
+                - "unbeaten-run"
+              "properties":
+                "on-fire":
+                  "const": 5
+                "helping-hand":
+                  "const": 3
+                "unbeaten-run":
+                  "const": 5
     OwnedJoinTeam:
       type: [object, 'null']
       additionalProperties: false

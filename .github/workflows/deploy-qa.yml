@@ -63,6 +63,9 @@ jobs:
           PLAYER_CLAIM_MODE: ${{ vars.PLAYER_CLAIM_MODE || 'proof' }}
           PLAYER_CONSOLIDATION_ENABLED: ${{ vars.PLAYER_CONSOLIDATION_ENABLED || 'false' }}
           PLAYER_RETURNING_JOIN_ENABLED: ${{ vars.PLAYER_RETURNING_JOIN_ENABLED || 'false' }}
+          PLAYER_PROFILES_ENABLED: ${{ vars.PLAYER_PROFILES_ENABLED || 'false' }}
+          PLAYER_ACHIEVEMENTS_ENABLED: ${{ vars.PLAYER_ACHIEVEMENTS_ENABLED || 'false' }}
+          PLAYER_OWNER_EDITING_ENABLED: ${{ vars.PLAYER_OWNER_EDITING_ENABLED || 'false' }}
         run: make deploy ENV=qa SERVICE=api-core
 
       # Infrastructure is provisioned separately from the reviewed local Terraform plan.

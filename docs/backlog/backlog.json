@@ -1386,14 +1386,15 @@
         "Long and Unicode names, empty states, keyboard/focus, screen reader, light/dark, 200% zoom and 320/390/430px layouts."
       ],
       "delivery": {
-        "asOf": "2026-09-20",
-        "wave": "deferred-player-portal",
-        "status": "planned",
+        "asOf": "2026-10-03",
+        "wave": "player-profiles-achievements",
+        "status": "in-progress",
         "githubIssue": 37,
         "notes": [
           "Expanded after AJ's request to cover the player card, latest-match summary, match-by-match contributions, season/career league totals and a separate private personal-information view.",
           "M3-08 owns the bounded linked-player history foundation; this issue owns the profile presentation and owner-only personal view.",
-          "AJ approved the Club Card build on 2026-10-03: league access, PNG sharing, all 23 achievements, automatic five-badge selection, name/photo editing; no XP or levels."
+          "AJ approved the Club Card build on 2026-10-03: league access, PNG sharing, all 23 achievements, automatic five-badge selection, name/photo editing; no XP or levels.",
+          "Authorised read interfaces and bounded verified-participant discovery are implemented in the profile-read child; owner editing and the app presentation follow before issue completion."
         ]
       },
       "reviewRequirements": [
@@ -3267,7 +3268,7 @@
         "status": "in-progress",
         "wave": "player-profiles-achievements",
         "notes": [
-          "PR #206 supplies immutable history generations; PR #207 adds atomic source/work writers. The worker child adds bounded Streams/SQS processing, explicit activation, resumable backfill, career-summary dry-run comparison and recovery. Runtime readers and QA coverage activation follow."
+          "PR #206 supplies immutable history generations; PR #207 adds atomic source/work writers. PR #208 adds bounded Streams/SQS processing, explicit activation, resumable backfill, career-summary dry-run comparison and recovery. The profile-read child adds complete default-season derivation and authorised runtime readers; QA coverage activation follows."
         ],
         "githubIssue": 200
       }
@@ -3314,7 +3315,7 @@
         "wave": "player-profiles-achievements",
         "notes": [
           "Approved Club Card build plan; retain existing issue IDs and dependencies.",
-          "PR #205 supplies all 23 evaluators; PR #206 retains every milestone in immutable generations; PR #207 records corrections atomically. Worker/backfill delivery follows in the current child before authorised reads and QA activation."
+          "PR #205 supplies all 23 evaluators; PR #206 retains every milestone in immutable generations; PR #207 records corrections atomically. PR #208 supplies worker/backfill delivery. The profile-read child retains first-unlock metadata and exposes validated progress, honours and paginated unlocks; QA activation follows."
         ],
         "githubIssue": 201,
         "branch": "codex/achievement-evaluator"

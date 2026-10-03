@@ -17,6 +17,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerConsolidationService } from "./player-consolidation.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
+import { PlayerProfileAccess } from "./player-profile-access.js";
+import { PlayerProfileReadService } from "./player-profile-read.js";
 import { OwnedPlayerJoinService } from "./owned-player-join.js";
 import { historyMutationItems, sendHistoryTransaction } from "./player-history-work.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
@@ -1061,6 +1063,21 @@ function withTimestamps<T extends object>(
 }
 
 export class ThreeFcRepository {
+  private profileReadService(): PlayerProfileReadService {
+    return new PlayerProfileReadService(this.client, this.tableName, undefined, {
+      profiles: process.env.PLAYER_PROFILES_ENABLED === "true",
+      achievements: process.env.PLAYER_ACHIEVEMENTS_ENABLED === "true",
+      ownerEditing: process.env.PLAYER_OWNER_EDITING_ENABLED === "true",
+    });
+  }
+  getPlayerPerformance(input: Parameters<PlayerProfileReadService["performance"]>[0]) { return this.profileReadService().performance(input); }
+  getPlayerHistory(input: Parameters<PlayerProfileReadService["history"]>[0]) { return this.profileReadService().history(input); }
+  getPlayerAchievements(input: Parameters<PlayerProfileReadService["achievements"]>[0]) { return this.profileReadService().achievements(input); }
+  getPlayerUnlocks(input: Parameters<PlayerProfileReadService["unlocks"]>[0]) { return this.profileReadService().unlocks(input); }
+  listPlayerAccess(input: Parameters<PlayerProfileAccess["discover"]>[0]) {
+    if (process.env.PLAYER_PROFILES_ENABLED !== "true") throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable.");
+    return new PlayerProfileAccess(this.client, this.tableName).discover(input);
+  }
   private ownedJoinService(): OwnedPlayerJoinService {
     return new OwnedPlayerJoinService(this.client, this.tableName, () => this.clock.now(),
       (game, id, nickname, now) => this.planPlayerMembership(game, id, nickname, now), process.env.PLAYER_RETURNING_JOIN_ENABLED === "true");
@@ -1269,6 +1286,7 @@ export class ThreeFcRepository {
         await this.identities.liveScope("season", [input.leagueId, input.seasonId]),
         { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), seasonSk(input.seasonId), ENTITY_TYPE.season, payload, now),
           ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } }, legacyAction,
+        ...historyMutationItems(this.tableName, { leagueId: input.leagueId, reason: "history-rebuild" }, now),
       ]) }));
     } catch (error) {
       if (isConditionalWriteFailure(error)) throw new PlayerIdentityError("season_exists", 409, "The season list changed. Refresh before trying again.");

@@ -1,0 +1,248 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { BatchGetItemCommand, GetItemCommand, QueryCommand, TransactWriteItemsCommand, type TransactWriteItem } from '@aws-sdk/client-dynamodb';
+import { PlayerProfileAccess } from '../data/player-profile-access.js';
+import { historyRow, historyKey, type HistoryItem } from '../data/player-history-model.js';
+import { aclSk, playerClaimSk } from '../data/keys.js';
+import { identityDirectorySk, identityLeagueSk, identityTombstoneSk } from '../data/player-identity.js';
+
+const account = 'account-subject', email = 'private@example.test';
+const itemKey = (item: HistoryItem) => JSON.stringify([item.pk!.S, item.sk!.S]);
+const data = (item: HistoryItem) => JSON.parse(item.data!.S!);
+class MemoryClient {
+  items = new Map<string, HistoryItem>();
+  queries: QueryCommand['input'][] = []; batches: BatchGetItemCommand['input'][] = [];
+  transactions: TransactWriteItem[][] = [];
+  beforeCommit: (() => void) | null = null;
+  queryOverride: ((result: { Items: HistoryItem[]; LastEvaluatedKey?: HistoryItem }) => unknown) | null = null;
+  batchOverride: (() => unknown) | null = null;
+  seed(pk: string, sk: string, type: string, value: unknown) {
+    const item = historyRow(pk, sk, type, value); this.items.set(itemKey(item), item); return item;
+  }
+  remove(pk: string, sk: string) { this.items.delete(itemKey(historyKey(pk, sk))); }
+  async send(command: unknown): Promise<unknown> {
+    if (command instanceof BatchGetItemCommand) {
+      this.batches.push(structuredClone(command.input));
+      if (this.batchOverride) return this.batchOverride();
+      const requests = command.input.RequestItems!; assert.deepEqual(Object.keys(requests), ['table']);
+      assert.equal(requests.table.ConsistentRead, true); const keys = requests.table.Keys!; assert(keys.length <= 100);
+      return { Responses: { table: keys.flatMap(key => {
+        const item = this.items.get(itemKey(key)); return item ? [structuredClone(item)] : [];
+      }) } };
+    }
+    if (command instanceof GetItemCommand) assert.fail('all point reads must use bounded cache prefetch');
+    if (command instanceof QueryCommand) {
+      const input = command.input; this.queries.push(structuredClone(input));
+      assert.equal(input.ConsistentRead, true); assert.equal(input.IndexName, undefined); assert.equal(input.FilterExpression, undefined);
+      assert(input.Limit && input.Limit <= 20);
+      const values = input.ExpressionAttributeValues!, pk = values[':pk'].S!, prefix = values[':prefix'].S!, after = input.ExclusiveStartKey?.sk?.S;
+      const rows = [...this.items.values()].filter(item => item.pk!.S === pk && item.sk!.S!.startsWith(prefix)
+        && (!after || Buffer.compare(Buffer.from(item.sk!.S!), Buffer.from(after)) > 0))
+        .sort((left, right) => Buffer.compare(Buffer.from(left.sk!.S!), Buffer.from(right.sk!.S!)));
+      const items = rows.slice(0, input.Limit), last = items.at(-1);
+      const result = { Items: structuredClone(items), ...(last && rows.length > items.length ? { LastEvaluatedKey: historyKey(pk, last.sk!.S!) } : {}) };
+      return this.queryOverride ? this.queryOverride(result) : result;
+    }
+    assert(command instanceof TransactWriteItemsCommand, 'no writes/scans/alternate APIs');
+    const actions = command.input.TransactItems!; this.transactions.push(actions);
+    assert(actions.length <= 100); assert(actions.every(action => action.ConditionCheck && !action.Put && !action.Delete && !action.Update));
+    this.beforeCommit?.();
+    const valid = actions.map(action => {
+      const check = action.ConditionCheck!, stored = this.items.get(itemKey(check.Key!));
+      return check.ConditionExpression!.split(' AND ').every(expression => {
+        const absent = expression.match(/^attribute_not_exists\((.+)\)$/); if (absent) return !stored?.[absent[1]];
+        const equality = expression.match(/^(\S+) = (\S+)$/); assert(equality);
+        return JSON.stringify(stored?.[check.ExpressionAttributeNames![equality[1]]]) === JSON.stringify(check.ExpressionAttributeValues![equality[2]]);
+      });
+    });
+    if (valid.some(value => !value)) throw Object.assign(new Error('authority changed'), { name: 'TransactionCanceledException',
+      CancellationReasons: valid.map(value => ({ Code: value ? 'None' : 'ConditionalCheckFailed' })) });
+    return {};
+  }
+}
+function addPlayer(client: MemoryClient, id: string, owner: string | null, leagueId = 'league') {
+  client.seed(`PLAYER#${id}`, 'IDENTITY', 'playerIdentity', { playerId: id, rootId: id, members: [id], identityVersion: 1,
+    writeVersion: 'w1', displayName: `Name ${id}`, formerNames: [] });
+  client.seed(`PLAYER#${id}`, 'PROFILE', 'player', { playerId: id, nickname: `Name ${id}`, claimedByUserId: owner,
+    email: 'never-return@example.test', notificationPreferences: { secret: true } });
+  client.seed(`PLAYER#${id}`, identityLeagueSk(leagueId), 'playerLeagueMembership', { playerId: id, leagueId });
+  client.seed(`LEAGUE#${leagueId}`, identityDirectorySk(id), 'leaguePlayer', { playerId: id, nickname: `Name ${id}`, active: true });
+  if (owner) client.seed(`USER#${owner}`, playerClaimSk(id), 'playerClaim', { playerId: id, userId: owner });
+}
+function fixture() {
+  const client = new MemoryClient();
+  client.seed('PLAYER_IDENTITY', 'CONTROL', 'playerIdentityControl', { mode: 'fenced', coverage: 'unknown', epoch: 'e1', writerVersion: 1 });
+  client.seed('LEAGUE#league', 'METADATA', 'league', { leagueId: 'league', name: 'Test league' });
+  client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'd1' });
+  for (const userId of [account, email]) client.seed(`USER#${userId}`, 'PLAYER_CLAIMS_REVISION', 'playerClaimsRevision', { revision: 'c1' });
+  addPlayer(client, 'owner', account); addPlayer(client, 'target', null);
+  return { client, access: new PlayerProfileAccess(client, 'table'), caller: { userId: account, userIds: [account, email], leagueId: 'league' } };
+}
+function claimRoot(client: MemoryClient, id: string, owner: string | null) {
+  const row = client.items.get(itemKey(historyKey(`PLAYER#${id}`, 'PROFILE')))!;
+  row.data = { S: JSON.stringify({ ...data(row), claimedByUserId: owner }) };
+}
+
+test('a verified canonical participant can read another profile without gaining owner authority', async () => {
+  const { client, access, caller } = fixture();
+  const grant = await access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'owner' });
+  assert.deepEqual(grant.player, { playerId: 'target', displayName: 'Name target', hasPortrait: false });
+  assert.deepEqual(grant.league, { leagueId: 'league', name: 'Test league' }); assert.equal(grant.owner, false);
+  assert.equal((await access.authorize({ ...caller, playerId: 'owner' })).owner, true);
+  await assert.rejects(access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'target' }), /cannot access/);
+  await assert.rejects(access.authorize({ ...caller, playerId: 'target' }), /cannot access/);
+  assert.equal(client.queries.length, 0, 'authorization never scans account claims');
+});
+
+test('each valid league ACL grants reading only; forged and cross-league roles do not', async () => {
+  for (const role of ['admin', 'scorekeeper', 'viewer']) {
+    const { client, access, caller } = fixture();
+    client.seed('LEAGUE#league', aclSk(email), 'acl', { leagueId: 'league', userId: email, role });
+    assert.equal((await access.authorize({ ...caller, playerId: 'target' })).owner, false);
+    assert.equal((await access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'obsolete-hint' })).owner, false,
+      'an unnecessary stale participant hint does not defeat independently valid ACL access');
+    assert.equal((await access.discover(caller)).hasLeagueAcl, true);
+  }
+  const { client, access, caller } = fixture();
+  client.seed('LEAGUE#other', aclSk(account), 'acl', { leagueId: 'other', userId: account, role: 'admin' });
+  await assert.rejects(access.authorize({ ...caller, playerId: 'target' }), /cannot access/);
+  client.seed('LEAGUE#league', aclSk(account), 'acl', { leagueId: 'other', userId: account, role: 'admin' });
+  await assert.rejects(access.authorize({ ...caller, playerId: 'target' }));
+});
+
+test('canonical aliases use the root current claim and never trust an alias stale owner', async () => {
+  const { client, access, caller } = fixture();
+  client.seed('PLAYER#alias/slash%λ', 'IDENTITY', 'playerIdentity', { playerId: 'alias/slash%λ', rootId: 'owner', members: [],
+    identityVersion: 1, writeVersion: 'wa', displayName: 'Alias', formerNames: [] });
+  const root = client.items.get(itemKey(historyKey('PLAYER#owner', 'IDENTITY')))!;
+  root.data = { S: JSON.stringify({ ...data(root), members: ['owner', 'alias/slash%λ'] }) };
+  client.seed('PLAYER#alias/slash%λ', 'PROFILE', 'player', { playerId: 'alias/slash%λ', nickname: 'Alias', claimedByUserId: 'stranger' });
+  const grant = await access.authorize({ ...caller, playerId: 'alias/slash%λ' });
+  assert.equal(grant.player.playerId, 'owner'); assert.equal(grant.owner, true);
+  claimRoot(client, 'owner', 'stranger');
+  await assert.rejects(access.authorize({ ...caller, playerId: 'alias/slash%λ' }), /cannot access/);
+});
+
+test('owner and viewer scope require an active directory plus matching league membership', async () => {
+  for (const scenario of ['missing-membership', 'inactive', 'wrong-membership', 'foreign-player']) {
+    const { client, access, caller } = fixture();
+    if (scenario === 'missing-membership') client.remove('PLAYER#owner', identityLeagueSk('league'));
+    if (scenario === 'inactive') client.seed('LEAGUE#league', identityDirectorySk('owner'), 'leaguePlayer', { playerId: 'owner', active: false, nickname: 'Owner' });
+    if (scenario === 'wrong-membership') client.seed('PLAYER#owner', identityLeagueSk('league'), 'playerLeagueMembership', { playerId: 'owner', leagueId: 'other' });
+    if (scenario === 'foreign-player') {
+      client.remove('PLAYER#owner', identityLeagueSk('league')); client.remove('LEAGUE#league', identityDirectorySk('owner'));
+      client.seed('PLAYER#owner', identityLeagueSk('other'), 'playerLeagueMembership', { playerId: 'owner', leagueId: 'other' });
+    }
+    await assert.rejects(access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'owner' }));
+  }
+});
+
+test('final composition fence rejects ownership, ACL, directory and root revocation races', async () => {
+  for (const scenario of ['owner', 'acl', 'directory', 'root', 'league']) {
+    const { client, access, caller } = fixture();
+    if (scenario === 'acl') client.seed('LEAGUE#league', aclSk(account), 'acl', { leagueId: 'league', userId: account, role: 'viewer' });
+    const grant = await access.authorize({ ...caller, playerId: 'target', ...(scenario === 'acl' ? {} : { viewerPlayerId: 'owner' }) });
+    client.beforeCommit = () => {
+      client.beforeCommit = null;
+      if (scenario === 'owner') claimRoot(client, 'owner', 'stranger');
+      if (scenario === 'acl') client.remove('LEAGUE#league', aclSk(account));
+      if (scenario === 'directory') client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'd2' });
+      if (scenario === 'root') {
+        const row = client.items.get(itemKey(historyKey('PLAYER#owner', 'IDENTITY')))!;
+        row.data = { S: JSON.stringify({ ...data(row), writeVersion: 'w2' }) };
+      }
+      if (scenario === 'league') client.seed('PLAYER_IDENTITY_TOMBSTONE', identityTombstoneSk('league', ['league']), 'playerIdentityTombstone', { kind: 'league', ids: ['league'] });
+    };
+    await assert.rejects(access.assertCurrent(grant.checks), error => (error as { code?: string }).code === 'player_profile_changed');
+  }
+});
+
+test('discovery paginates both claim namespaces and trusted identities while preserving opaque player IDs', async () => {
+  const { client, access, caller } = fixture();
+  const long = 'x'.repeat(1020), opaque = 'email-owned/λ%'; addPlayer(client, long, account); addPlayer(client, opaque, email);
+  assert.equal((await access.authorize({ ...caller, playerId: opaque })).owner, true, 'legacy email claim belongs to the verified account alias');
+  let cursor: string | undefined, pages = 0; const found = new Set<string>();
+  do {
+    const page = await access.discover({ ...caller, limit: 1, cursor });
+    assert.equal(page.leagueId, 'league'); assert.equal(page.hasLeagueAcl, false); assert.equal(page.complete, page.cursor === null);
+    page.players.forEach(player => found.add(player.playerId)); pages++;
+    assert(!JSON.stringify(page).includes(email)); assert(!JSON.stringify(page).includes('never-return'));
+    if (page.cursor) assert(!Buffer.from(page.cursor, 'base64url').toString().includes(email));
+    cursor = page.cursor ?? undefined;
+  } while (cursor && pages < 10);
+  assert.equal(cursor, undefined); assert.deepEqual([...found].sort(), ['owner', long, opaque].sort());
+  assert.equal(client.queries.length, pages, 'exactly one bounded claims query per page');
+  assert(client.queries.some(query => query.ExpressionAttributeValues![':prefix'].S === 'PLAYER_HASH#'));
+});
+
+test('twenty raw claims are a hard page bound and stale ownership hints are filtered', async () => {
+  const { client, access, caller } = fixture();
+  for (let index = 0; index < 25; index++) addPlayer(client, `extra-${String(index).padStart(2, '0')}`, account);
+  claimRoot(client, 'extra-00', 'stranger');
+  const first = await access.discover(caller);
+  assert.equal(first.players.length, 19); assert(first.cursor); assert.equal(first.complete, false);
+  assert(!first.players.some(player => player.playerId === 'extra-00')); assert.equal(client.queries.length, 1);
+  assert(client.transactions.at(-1)!.length <= 100); assert(client.batches.every(batch => batch.RequestItems!.table.Keys!.length <= 100));
+});
+
+test('twenty full canonical alias closures use bounded batch reads and fit one authority fence', async () => {
+  const { client, access, caller } = fixture();
+  client.remove(`USER#${account}`, playerClaimSk('owner'));
+  for (let group = 0; group < 20; group++) {
+    const root = `group-${String(group).padStart(2, '0')}`; addPlayer(client, root, account);
+    const aliases = Array.from({ length: 19 }, (_, index) => `${root}-alias-${index}`);
+    const row = client.items.get(itemKey(historyKey(`PLAYER#${root}`, 'IDENTITY')))!;
+    row.data = { S: JSON.stringify({ ...data(row), members: [root, ...aliases] }) };
+    for (const alias of aliases) client.seed(`PLAYER#${alias}`, 'IDENTITY', 'playerIdentity', { playerId: alias, rootId: root,
+      members: [], writeVersion: 'w1', identityVersion: 1, displayName: alias, formerNames: [] });
+  }
+  const page = await access.discover(caller);
+  assert.equal(page.players.length, 20); assert.equal(client.queries.length, 1);
+  assert.equal(client.batches.length, 7, 'scope + roots + five bounded metadata/alias batches');
+  assert(client.batches.every(batch => batch.RequestItems!.table.Keys!.length <= 100));
+  assert.equal(client.transactions.length, 1); assert(client.transactions[0].length <= 90);
+});
+
+test('discovery cursors bind account set, league, claim revision, directory and identity epoch', async () => {
+  for (const change of ['account', 'league', 'claim', 'directory', 'epoch']) {
+    const { client, access, caller } = fixture(); const first = await access.discover(caller); assert(first.cursor);
+    let input = { ...caller, cursor: first.cursor };
+    if (change === 'account') input = { ...input, userId: email, userIds: [email, account] };
+    if (change === 'league') {
+      client.seed('LEAGUE#other', 'METADATA', 'league', { leagueId: 'other', name: 'Other' }); input.leagueId = 'other';
+    }
+    if (change === 'claim') client.seed(`USER#${email}`, 'PLAYER_CLAIMS_REVISION', 'playerClaimsRevision', { revision: 'c2' });
+    if (change === 'directory') client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'd2' });
+    if (change === 'epoch') client.seed('PLAYER_IDENTITY', 'CONTROL', 'playerIdentityControl', { mode: 'fenced', coverage: 'unknown', epoch: 'e2', writerVersion: 1 });
+    await assert.rejects(access.discover(input), error => (error as { code?: string }).code === 'invalid_player_cursor');
+  }
+});
+
+test('discovery final fence rejects a claim change during assembly and never returns a partial page', async () => {
+  const { client, access, caller } = fixture();
+  client.beforeCommit = () => {
+    client.beforeCommit = null; client.seed(`USER#${account}`, 'PLAYER_CLAIMS_REVISION', 'playerClaimsRevision', { revision: 'c2' });
+  };
+  await assert.rejects(access.discover(caller), error => (error as { code?: string }).code === 'player_profile_changed');
+});
+
+test('malformed claims, forged continuations and incomplete batch reads fail explicitly', async () => {
+  const malformed = fixture();
+  malformed.client.seed(`USER#${account}`, playerClaimSk('forged'), 'playerClaim', { playerId: 'owner', userId: account });
+  await assert.rejects(malformed.access.discover(malformed.caller));
+  const cursor = fixture(); cursor.client.queryOverride = result => ({ ...result, LastEvaluatedKey: historyKey('USER#stranger', 'PLAYER#owner') });
+  await assert.rejects(cursor.access.discover(cursor.caller));
+  const batch = fixture(); batch.client.batchOverride = () => ({ Responses: { wrongTable: [] } });
+  await assert.rejects(batch.access.discover(batch.caller));
+  const invalid = fixture();
+  for (const limit of [0, 21, 1.5]) await assert.rejects(invalid.access.discover({ ...invalid.caller, limit }));
+  await assert.rejects(invalid.access.discover({ ...invalid.caller, cursor: 'not-valid!' }));
+});
+
+test('composition accepts only condition checks and rejects conflicting snapshots', async () => {
+  const { access, caller } = fixture(); const grant = await access.authorize({ ...caller, playerId: 'owner' });
+  await access.assertCurrent(grant.checks, grant.checks);
+  const altered = structuredClone(grant.checks[0]); altered.ConditionCheck!.ExpressionAttributeValues![':data'] = { S: 'changed' };
+  await assert.rejects(access.assertCurrent(grant.checks, [altered]), error => (error as { code?: string }).code === 'player_profile_changed');
+  await assert.rejects(access.assertCurrent(grant.checks, [{ Put: { TableName: 'table', Item: historyRow('LEAGUE#league', 'METADATA', 'league', {}) } }]));
+});

@@ -110,7 +110,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `M3-03` | deferred-player-portal | planned | [#34](https://github.com/ajfisher/3fc/issues/34) | - |
 | `M3-04` | deferred-player-portal | planned | [#35](https://github.com/ajfisher/3fc/issues/35) | - |
 | `M3-05` | deferred-player-portal | partial | [#36](https://github.com/ajfisher/3fc/issues/36) | - |
-| `M3-06` | deferred-player-portal | planned | [#37](https://github.com/ajfisher/3fc/issues/37) | - |
+| `M3-06` | player-profiles-achievements | in-progress | [#37](https://github.com/ajfisher/3fc/issues/37) | - |
 | `M4-03` | partial-existing | partial | [#40](https://github.com/ajfisher/3fc/issues/40) | - |
 | `M1-09` | separate | planned | [#68](https://github.com/ajfisher/3fc/issues/68) | - |
 | `M1-10` | historical | merged | [#76](https://github.com/ajfisher/3fc/issues/76) | - |

@@ -11,6 +11,7 @@ import { identityDirectorySk, identityGameSk, identityTombstoneSk } from '../dat
 import type { HistoryQueueReference } from '../history-transport.js';
 import { goalSk } from '../data/keys.js';
 import { publicUnlock } from '../achievements/evaluate.js';
+import { getProfileSeasonDefault } from '../data/player-profile-season.js';
 
 const at = '2026-10-03T00:00:00.000Z';
 const key = (item: HistoryItem): string => JSON.stringify([item.pk!.S, item.sk!.S]);
@@ -256,6 +257,8 @@ test('league sweep includes every active zero-appearance player and cannot compl
   const { client, coordinator, store, ref } = await fixture(players);
   addPlayer(client, 'inactive', false);
   assert.deepEqual(await coordinator.process(ref), { done: false });
+  assert.equal((await coordinator.status('league'))?.phase, 'seasons');
+  await coordinator.process(ref);
   assert.equal((await coordinator.status('league'))?.phase, 'fanout');
   await coordinator.process(ref); await coordinator.process(ref);
   assert.equal((await coordinator.status('league'))?.phase, 'verify');
@@ -332,7 +335,7 @@ test('a changed source replaces stale in-flight generations before any stale pub
 
 test('directory changes fence a partially enumerated sweep and include newly added players on restart', async () => {
   const { client, coordinator, store, ref } = await fixture();
-  await coordinator.process(ref);
+  await coordinator.process(ref); await coordinator.process(ref);
   client.beforeCommit = actions => {
     if (!writes(actions, 'playerHistorySweep')) return;
     client.beforeCommit = null;
@@ -498,7 +501,7 @@ test('rebuild collects real completed game records and corrections revoke goals 
   await coordinator.requestRebuild('league');
   const identical = await compare();
   assert.equal(identical.comparisonScope, 'career-summary');
-  assert.deepEqual(identical.comparisonIncludes, ['totals', 'progress', 'assessability', 'streaks', 'highest-milestones']);
+  assert.deepEqual(identical.comparisonIncludes, ['totals', 'progress', 'assessability', 'streaks', 'first-unlocks', 'highest-milestones']);
   assert.equal(identical.totalsChanged, false);
   assert.equal(identical.achievementsChanged, false, 'source revision alone is not an achievement change');
   assert.notDeepEqual(identical.before.highest, identical.after.highest, 'raw award evidence really has a different source revision');
@@ -575,6 +578,140 @@ for (const hadPublication of [false, true]) {
       hadPublication ? 2 : 1, 'comparison retry does not publish its own generation');
   });
 }
+
+function addSeason(client: MemoryClient, seasonId: string, startsOn: string | null, createdAt: string, name = seasonId) {
+  const row = client.seed('LEAGUE#league', `SEASON#${seasonId}`, 'season', { leagueId: 'league', seasonId, name, startsOn, endsOn: null, slug: null });
+  row.createdAt = { S: createdAt }; return row;
+}
+
+test('season catalogue advances fully filtered pages and publishes only after bounded complete drainage', async () => {
+  const { client, coordinator, ref } = await fixture([]);
+  for (let index = 0; index < 20; index++) client.seed('LEAGUE#league', `SEASON#000-${String(index).padStart(2, '0')}#TEAM#red`,
+    'team', { leagueId: 'league', seasonId: `000-${String(index).padStart(2, '0')}`, teamId: 'red' });
+  for (let index = 0; index < 23; index++) addSeason(client, `winter-${String(index).padStart(2, '0')}`, null,
+    `2026-01-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`);
+  await coordinator.process(ref);
+  assert.equal((await coordinator.status('league'))?.phase, 'seasons');
+  await coordinator.process(ref);
+  const firstPage = await coordinator.status('league'); assert(firstPage?.cursor);
+  assert.equal(firstPage.seasonCandidate, null, 'nested rows do not masquerade as seasons');
+  assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value, null, 'filtered page is not complete coverage');
+  await coordinator.process(ref);
+  assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value, null, 'partial real season page is still unpublished');
+  await coordinator.process(ref);
+  const snapshot = await getProfileSeasonDefault(client, 'table', 'league');
+  assert.equal(snapshot.value?.season?.seasonId, 'winter-22');
+  assert.equal(snapshot.value?.sourceRevision, sourceRevision(client));
+  assert.equal(snapshot.value?.readinessRevision, body(client.read('PLAYER_HISTORY', 'CONTROL')!).revision);
+  assert.equal((await coordinator.status('league'))?.phase, 'fanout');
+  const queries = client.queries.filter(query => query.ExpressionAttributeValues![':prefix'].S === 'SEASON#');
+  assert.equal(queries.length, 3); assert(queries.every(query => query.Limit === 20));
+});
+
+test('default season ranks start-or-creation date, then creation instant, then UTF-8 opaque ID deterministically', async () => {
+  const { client, coordinator, ref } = await fixture([]);
+  addSeason(client, 'old-start-new-creation', '2025-12-31', '2026-10-03T00:00:00Z');
+  addSeason(client, 'without-start', null, '2026-02-01T23:00:00Z');
+  addSeason(client, 'a-created-later', '2026-02-01', '2026-03-01T01:00:00+01:00');
+  addSeason(client, 'winter#opaque/\uE000', '2026-02-01', '2026-03-01T00:00:00Z');
+  addSeason(client, 'winter#opaque/\u{10000}', '2026-02-01', '2026-03-01T00:00:00Z', 'Canonical latest');
+  await drain(coordinator, ref);
+  const value = (await getProfileSeasonDefault(client, 'table', 'league')).value;
+  assert.equal(value?.season?.seasonId, 'winter#opaque/\u{10000}');
+  assert.equal(value?.season?.name, 'Canonical latest');
+  assert.equal(value?.season?.createdAt, '2026-03-01T00:00:00.000Z');
+});
+
+test('confirmed empty season catalogue differs from a missing default projection', async () => {
+  const { client, coordinator, ref } = await fixture([]);
+  const missing = await getProfileSeasonDefault(client, 'table', 'league');
+  assert.equal(missing.item, null); assert.equal(missing.value, null);
+  await drain(coordinator, ref);
+  const complete = await getProfileSeasonDefault(client, 'table', 'league');
+  assert(complete.item); assert(complete.value); assert.equal(complete.value.season, null);
+});
+
+test('API-valid free-form and impossible start dates fall back to creation date without blocking history', async () => {
+  for (const startsOn of ['Winter 2027', '2027-02-30']) {
+    const { client, coordinator, ref } = await fixture([]);
+    addSeason(client, 'known-start', '2027-01-01', '2027-04-01T00:00:00Z');
+    addSeason(client, 'unusable-start', startsOn, '2027-02-01T00:00:00Z');
+    await drain(coordinator, ref);
+    const value = (await getProfileSeasonDefault(client, 'table', 'league')).value;
+    assert.equal(value?.season?.seasonId, 'unusable-start');
+    assert.equal(value?.season?.startsOn, null);
+    assert.equal((await coordinator.status('league'))?.phase, 'complete');
+  }
+});
+
+test('changed season source and lost checkpoint acknowledgements cannot publish or skip a stale candidate', async () => {
+  const { client, coordinator, ref } = await fixture([]);
+  addSeason(client, 'first', null, at);
+  await coordinator.process(ref);
+  client.beforeCommit = async actions => {
+    if (!writes(actions, 'playerProfileSeasonDefault')) return;
+    client.beforeCommit = null;
+    addSeason(client, 'newer', '2027-01-01', at);
+    await coordinator.requestRebuild('league');
+  };
+  assert.deepEqual(await coordinator.process(ref), { done: false });
+  assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value, null);
+  // Old markers coalesce to the new revision and rerun the catalogue from its start.
+  await coordinator.process(ref);
+  loseOnce(client, 'playerProfileSeasonDefault');
+  await assert.rejects(coordinator.process(ref), /lost acknowledgement/);
+  assert.equal((await coordinator.status('league'))?.phase, 'fanout', 'result and exhausted checkpoint committed atomically');
+  const value = (await getProfileSeasonDefault(client, 'table', 'league')).value;
+  assert.equal(value?.season?.seasonId, 'newer'); assert.equal(value?.sourceRevision, sourceRevision(client));
+  await drain(coordinator, ref);
+  assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value?.season?.seasonId, 'newer');
+});
+
+test('legacy sweeps restart catalogue coverage instead of acknowledging an absent season projection', async () => {
+  const { client, coordinator, ref } = await fixture([]);
+  addSeason(client, 'winter', null, at);
+  await coordinator.process(ref);
+  const row = client.read('LEAGUE#league', 'HISTORY_SWEEP')!, legacy = body(row);
+  delete legacy.seasonCatalogueVersion; delete legacy.seasonCandidate;
+  legacy.phase = 'complete'; legacy.completedAt = at; row.data = { S: JSON.stringify(legacy) };
+  await coordinator.process(ref);
+  assert.equal((await coordinator.status('league'))?.phase, 'seasons');
+  assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value, null);
+  await drain(coordinator, ref);
+  assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value?.season?.seasonId, 'winter');
+});
+
+test('malformed season metadata fails explicitly instead of selecting a different season or claiming empty coverage', async () => {
+  for (const corrupt of ['createdAt', 'missing-createdAt', 'scope', 'key', 'entity', 'wrong-type']) {
+    const { client, coordinator, ref } = await fixture([]);
+    const item = addSeason(client, 'winter', null, at);
+    if (corrupt === 'createdAt') item.createdAt = { S: 'invalid' };
+    else if (corrupt === 'missing-createdAt') delete item.createdAt;
+    else if (corrupt === 'entity') delete item.entityType;
+    else if (corrupt === 'wrong-type') item.entityType = { S: 'team' };
+    else {
+      const data = body(item);
+      if (corrupt === 'scope') data.leagueId = 'elsewhere';
+      else data.seasonId = 'different';
+      item.data = { S: JSON.stringify(data) };
+    }
+    await coordinator.process(ref);
+    await assert.rejects(coordinator.process(ref));
+    assert.equal((await getProfileSeasonDefault(client, 'table', 'league')).value, null);
+    assert.equal((await coordinator.status('league'))?.phase, 'seasons');
+  }
+});
+
+test('default season reads return exact strong snapshots and reject malformed or cross-league projections', async () => {
+  const { client, coordinator, ref } = await fixture([]); await drain(coordinator, ref);
+  const valid = await getProfileSeasonDefault(client, 'table', 'league');
+  assert.equal(valid.pk, 'LEAGUE#league'); assert.equal(valid.sk, 'PROFILE_SEASON_DEFAULT');
+  assert.deepEqual(valid.item, client.read(valid.pk, valid.sk));
+  for (const fields of [{ leagueId: 'another' }, { version: 2 }, { sourceRevision: '' }, { season: { seasonId: 'x' } }]) {
+    client.seed(valid.pk, valid.sk, 'playerProfileSeasonDefault', { ...valid.value, ...fields });
+    await assert.rejects(getProfileSeasonDefault(client, 'table', 'league'));
+  }
+});
 
 test('pending status remains read-only and inspectable before activation and during rollback', async () => {
   for (const disabled of [false, true]) {

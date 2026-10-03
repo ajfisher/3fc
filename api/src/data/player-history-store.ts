@@ -311,6 +311,11 @@ export class PlayerHistoryStore {
     const view = await this.publishedSnapshot(leagueId, playerId);
     if (!view) return null;
     const key = view.snapshot.value.summaryKeys[scopeKey(scope)];
+    // Every published generation has a career accumulator, including verified
+    // zero-appearance history. A missing played-season pointer is corruption too;
+    // only a season absent from complete appearance coverage is confirmed empty.
+    if (!key && (scope.scope === 'career' || view.publication.seasons.some(value => value.seasonId === scope.seasonId)))
+      unavailable('Published history summary coverage is incomplete.');
     const state = key ? await this.state(view.snapshot, key) : emptyAccumulator();
     await this.unchanged(view.publication);
     return { state };

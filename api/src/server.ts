@@ -1,3 +1,4 @@
+import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:http";
@@ -3019,6 +3020,16 @@ export async function handleLocalPlayerDirectoryRoute(input: {
   return result.statusCode;
 }
 
+export async function handleLocalPlayerProfileRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerProfileRepository;
+}): Promise<number> {
+  const result = await handlePlayerProfileRoute({ ...input, repository: input.playerRepository ?? repository });
+  sendJsonWithCors(input.request, input.response, result.statusCode, result.payload,
+    { "cache-control": "no-store", "referrer-policy": "no-referrer" });
+  return result.statusCode;
+}
+
 export async function handleLocalOwnedPlayerJoinRoute(input: {
   request: IncomingMessage; response: ServerResponse; method: string; route: string;
   rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: OwnedPlayerJoinRepository;
@@ -5067,6 +5078,11 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isPlayerProfileRoute(method, route)) {
+        status = await handleLocalPlayerProfileRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
       if (isOwnedPlayerJoinRoute(method, route)) {
         status = await handleLocalOwnedPlayerJoinRoute({ request, response, method, route,
           rawQueryString: requestUrl.search.slice(1), session: authGate.session });

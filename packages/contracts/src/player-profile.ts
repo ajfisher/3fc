@@ -32,7 +32,7 @@ export interface PlayerHistoryPage { matches: PlayerAppearance[] | null; cursor:
 export type PlayerAchievements = AchievementScopeContext & {
   playerId: string; leagueId: string;
   progress: AchievementProgress[] | null; honours: AchievementUnlock[] | null;
-  latestUnlocks: AchievementUnlock[] | null; freshness: ProjectionFreshness;
+  firstUnlocks: AchievementUnlock[] | null; latestUnlocks: AchievementUnlock[] | null; freshness: ProjectionFreshness;
 }
 export interface PlayerUnlockPage { unlocks: AchievementUnlock[] | null; cursor: string | null; freshness: ProjectionFreshness }
 export interface OwnerPlayerProfile { playerId: string; displayName: string; email: string; hasPortrait: boolean; revision: string }

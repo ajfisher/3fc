@@ -1,3 +1,4 @@
+import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -190,7 +191,7 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository,
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository,
   Pick<ThreeFcRepository, "getPlayerView"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
@@ -5209,6 +5210,13 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        if (isPlayerProfileRoute(method, route)) {
+          const result = await handlePlayerProfileRoute({ method, route, rawQueryString: event.rawQueryString ?? "",
+            session, repository: dependencies.repository });
+          status = result.statusCode;
+          return createJsonResponse(status, result.payload, { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
+            "cache-control": "no-store", "referrer-policy": "no-referrer" });
+        }
         if (isOwnedPlayerJoinRoute(method, route)) {
           const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
             "cache-control": "no-store", "referrer-policy": "no-referrer" };

@@ -371,3 +371,50 @@ test('proven once-per-match third feats stay certain despite an extra unknown pe
     assert.equal(progressFor(result.state).find(value => value.achievementId === id)?.assessability, 'complete');
   }
 });
+
+test('first unlock retains ordinal one when several milestones cross together and later tiers replace highest', () => {
+  const empty = emptyAccumulator(), before = structuredClone(empty);
+  const firstMatch = numbered(1, Array.from({ length: 60 }, (_, index) => goal(`goal-${index}`)));
+  const first = applyAppearance(empty, firstMatch, player, 'career');
+  assert.deepEqual(empty, before, 'first metadata cannot mutate its input accumulator');
+  const goalUnlocks = first.unlocks.filter(award => award.achievementId === 'goal');
+  assert(goalUnlocks.length > 1);
+  assert.deepEqual(first.state.first?.goal, goalUnlocks[0]);
+  assert.equal(first.state.first?.goal?.threshold, 1);
+  assert.equal(first.state.highest.goal?.threshold, 50);
+  const saved = structuredClone(first.state);
+  const later = applyAppearance(first.state, numbered(2, Array.from({ length: 50 }, (_, index) => goal(`later-${index}`))), player, 'career');
+  assert.equal(later.state.highest.goal?.threshold, 100);
+  assert.deepEqual(later.state.first?.goal, saved.first?.goal);
+  assert.deepEqual(first.state, saved);
+});
+
+test('replay corrects the first unlock date even when the highest milestone stays in the later match', () => {
+  const early = numbered(1, [goal('early')]);
+  const later = numbered(2, Array.from({ length: 5 }, (_, index) => goal(`later-${index}`)));
+  const originalFirst = applyAppearance(emptyAccumulator(), early, player, 'career').state;
+  const original = applyAppearance(originalFirst, later, player, 'career').state;
+  const correctedFirst = applyAppearance(emptyAccumulator(), { ...early, goals: [], sourceRevision: 'corrected' }, player, 'career').state;
+  const corrected = applyAppearance(correctedFirst, { ...later, sourceRevision: 'corrected' }, player, 'career').state;
+  assert.equal(original.first?.goal?.gameId, early.gameId);
+  assert.equal(corrected.first?.goal?.gameId, later.gameId);
+  assert.equal(original.first?.goal?.id, corrected.first?.goal?.id, 'first-unlock identity survives evidence corrections');
+  assert.deepEqual(publicUnlock(original.highest.goal!), publicUnlock(corrected.highest.goal!), 'highest badge alone cannot reveal this correction');
+  assert.notEqual(original.first?.goal?.earnedAt, corrected.first?.goal?.earnedAt);
+  const restored = applyAppearance(applyAppearance(emptyAccumulator(), early, player, 'career').state, later, player, 'career').state;
+  assert.deepEqual(restored.first, original.first);
+});
+
+test('first unlocks are scope-specific and missing legacy metadata stays unknown until a full replay', () => {
+  const winter = numbered(1, [goal('winter')]), summer = numbered(2, [goal('summer')], { seasonId: 'summer' });
+  const career = applyAppearance(applyAppearance(emptyAccumulator(), winter, player, 'career').state, summer, player, 'career').state;
+  const season = applyAppearance(emptyAccumulator(), summer, player, 'season').state;
+  assert.equal(career.first?.goal?.gameId, winter.gameId); assert.equal(career.first?.goal?.scope, 'career');
+  assert.equal(season.first?.goal?.gameId, summer.gameId); assert.equal(season.first?.goal?.seasonId, 'summer');
+  const legacy = applyAppearance(emptyAccumulator(), winter, player, 'career').state;
+  delete legacy.first;
+  const resumed = applyAppearance(legacy, numbered(2, Array.from({ length: 5 }, (_, index) => goal(`next-${index}`))), player, 'career').state;
+  assert.equal(resumed.first, undefined, 'a later tier is not evidence of the first unlock date');
+  assert.equal(resumed.highest.goal?.threshold, 5);
+  assert.deepEqual(emptyAccumulator().first, {});
+});

@@ -69,6 +69,10 @@ test("expired session cookies match the host-only session scope and expire immed
 });
 
 test("isAuthenticatedApiRoute marks protected routes only", () => {
+  for (const path of ["player-access", "player-profile", "player-history", "player-achievements", "player-unlocks", "achievement-catalogue"]) {
+    assert.equal(isAuthenticatedApiRoute("GET", `/v1/${path}`), true);
+    assert.equal(isAuthenticatedApiRoute("OPTIONS", `/v1/${path}`), false);
+  }
   for (const method of ["GET", "POST"]) assert.equal(isAuthenticatedApiRoute(method, "/v1/player-consolidations"), true);
   for (const action of ["approve", "commit"]) {
     assert.equal(isAuthenticatedApiRoute("POST", `/v1/player-consolidations/${action}`), true);

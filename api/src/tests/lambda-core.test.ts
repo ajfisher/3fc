@@ -1,3 +1,4 @@
+import type { PlayerProfileRepository } from "../player-profile-routes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -259,6 +260,7 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  profileReads?: Partial<PlayerProfileRepository>;
   onLeagueAccessRead?: () => void;
   resumeLeagueDeletion?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
   deleteLeagueOverride?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
@@ -1020,6 +1022,12 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async getPlayerPerformance() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async getPlayerHistory() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async getPlayerAchievements() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async getPlayerUnlocks() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async listPlayerAccess() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      ...config.profileReads,
       async listOwnedJoinPlayers() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async joinOwnedPlayer() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
@@ -8450,4 +8458,43 @@ test("core lambda rejects invalid idempotency key header", async () => {
 
   assert.equal(response.statusCode, 400);
   assert.equal(harness.createdLeagues.length, 0);
+});
+
+test("profile Lambda routes share session binding, safe responses and independent exposure flags", async () => {
+  const saved = Object.fromEntries(["PLAYER_PROFILES_ENABLED", "PLAYER_ACHIEVEMENTS_ENABLED", "PLAYER_OWNER_EDITING_ENABLED"].map(key => [key, process.env[key]]));
+  const calls: unknown[] = [];
+  try {
+    process.env.PLAYER_PROFILES_ENABLED = "true";
+    process.env.PLAYER_ACHIEVEMENTS_ENABLED = "true";
+    process.env.PLAYER_OWNER_EDITING_ENABLED = "false";
+    const { handler } = createHarness({ sessions: { profile: { sessionId: "profile", subject: "verified-subject", email: "private@example.invalid",
+      createdAt: "2026-10-03T00:00:00.000Z", expiresAt: "2026-10-11T00:00:00.000Z" } }, profileReads: {
+      async getPlayerHistory(input) { calls.push(input); return { matches: [], cursor: null,
+        freshness: { status: "ready", coverage: "complete", revision: "r1", computedAt: "2026-10-03T00:00:00.000Z" } }; },
+    } });
+    const request = (path: string, query: string, signedIn = true) => handler({ ...createEvent({ method: "GET", path,
+      headers: { origin: "https://qa.3fc.football" }, cookies: signedIn ? ["threefc_session=profile"] : [] }), rawQueryString: query });
+    const query = "leagueId=league&playerId=opaque%2FPlayer%252F&viewerPlayerId=owned";
+    assert.equal((await request("/v1/player-history", query, false)).statusCode, 401);
+    assert.equal(calls.length, 0);
+    const result = await request("/v1/player-history", query);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.headers?.["cache-control"], "no-store");
+    assert.equal(result.headers?.["referrer-policy"], "no-referrer");
+    assert.deepEqual(calls, [{ leagueId: "league", playerId: "opaque/Player%2F", viewerPlayerId: "owned",
+      userId: "verified-subject", userIds: ["verified-subject", "private@example.invalid"], seasonId: undefined, cursor: undefined }]);
+    assert.doesNotMatch(result.body, /private@example|verified-subject/);
+    assert.equal((await request("/v1/player-history", query + "&userId=spoofed")).statusCode, 400);
+    assert.equal(calls.length, 1);
+    const catalogue = await request("/v1/achievement-catalogue", "");
+    assert.equal(catalogue.statusCode, 200); assert.equal(JSON.parse(catalogue.body).achievements.length, 23);
+    process.env.PLAYER_ACHIEVEMENTS_ENABLED = "false";
+    assert.equal((await request("/v1/achievement-catalogue", "")).statusCode, 404);
+    assert.equal((await request("/v1/player-history", query)).statusCode, 200);
+    process.env.PLAYER_PROFILES_ENABLED = "false";
+    assert.equal((await request("/v1/player-history", query)).statusCode, 404);
+    assert.equal(calls.length, 2);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
 });

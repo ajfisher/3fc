@@ -401,3 +401,28 @@ test('finished source writes retry transient league revision contention without 
   assert.equal((await repository.listGoalEvents('game')).length, 1);
   assertAtomic(client, 'goal-changed', 'goal');
 });
+
+test('new season creation atomically requests default-season reconciliation while exact retries stay quiet', async () => {
+  const { repository, client } = harness();
+  const input = { leagueId: 'league', seasonId: 'new-season', name: 'New season', startsOn: '2027-01-01' };
+  const created = await repository.createSeason(input);
+  assertAtomic(client, 'history-rebuild', 'season');
+  assert.equal(client.work().length, 1);
+  const revision = body(client.items.get(key({ pk: { S: 'LEAGUE#league' }, sk: { S: 'HISTORY_SOURCE' } }))!).revision;
+  assert.deepEqual(await repository.createSeason(input), created);
+  assert.equal(client.work().length, 1);
+  assert.equal(body(client.items.get(key({ pk: { S: 'LEAGUE#league' }, sk: { S: 'HISTORY_SOURCE' } }))!).revision, revision);
+  await assert.rejects(repository.createSeason({ ...input, name: 'Changed' }), /season list changed/);
+  assert.equal(client.work().length, 1);
+});
+
+test('season metadata cannot commit if its history obligation transaction fails', async () => {
+  const { repository, client } = harness(); client.failHistory = true;
+  await assert.rejects(repository.createSeason({ leagueId: 'league', seasonId: 'blocked', name: 'Blocked' }));
+  assert.equal(client.items.has(key({ pk: { S: 'LEAGUE#league' }, sk: { S: 'SEASON#blocked' } })), false);
+  assert.equal(client.items.has(key({ pk: { S: 'SEASON#blocked' }, sk: { S: 'METADATA' } })), false);
+  assert.equal(client.work().length, 0);
+  client.failHistory = false;
+  await repository.createSeason({ leagueId: 'league', seasonId: 'blocked', name: 'Blocked' });
+  assertAtomic(client, 'history-rebuild', 'season'); assert.equal(client.work().length, 1);
+});

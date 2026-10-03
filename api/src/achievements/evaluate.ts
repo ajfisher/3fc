@@ -18,6 +18,8 @@ export interface AchievementAccumulator {
   counts: Record<AchievementId, number>;
   uncertain: AchievementId[];
   runs: Record<StreakId, number>;
+  /** Absent on legacy checkpoints; only a full replay can recover missing first dates. */
+  first?: Partial<Record<AchievementId, AwardEvidence>>;
   highest: Partial<Record<AchievementId, AwardEvidence>>;
   latest: PlayerAppearance | null;
 }
@@ -27,7 +29,7 @@ export function emptyTotals(): PlayerTotals {
 }
 export function emptyAccumulator(): AchievementAccumulator {
   return { context: null, cursor: null, totals: emptyTotals(), counts: zeroCounts(), uncertain: [],
-    runs: { 'on-fire': 0, 'helping-hand': 0, 'unbeaten-run': 0 }, highest: {}, latest: null };
+    runs: { 'on-fire': 0, 'helping-hand': 0, 'unbeaten-run': 0 }, first: {}, highest: {}, latest: null };
 }
 type Scores = Record<TeamId, { scored: number; conceded: number }>;
 const emptyScores = (): Scores => ({ red: { scored: 0, conceded: 0 }, blue: { scored: 0, conceded: 0 }, yellow: { scored: 0, conceded: 0 } });
@@ -164,6 +166,7 @@ export function applyAppearance(previous: AchievementAccumulator, rawMatch: Matc
         ordinal, threshold: milestoneThreshold(def.rarity, ordinal), earnedAt: match.finishedAt, gameId: match.gameId,
         ruleVersion: ACHIEVEMENT_RULE_VERSION, sourceRevision: match.sourceRevision };
       unlocks.push(award); state.highest[def.id] = award;
+      if (ordinal === 1 && state.first !== undefined && !state.first[def.id]) state.first[def.id] = award;
     }
   }
   state.uncertain = [...uncertain].sort();

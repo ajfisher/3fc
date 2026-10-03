@@ -31,6 +31,9 @@ provider:
     PLAYER_CLAIM_MODE: ${env:PLAYER_CLAIM_MODE, 'proof'}
     PLAYER_CONSOLIDATION_ENABLED: ${env:PLAYER_CONSOLIDATION_ENABLED, 'false'}
     PLAYER_RETURNING_JOIN_ENABLED: ${env:PLAYER_RETURNING_JOIN_ENABLED, 'false'}
+    PLAYER_PROFILES_ENABLED: ${env:PLAYER_PROFILES_ENABLED, 'false'}
+    PLAYER_ACHIEVEMENTS_ENABLED: ${env:PLAYER_ACHIEVEMENTS_ENABLED, 'false'}
+    PLAYER_OWNER_EDITING_ENABLED: ${env:PLAYER_OWNER_EDITING_ENABLED, 'false'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS, '3'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS, '900'}
     MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS, '20'}
@@ -330,6 +333,42 @@ functions:
       - httpApi:
           method: POST
           path: /v1/player-proofs/preview
+      - httpApi:
+          method: GET
+          path: /v1/player-access
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-access
+      - httpApi:
+          method: GET
+          path: /v1/player-profile
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-profile
+      - httpApi:
+          method: GET
+          path: /v1/player-history
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-history
+      - httpApi:
+          method: GET
+          path: /v1/player-achievements
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-achievements
+      - httpApi:
+          method: GET
+          path: /v1/player-unlocks
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-unlocks
+      - httpApi:
+          method: GET
+          path: /v1/achievement-catalogue
+      - httpApi:
+          method: OPTIONS
+          path: /v1/achievement-catalogue
       - httpApi:
           method: GET
           path: /v1/player-consolidations

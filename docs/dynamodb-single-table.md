@@ -307,3 +307,11 @@ Implementation lives in:
 Tests live in:
 
 - `api/src/tests/repository.test.ts`
+
+### Profile default season
+
+`LEAGUE#<leagueId> / PROFILE_SEASON_DEFAULT` is a worker-owned complete latest-season
+projection, scoped to history source and readiness revisions. The bounded season phase
+selects metadata by startsOn (creation date fallback), creation timestamp and stable ID.
+Readers never infer a latest season from opaque key order or a truncated directory sample.
+See [ADR 0007](decisions/0007-player-profile-read-boundary.md).

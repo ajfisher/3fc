@@ -190,3 +190,26 @@ cases, then 379 history/scoring/import/deployment regressions (group 24373, exit
 peak 130688 KiB, no remaining children). API test compilation and diff check pass.
 Independent runtime/privacy review passed after strict receipt validation was shared
 with recovery. Processing remains disabled pending the final feature rollout.
+
+PR #208 final worker head `f12fdd4f4f1c9f53effa16e49a17bce23cd5d922`
+passed CI 37125666023, QA 37125666039 and current-head review-gate check
+111210365385. Independent reviews passed and all accepted review threads are
+resolved. The read/API child `codex/player-profile-reads` started after these gates.
+PR #208 remains unmerged for AJ; workers are deployed but not activated yet.
+
+Late PR #208 operational finding 4173337529 was fixed separately: pending-work
+inspection remains read-only before activation and during rollback; processing still
+requires enabled readiness. Corrected parent head
+`6ed733b051dfdf6989396b1b37d115eee2f7dedf` passed CI 37126803739, QA
+37126803757 and current-head review-gate 111213674622. All accepted threads are
+resolved. The child retains this correction in its ancestry.
+
+Slice 6: `codex/player-profile-reads`, based on PR #208. Adds verified participant
+and ACL read access, bounded private identity discovery, shared local/Lambda safe
+profile/history/achievement routes, complete default-season derivation and retained
+first-unlock metadata. Separate read/privacy, access, season/evaluator and deployment
+reviews pass after legacy date and incomplete-summary fixes. Four focused completeness
+cases and all31 read/store/route cases passed, followed by 525 affected regressions
+(group30386, exit0, peak189872KiB, no children). Full build and backlog
+validation/export passed (group31717, exit0, peak716400KiB, no children). OpenAPI YAML
+parses successfully. Current-head remote gates follow before owner-editing work.

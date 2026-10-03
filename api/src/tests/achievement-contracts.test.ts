@@ -112,7 +112,7 @@ test('unavailable projection contracts carry no fabricated totals, progress or p
     capabilities: { editProfile: false, achievements: false }
   };
   const achievements: PlayerAchievements = { playerId: 'player', leagueId: 'league',
-    scope: 'career', seasonId: null, progress: null, honours: null, latestUnlocks: null, freshness };
+    scope: 'career', seasonId: null, progress: null, honours: null, firstUnlocks: null, latestUnlocks: null, freshness };
   const history: PlayerHistoryPage = { matches: null, cursor: null, freshness };
   const unlocks: PlayerUnlockPage = { unlocks: null, cursor: null, freshness };
   assert.equal(profile.career, null);
@@ -129,6 +129,6 @@ test('unavailable projection contracts carry no fabricated totals, progress or p
 // @ts-expect-error A season unlock must identify its season.
 const missingSeason: AchievementUnlock = { ...unlock('goal'), scope: 'season', seasonId: null };
 // @ts-expect-error Career progress cannot be attached to one season.
-const careerSeason: PlayerAchievements = { playerId: 'p', leagueId: 'l', scope: 'career', seasonId: 'winter', progress: null, honours: null, latestUnlocks: null, freshness: { status: 'unavailable', coverage: 'unknown', revision: null, computedAt: null } };
+const careerSeason: PlayerAchievements = { playerId: 'p', leagueId: 'l', scope: 'career', seasonId: 'winter', progress: null, honours: null, firstUnlocks: null, latestUnlocks: null, freshness: { status: 'unavailable', coverage: 'unknown', revision: null, computedAt: null } };
 void missingSeason;
 void careerSeason;
