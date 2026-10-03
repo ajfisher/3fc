@@ -38,15 +38,16 @@ snapshot; a future cutover must export again under its approved freeze.
 | Directory and account reuse | All 49 canonical players enumerated through real directory pagination; returning-player discovery traversed both claim-key namespaces for both claimed roots | PASS |
 | No accidental shared-table write path | CLI has no production apply/target option; absence-conditioned writes use a new disposable name; unit tests reject shared targets and repository mutation attempts | PASS |
 | Cleanup and production unchanged | Successful table deletion followed by confirmed ResourceNotFound; production full inventory hashes matched before/after | PASS |
-| Host resource safety | One owned process group; 4 GiB limit; successful rehearsal peak 162,448 KiB; actual exit 0 and no remaining children | PASS |
+| Host resource safety | One owned process group; 4 GiB limit; successful rehearsal peak 169,856 KiB; actual exit 0 and no remaining children | PASS |
 | Failure cleanup | Two early acceptance-harness failures both deleted their owned tables and verified production unchanged before further work | PASS |
-| Focused regressions | `node --test --test-concurrency=1 scripts/tests/season-import.test.mjs`: 14 passed | PASS |
-| Related tooling suite | `node --test --test-concurrency=1 scripts/tests/*.test.mjs`: 28 passed | PASS |
+| Focused regressions | `node --test --test-concurrency=1 scripts/tests/season-import.test.mjs`: 15 passed | PASS |
+| Related tooling suite | `node --test --test-concurrency=1 scripts/tests/*.test.mjs`: 29 passed | PASS |
 | Review tooling | `npm run test:review-gate`: 57 passed; policy validation passed | PASS |
 | API acceptance build | `node node_modules/typescript/bin/tsc --build api/tsconfig.json --force`: exit 0; peak 450,592 KiB; no remaining children | PASS |
 
-The successful temporary resource was
-`3fc-import-rehearsal-7b9ad297-528c-469c-8f1c-68e7ed326b00`; it is deleted.
+The final post-review rehearsal reproduced the same plan digest and passed all
+repository checks with the stricter reverse-membership guard. Its temporary resource was
+`3fc-import-rehearsal-a1db353f-fedf-45b4-b630-6e01daf3b5cf`; it is deleted.
 Private mode 0600 files retain the plan, output report and ownership evidence
 outside the repository. Source records, emails, account subjects and bearer
 codes are not committed.
@@ -66,6 +67,14 @@ codes are not committed.
   process exit and confirmed table cleanup. Targeted tests then the complete
   focused file passed before each new disposable rehearsal. The final run passed
   all checks, including both claim namespaces.
+- Advisory review found that the initial cross-scope guard checked only game
+  memberships. It now checks league and season reverse memberships and league
+  creation provenance as well, including aliases and roots. A focused regression
+  demonstrates foreign references blocking even without a foreign game index.
+- Advisory review also corrected the architecture declaration: INV-009 concerns
+  cookies, secure flags, CSP and headers and is unaffected by this operator tool.
+  Authentication-record exclusion is documented as a separate scope/privacy
+  safeguard rather than evidence for that invariant.
 - No findings were rejected. The existing runtime API was not changed to make
   the rehearsal pass.
 

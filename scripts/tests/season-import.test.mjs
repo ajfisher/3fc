@@ -99,6 +99,22 @@ test("scheduled games can be retained only without played state", () => {
   assert.throws(() => buildPlan(clean, scope, options), /scheduled_game_has_played_state/);
 });
 
+test("foreign league, season and creation associations block even without a foreign game index", () => {
+  for (const [type, d] of [
+    ["playerLeagueMembership", { playerId: "alias", leagueId: "other" }],
+    ["playerSeasonMembership", { playerId: "root", leagueId: "league", seasonId: "other" }],
+    ["playerSeasonMembership", { playerId: "alias", leagueId: "other", seasonId: "winter" }],
+    ["leaguePlayerCreation", { playerId: "root", leagueId: "other" }],
+  ]) {
+    const rows = fixture(); rows.push(envelope(`PLAYER#${d.playerId}`, `FOREIGN#${type}`, type, d, at));
+    assert.throws(() => buildPlan(rows, scope, options), /external_player_membership/);
+  }
+  const rows = fixture();
+  rows.push(envelope("PLAYER#root", projection("LEAGUE", "league"), "playerLeagueMembership", { playerId: "root", leagueId: "league" }, at));
+  rows.push(envelope("PLAYER#alias", projection("SEASON", "league", "winter"), "playerSeasonMembership", { playerId: "alias", leagueId: "league", seasonId: "winter" }, at));
+  assert.equal(buildPlan(rows, scope, options).summary.canonicalPlayers, 1);
+});
+
 test("legacy sessions get missing scoped rows and mirrors only with verified season ownership", () => {
   const source = fixture().filter(i => i.entityType.S !== "session");
   source.push(envelope("SEASON#winter", "SESSION#day", "session", { seasonId: "winter", sessionId: "day", sessionDate: "2026-09-20" }, at));

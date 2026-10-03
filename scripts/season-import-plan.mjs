@@ -155,7 +155,12 @@ export function buildPlan(source, scope, options = {}) {
     copy(`PLAYER#${id}`, "PROFILE", "player"); copy(`PLAYER#${id}`, "IDENTITY", "playerIdentity");
   }
   // A player shared with unselected scope needs a separate reviewed plan.
-  need(!rows.some(r => r.type === "playerGameMembership" && ids.has(r.d.playerId) && !gameIds.has(r.d.gameId) && !excludedGameIds.includes(r.d.gameId)), "external_player_membership");
+  for (const r of rows.filter(r => ids.has(r.d.playerId))) {
+    if (r.type === "playerGameMembership") need(r.d.leagueId === leagueId && r.d.seasonId === seasonId &&
+      (gameIds.has(r.d.gameId) || excludedGameIds.includes(r.d.gameId)), "external_player_membership");
+    if (r.type === "playerSeasonMembership") need(r.d.leagueId === leagueId && r.d.seasonId === seasonId, "external_player_membership");
+    if (r.type === "playerLeagueMembership" || r.type === "leaguePlayerCreation") need(r.d.leagueId === leagueId, "external_player_membership");
+  }
   const registrationPairs = new Map();
   for (const r of selected.filter(r => ["gamePlayer", "roster"].includes(r.type))) registrationPairs.set(JSON.stringify([r.d.playerId, r.d.gameId]), r.d);
   const seasonPlayers = new Set();

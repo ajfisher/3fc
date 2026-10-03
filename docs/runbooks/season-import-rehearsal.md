@@ -78,8 +78,9 @@ this temporary control activation is not that protocol.
 These operations cross a durable-state ownership boundary and are high risk as
 tooling despite their restricted target. Relevant invariants are INV-001 (private
 data), INV-002 (exact admin scope), INV-004 (complete IDs and index relationships),
-INV-005/006/008 (goals, results, assists) and INV-009 (authentication state stays
-environment-local). No production runtime, public API, IAM policy, infrastructure
+INV-005/006/008 (goals, results, assists). Authentication-record exclusion is a
+separate privacy and migration-scope safeguard, not an INV-009 cookie/header
+claim. Canonical INV-009 is unaffected. No production runtime, public API, IAM policy, infrastructure
 definition or dependency is changed.
 
 ## Private configuration and planning
