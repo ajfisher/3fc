@@ -80,10 +80,14 @@ AWS_PROFILE=3fc-agent node scripts/deploy/verify-player-history.mjs qa <reviewed
 
 ## Delivery, recovery and activation
 
-The stream dispatcher admits work inserts and job inserts/updates. The runtime
-validates each job's scheduling state and sends only versioned league/key references
-to SQS. Never forward or log a raw stream image. The dispatcher uses stream sequence
-numbers for partial failures; the queue worker uses SQS message IDs.
+The stream dispatcher admits three event classes: work inserts, job inserts/updates,
+and league directory revision inserts/updates. Directory events must have partition
+key `LEAGUE#*`, sort key `PLAYER_DIRECTORY` and type `playerDirectoryRevision`.
+They schedule reconciliation when the eligible player directory changes, including
+players added after an earlier sweep completed. The runtime validates scope and each
+job's scheduling state, and sends only versioned league/key references to SQS. Never
+forward or log a raw stream image. The dispatcher uses stream sequence numbers for
+partial failures; the queue worker uses SQS message IDs.
 
 The work queue retains messages for four days, with six-minute visibility for a
 60-second worker and redrive after five receives. Both failure queues retain

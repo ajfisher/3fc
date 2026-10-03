@@ -8,7 +8,9 @@ export const historyQueueReferenceSchema = z.discriminatedUnion('kind', [
   z.object({ version: z.literal(1), kind: z.literal('work'), leagueId,
     key: z.string().regex(/^HISTORY_WORK#[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) }).strict(),
   z.object({ version: z.literal(1), kind: z.literal('player'), leagueId,
-    key: z.string().regex(/^HISTORY_JOB#[0-9a-f]{64}$/) }).strict()
+    key: z.string().regex(/^HISTORY_JOB#[0-9a-f]{64}$/) }).strict(),
+  z.object({ version: z.literal(1), kind: z.literal('directory'), leagueId,
+    key: z.literal('PLAYER_DIRECTORY') }).strict()
 ]);
 export type HistoryQueueReference = z.infer<typeof historyQueueReferenceSchema>;
 export interface HistoryBatchResult { batchItemFailures: Array<{ itemIdentifier: string }> }
@@ -42,6 +44,8 @@ const imageSchema = z.object({ pk: stringAttribute, sk: stringAttribute,
   entityType: stringAttribute, data: stringAttribute }).passthrough();
 const jobSchema = z.object({ version: z.literal(1), leagueId, playerId: identifier,
   status: z.enum(['pending', 'done', 'failed']) }).passthrough();
+// identityPut stores timestamps as top-level DynamoDB attributes, not in data.
+const directoryRevisionSchema = z.object({ revision: z.string().uuid() }).strict();
 const streamRecordSchema = z.object({ eventSource: z.literal('aws:dynamodb'),
   eventName: z.enum(['INSERT', 'MODIFY', 'REMOVE']), dynamodb: z.object({
     SequenceNumber: z.string().regex(/^\d+$/), Keys: keysSchema,
@@ -67,8 +71,9 @@ function streamReference(value: unknown): HistoryQueueReference | null {
   const image = imageSchema.parse(record.dynamodb.NewImage), keys = record.dynamodb.Keys;
   if (keys.pk.S !== image.pk.S || keys.sk.S !== image.sk.S) throw new Error('history_stream_key_mismatch');
   const work = image.entityType.S === 'playerHistoryWork', job = image.entityType.S === 'playerHistoryJob';
-  if (!work && !job) {
-    if (/^HISTORY_(WORK|JOB)#/.test(keys.sk.S)) throw new Error('history_stream_entity_mismatch');
+  const directory = image.entityType.S === 'playerDirectoryRevision';
+  if (!work && !job && !directory) {
+    if (/^HISTORY_(WORK|JOB)#/.test(keys.sk.S) || keys.sk.S === 'PLAYER_DIRECTORY') throw new Error('history_stream_entity_mismatch');
     return null;
   }
   if (work && record.eventName !== 'INSERT') return null;
@@ -77,10 +82,14 @@ function streamReference(value: unknown): HistoryQueueReference | null {
   if (work) {
     const data = historyWorkSchema.parse(parsed);
     reference = { version: 1, kind: 'work', leagueId: data.leagueId, key: `HISTORY_WORK#${data.revision}` };
-  } else {
+  } else if (job) {
     const data = jobSchema.parse(parsed);
     reference = { version: 1, kind: 'player', leagueId: data.leagueId, key: `HISTORY_JOB#${historyHash(data.playerId)}` };
     pending = data.status === 'pending';
+  } else {
+    directoryRevisionSchema.parse(parsed);
+    if (!keys.pk.S.startsWith('LEAGUE#')) throw new Error('history_stream_scope_mismatch');
+    reference = { version: 1, kind: 'directory', leagueId: keys.pk.S.slice('LEAGUE#'.length), key: 'PLAYER_DIRECTORY' };
   }
   if (keys.pk.S !== `LEAGUE#${reference.leagueId}` || keys.sk.S !== reference.key) throw new Error('history_stream_scope_mismatch');
   const safeReference = historyQueueReferenceSchema.parse(reference);

@@ -10,6 +10,10 @@ const nonempty = value => typeof value === 'string' && value.length > 0;
 export const historyFilters = [
   { eventName: ['INSERT'], dynamodb: { NewImage: { entityType: { S: ['playerHistoryWork'] } } } },
   { eventName: ['INSERT', 'MODIFY'], dynamodb: { NewImage: { entityType: { S: ['playerHistoryJob'] } } } },
+  { eventName: ['INSERT', 'MODIFY'], dynamodb: {
+    Keys: { pk: { S: [{ prefix: 'LEAGUE#' }] }, sk: { S: ['PLAYER_DIRECTORY'] } },
+    NewImage: { entityType: { S: ['playerDirectoryRevision'] } }
+  } },
 ];
 
 export function verifyHistorySnapshot(intent, snapshot) {

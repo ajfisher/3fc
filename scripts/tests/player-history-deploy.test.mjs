@@ -101,6 +101,11 @@ test('mapping drift, duplicate consumers, queue policy changes and missing evide
     live => { live.mappings.dispatch[0].UUID = 'replacement'; },
     live => { live.mappings.worker.push(structuredClone(live.mappings.worker[0])); },
     live => { live.mappings.dispatch[0].FilterCriteria.Filters.pop(); },
+    live => {
+      const filter = JSON.parse(live.mappings.dispatch[0].FilterCriteria.Filters[2].Pattern);
+      delete filter.dynamodb.Keys;
+      live.mappings.dispatch[0].FilterCriteria.Filters[2].Pattern = JSON.stringify(filter);
+    },
     live => { live.mappings.worker[0].FilterCriteria = { Filters: [{ Pattern: '{}' }] }; },
     live => { live.mappings.dispatch[0].DestinationConfig.OnFailure.Destination = manifest.deadQueueArn; },
     live => { live.mappings.worker[0].FunctionResponseTypes = []; },
@@ -163,6 +168,13 @@ test('history deployment stays in serialized jobs and requires separately provis
   assert.match(service, /BatchSize: 1\n        MaximumBatchingWindowInSeconds: 0/);
   assert.equal((service.match(/ReportBatchItemFailures/g) ?? []).length, 2);
   assert.doesNotMatch(service, /httpApi:/);
+  const patterns = [...service.matchAll(/- Pattern: '([^']+)'/g)].map(match => JSON.parse(match[1]));
+  assert.deepEqual(patterns, historyFilters);
+  assert.equal(patterns.length, 3);
+  assert.deepEqual(patterns[2], { eventName: ['INSERT', 'MODIFY'], dynamodb: {
+    Keys: { pk: { S: [{ prefix: 'LEAGUE#' }] }, sk: { S: ['PLAYER_DIRECTORY'] } },
+    NewImage: { entityType: { S: ['playerDirectoryRevision'] } }
+  } });
   const infrastructure = read('infra/application/player-history.tf');
   assert.doesNotMatch(infrastructure, /dynamodb:Scan|ses:|s3:/);
   assert.match(infrastructure, /visibility_timeout_seconds = 360/);

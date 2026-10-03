@@ -77,6 +77,7 @@ class MemoryClient {
   }
 }
 const writes = (actions: TransactWriteItem[], type: string) => actions.some(action => action.Put?.Item?.entityType?.S === type);
+const directoryRef: HistoryQueueReference = { version: 1, kind: 'directory', leagueId: 'league', key: 'PLAYER_DIRECTORY' };
 function addPlayer(client: MemoryClient, playerId: string, active = true) {
   client.seed(`PLAYER#${playerId}`, 'IDENTITY', 'playerIdentity', { playerId, rootId: playerId, members: [playerId],
     writeVersion: `identity-${playerId}`, identityVersion: 1, displayName: playerId, formerNames: [] });
@@ -104,6 +105,125 @@ function loseOnce(client: MemoryClient, type: string) {
     client.loseAck = null; return true;
   };
 }
+
+test('directory activation after completed backfill publishes a new zero-appearance player without another game', async () => {
+  const { client, coordinator, store, ref } = await fixture();
+  await drain(coordinator, directoryRef); await drain(coordinator, ref);
+  assert.equal((await coordinator.status('league'))?.phase, 'complete');
+  const before = sourceRevision(client);
+  addPlayer(client, 'new-player');
+  client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'directory-2' });
+  assert.equal(await store.getPublication('league', 'new-player'), null);
+  await drain(coordinator, directoryRef);
+  assert.notEqual(sourceRevision(client), before);
+  const publication = await store.getPublication('league', 'new-player');
+  assert(publicationCurrent(publication, sourceRevision(client), body(client.read('PLAYER_HISTORY', 'CONTROL')!).revision));
+  assert.equal((await store.getSummary('league', 'new-player', { scope: 'career', seasonId: null }))?.state.totals.played, 0);
+  assert.equal((await coordinator.status('league'))?.checked, 2);
+  assert.deepEqual((await coordinator.pendingPage('league', 'work')).refs, []);
+});
+
+test('first directory activation initializes an empty league history source and reaches a complete zero total', async () => {
+  const { client, coordinator, store, ref } = await fixture();
+  client.remove('LEAGUE#league', 'HISTORY_SOURCE'); client.remove('LEAGUE#league', ref.key);
+  assert.deepEqual(await coordinator.pendingPage('league', 'work'), { refs: [directoryRef], cursor: null });
+  await drain(coordinator, directoryRef);
+  const receipt = body(client.read('LEAGUE#league', 'HISTORY_DIRECTORY')!);
+  const work = body(client.read('LEAGUE#league', receipt.workKey)!);
+  assert.equal(work.revision, sourceRevision(client));
+  assert.equal((await store.getSummary('league', 'player', { scope: 'career', seasonId: null }))?.state.totals.played, 0);
+  assert.equal((await coordinator.status('league'))?.phase, 'complete');
+});
+
+test('duplicate directory delivery and a lost bridge acknowledgement allocate only one durable work marker', async () => {
+  const { client, coordinator, store } = await fixture();
+  const markers = () => [...client.items.values()].filter(item => item.entityType.S === 'playerHistoryWork').length;
+  const before = markers();
+  loseOnce(client, 'playerHistoryDirectoryReceipt');
+  await assert.rejects(coordinator.process(directoryRef), /lost acknowledgement/);
+  const committed = body(client.read('LEAGUE#league', 'HISTORY_DIRECTORY')!), revision = sourceRevision(client);
+  assert.equal(markers(), before + 1);
+  await Promise.all([coordinator.process(directoryRef), coordinator.process(directoryRef)]);
+  await drain(coordinator, directoryRef);
+  assert.equal(sourceRevision(client), revision); assert.equal(markers(), before + 1);
+  assert.deepEqual(body(client.read('LEAGUE#league', 'HISTORY_DIRECTORY')!), committed);
+  assert(await store.getPublication('league', 'player'));
+  const audits = [...client.items.values()].filter(item => item.entityType.S === 'playerHistoryPublicationAudit').length;
+  assert.deepEqual(await coordinator.process(directoryRef), { done: true });
+  assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryPublicationAudit').length, audits);
+});
+
+test('a directory revision raced at bridge commit cannot leave a stale receipt or partial work marker', async () => {
+  const { client, coordinator, store } = await fixture();
+  const previousSource = sourceRevision(client);
+  const previousMarkers = [...client.items.values()].filter(item => item.entityType.S === 'playerHistoryWork').length;
+  client.beforeCommit = actions => {
+    if (!writes(actions, 'playerHistoryDirectoryReceipt')) return;
+    client.beforeCommit = null; addPlayer(client, 'raced-player');
+    client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'directory-raced' });
+  };
+  assert.deepEqual(await coordinator.process(directoryRef), { done: false });
+  assert.equal(client.read('LEAGUE#league', 'HISTORY_DIRECTORY'), undefined);
+  assert.equal(sourceRevision(client), previousSource);
+  assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryWork').length, previousMarkers);
+  await drain(coordinator, directoryRef);
+  assert.equal(body(client.read('LEAGUE#league', 'HISTORY_DIRECTORY')!).directoryData,
+    client.read('LEAGUE#league', 'PLAYER_DIRECTORY')!.data.S);
+  assert(await store.getPublication('league', 'raced-player'));
+});
+
+test('keyed recovery discovers an unprocessed directory revision after its stream event has expired', async () => {
+  const { client, coordinator, store, ref } = await fixture();
+  await drain(coordinator, directoryRef); await drain(coordinator, ref);
+  addPlayer(client, 'missed-stream-player');
+  client.seed('LEAGUE#league', 'PLAYER_DIRECTORY', 'playerDirectoryRevision', { revision: 'directory-missed-stream' });
+  const revision = sourceRevision(client), queriesBefore = client.queries.length;
+  // No stream/SQS delivery and no new game or explicit operator rebuild exist.
+  const page = await coordinator.pendingPage('league', 'work');
+  assert.deepEqual(page, { refs: [directoryRef], cursor: null });
+  assert.equal(sourceRevision(client), revision, 'discovery remains read-only');
+  assert(client.queries.slice(queriesBefore).every(query => query.Limit! <= 20 && query.ExpressionAttributeValues![':pk'].S === 'LEAGUE#league'));
+  await drain(coordinator, page.refs[0]);
+  assert(await store.getPublication('league', 'missed-stream-player'));
+  assert.deepEqual((await coordinator.pendingPage('league', 'work')).refs, []);
+});
+
+test('directory bridge obeys readiness and league tombstones without creating unauthorized work', async () => {
+  const { client, coordinator } = await fixture();
+  const previous = sourceRevision(client);
+  const disabled = disableHistoryReadiness('table', 'migration', at).Put!.Item!;
+  client.items.set(key(disabled), disabled);
+  await assert.rejects(coordinator.process(directoryRef), /not been activated/);
+  assert.equal(sourceRevision(client), previous); assert.equal(client.read('LEAGUE#league', 'HISTORY_DIRECTORY'), undefined);
+  client.seed('PLAYER_IDENTITY_TOMBSTONE', identityTombstoneSk('league', ['league']), 'playerIdentityTombstone',
+    { kind: 'league', ids: ['league'] });
+  assert.deepEqual(await coordinator.process(directoryRef), { done: true });
+  assert.equal(sourceRevision(client), previous); assert.equal(client.read('LEAGUE#league', 'HISTORY_DIRECTORY'), undefined);
+});
+
+test('concurrent initial directory bridges commit only one receipt and work marker', async () => {
+  const { client, coordinator } = await fixture();
+  const before = [...client.items.values()].filter(item => item.entityType.S === 'playerHistoryWork').length;
+  const results = await Promise.all([coordinator.process(directoryRef), coordinator.process(directoryRef)]);
+  assert(results.every(result => !result.done));
+  assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryWork').length, before + 1);
+  const receipt = body(client.read('LEAGUE#league', 'HISTORY_DIRECTORY')!);
+  assert.equal(body(client.read('LEAGUE#league', receipt.workKey)!).revision, sourceRevision(client));
+  await drain(coordinator, directoryRef);
+});
+
+test('malformed directory receipts cannot suppress keyed recovery of their durable obligation', async () => {
+  for (const damage of ['workKey', 'leagueId', 'version']) {
+    const { client, coordinator } = await fixture(); await drain(coordinator, directoryRef);
+    const receipt = client.read('LEAGUE#league', 'HISTORY_DIRECTORY')!, data = body(receipt);
+    if (damage === 'workKey') delete data.workKey;
+    else if (damage === 'leagueId') data.leagueId = 'another-league';
+    else data.version = 99;
+    receipt.data = { S: JSON.stringify(data) };
+    await assert.rejects(coordinator.pendingPage('league', 'work'));
+    await assert.rejects(coordinator.process(directoryRef));
+  }
+});
 
 test('activation requires verified identity coverage; a source token alone cannot assert history readiness', async () => {
   const client = new MemoryClient();
@@ -162,7 +282,8 @@ test('old work markers coalesce to the latest source revision without duplicate 
   assert.equal((await store.getPublication('league', 'player'))?.sourceRevision, current);
   assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryPublicationAudit').length, 1);
   assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryAcknowledgement').length, 2);
-  assert.equal((await coordinator.pendingPage('league', 'work')).refs.length, 0);
+  assert.deepEqual((await coordinator.pendingPage('league', 'work')).refs, [directoryRef],
+    'ordinary completed markers do not acknowledge the still-unbridged directory revision');
 });
 
 test('duplicate worker delivery and lost generation/publication acknowledgements resume durable checkpoints', async () => {
@@ -283,8 +404,9 @@ test('recovery lists bounded keyed pages and keeps continuations until every mar
   const first = await coordinator.pendingPage('league', 'work');
   assert.equal(first.refs.length, 20); assert(first.cursor);
   const second = await coordinator.pendingPage('league', 'work', first.cursor);
-  assert.equal(second.refs.length, 4); assert.equal(second.cursor, null);
-  assert.equal(new Set([...first.refs, ...second.refs].map(ref => ref.key)).size, 24);
+  assert.equal(second.refs.length, 5); assert.equal(second.cursor, null);
+  assert.deepEqual(first.refs[0], directoryRef);
+  assert.equal(new Set([...first.refs, ...second.refs].map(ref => ref.key)).size, 25);
   await assert.rejects(coordinator.pendingPage('league', 'work', 'HISTORY_JOB#invalid'), /continuation/);
   assert(client.queries.every(query => query.ExpressionAttributeValues![':pk'].S === 'LEAGUE#league'));
 });

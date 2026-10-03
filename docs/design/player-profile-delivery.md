@@ -176,3 +176,17 @@ one policy update, no additions/deletions (group 23095, exit 0, no children); AW
 simulation confirmed all 54 allow/deny cases (group 23146, exit 0, no children).
 Private raw staging/transaction metadata is explicitly distinguished from safe
 performance projections in the ownership documentation. Fresh final-head gates follow.
+
+Cloud finding 4173265572 was accepted: directory revisions now trigger durable
+reconciliation, covering newly activated players with zero appearances after the
+initial backfill. The worker coalesces current revisions into an atomic receipt
+and ordinary work marker. Recovery discovers an unprocessed directory revision
+without depending on stream retention; duplicate delivery and lost acknowledgements
+reuse the committed work. The local operator can step the same directory reference.
+Final validation and current-head checks follow this correction.
+
+Directory correction validation passed: 13 focused cases, all 55 directly affected
+cases, then 379 history/scoring/import/deployment regressions (group 24373, exit 0,
+peak 130688 KiB, no remaining children). API test compilation and diff check pass.
+Independent runtime/privacy review passed after strict receipt validation was shared
+with recovery. Processing remains disabled pending the final feature rollout.

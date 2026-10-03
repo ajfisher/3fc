@@ -5,9 +5,10 @@ const cloud = ['--manifest', 'history.json', '--deployment-manifest', 'deploymen
 test('history operator requires explicit context and bounded resumable steps', () => {
   assert.equal(historyArguments(['activate', ...cloud, '--apply', 'reviewed-history']).command, 'activate');
   assert.equal(historyArguments(['step', ...cloud, '--league', 'opaque/league', '--key', 'HISTORY_WORK#id', '--pages', '100', '--apply', 'reviewed-history']).pages, 100);
+  assert.equal(historyArguments(['step', ...cloud, '--league', 'league', '--key', 'PLAYER_DIRECTORY', '--kind', 'directory', '--apply', 'reviewed-history']).options['--kind'], 'directory');
   assert.equal(historyArguments(['status', '--manifest', 'local.json', '--local-table', '3fc-local', '--league', 'league']).local, true);
   for (const args of [[], ['status'], ['activate', ...cloud], ['step', ...cloud, '--league', 'league', '--apply', 'reviewed-history'],
-    ['status', ...cloud, '--league', 'league', '--local-table', 'local'], ['status', ...cloud, '--league', 'league', '--kind', 'other'],
+    ['status', ...cloud, '--league', 'league', '--local-table', 'local'], ['recover', ...cloud, '--league', 'league', '--kind', 'directory', '--apply', 'reviewed-history'], ['status', ...cloud, '--league', 'league', '--kind', 'other'],
     ['dry-run', ...cloud, '--league', 'league', '--apply', 'reviewed-history'],
     ['step', ...cloud, '--league', 'league', '--key', 'key', '--pages', '101', '--apply', 'reviewed-history']]) assert.throws(() => historyArguments(args));
 });

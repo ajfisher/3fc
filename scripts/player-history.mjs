@@ -29,7 +29,8 @@ export function historyArguments(args) {
     throw new Error('Only step/dry-run accept --pages from 1 to 100.');
   if (command !== 'status' && options['--apply'] !== 'reviewed-history') throw new Error('Mutations require --apply reviewed-history.');
   if (command === 'step' && !options['--key']) throw new Error('--key is required.');
-  if (options['--kind'] && !['work', 'player'].includes(options['--kind'])) throw new Error('Choose work or player.');
+  if (options['--kind'] && !(command === 'step' ? ['work', 'player', 'directory'] : ['work', 'player']).includes(options['--kind']))
+    throw new Error('Choose work or player; step also accepts directory.');
   if (command === 'dry-run' && !options['--comparison'] && !options['--player']) throw new Error('Dry-run needs --player or --comparison.');
   return { command, options, pages, local };
 }

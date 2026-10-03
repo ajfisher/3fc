@@ -9,9 +9,12 @@
 Terraform owns DynamoDB Streams, encrypted SQS queues, dead-letter queues,
 dedicated least-privilege roles and operational alarms. Serverless owns the two
 Lambda functions and disabled-by-default event mappings. The dispatcher accepts
-only work/job stream records and sends validated identifiers, never stored player
-facts, account information or checkpoints. The SQS worker re-reads authority from
-the table. HTTP scoring never waits for derivation.
+three stream event classes: work inserts, job inserts/updates, and league directory
+revision inserts/updates. The directory filter requires `LEAGUE#*` / `PLAYER_DIRECTORY`
+keys and the `playerDirectoryRevision` entity type. It schedules reconciliation when
+eligible players change after a prior sweep. The dispatcher sends validated
+identifiers, never stored player facts, account information or checkpoints. The SQS
+worker re-reads authority from the table. HTTP scoring never waits for derivation.
 
 A league sweep enumerates the complete active canonical directory in bounded
 pages and creates durable player jobs. A second verification pass proves every

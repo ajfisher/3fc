@@ -195,3 +195,73 @@ test('a batch of bounded checkpoints still emits one continuation and retries it
   assert.deepEqual(await handler({ Records: [sqs(work, 'original-message')] }), { batchItemFailures: [{ itemIdentifier: 'original-message' }] });
   assert.equal(steps, 8); assert.equal(sends, 1);
 });
+
+const directory: HistoryQueueReference = { version: 1, kind: 'directory', leagueId: 'league', key: 'PLAYER_DIRECTORY' };
+function directoryStream(sequence = '456') {
+  const record = stream('work', sequence);
+  record.dynamodb.Keys.sk.S = 'PLAYER_DIRECTORY'; record.dynamodb.NewImage.sk.S = 'PLAYER_DIRECTORY';
+  record.dynamodb.NewImage.entityType.S = 'playerDirectoryRevision';
+  record.dynamodb.NewImage.data.S = JSON.stringify({ revision });
+  return { ...record, dynamodb: { ...record.dynamodb, NewImage: { ...record.dynamodb.NewImage,
+    createdAt: { S: '2026-10-03T00:00:00Z' }, updatedAt: { S: '2026-10-03T00:01:00Z' } } } };
+}
+
+test('directory inserts and modifications queue only their league/key reference, preserving opaque league IDs', async () => {
+  const sent: Array<[HistoryQueueReference, number | undefined]> = [];
+  const handler = createHistoryDispatcher({ enabled: () => true, send: async (reference, delay) => { sent.push([reference, delay]); } });
+  const modified = directoryStream('457'); modified.eventName = 'MODIFY';
+  replaceData(modified, { revision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' });
+  const opaque = directoryStream('458');
+  opaque.dynamodb.Keys.pk.S = 'LEAGUE#league/opaque#é'; opaque.dynamodb.NewImage.pk.S = 'LEAGUE#league/opaque#é';
+  const removed = directoryStream('459'); removed.eventName = 'REMOVE';
+  assert.deepEqual(await handler({ Records: [directoryStream(), modified, opaque, removed] }), { batchItemFailures: [] });
+  assert.deepEqual(sent, [[directory, 0], [directory, 0], [{ ...directory, leagueId: 'league/opaque#é' }, 0]]);
+  assert.equal(JSON.stringify(sent).includes(revision), false, 'workers reread the current directory rather than trusting an event revision');
+});
+
+test('directory stream records reject malformed revisions and forged namespace, key, image or entity', async () => {
+  const malformed = [
+    replaceData(directoryStream(), { revision: '' }), replaceData(directoryStream(), { revision: 'not-a-uuid' }),
+    replaceData(directoryStream(), { revision: null }), replaceData(directoryStream(), { email: 'private@example.test' }),
+    replaceData(directoryStream(), { leagueId: 'untrusted' })
+  ];
+  const missingRevision = directoryStream(); missingRevision.dynamodb.NewImage.data.S = '{}'; malformed.push(missingRevision);
+  const wrongPartition = directoryStream(); wrongPartition.dynamodb.Keys.pk.S = 'PLAYER#league';
+  wrongPartition.dynamodb.NewImage.pk.S = 'PLAYER#league'; malformed.push(wrongPartition);
+  const emptyLeague = directoryStream(); emptyLeague.dynamodb.Keys.pk.S = 'LEAGUE#';
+  emptyLeague.dynamodb.NewImage.pk.S = 'LEAGUE#'; malformed.push(emptyLeague);
+  const oversized = directoryStream(); oversized.dynamodb.Keys.pk.S = `LEAGUE#${'x'.repeat(2048)}`;
+  oversized.dynamodb.NewImage.pk.S = oversized.dynamodb.Keys.pk.S; malformed.push(oversized);
+  const wrongKey = directoryStream(); wrongKey.dynamodb.Keys.sk.S = 'OTHER'; wrongKey.dynamodb.NewImage.sk.S = 'OTHER'; malformed.push(wrongKey);
+  const mismatchedImage = directoryStream(); mismatchedImage.dynamodb.NewImage.pk.S = 'LEAGUE#other'; malformed.push(mismatchedImage);
+  const wrongType = directoryStream(); wrongType.dynamodb.NewImage.entityType.S = 'leaguePlayer'; malformed.push(wrongType);
+  const handler = createHistoryDispatcher({ enabled: () => true, send: async () => { assert.fail('malformed directory enqueued'); } });
+  for (const record of malformed) assert.deepEqual(await handler({ Records: [record] }), { batchItemFailures: [{ itemIdentifier: '456' }] });
+});
+
+test('directory references remain strict through worker continuations, send failures and disabled processing', async () => {
+  const processed: HistoryQueueReference[] = [], sent: HistoryQueueReference[] = [];
+  const dependencies = { enabled: () => true, process: async (reference: HistoryQueueReference) => {
+    processed.push(reference); return { done: false };
+  }, send: async (reference: HistoryQueueReference, delay?: number) => {
+    assert.equal(delay, 1); sent.push(reference); throw new Error('send failed');
+  } };
+  assert.deepEqual(await createHistoryWorker(dependencies)({ Records: [sqs(directory, 'directory-message')] }),
+    { batchItemFailures: [{ itemIdentifier: 'directory-message' }] });
+  assert.deepEqual(processed, [directory]); assert.deepEqual(sent, [directory]);
+  for (const reference of [{ ...directory, key: work.key }, { ...directory, revision }, { ...directory, playerId: 'player' }]) {
+    assert.equal(historyQueueReferenceSchema.safeParse(reference).success, false);
+    assert.deepEqual(await createHistoryWorker(dependencies)({ Records: [sqs(reference, 'invalid-directory')] }),
+      { batchItemFailures: [{ itemIdentifier: 'invalid-directory' }] });
+  }
+  assert.deepEqual(await createHistoryWorker({ ...dependencies, enabled: () => false })({ Records: [sqs(directory, 'disabled-directory')] }),
+    { batchItemFailures: [{ itemIdentifier: 'disabled-directory' }] });
+  assert.equal(processed.length, 1); assert.equal(sent.length, 1);
+});
+
+test('directory dispatcher send failures retain the stream sequence for retry', async () => {
+  const handler = createHistoryDispatcher({ enabled: () => true, send: async reference => {
+    assert.deepEqual(reference, directory); throw new Error('queue unavailable');
+  } });
+  assert.deepEqual(await handler({ Records: [directoryStream('987')] }), { batchItemFailures: [{ itemIdentifier: '987' }] });
+});

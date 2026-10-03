@@ -29,6 +29,8 @@ const ackSchema = z.discriminatedUnion('disposition', [
   z.object({ version: z.literal(1), leagueId: text, revision: z.string().uuid(), disposition: z.literal('reconciled'), satisfiedBy: text, sweepId: z.string().uuid(), completedAt: z.string().datetime({ offset: true }) }).strict()
 ]);
 const directorySchema = z.object({ playerId: text, active: z.boolean() });
+const directoryReceiptSchema = (leagueId: string) => z.object({ version: z.literal(1), leagueId: z.literal(leagueId), directoryData: text,
+  readinessRevision: text, workKey: z.string().regex(/^HISTORY_WORK#[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) }).strict();
 export const historyJobKey = (playerId: string) => `HISTORY_JOB#${historyHash(playerId)}`;
 const semanticAchievements = (state: AchievementAccumulator | null) => state ? {
   counts: state.counts, uncertain: [...state.uncertain].sort(), runs: state.runs,
@@ -139,7 +141,8 @@ export class HistoryCoordinator {
   }
   async process(input: HistoryQueueReference): Promise<{ done: boolean }> {
     const ref = historyQueueReferenceSchema.parse(input);
-    try { return ref.kind === 'work' ? await this.processWork(ref) : await this.processPlayer(ref); }
+    try { return ref.kind === 'directory' ? await this.processDirectory(ref)
+      : ref.kind === 'work' ? await this.processWork(ref) : await this.processPlayer(ref); }
     catch (error) {
       // Contending duplicate delivery never starts a speculative second checkpoint.
       // The next delivery rereads the durable state. Other failures retain SQS retry/DLQ.
@@ -191,6 +194,37 @@ export class HistoryCoordinator {
       }
       throw error;
     }
+  }
+  /** Directory revisions commit with activation, including zero-appearance players.
+   * Coalesce duplicate/old stream delivery against the CURRENT authoritative revision.
+   * The receipt and ordinary work marker commit together; retries never invent another
+   * rebuild after a lost acknowledgement, and queue continuations drain that marker. */
+  private async processDirectory(ref: HistoryQueueReference): Promise<{ done: boolean }> {
+    const deleted = await this.deletedLeague(ref.leagueId);
+    if (deleted) {
+      await this.transact([this.check(deleted, deleted.pk!.S!, deleted.sk!.S!)]);
+      return { done: true };
+    }
+    const readiness = await readHistoryReadiness(this.client, this.tableName);
+    const control = await this.identities.readControl(); this.identities.requireDirectory(control);
+    const pk = `LEAGUE#${ref.leagueId}`, league = await this.get(pk, 'METADATA');
+    if (!league || historyBody<{ leagueId: string }>(league, pk, 'METADATA', 'league').leagueId !== ref.leagueId)
+      failure('League is unavailable.');
+    const directory = await this.get(pk, 'PLAYER_DIRECTORY');
+    if (!directory) failure('Directory revision is unavailable.');
+    z.object({ revision: text }).strict().parse(historyBody(directory!, pk, 'PLAYER_DIRECTORY', 'playerDirectoryRevision'));
+    const key = 'HISTORY_DIRECTORY', prior = await this.get(pk, key);
+    const receipt = prior ? directoryReceiptSchema(ref.leagueId).parse(historyBody(prior, pk, key, 'playerHistoryDirectoryReceipt')) : null;
+    if (receipt && receipt.directoryData === directory!.data!.S && receipt.readinessRevision === readiness.value.revision)
+      return this.processWork({ version: 1, kind: 'work', leagueId: ref.leagueId, key: receipt.workKey });
+    const actions = historyMutationItems(this.tableName, { leagueId: ref.leagueId, reason: 'history-rebuild' }, this.now());
+    await this.transact([identityCondition(this.tableName, readiness), identityCondition(this.tableName, control),
+      this.check(league, pk, 'METADATA'), await this.identities.liveScope('league', [ref.leagueId]),
+      this.check(directory, pk, 'PLAYER_DIRECTORY'), this.put(prior, pk, key, 'playerHistoryDirectoryReceipt', {
+        version: 1, leagueId: ref.leagueId, directoryData: directory!.data!.S!, readinessRevision: readiness.value.revision,
+        workKey: actions[1].Put!.Item!.sk!.S!
+      }), ...actions]);
+    return { done: false };
   }
   private async processWork(ref: HistoryQueueReference): Promise<{ done: boolean }> {
     const pk = `LEAGUE#${ref.leagueId}`, marker = await this.get(pk, ref.key);
@@ -310,7 +344,21 @@ export class HistoryCoordinator {
   async pendingPage(leagueId: string, kind: 'work' | 'player', cursor: string | null = null) {
     text.parse(leagueId); const prefix = kind === 'work' ? 'HISTORY_WORK#' : 'HISTORY_JOB#';
     if (cursor !== null && (!cursor.startsWith(prefix) || Buffer.byteLength(cursor) > 1024)) failure('Invalid recovery continuation.');
-    const page = await this.page(`LEAGUE#${leagueId}`, prefix, cursor, 20), refs: HistoryQueueReference[] = [];
+    const refs: HistoryQueueReference[] = [];
+    // The directory revision itself is the durable obligation. Recover it even if
+    // its stream record aged out before the bridge could create HISTORY_WORK.
+    if (kind === 'work' && cursor === null && !await this.deletedLeague(leagueId)) {
+      const pk = `LEAGUE#${leagueId}`, directory = await this.get(pk, 'PLAYER_DIRECTORY');
+      if (directory) {
+        z.object({ revision: text }).strict().parse(historyBody(directory, pk, 'PLAYER_DIRECTORY', 'playerDirectoryRevision'));
+        const readiness = await readHistoryReadiness(this.client, this.tableName), receipt = await this.get(pk, 'HISTORY_DIRECTORY');
+        const value = receipt ? directoryReceiptSchema(leagueId).parse(historyBody(receipt, pk,
+          'HISTORY_DIRECTORY', 'playerHistoryDirectoryReceipt')) : null;
+        if (value?.directoryData !== directory.data!.S || value?.readinessRevision !== readiness.value.revision)
+          refs.push({ version: 1, kind: 'directory', leagueId, key: 'PLAYER_DIRECTORY' });
+      }
+    }
+    const page = await this.page(`LEAGUE#${leagueId}`, prefix, cursor, 20 - refs.length);
     for (const row of page.items) {
       const key = row.sk!.S!;
       if (kind === 'work') {
