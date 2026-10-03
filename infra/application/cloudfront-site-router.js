@@ -19,6 +19,10 @@ function rewriteToShell(uri) {
     return "/player-settings/index.html";
   }
 
+  if (uri === "/achievements" || uri === "/achievements/") {
+    return "/achievements/index.html";
+  }
+
   if (uri === "/sign-in" || uri === "/sign-in/") {
     return "/sign-in/index.html";
   }

@@ -10,6 +10,7 @@ import {
   renderPlayerLinkPage,
   renderPlayerProfilePage,
   renderPlayerSettingsPage,
+  renderAchievementGalleryPage,
   renderPlayerConsolidationPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
@@ -34,7 +35,7 @@ interface StaticAsset {
 }
 
 const STATIC_ASSETS: StaticAsset[] = [
-  ...["player-profile", "player-settings"].map(name => ({
+  ...["player-profile", "player-settings", "achievement-gallery"].map(name => ({
     outputPath: `ui/${name}-browser.js`,
     candidateSources: [fileURLToPath(new URL(`./ui/${name}-browser.js`, import.meta.url)),
       resolve(process.cwd(), `dist/ui/${name}-browser.js`), resolve(process.cwd(), `app/dist/ui/${name}-browser.js`)],
@@ -140,6 +141,7 @@ export function buildStaticSite(options: StaticSiteBuildOptions): string {
     { path: "/sign-in", html: renderSignInPage(options.apiBaseUrl, "/setup") },
     { path: "/player", html: renderPlayerProfilePage(options.apiBaseUrl) },
     { path: "/player-settings", html: renderPlayerSettingsPage(options.apiBaseUrl) },
+    { path: "/achievements", html: renderAchievementGalleryPage(options.apiBaseUrl) },
     { path: "/link-player", html: renderPlayerLinkPage(options.apiBaseUrl) },
     { path: "/combine-players", html: renderPlayerConsolidationPage(options.apiBaseUrl) },
     { path: "/auth/callback", html: renderMagicLinkCallbackPage(options.apiBaseUrl) },

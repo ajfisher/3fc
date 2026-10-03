@@ -13,6 +13,7 @@ import {
   renderPlayerLinkPage,
   renderPlayerProfilePage,
   renderPlayerSettingsPage,
+  renderAchievementGalleryPage,
   renderPlayerConsolidationPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
@@ -78,7 +79,7 @@ const UI_PLAYER_PRESENTATION_SCRIPT = [
 ].map(path => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find(value => value !== null);
 if (!UI_PLAYER_PRESENTATION_SCRIPT) throw new Error("Player presentation script is missing. Build the app first.");
 
-const PLAYER_PAGE_SCRIPTS = new Map<string, string>(["player-profile", "player-settings"].map(name => {
+const PLAYER_PAGE_SCRIPTS = new Map<string, string>(["player-profile", "player-settings", "achievement-gallery"].map(name => {
   const asset = `./ui/${name}-browser.js`;
   const script = [fileURLToPath(new URL(asset, import.meta.url)),
     resolve(process.cwd(), `dist/ui/${name}-browser.js`), resolve(process.cwd(), `app/dist/ui/${name}-browser.js`)]
@@ -225,9 +226,10 @@ export function createAppRequestHandler(apiBaseUrl: string) {
       return;
     }
 
-    if (method === "GET" && ["/player", "/player/", "/player-settings", "/player-settings/"].includes(route)) {
+    if (method === "GET" && ["/player", "/player/", "/player-settings", "/player-settings/", "/achievements", "/achievements/"].includes(route)) {
       sendHtml(response, { ...securityHeaders, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }, 200,
-        route.startsWith("/player-settings") ? renderPlayerSettingsPage(apiBaseUrl) : renderPlayerProfilePage(apiBaseUrl));
+        route.startsWith("/achievements") ? renderAchievementGalleryPage(apiBaseUrl)
+          : route.startsWith("/player-settings") ? renderPlayerSettingsPage(apiBaseUrl) : renderPlayerProfilePage(apiBaseUrl));
       return;
     }
     if (method === "GET" && PLAYER_PAGE_SCRIPTS.has(route)) {

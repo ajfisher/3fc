@@ -16365,8 +16365,16 @@ for (const outcome of ["uncertain-owned", "uncertain-outside", "uncertain-score-
 }
 
 
-test("auth browser preserves only validated player return scope", async () => {
+test("auth browser preserves only validated player and gallery return scope", async () => {
   for (const [target, expected] of [
+    ["/achievements/?achievementId=goal", "/achievements?achievementId=goal"],
+    ["/achievements?leagueId=l&playerId=p&scope=season&seasonId=winter&viewerPlayerId=v&achievementId=played", "/achievements?leagueId=l&playerId=p&scope=season&seasonId=winter&viewerPlayerId=v&achievementId=played"],
+    ["/achievements?leagueId=l&playerId=p&scope=career", "/achievements?leagueId=l&playerId=p&scope=career"],
+    ["/achievements?leagueId=l", "/setup"],
+    ["/achievements?achievementId=unknown", "/setup"],
+    ["/achievements?leagueId=l&playerId=p&scope=career&seasonId=winter", "/setup"],
+    ["/achievements?scope=season", "/setup"],
+    ["/achievements?achievementId=goal&achievementId=played", "/setup"],
     ["/player?leagueId=l%2Fone&playerId=p%2525&seasonId=winter", "/player?leagueId=l%2Fone&playerId=p%2525&seasonId=winter"],
     ["/player-settings/?playerId=p&leagueId=l&seasonId=winter&viewerPlayerId=v", "/player-settings?playerId=p&leagueId=l&seasonId=winter&viewerPlayerId=v"],
     ["/player-settings?playerId=p", "/setup"],

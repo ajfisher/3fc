@@ -31,10 +31,12 @@ at fa7e775 found no newer profile/history implementation to duplicate.
 3. Complete canonical history and generation persistence (#139 foundation, #200,
    remainder of #201): ready for AJ's final review in PR #206.
    Durable source markers are ready for AJ in PR #207.
-   Streams/SQS delivery, worker and resumable backfill follow before any runtime
-   reader is enabled.
-4. Authorised profile/history routes and owner name/photo/media (#37, #202): pending.
-5. Profile UI, card/export and achievement gallery (#37, #203): pending.
+   Streams/SQS delivery, worker and resumable backfill are reviewed in PR #208.
+   Consumers remain disabled until the final QA activation.
+4. Authorised profile/history routes and owner name/photo/media (#37, #202):
+   reviewed in PRs #209, #210 and #211.
+5. Profile and owner-settings UI (#37, #202): reviewed in PR #212.
+   Card/export and achievement gallery (#203): next stacked slice in progress.
 6. Serialised QA coverage verification and feature activation: pending.
 
 Each child PR bases on the preceding reviewed PR. Before starting the next slice:
@@ -332,3 +334,28 @@ QA route infrastructure applied:0 additions,1 CloudFront function update,0 delet
 of the bucket's existing SSE-C block; explicit configuration preserves it, leaving
 only the router in the accepted plan. Independent review and5 deployment cases
 pass (group54962 exit0). Production infrastructure was not applied.
+
+
+PR #212 final head `689f7f7fcc7cac647afe41a86335caa99c04a50e` passed CI
+37137103016, QA 37137103024 and current-head review-gate check 111243776630.
+Cloud review reported no major issues (comment5971128921). Its accepted portrait
+finding is fixed: owner settings requires league context before any private read,
+loads the canonical portrait and preserves the originating season/viewer. Independent
+review and18 focused,515 affected integration and11 real-browser checks pass.
+PR remains unmerged. The card/gallery child began only after these gates.
+
+
+Slice10: `codex/player-card-gallery`, based on PR #212, implements the approved
+Club Card front/five-honour reverse and1200×1560PNG export, native file sharing,
+and all23 achievement gallery entries with personal scopes, filters and bounded
+unlock history. Two independent review passes resolved account/revocation,
+visibility, uncertainty, date and SVG-sizing findings. Final local validation:
+14 card lifecycle cases,35 model/gallery/profile cases,536 affected app cases,
+22 integrated browser checks plus one real portrait export/pixel check, and57
+review-gate tests pass. Every owned process exited0 without children; maximum
+measured RSS2588896KiB. Exported fronts/reverses and light/dark mobile galleries
+were visually inspected. Remote gates and final QA activation follow. Physical
+mobile OS file sharing remains AJ's device acceptance; browser user-activation
+and cancellation behavior are covered. Local AWS SSO expired before the new
+CloudFront function could be applied; static HTML aliases support the route on
+the existing distribution. No production operation was performed.

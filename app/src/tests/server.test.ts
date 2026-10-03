@@ -291,8 +291,8 @@ test("auth callback error and success responses include security headers", () =>
 });
 
 
-test("player profile and owner settings serve private fixed shells with local bundles", () => {
-  for (const [path, asset, marker] of [["player", "player-profile", "player-content"], ["player-settings", "player-settings", "owner-form"]]) {
+test("player profile, owner settings and achievements serve private fixed shells with local bundles", () => {
+  for (const [path, asset, marker] of [["player", "player-profile", "player-content"], ["player-settings", "player-settings", "owner-form"], ["achievements", "achievement-gallery", "achievement-gallery"]]) {
     const page = executeRoute("GET", `/${path}?leagueId=l&playerId=opaque%2Fplayer&email=must-not-render`);
     assert.equal(page.statusCode, 200);
     assert.equal(page.headers["Cache-Control"], "no-store");
@@ -303,4 +303,5 @@ test("player profile and owner settings serve private fixed shells with local bu
     assert.equal(executeRoute("GET", `/ui/${asset}-browser.js`).statusCode, 200);
   }
   assert.equal(executeRoute("GET", "/player/arbitrary-id").statusCode, 404);
+  assert.equal(executeRoute("GET", "/achievements/arbitrary-id").statusCode, 404);
 });

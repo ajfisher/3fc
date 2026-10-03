@@ -36,10 +36,10 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(builtDir, resolve(outputDir));
     assert.equal(existsSync(resolve(outputDir, "index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "setup/index.html")), true);
-    for (const path of ["player/index.html", "player-settings/index.html", "ui/player-profile-browser.js", "ui/player-settings-browser.js"]) {
+    for (const path of ["player/index.html", "player-settings/index.html", "ui/player-profile-browser.js", "ui/player-settings-browser.js", "achievements/index.html", "ui/achievement-gallery-browser.js"]) {
       assert.equal(existsSync(resolve(outputDir, path)), true, path);
     }
-    for (const path of ["player", "player-settings"]) {
+    for (const path of ["player", "player-settings", "achievements"]) {
       const html = readFileSync(resolve(outputDir, `${path}/index.html`), "utf8");
       assert.match(html, /name="referrer" content="no-referrer"/);
     }
@@ -123,7 +123,7 @@ test("CloudFront router maps deployed join deep links to exported shells", () =>
 
 test("CloudFront player routes use exact fixed shells and preserve opaque query values", () => {
   const deploy = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
-  for (const path of ["player", "player-settings"]) {
+  for (const path of ["player", "player-settings", "achievements"]) {
     for (const suffix of ["", "/"]) assert(deploy.includes(`upload_html_alias "\${STATIC_SITE_OUTPUT_DIR}/${path}/index.html" "${path}${suffix}"`), "exact aliases also work before router infrastructure is updated");
     assert.equal(runCloudFrontRouter(`/${path}`), `/${path}/index.html`);
     assert.equal(runCloudFrontRouter(`/${path}/`), `/${path}/index.html`);

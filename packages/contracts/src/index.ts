@@ -1,3 +1,5 @@
+import { ACHIEVEMENT_DEFINITIONS } from "./achievements.js";
+
 export type TeamId = "red" | "blue" | "yellow";
 export type ThirdNumber = 1 | 2 | 3;
 export type ThirdLengthMinutes = 20 | 25 | 30;
@@ -14,6 +16,7 @@ export const APP_RETURN_TARGET_PATTERN_SOURCES = [
   "^/setup/?$",
   "^/player/?$",
   "^/player-settings/?$",
+  "^/achievements/?$",
   "^/leagues/[^/]+(?:/seasons/[^/]+)?/?$",
   "^/seasons/[^/]+/?$",
   "^/games/[^/]+/?$",
@@ -72,6 +75,20 @@ export function normalizeAppReturnTarget(value: unknown): string | null {
       for (const [key, item] of target.searchParams) {
         if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
       }
+    }
+    if (/^\/achievements\/?$/.test(target.pathname)) {
+      const allowed = ["leagueId", "playerId", "seasonId", "viewerPlayerId", "scope", "achievementId"];
+      for (const [key, item] of target.searchParams) {
+        if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
+      }
+      const paired = target.searchParams.has("leagueId") && target.searchParams.has("playerId");
+      const scope = target.searchParams.get("scope");
+      const achievementId = target.searchParams.get("achievementId");
+      if (target.hash || target.searchParams.has("leagueId") !== target.searchParams.has("playerId") ||
+        (!paired && ["scope", "seasonId", "viewerPlayerId"].some(key => target.searchParams.has(key))) ||
+        (scope !== null && scope !== "season" && scope !== "career") ||
+        (scope === "career" && target.searchParams.has("seasonId"))) return null;
+      if (achievementId !== null && !(ACHIEVEMENT_DEFINITIONS.some(item => item.id === achievementId))) return null;
     }
     const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
       ? `${target.pathname}${target.search}${target.hash}` : target.pathname;

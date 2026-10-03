@@ -1,3 +1,4 @@
+import { ACHIEVEMENT_CONDITIONS, ACHIEVEMENT_DEFINITIONS, ACHIEVEMENT_RULE_VERSION, COMMON_MILESTONES, RARE_MILESTONES, milestoneOrdinal, milestoneThreshold, type AchievementId, type AchievementProgress, type AchievementRarity, type AchievementScopeContext, type AchievementUnlock, type PlayerAchievements, type PlayerUnlockPage } from '@3fc/contracts';
 import type { OwnerPlayerProfile, PlayerAppearance, PlayerHistoryPage, PlayerPerformance, PlayerTotals, ProjectionFreshness } from '@3fc/contracts';
 
 export interface PlayerContext { leagueId: string; playerId: string; viewerPlayerId?: string }
@@ -43,6 +44,68 @@ export function parsePlayerHistory(value: unknown): PlayerHistoryPage {
   if (matches === null && cursor !== null || matches && new Set(matches.map(m => m.gameId)).size !== matches.length) return bad();
   return { matches, cursor, freshness: parseFreshness(v.freshness) };
 }
+export interface AchievementCatalogue { ruleVersion: typeof ACHIEVEMENT_RULE_VERSION; achievements: Array<{ id: AchievementId; name: string; rarity: AchievementRarity; rule: string }> }
+const achievementDefinitions = new Map<AchievementId, typeof ACHIEVEMENT_DEFINITIONS[number]>(ACHIEVEMENT_DEFINITIONS.map(value => [value.id, value]));
+function achievementId(value: unknown): AchievementId { if (!achievementDefinitions.has(value as AchievementId)) return bad(); return value as AchievementId; }
+function equalKnown(value: unknown, expected: unknown): boolean {
+  if (Array.isArray(expected)) return Array.isArray(value) && value.length === expected.length && expected.every((entry, index) => equalKnown(value[index], entry));
+  if (expected && typeof expected === 'object') return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.entries(expected).every(([key, entry]) => equalKnown((value as Record<string, unknown>)[key], entry)));
+  return value === expected;
+}
+export function parseAchievementCatalogue(value: unknown): AchievementCatalogue {
+  const v = record(value);
+  if (v.ruleVersion !== ACHIEVEMENT_RULE_VERSION) throw new PlayerClientError(503, 'catalogue_changed', 'Achievement rules have changed. Reload to get the latest collection.');
+  const entries = list(v.achievements, 23, entry => { const a = record(entry), id = achievementId(a.id), def = achievementDefinitions.get(id)!;
+    if (a.name !== def.name || a.rarity !== def.rarity || a.rule !== def.rule) return bad();
+    // API artwork is deliberately discarded. Only the bundled authored SVG is rendered.
+    return { id, name: def.name, rarity: def.rarity, rule: def.rule };
+  });
+  if (entries.length !== 23 || new Set(entries.map(entry => entry.id)).size !== 23 || !equalKnown(v.conditions, ACHIEVEMENT_CONDITIONS)
+    || !equalKnown(v.milestones, { common: [...COMMON_MILESTONES], rare: [...RARE_MILESTONES], commonRepeatEvery: 100, rareRepeatEvery: 10, legendaryRepeatEvery: 1, epicRepeatEvery: 1 })) return bad();
+  return { ruleVersion: ACHIEVEMENT_RULE_VERSION, achievements: entries };
+}
+function achievementScope(value: unknown): AchievementScopeContext {
+  const v = record(value); if (v.scope === 'season') return { scope: 'season', seasonId: text(v.seasonId) };
+  if (v.scope === 'career' && v.seasonId === null) return { scope: 'career', seasonId: null }; return bad();
+}
+function matchesScope(value: AchievementScopeContext, expected: AchievementScopeContext) { return value.scope === expected.scope && value.seasonId === expected.seasonId; }
+function parseUnlock(value: unknown): AchievementUnlock {
+  const v = record(value), id = achievementId(v.achievementId), ordinal = count(v.ordinal), threshold = count(v.threshold);
+  if (!ordinal || threshold !== milestoneThreshold(achievementDefinitions.get(id)!.rarity, ordinal)) return bad();
+  return { id: text(v.id), achievementId: id, ordinal, threshold, earnedAt: date(v.earnedAt), gameId: text(v.gameId), ...achievementScope(v) };
+}
+function sameUnlock(left: AchievementUnlock | null, right: AchievementUnlock | null): boolean {
+  return left === null || right === null ? left === right : left.id === right.id && left.achievementId === right.achievementId && left.ordinal === right.ordinal && left.threshold === right.threshold && left.earnedAt === right.earnedAt && left.gameId === right.gameId && matchesScope(left, right);
+}
+function parseProgress(value: unknown): AchievementProgress {
+  const v = record(value), id = achievementId(v.achievementId), rarity = achievementDefinitions.get(id)!.rarity;
+  const result = { achievementId: id, count: count(v.count), ordinal: count(v.ordinal), nextThreshold: count(v.nextThreshold), assessability: choice(v.assessability, ['complete', 'partial']), currentRun: v.currentRun === null ? null : count(v.currentRun), highest: v.highest === null ? null : parseUnlock(v.highest) };
+  if (result.ordinal !== milestoneOrdinal(rarity, result.count) || result.nextThreshold !== milestoneThreshold(rarity, result.ordinal + 1)
+    || (result.highest ? result.highest.achievementId !== id || result.highest.ordinal !== result.ordinal : result.ordinal !== 0)) return bad();
+  const streak = ACHIEVEMENT_CONDITIONS.streakAppearances[id as keyof typeof ACHIEVEMENT_CONDITIONS.streakAppearances];
+  if (streak ? result.currentRun === null || result.currentRun >= streak : result.currentRun !== null) return bad();
+  return result;
+}
+export function parsePlayerAchievements(value: unknown): PlayerAchievements {
+  const v = record(value), scope = achievementScope(v), progress = v.progress === null ? null : list(v.progress, 23, parseProgress);
+  const honours = v.honours === null ? null : list(v.honours, 23, parseUnlock), firstUnlocks = v.firstUnlocks === null ? null : list(v.firstUnlocks, 23, parseUnlock), latestUnlocks = v.latestUnlocks === null ? null : list(v.latestUnlocks, 46, parseUnlock);
+  if (progress && (progress.length !== 23 || new Set(progress.map(p => p.achievementId)).size !== 23)) return bad();
+  for (const entries of [honours, firstUnlocks]) if (entries && (new Set(entries.map(a => a.achievementId)).size !== entries.length || entries.some(a => !matchesScope(a, scope)))) return bad();
+  if (firstUnlocks?.some(a => a.ordinal !== 1) || latestUnlocks && new Set(latestUnlocks.map(a => `${a.scope}:${a.seasonId}:${a.achievementId}`)).size !== latestUnlocks.length) return bad();
+  if (progress) for (const p of progress) {
+    if (p.highest && !matchesScope(p.highest, scope) || honours && !sameUnlock(p.highest, honours.find(a => a.achievementId === p.achievementId) ?? null)) return bad();
+    const first = firstUnlocks?.find(a => a.achievementId === p.achievementId);
+    if (first && (!p.highest || Date.parse(first.earnedAt) > Date.parse(p.highest.earnedAt))) return bad();
+  }
+  return { playerId: text(v.playerId), leagueId: text(v.leagueId), ...scope, progress, honours, firstUnlocks, latestUnlocks, freshness: parseFreshness(v.freshness) };
+}
+export function parsePlayerUnlocks(value: unknown): PlayerUnlockPage {
+  const v = record(value), unlocks = v.unlocks === null ? null : list(v.unlocks, 20, parseUnlock), cursor = nullableText(v.cursor);
+  if (unlocks === null && cursor !== null || unlocks && new Set(unlocks.map(a => a.id)).size !== unlocks.length) return bad();
+  return { unlocks, cursor, freshness: parseFreshness(v.freshness) };
+}
+function scopeQuery(scope: AchievementScopeContext) { return scope.scope === 'career' ? { scope: 'career' } : { scope: 'season', seasonId: scope.seasonId }; }
+
 function owner(value: unknown): OwnerDetails {
   const v = record(value), revision = text(v.revision); if (!/^[a-f0-9]{64}$/.test(revision)) return bad();
   return { playerId: text(v.playerId), displayName: text(v.displayName), hasPortrait: bool(v.hasPortrait), revision };
@@ -97,6 +160,15 @@ export function createPlayerClient(options: { baseUrl: string; fetch?: typeof fe
     },
     async access(leagueId: string, page: { cursor?: string } = {}, signal?: AbortSignal) {
       const result = access(await json(`/v1/player-access?${params({ leagueId, ...page, limit: 20 })}`, signal)); if (result.leagueId !== leagueId) return bad(); return result;
+    },
+    async catalogue(signal?: AbortSignal): Promise<AchievementCatalogue> { return parseAchievementCatalogue(await json('/v1/achievement-catalogue', signal)); },
+    async achievements(context: PlayerContext, scope: AchievementScopeContext, signal?: AbortSignal): Promise<PlayerAchievements> {
+      const result = parsePlayerAchievements(await json(`/v1/player-achievements?${params({ ...context, ...scopeQuery(scope) })}`, signal));
+      if (result.leagueId !== context.leagueId || !matchesScope(result, scope)) return bad(); return result;
+    },
+    async unlocks(context: PlayerContext, scope: AchievementScopeContext, page: { cursor?: string } = {}, signal?: AbortSignal): Promise<PlayerUnlockPage> {
+      const result = parsePlayerUnlocks(await json(`/v1/player-unlocks?${params({ ...context, ...scopeQuery(scope), ...page })}`, signal));
+      if (result.unlocks?.some(a => !matchesScope(a, scope))) return bad(); return result;
     },
     async owner(playerId: string, signal?: AbortSignal): Promise<OwnerPlayerProfile> {
       const v = record(await json(`/v1/owner-player-profile?${params({ playerId })}`, signal)); return { ...owner(v), email: text(v.email) };

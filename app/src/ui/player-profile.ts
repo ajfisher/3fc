@@ -1,6 +1,7 @@
 import type { PlayerAppearance, PlayerPerformance, ProjectionFreshness } from '@3fc/contracts';
 import { bindPlayerAccount, PlayerClientError, type PlayerClient, type PlayerContext } from './player-client.js';
 import { playerInitial } from './player-presentation.js';
+import { mountClubCard } from './club-card.js';
 
 type Period = 'last' | 'season' | 'career';
 /** This controller retains only safe profile DTOs. Account details belong to the
@@ -18,16 +19,22 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
   const context: PlayerContext = { leagueId: query.get('leagueId') ?? '', playerId: query.get('playerId') ?? '', ...(query.get('viewerPlayerId') ? { viewerPlayerId: query.get('viewerPlayerId')! } : {}) };
   let selectedSeason = query.get('seasonId') ?? undefined, period: Period = 'season', performance: PlayerPerformance | null = null;
   let generation = 0, controller = new AbortController(), disposed = false, suspended = false, locked = false, busy = false;
-  let historyFreshness: ProjectionFreshness | null = null;
+  let historyFreshness: ProjectionFreshness | null = null, portraitDataUrl: string | null = null;
   let sessionKey: string | null = null, cursor: string | null = null, accessCursor: string | null = null, matches: PlayerAppearance[] = [];
   const cleanup: Array<() => void> = [];
+  const cardTrigger = root.querySelector<HTMLButtonElement>('#player-card');
+  const gallery = root.querySelector<HTMLAnchorElement>('#player-achievements');
+  const cardDialog = root.querySelector<HTMLDialogElement>('#club-card-dialog');
+  const card = cardDialog ? mountClubCard({ dialog: cardDialog, client, getSnapshot: () => performance && !locked && !suspended && !disposed
+    ? { context: { ...context }, performance, period, portraitDataUrl } : null }) : null;
   const account = bindPlayerAccount(document, client, () => retire('Sign in to view player profiles.'));
   function listen(target: EventTarget, event: string, handler: EventListener) { target.addEventListener(event, handler); cleanup.push(() => target.removeEventListener(event, handler)); }
   function node(tag: string, text?: string) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; return element; }
   function say(message: string, error = false) { status.textContent = message; status.hidden = !message; status.setAttribute('role', error ? 'alert' : 'status'); }
   function active(id: number) { return id === generation && !disposed && !suspended && !locked; }
   function clear() {
-    controller.abort(); generation++; performance = null; cursor = null; matches = []; historyFreshness = null; content.hidden = true;
+    controller.abort(); generation++; card?.invalidate(); portraitDataUrl = null; performance = null;
+    if (cardTrigger) cardTrigger.hidden = true; if (gallery) gallery.hidden = true; cursor = null; matches = []; historyFreshness = null; content.hidden = true;
     name.textContent = ''; avatar.replaceChildren(); stats.replaceChildren(); latest.replaceChildren(); log.replaceChildren(); access.replaceChildren(); edit.hidden = true; more.hidden = true;
   }
   function retire(message = 'Your sign-in changed. Reload this page before continuing.') { clear(); locked = true; retry.hidden = true; if (signIn) signIn.hidden = false; say(message, true); }
@@ -90,6 +97,12 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
     latest.replaceChildren(); if (performance.latest) appendMatch(latest, performance.latest, true); else latest.append(node('p', performance.freshness.status === 'ready' && performance.freshness.coverage === 'complete' ? 'Your story starts with the next match.' : 'Latest match is not available yet.'));
     edit.hidden = !performance.capabilities.editProfile;
     edit.href = `/player-settings?${new URLSearchParams({ playerId: performance.player.playerId, leagueId: context.leagueId, ...(selectedSeason ? { seasonId: selectedSeason } : {}), ...(context.viewerPlayerId ? { viewerPlayerId: context.viewerPlayerId } : {}) })}`;
+    if (cardTrigger) { cardTrigger.hidden = !card; cardTrigger.disabled = false; }
+    if (gallery) {
+      gallery.hidden = !performance.capabilities.achievements;
+      const scope = period === 'career' || !selectedSeason ? 'career' : 'season';
+      gallery.href = `/achievements?${new URLSearchParams({ ...context, scope, ...(scope === 'season' && selectedSeason ? { seasonId: selectedSeason } : {}) })}`;
+    }
     say(freshness(performance.freshness)); renderLog();
   }
   async function portrait(id: number) {
@@ -98,6 +111,7 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
       const blob = await client.portrait(context, controller.signal); if (!blob || !active(id)) return;
       const data = await new Promise<string>((resolve, reject) => { const reader = new window.FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('photo')); reader.readAsDataURL(blob); });
       if (!active(id) || !await verify(id)) return;
+      portraitDataUrl = data;
       const image = document.createElement('img'); image.src = data; image.alt = `${performance!.player.displayName}'s portrait`; image.width = 128; image.height = 128; avatar.replaceChildren(image);
     } catch { /* Safe initials remain; the statistics stay available. */ }
   }
@@ -149,6 +163,7 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
     } catch (error) { fail(error, id); }
     finally { if (active(id)) { busy = false; more.disabled = false; season.disabled = !performance?.seasons.length; } }
   }
+  if (cardTrigger && card) listen(cardTrigger, 'click', () => { void card.open(cardTrigger); });
   listen(retry, 'click', () => { void load(); });
   listen(season, 'change', () => { selectedSeason = season.value || undefined; updateUrl(); void load(); });
   listen(required('player-period'), 'change', event => {
@@ -163,9 +178,9 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
   listen(window, 'threefc:player-proof-invalidated', () => retire());
   listen(window, 'pagehide', () => { clear(); suspended = true; });
   listen(window, 'pageshow', event => { if ((event as PageTransitionEvent).persisted && !disposed && !locked) { suspended = false; void load(); } });
-  listen(document, 'visibilitychange', () => { if (document.visibilityState === 'visible' && !busy && !locked && !disposed && !suspended) void load(); });
+  listen(document, 'visibilitychange', () => { if (document.visibilityState === 'visible' && !cardDialog?.open && !busy && !locked && !disposed && !suspended) void load(); });
   const ready = load();
-  function destroy() { disposed = true; clear(); account.destroy(); cleanup.forEach(fn => fn()); }
+  function destroy() { disposed = true; clear(); card?.dispose(); account.destroy(); cleanup.forEach(fn => fn()); }
   return { ready, destroy, dispose: destroy };
 }
 export const mount = mountPlayerProfile;
