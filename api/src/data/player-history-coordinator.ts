@@ -351,10 +351,15 @@ export class HistoryCoordinator {
       const pk = `LEAGUE#${leagueId}`, directory = await this.get(pk, 'PLAYER_DIRECTORY');
       if (directory) {
         z.object({ revision: text }).strict().parse(historyBody(directory, pk, 'PLAYER_DIRECTORY', 'playerDirectoryRevision'));
-        const readiness = await readHistoryReadiness(this.client, this.tableName), receipt = await this.get(pk, 'HISTORY_DIRECTORY');
+        // Inspection must work before activation and during rollback. Actual
+        // processing still requires enabled readiness in processDirectory/work.
+        const readiness = await readHistoryReadiness(this.client, this.tableName).catch(error => {
+          if (error instanceof PlayerHistoryError && error.code === 'history_unavailable') return null;
+          throw error;
+        }), receipt = await this.get(pk, 'HISTORY_DIRECTORY');
         const value = receipt ? directoryReceiptSchema(leagueId).parse(historyBody(receipt, pk,
           'HISTORY_DIRECTORY', 'playerHistoryDirectoryReceipt')) : null;
-        if (value?.directoryData !== directory.data!.S || value?.readinessRevision !== readiness.value.revision)
+        if (!readiness || value?.directoryData !== directory.data!.S || value?.readinessRevision !== readiness.value.revision)
           refs.push({ version: 1, kind: 'directory', leagueId, key: 'PLAYER_DIRECTORY' });
       }
     }

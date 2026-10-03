@@ -575,3 +575,23 @@ for (const hadPublication of [false, true]) {
       hadPublication ? 2 : 1, 'comparison retry does not publish its own generation');
   });
 }
+
+test('pending status remains read-only and inspectable before activation and during rollback', async () => {
+  for (const disabled of [false, true]) {
+    const { client, coordinator, ref } = await fixture();
+    const directory: HistoryQueueReference = { version: 1, kind: 'directory', leagueId: 'league', key: 'PLAYER_DIRECTORY' };
+    if (disabled) {
+      await coordinator.process(directory); // An existing receipt cannot suppress inspection after disabling.
+      const item = disableHistoryReadiness('table', 'rollback', at).Put!.Item!;
+      client.items.set(key(item), item);
+    } else client.remove('PLAYER_HISTORY', 'CONTROL');
+    const writesBefore = client.transactions.length;
+    const page = await coordinator.pendingPage('league', 'work');
+    assert(page.refs.some(value => value.kind === 'directory'));
+    assert(page.refs.some(value => value.key === ref.key));
+    assert.equal(page.cursor, null);
+    assert.equal(client.transactions.length, writesBefore, 'status cannot activate or enqueue work');
+    await assert.rejects(coordinator.process(directory), /not been activated/);
+    assert.equal(client.transactions.length, writesBefore, 'inspection must not bypass processing readiness');
+  }
+});
