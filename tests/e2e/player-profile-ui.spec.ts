@@ -73,3 +73,16 @@ test('long names and enlarged text retain keyboard period controls without horiz
   await expect(page.locator('#player-stats')).toContainText('24');
   await expect(page.locator('.player-season-field')).not.toBeVisible();
 });
+
+test('existing private portrait is visible on both profile and scoped owner settings', async ({ page }) => {
+  const png = await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = canvas.height = 512; const c = canvas.getContext('2d')!; c.fillStyle = '#d9b769'; c.fillRect(0, 0, 512, 512); return canvas.toDataURL('image/png').split(',')[1]; });
+  await mockApi(page, { ...performance, player: { ...performance.player, hasPortrait: true } });
+  await page.route('**/v1/player-portrait?*', route => route.fulfill({ status: 200, contentType: 'image/png', headers: { 'Cache-Control': 'no-store' }, body: Buffer.from(png, 'base64') }));
+  await page.route('**/v1/owner-player-profile?*', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ playerId: 'player-one', displayName: 'Alex Rivera', email: 'private@example.invalid', hasPortrait: true, revision: 'a'.repeat(64) }) }));
+  await page.goto('/player?leagueId=league-one&playerId=player-one&seasonId=winter');
+  await expect(page.locator('#player-avatar img')).toHaveAttribute('src', /^data:image\/png;base64,/);
+  await page.locator('#player-edit').click();
+  await expect(page.locator('#owner-photo-preview')).toBeVisible();
+  await expect(page.locator('#owner-photo-preview')).toHaveAttribute('src', /^data:image\/png;base64,/);
+  await expect(page.locator('#owner-photo-remove')).toBeVisible();
+});

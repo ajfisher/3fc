@@ -91,7 +91,7 @@ export function initializePlayerSettings(options: PlayerSettingsOptions) {
       identity = { playerId: details.playerId, displayName: details.displayName, hasPortrait: details.hasPortrait, revision: details.revision };
       name.value = preserveDraft ? draft : details.displayName; email.value = details.email;
       currentPhoto = null;
-      let photoUnavailable = false;
+      let photoUnavailable = details.hasPortrait && !options.context;
       if (details.hasPortrait && options.context) {
         try {
           const blob = await client.portrait({ ...options.context, playerId: details.playerId }, controller.signal);

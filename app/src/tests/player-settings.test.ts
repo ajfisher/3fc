@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { webcrypto } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { renderPlayerSettingsPage } from '../ui/layout.js';
 import { JSDOM } from 'jsdom';
 import { initializeRestoringPlayerSettings } from '../ui/player-settings.js';
 import { PlayerClientError, type OwnerDetails } from '../ui/player-client.js';
@@ -154,4 +157,50 @@ for (const event of ['threefc:player-proof-cleared', 'threefc:player-proof-inval
     assert.equal(f.el<HTMLImageElement>('owner-photo-preview').hasAttribute('src'), false);
     f.click('owner-retry'); await settle(); assert.equal(f.calls.length, 1); assert.equal(f.el('owner-form').hidden, true);
   } finally { f.close(); }
+});
+
+test('a controller without league context labels an existing portrait unavailable rather than empty', async () => {
+  const f = setup({ hasPortrait: true }); try { await f.ready;
+    assert.match(f.el('owner-status').textContent!, /current photo could not be loaded/);
+    assert.equal(f.el('owner-photo-remove').hidden, false);
+  } finally { f.close(); }
+});
+test('settings browser entry requires league context before issuing any private request', async () => {
+  const script = readFileSync(resolve(process.cwd(), 'dist/ui/player-settings-browser.js'), 'utf8');
+  for (const query of ['playerId=alias', 'playerId=alias&leagueId=', 'playerId=alias&leagueId=%20', 'playerId=alias&leagueId=l&leagueId=other']) {
+    const dom = new JSDOM(renderPlayerSettingsPage('https://api.example.test'), {
+      url: `https://qa.3fc.football/player-settings?${query}`, runScripts: 'outside-only', pretendToBeVisual: true });
+    let requests = 0;
+    dom.window.fetch = async () => { requests++; throw new Error('Unexpected private request'); };
+    try {
+      dom.window.eval(script); await settle(); assert.equal(requests, 0);
+      assert.match(dom.window.document.getElementById('owner-status')!.textContent!, /profile in your league/);
+      assert.equal(dom.window.document.getElementById('owner-form')!.hidden, true);
+    } finally { dom.window.close(); }
+  }
+});
+test('settings browser entry with full league context loads the existing portrait and preserves its origin', async () => {
+  const script = readFileSync(resolve(process.cwd(), 'dist/ui/player-settings-browser.js'), 'utf8');
+  const dom = new JSDOM(renderPlayerSettingsPage('https://api.example.test'), {
+    url: 'https://qa.3fc.football/player-settings?playerId=alias&leagueId=league%2Fone&viewerPlayerId=viewer&seasonId=winter', runScripts: 'outside-only', pretendToBeVisual: true });
+  const requested: URL[] = [];
+  Object.defineProperty(dom.window, 'crypto', { value: webcrypto });
+  const png = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6V0AAAAASUVORK5CYII=', 'base64'));
+  dom.window.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input)); requested.push(url);
+    const value = url.pathname === '/v1/auth/session' ? { authenticated: true, session: { sessionId: 'session', subject: 'owner', email: 'private@example.test' } }
+      : url.pathname === '/v1/owner-player-profile' ? { ...original, hasPortrait: true, email: 'private@example.test' } : null;
+    return { ok: true, status: 200, async json() { return value; }, async blob() { return new dom.window.Blob([png], { type: 'image/png' }); } } as Response;
+  }) as typeof fetch;
+  try {
+    dom.window.eval(script);
+    for (let i = 0; i < 50 && dom.window.document.getElementById('owner-form')!.hidden; i++) await new Promise(resolve => setImmediate(resolve));
+    const portrait = requested.find(url => url.pathname === '/v1/player-portrait'); assert(portrait);
+    assert.equal(portrait.searchParams.get('leagueId'), 'league/one'); assert.equal(portrait.searchParams.get('playerId'), 'canonical'); assert.equal(portrait.searchParams.get('viewerPlayerId'), 'viewer');
+    const image = dom.window.document.getElementById('owner-photo-preview') as HTMLImageElement;
+    assert.equal(image.hidden, false); assert.match(image.src, /^data:image\/png;base64,/);
+    const back = new URL((dom.window.document.getElementById('owner-back') as HTMLAnchorElement).href);
+    assert.equal(back.pathname, '/player'); assert.equal(back.searchParams.get('seasonId'), 'winter'); assert.equal(back.searchParams.get('leagueId'), 'league/one');
+    assert.equal(dom.window.document.getElementById('owner-photo-remove')!.hidden, false);
+  } finally { dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pagehide')); dom.window.close(); }
 });

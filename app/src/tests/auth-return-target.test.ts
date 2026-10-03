@@ -8,7 +8,7 @@ test("normalizes known application return targets", () => {
     "/",
     "/setup",
     "/player?leagueId=l%2Fone&playerId=p%2525%26x&seasonId=winter",
-    "/player-settings?playerId=p%2Fone&leagueId=l&viewerPlayerId=viewer",
+    "/player-settings?playerId=p%2Fone&leagueId=l&seasonId=winter&viewerPlayerId=viewer",
     "/leagues/league-1",
     "/leagues/league-1/seasons/winter-2026?view=table#games",
     "/seasons/winter-2026",
@@ -46,6 +46,7 @@ test("rejects non-application and ambiguous return targets", () => {
     "/player", "/player?playerId=p", "/player?leagueId=l&playerId=p&playerId=q",
     "/player?leagueId=l&playerId=p&email=private", "/player?leagueId=l&playerId=p#private",
     "/player-settings", "/player-settings?playerId=p&owner=true", "/player-settings?playerId=",
+    "/player-settings?playerId=p", "/player-settings?playerId=p&leagueId=", "/player-settings?playerId=p&leagueId=+",
     "/player-settings?playerId=p&viewerPlayerId=v&viewerPlayerId=w",
     "/link-player",
     "/link-player#proofId=proof-id-for-test-123456&secret=private",
@@ -71,7 +72,7 @@ test("canonicalizes trailing slashes on known application return targets", () =>
   const targets = new Map([
     ["/setup/", "/setup"],
     ["/player/?leagueId=l&playerId=p", "/player?leagueId=l&playerId=p"],
-    ["/player-settings/?playerId=p", "/player-settings?playerId=p"],
+    ["/player-settings/?playerId=p&leagueId=l", "/player-settings?playerId=p&leagueId=l"],
     ["/leagues/league-1/", "/leagues/league-1"],
     [
       "/leagues/league-1/seasons/winter-2026/?view=table#games",

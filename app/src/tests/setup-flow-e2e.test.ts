@@ -16368,7 +16368,10 @@ for (const outcome of ["uncertain-owned", "uncertain-outside", "uncertain-score-
 test("auth browser preserves only validated player return scope", async () => {
   for (const [target, expected] of [
     ["/player?leagueId=l%2Fone&playerId=p%2525&seasonId=winter", "/player?leagueId=l%2Fone&playerId=p%2525&seasonId=winter"],
-    ["/player-settings/?playerId=p&leagueId=l&viewerPlayerId=v", "/player-settings?playerId=p&leagueId=l&viewerPlayerId=v"],
+    ["/player-settings/?playerId=p&leagueId=l&seasonId=winter&viewerPlayerId=v", "/player-settings?playerId=p&leagueId=l&seasonId=winter&viewerPlayerId=v"],
+    ["/player-settings?playerId=p", "/setup"],
+    ["/player-settings?playerId=p&leagueId=", "/setup"],
+    ["/player-settings?playerId=p&leagueId=+", "/setup"],
     ["/player?leagueId=l&playerId=p&playerId=other", "/setup"],
     ["/player-settings?playerId=p&email=private", "/setup"],
     ["/player?leagueId=l&playerId=p#secret", "/setup"],
