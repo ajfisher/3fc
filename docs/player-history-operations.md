@@ -5,6 +5,16 @@ the existing table's stream, the work queue, two failure queues, IAM roles and
 CloudWatch alarms. Serverless owns the two functions and their event-source mappings.
 There is no HTTP endpoint for dispatching or running history work.
 
+The worker can read and condition-check only the player, game, league, history,
+identity-control and tombstone partition families used by its source adapters.
+It can put records only in `PLAYER_HISTORY#*` and `LEAGUE#*`; it has no DynamoDB
+delete, update or scan permission. Both grants require `dynamodb:LeadingKeys` to
+be present. The league grant is deliberately documented as a residual boundary:
+jobs, sweeps and acknowledgements share league partitions with authoritative
+records, and DynamoDB IAM cannot restrict this grant by sort key. Runtime
+transaction construction must still keep writes within history-owned sort keys;
+IAM does not make the entire `LEAGUE#*` partition exclusive to history.
+
 ## Provision before application deployment
 
 The reviewed QA account is `301691475109`, region `ap-southeast-2`, CLI profile

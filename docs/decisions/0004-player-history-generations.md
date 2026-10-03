@@ -78,7 +78,12 @@ Source changes, consolidation, deletion or competing publication invalidate stal
 work. Retries may complete immutable staging, but cannot restore a superseded
 publication. Malformed or incomplete source history cannot publish complete totals.
 The future read layer must compare freshness and enforce league visibility; this
-internal store grants no authorisation and contains no private account fields.
+internal store grants no authorisation. Performance facts, summaries and publication
+DTOs exclude private account fields. Raw collection staging and exact transaction
+preconditions are private operational evidence: source audit or league metadata
+snapshots may contain legacy account identifiers. Never serialize these internal
+records into safe responses, queue payloads, exports, logs or telemetry. Only
+explicit allowlisted projections may cross the read boundary.
 
 Disable workers and feature exposure to roll back. Keep source data, prior
 generations and publication history. This foundation has no active worker or route;

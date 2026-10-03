@@ -166,3 +166,13 @@ race its final read. Two real concurrent-publication cases pass, then all 18
 coordinator cases and 366 affected regression/deployment tests pass (group 20628,
 exit 0, peak 182272 KiB, no children). Independent source/evidence review passes.
 Fresh current-head CI, QA and review gates are required after this fix.
+
+
+Cloud finding 4173244879 was accepted: worker IAM drops unused UpdateItem/DeleteItem,
+requires explicit source partition families for reads/checks, and permits Put only
+in player-history and league partitions. The residual shared league sort-key boundary
+is documented. Seven policy/deployment tests and independent review pass. QA applied
+one policy update, no additions/deletions (group 23095, exit 0, no children); AWS IAM
+simulation confirmed all 54 allow/deny cases (group 23146, exit 0, no children).
+Private raw staging/transaction metadata is explicitly distinguished from safe
+performance projections in the ownership documentation. Fresh final-head gates follow.

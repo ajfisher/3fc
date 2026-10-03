@@ -74,7 +74,28 @@ resource "aws_iam_role_policy" "player_history_worker" {
   role  = aws_iam_role.player_history_worker[0].id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     # DynamoDB transactions authorise their constituent item operations.
-    { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"], Resource = aws_dynamodb_table.app[0].arn },
+    {
+      Sid      = "HistoryReadAndCheck"
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:ConditionCheckItem"]
+      Resource = aws_dynamodb_table.app[0].arn
+      Condition = {
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["PLAYER#*", "GAME#*", "LEAGUE#*", "PLAYER_HISTORY#*", "PLAYER_HISTORY", "PLAYER_IDENTITY", "PLAYER_IDENTITY_TOMBSTONE"] }
+        Null                      = { "dynamodb:LeadingKeys" = "false" }
+      }
+    },
+    {
+      Sid      = "HistoryWriteDerived"
+      Effect   = "Allow"
+      Action   = ["dynamodb:PutItem"]
+      Resource = aws_dynamodb_table.app[0].arn
+      # Jobs/sweeps/acknowledgements share LEAGUE partitions with source rows.
+      # LeadingKeys cannot restrict sort keys; runtime code owns that boundary.
+      Condition = {
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["PLAYER_HISTORY#*", "LEAGUE#*"] }
+        Null                      = { "dynamodb:LeadingKeys" = "false" }
+      }
+    },
     { Effect = "Allow", Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:SendMessage"], Resource = aws_sqs_queue.player_history[0].arn },
     { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/3fc-${var.env}-player-history-worker:*" }
   ] })

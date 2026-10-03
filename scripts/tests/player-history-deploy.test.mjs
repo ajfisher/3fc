@@ -127,6 +127,30 @@ test('mapping drift, duplicate consumers, queue policy changes and missing evide
   }
 });
 
+test('worker IAM separates bounded source reads from derived puts and requires partition keys', () => {
+  const infrastructure = readFileSync(new URL('../../infra/application/player-history.tf', import.meta.url), 'utf8');
+  const worker = infrastructure.split('resource "aws_iam_role_policy" "player_history_worker" {')[1]
+    .split('resource "aws_iam_role_policy" "player_history_deploy_discovery" {')[0];
+  assert.doesNotMatch(worker, /dynamodb:(?:DeleteItem|UpdateItem|Scan|BatchWriteItem|\*)/);
+  const statements = [...worker.matchAll(/\{\s*Sid\s*=\s*"([^"]+)"([\s\S]*?)\n    \}/g)];
+  assert.deepEqual(statements.map(match => match[1]), ['HistoryReadAndCheck', 'HistoryWriteDerived']);
+  const expected = [
+    { actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:ConditionCheckItem'],
+      keys: ['PLAYER#*', 'GAME#*', 'LEAGUE#*', 'PLAYER_HISTORY#*', 'PLAYER_HISTORY', 'PLAYER_IDENTITY', 'PLAYER_IDENTITY_TOMBSTONE'] },
+    { actions: ['dynamodb:PutItem'], keys: ['PLAYER_HISTORY#*', 'LEAGUE#*'] }
+  ];
+  for (const [index, match] of statements.entries()) {
+    const statement = match[2];
+    assert.deepEqual(JSON.parse(statement.match(/Action\s*=\s*(\[[^\]]*\])/)[1]), expected[index].actions);
+    assert.deepEqual(JSON.parse(statement.match(/"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*(\[[^\]]*\])/)[1]), expected[index].keys);
+    assert.match(statement, /Null\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*"false"\s*\}/);
+    assert.match(statement, /Resource\s*=\s*aws_dynamodb_table\.app\[0\]\.arn/);
+  }
+  // No additional statement can quietly grant a broader DynamoDB operation.
+  const allActions = [...worker.matchAll(/Action\s*=\s*(\[[^\]]*\])/g)].flatMap(match => JSON.parse(match[1]));
+  assert.deepEqual(allActions.filter(action => action.startsWith('dynamodb:')), expected.flatMap(value => value.actions));
+});
+
 test('history deployment stays in serialized jobs and requires separately provisioned infrastructure', () => {
   const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
   const service = read('serverless.player-history.yml');

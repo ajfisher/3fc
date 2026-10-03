@@ -13,8 +13,10 @@ This document defines the baseline key structure and access patterns for the
 ## Player history generations (additive, disabled until writer/backfill rollout)
 
 `PLAYER_HISTORY#{sha256(JSON.stringify([leagueId, canonicalPlayerId]))}` owns
-derived history for one canonical player in one league. No account or email data
-is stored here. The generation prefix `GEN#{sha256(JSON.stringify([generationId]))}#`
+derived history for one canonical player in one league. Performance projections
+exclude private account data. Raw staging and transaction fences are private
+operational records which can retain source account identifiers; they must never
+be exposed as presentation payloads. The generation prefix `GEN#{sha256(JSON.stringify([generationId]))}#`
 isolates immutable facts, summaries, appearances and milestone evidence.
 
 | Sort key | Ownership and access |
