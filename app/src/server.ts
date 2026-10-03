@@ -11,6 +11,8 @@ import {
   renderInvitePage,
   renderJoinPage,
   renderPlayerLinkPage,
+  renderPlayerProfilePage,
+  renderPlayerSettingsPage,
   renderPlayerConsolidationPage,
   renderLeaguePage,
   renderMagicLinkCallbackPage,
@@ -75,6 +77,15 @@ const UI_PLAYER_PRESENTATION_SCRIPT = [
   resolve(process.cwd(), "app/dist/ui/player-presentation-browser.js"),
 ].map(path => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find(value => value !== null);
 if (!UI_PLAYER_PRESENTATION_SCRIPT) throw new Error("Player presentation script is missing. Build the app first.");
+
+const PLAYER_PAGE_SCRIPTS = new Map<string, string>(["player-profile", "player-settings"].map(name => {
+  const asset = `./ui/${name}-browser.js`;
+  const script = [fileURLToPath(new URL(asset, import.meta.url)),
+    resolve(process.cwd(), `dist/ui/${name}-browser.js`), resolve(process.cwd(), `app/dist/ui/${name}-browser.js`)]
+    .map(path => { try { return readFileSync(path, "utf8"); } catch { return null; } }).find(value => value !== null);
+  if (!script) throw new Error(`Player page script ${name} is missing. Build the app first.`);
+  return [`/ui/${name}-browser.js`, script] as const;
+}));
 
 function loadUiStylesheet(): string {
   for (const stylesheetPath of UI_STYLESHEET_PATHS) {
@@ -211,6 +222,16 @@ export function createAppRequestHandler(apiBaseUrl: string) {
     if (method === "GET" && route === "/sign-in") {
       const returnTo = normalizeAppReturnTarget(requestUrl.searchParams.get("returnTo")) ?? "/setup";
       sendHtml(response, securityHeaders, 200, renderSignInPage(apiBaseUrl, returnTo));
+      return;
+    }
+
+    if (method === "GET" && ["/player", "/player/", "/player-settings", "/player-settings/"].includes(route)) {
+      sendHtml(response, { ...securityHeaders, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }, 200,
+        route.startsWith("/player-settings") ? renderPlayerSettingsPage(apiBaseUrl) : renderPlayerProfilePage(apiBaseUrl));
+      return;
+    }
+    if (method === "GET" && PLAYER_PAGE_SCRIPTS.has(route)) {
+      sendJavascript(response, securityHeaders, 200, PLAYER_PAGE_SCRIPTS.get(route)!);
       return;
     }
 

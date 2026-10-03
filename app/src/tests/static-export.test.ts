@@ -36,6 +36,13 @@ test("buildStaticSite exports static route shells and ui assets", () => {
     assert.equal(builtDir, resolve(outputDir));
     assert.equal(existsSync(resolve(outputDir, "index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "setup/index.html")), true);
+    for (const path of ["player/index.html", "player-settings/index.html", "ui/player-profile-browser.js", "ui/player-settings-browser.js"]) {
+      assert.equal(existsSync(resolve(outputDir, path)), true, path);
+    }
+    for (const path of ["player", "player-settings"]) {
+      const html = readFileSync(resolve(outputDir, `${path}/index.html`), "utf8");
+      assert.match(html, /name="referrer" content="no-referrer"/);
+    }
     assert.equal(existsSync(resolve(outputDir, "sign-in/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "auth/callback/index.html")), true);
     assert.equal(existsSync(resolve(outputDir, "leagues/index.html")), true);
@@ -111,4 +118,20 @@ test("CloudFront router maps deployed join deep links to exported shells", () =>
   const deploy = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
   assert.match(deploy, /upload_html_alias "\$\{STATIC_SITE_OUTPUT_DIR\}\/link-player\/index.html" "link-player"/);
   assert.match(deploy, /upload_html_alias "\$\{STATIC_SITE_OUTPUT_DIR\}\/link-player\/index.html" "link-player\/"/);
+});
+
+
+test("CloudFront player routes use exact fixed shells and preserve opaque query values", () => {
+  const deploy = readFileSync(resolve(process.cwd(), "../scripts/deploy/deploy-site.sh"), "utf8");
+  for (const path of ["player", "player-settings"]) {
+    for (const suffix of ["", "/"]) assert(deploy.includes(`upload_html_alias "\${STATIC_SITE_OUTPUT_DIR}/${path}/index.html" "${path}${suffix}"`), "exact aliases also work before router infrastructure is updated");
+    assert.equal(runCloudFrontRouter(`/${path}`), `/${path}/index.html`);
+    assert.equal(runCloudFrontRouter(`/${path}/`), `/${path}/index.html`);
+    assert.equal(runCloudFrontRouter(`/${path}/unexpected`), `/${path}/unexpected`);
+  }
+  const source = readFileSync(resolve(process.cwd(), "../infra/application/cloudfront-site-router.js"), "utf8");
+  const querystring = { playerId: { value: "opaque%2F%26id" }, leagueId: { value: "league" } };
+  const context = createContext({ event: { request: { uri: "/player", querystring } }, result: null });
+  new Script(`${source}\nresult = handler(event);`).runInContext(context);
+  assert.equal((context.result as any).querystring, querystring);
 });

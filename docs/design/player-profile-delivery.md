@@ -282,3 +282,53 @@ deleted objects. Independent delta review passed. Seven focused race cases,
 all26 changed-file cases and all566 affected regressions pass (group47963 exit0,
 peak189296KiB, no children). API compilation, YAML and diff checks pass; fresh
 current-head CI/QA/review follow before the UI child begins.
+
+
+PR #211 final head `11c98bc0d519579ba33afac411b834eee8d9d829` passed
+CI37134127263, QA37134127269 and actual current-head review-gate111235061868.
+Cloud review completed without major findings (comment5970729075). The accepted
+timeout finding is fixed with a verified28s core budget. QA also revealed that
+Serverless cleans the ZIP after deploying it; its verified digest is now captured
+before deployment, with an executable regression. All30 affected deployment/operator
+cases pass (group50540 exit0, peak111968KiB, no children) and independent delta
+review passes. UI child `codex/player-profile-ui` started after these gates.
+Native authenticated photo acceptance remains part of final feature QA.
+
+## Profile and owner screens
+
+The next slice adds fixed `/player` and `/player-settings` routes with local/static
+asset parity and safe authentication return links. Separate browser controllers
+share a validated, cookie-authenticated client. The profile retains only safe
+performance DTOs; the settings controller owns private email, drafts and temporary
+photo bytes. Neither controller persists those values in browser storage.
+
+The main view opens on the originating/default season, renders authoritative
+Last game/Season/Career statistics and keeps the latest completed team totals
+visible. Match history loads20 entries per explicit action and refuses mixed
+projection revisions. Unavailable history remains unknown. League participation
+is discovered through bounded authorised pages, without granting management rights.
+Relevant directory, roster and result names link to the profile with season context.
+
+Owner editing validates source type/8MiB/16MP before decoding, offers a keyboard
+operable512px crop, and submits only the processed crop to the owner API. Ambiguous
+saves retry the identical key/body; conflicts preserve drafts and require refresh.
+Successful receipts are followed by fresh reads before displaying current state.
+Signout, account uncertainty, proof invalidation and BFCache transitions clear or
+hide private content and fence late responses. Read-only email stays on settings.
+
+Validation:29 focused client/profile/settings/crop/shell tests pass (group54151,
+exit0, peak203600KiB),538 affected navigation/auth/scoring/static/server regressions
+pass (group54233, exit0, peak2706880KiB), and final9 profile/shell cases pass after
+season-picker refinement (group54596, exit0, peak187344KiB). All10 serial browser
+checks pass at320/390/430/1280px in light/dark, with keyboard cropping, focus return,
+200% text and long names (group54604, exit0, peak1021232KiB). Every group left no
+children and remained under4GiB. Browser fixtures are synthetic test data, never
+application defaults. Independent navigation and full client/settings privacy
+reviews pass after recorded lifecycle/unknown-state fixes. Card/gallery and final
+QA activation remain subsequent slices; no release-complete claim is made here.
+
+QA route infrastructure applied:0 additions,1 CloudFront function update,0 deletions
+(group55009 exit0, peak723232KiB, no children). The initial plan exposed removal
+of the bucket's existing SSE-C block; explicit configuration preserves it, leaving
+only the router in the accepted plan. Independent review and5 deployment cases
+pass (group54962 exit0). Production infrastructure was not applied.

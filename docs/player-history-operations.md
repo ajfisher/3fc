@@ -7,7 +7,7 @@ There is no HTTP endpoint for dispatching or running history work.
 
 The worker can read and condition-check only the player, game, league, history,
 identity-control and tombstone partition families used by its source adapters.
-It can put records only in `PLAYER_HISTORY#*` and `LEAGUE#*`; it has no DynamoDB
+It can put records only in `PLAYER_HISTORY#*`, `PLAYER_PROFILE_WORK#*` and `LEAGUE#*`; it has no DynamoDB
 delete, update or scan permission. Both grants require `dynamodb:LeadingKeys` to
 be present. The league grant is deliberately documented as a residual boundary:
 jobs, sweeps and acknowledgements share league partitions with authoritative
@@ -43,7 +43,7 @@ a QA plan or successful PR gate is not authority to apply or deploy production.
 
 ## Deploy with processing disabled
 
-Both deploy workflows place the worker service after the API writer deployment,
+Both deploy workflows place the compatible worker service before the API writer deployment,
 inside their existing serialized environment job. The deployment fails if the
 stream, queues or dedicated roles have not been provisioned. The deploy script
 checks the reviewed AWS account; `EXPECTED_AWS_ACCOUNT_ID` permits an explicitly

@@ -289,3 +289,18 @@ test("auth callback error and success responses include security headers", () =>
   assert.match(trailingSlashResponse.body, /data-testid="auth-callback-shell"/);
   assert.doesNotMatch(trailingSlashResponse.body, /abc123/);
 });
+
+
+test("player profile and owner settings serve private fixed shells with local bundles", () => {
+  for (const [path, asset, marker] of [["player", "player-profile", "player-content"], ["player-settings", "player-settings", "owner-form"]]) {
+    const page = executeRoute("GET", `/${path}?leagueId=l&playerId=opaque%2Fplayer&email=must-not-render`);
+    assert.equal(page.statusCode, 200);
+    assert.equal(page.headers["Cache-Control"], "no-store");
+    assert.equal(page.headers["Referrer-Policy"], "no-referrer");
+    assert(page.body.includes(`id="${marker}"`));
+    assert.doesNotMatch(page.body, /must-not-render|opaque%2Fplayer/);
+    assert.equal(executeRoute("GET", `/${path}/`).body, page.body);
+    assert.equal(executeRoute("GET", `/ui/${asset}-browser.js`).statusCode, 200);
+  }
+  assert.equal(executeRoute("GET", "/player/arbitrary-id").statusCode, 404);
+});

@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { JSDOM } from "jsdom";
-import { playerInitial, renderPlayerIdentity } from "../ui/player-presentation.js";
+import { playerInitial, profileHref, renderPlayerIdentity } from "../ui/player-presentation.js";
 
 test("player initials use one safe Unicode grapheme", () => {
   for (const [name, initial] of [[" Xavier", "X"], ["Ari Fisher", "A"], ["  ", "P"], ["éclair", "É"], ["e\u0301clair", "E\u0301"], ["🧑🏽‍⚽ Alex", "🧑🏽‍⚽"], ["ßam", "S"]]) {
@@ -29,5 +29,25 @@ test("server and browser share escaped identity markup and truthful link states"
     dom.window.eval("Intl.Segmenter = undefined");
     assert.equal(dom.window.ThreeFcPlayers.playerInitial("😀 Alex"), "😀");
     assert.equal(dom.window.ThreeFcPlayers.playerInitial("  "), "P");
+  } finally { dom.window.close(); }
+});
+
+
+test("profile links retain opaque scope and escape identity without changing selectable identities", () => {
+  const profile = { leagueId: "league /?&雪", playerId: "player +%/#<x>", seasonId: "winter & 2026" };
+  const href = profileHref(profile)!;
+  const target = new URL(href, "https://3fc.football");
+  assert.equal(target.pathname, "/player");
+  for (const [key, value] of Object.entries(profile)) assert.equal(target.searchParams.get(key), value);
+  const dom = new JSDOM(renderPlayerIdentity({ name: '<script>name</script>', profile }));
+  try {
+    const link = dom.window.document.querySelector("a")!;
+    assert.equal(link.getAttribute("href"), href);
+    assert.equal(link.textContent, "<script>name</script>");
+    assert.equal(dom.window.document.querySelector("script"), null);
+    assert.equal(dom.window.document.querySelectorAll("a a, button a").length, 0);
+    assert.doesNotMatch(renderPlayerIdentity({ name: "Selector" }), /<a /);
+    assert.equal(profileHref({ leagueId: "", playerId: "p" }), null);
+    assert.equal(profileHref({ leagueId: "l", playerId: "bad\ud800" }), null);
   } finally { dom.window.close(); }
 });

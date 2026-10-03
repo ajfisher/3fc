@@ -11,6 +11,14 @@ function rewriteToShell(uri) {
     return "/setup/index.html";
   }
 
+  if (uri === "/player" || uri === "/player/") {
+    return "/player/index.html";
+  }
+
+  if (uri === "/player-settings" || uri === "/player-settings/") {
+    return "/player-settings/index.html";
+  }
+
   if (uri === "/sign-in" || uri === "/sign-in/") {
     return "/sign-in/index.html";
   }

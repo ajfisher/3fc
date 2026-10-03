@@ -24,6 +24,7 @@ test('core artifact must contain native Linux arm64 sharp and libvips', () => {
 test('only processed private objects are allowed and cleanup has no write or read grant', () => {
   const tf = source('infra/application/player-portrait.tf');
   for (const flag of ['block_public_acls', 'block_public_policy', 'ignore_public_acls', 'restrict_public_buckets']) assert.match(tf, new RegExp(`${flag}\\s*= true`));
+  assert.match(tf, /blocked_encryption_types\s*= \["SSE-C"\]/);
   assert.match(tf, /BucketOwnerEnforced/); assert.match(tf, /AES256/); assert.match(tf, /aws:SecureTransport/);
   assert.match(tf, /force_destroy\s*= false/);
   const core = tf.split('resource "aws_iam_role_policy" "player_portrait_core"')[1].split('resource "aws_iam_role_policy" "player_portrait_cleanup"')[0];

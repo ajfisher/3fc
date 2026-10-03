@@ -4081,6 +4081,14 @@ test("league directory paginates submitted search, keeps equal names distinct an
     assert.equal(queries[0].get("seasonId"), "autumn-cup");
     assert.equal(list.children.length, 1);
     assert.equal(list.querySelector("script"), null);
+    const profileLink = list.querySelector<HTMLAnchorElement>('a[data-ui="player-profile-link"]')!;
+    assert(profileLink);
+    const profileTarget = new URL(profileLink.href);
+    assert.equal(profileTarget.pathname, "/player");
+    assert.equal(profileTarget.searchParams.get("leagueId"), "three-sided-football-club");
+    assert.equal(profileTarget.searchParams.get("playerId"), "first");
+    assert.equal(profileTarget.searchParams.get("seasonId"), "autumn-cup");
+    assert.equal(list.querySelector("button a, a a"), null);
     search.value = "not yet submitted";
     search.dispatchEvent(new page.window.Event("input", { bubbles: true }));
     more.focus(); dispatchClick(more); await flushAsync();
@@ -16355,3 +16363,22 @@ for (const outcome of ["uncertain-owned", "uncertain-outside", "uncertain-score-
     } finally { releaseMetadata?.(); releaseClock?.(); await flushAsync(); closeUx10Page(page); }
   });
 }
+
+
+test("auth browser preserves only validated player return scope", async () => {
+  for (const [target, expected] of [
+    ["/player?leagueId=l%2Fone&playerId=p%2525&seasonId=winter", "/player?leagueId=l%2Fone&playerId=p%2525&seasonId=winter"],
+    ["/player-settings/?playerId=p&leagueId=l&viewerPlayerId=v", "/player-settings?playerId=p&leagueId=l&viewerPlayerId=v"],
+    ["/player?leagueId=l&playerId=p&playerId=other", "/setup"],
+    ["/player-settings?playerId=p&email=private", "/setup"],
+    ["/player?leagueId=l&playerId=p#secret", "/setup"],
+  ]) {
+    const apiState = createMockApiState();
+    apiState.session = { sessionId: "session-1", email: "organizer@3fc.football", createdAt: "2026-03-28T11:00:00.000Z", expiresAt: "2026-03-29T11:00:00.000Z" };
+    apiState.cookieJar = "threefc_session=session-1";
+    const page = await bootPage({ html: renderSignInPage("http://localhost:3001", "/setup"),
+      url: `http://localhost:3000/sign-in?${new URLSearchParams({ returnTo: target })}`, scriptFile: "auth-flow.js", apiState });
+    try { assert.deepEqual(page.navigations.at(-1), { url: expected, mode: "replace" }); }
+    finally { page.dom.window.close(); }
+  }
+});

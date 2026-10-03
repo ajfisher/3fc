@@ -22,6 +22,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "player_portraits"
   count  = var.create_baseline_resources ? 1 : 0
   bucket = aws_s3_bucket.player_portraits[0].id
   rule {
+    # Preserve the managed bucket protection; callers must use server-managed keys.
+    blocked_encryption_types = ["SSE-C"]
+    bucket_key_enabled       = false
     apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
   }
 }

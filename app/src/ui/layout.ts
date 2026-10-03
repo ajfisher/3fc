@@ -1429,3 +1429,84 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
   </body>
 </html>`;
 }
+
+/** Authenticated shells contain no player/account data; the fixed-route clients
+ * obtain only the response appropriate to this screen after session checks. */
+function renderPlayerScreen(apiBaseUrl: string, kind: "profile" | "settings", title: string, content: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="referrer" content="no-referrer" />
+  <title>${escapeHtml(title)} · 3FC</title>${renderStylesheetLink()}</head>
+  <body data-page="player-${kind}" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <main data-ui="app-shell" id="player-${kind}">${renderManagementNavigation()}${content}</main>
+  ${renderAuthScriptTag()}<script src="${escapeHtml(renderAssetPath(`/ui/player-${kind}-browser.js`))}" defer></script>
+  </body></html>`;
+}
+
+export function renderPlayerProfilePage(apiBaseUrl: string): string {
+  return renderPlayerScreen(apiBaseUrl, "profile", "Player profile", `
+  <p id="player-status" role="status" aria-live="polite">Loading player profile…</p>
+  <button id="player-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
+  <a id="player-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to view profile</a>
+  <div id="player-access"></div>
+  <section id="player-content" hidden>
+    <header class="player-heading">
+      <div id="player-avatar" class="player-avatar" aria-hidden="true"></div>
+      <div class="player-heading-copy"><p id="player-league" class="player-eyebrow"></p><h1 id="player-name"></h1></div>
+      <div class="player-heading-actions"><a id="player-edit" data-ui="button-secondary" hidden>Edit profile</a>
+      <button id="player-card" type="button" data-ui="button" data-variant="primary" hidden>Player card</button></div>
+    </header>
+    <div class="player-period-controls">
+      <fieldset id="player-period" class="player-period-picker"><legend class="sr-only">Statistics period</legend>
+        <label><input type="radio" name="player-period" value="last" /><span>Last game</span></label>
+        <label><input type="radio" name="player-period" value="season" checked /><span>Season</span></label>
+        <label><input type="radio" name="player-period" value="career" /><span>Career</span></label>
+      </fieldset>
+      <div class="player-season-field" data-ui="field"><label for="player-season">Season</label><select id="player-season" data-ui="input"></select></div>
+    </div>
+    <section class="player-record" aria-labelledby="player-period-title">
+      <h2 id="player-period-title">Season statistics</h2><dl id="player-stats" class="player-stat-grid"></dl>
+    </section>
+    <section class="player-latest-section" aria-labelledby="player-latest-title"><h2 id="player-latest-title">Last completed game</h2><div id="player-latest"></div></section>
+    <section class="player-history-section" aria-labelledby="player-history-title"><h2 id="player-history-title">Match history</h2>
+      <p id="player-history-status" role="status" aria-live="polite"></p><ol id="player-history-list" class="player-history-list"></ol>
+      <button id="player-history-more" type="button" data-ui="button-secondary" hidden>Load more</button>
+    </section>
+    <a id="player-achievements" data-ui="button-secondary" hidden>Explore achievements</a>
+  </section>`);
+}
+
+export function renderPlayerSettingsPage(apiBaseUrl: string): string {
+  return renderPlayerScreen(apiBaseUrl, "settings", "Your player profile", `
+  <a id="owner-back" href="/setup">Back</a><header><h1>Your player profile</h1><p>Make it yours.</p></header>
+  <p id="owner-status" role="status" aria-live="polite">Loading your profile…</p>
+  <a id="owner-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to edit your profile</a>
+  <div data-ui="button-row"><button id="owner-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
+  <button id="owner-refresh" type="button" data-ui="button-secondary" hidden>Refresh profile</button></div>
+  <section id="owner-form" class="owner-sections" hidden>
+    <form id="owner-name-form" data-ui="panel"><h2>Your details</h2>
+      <div data-ui="field"><label for="owner-name">Display name</label><input id="owner-name" data-ui="input" maxlength="80" required autocomplete="nickname" /></div>
+      <div data-ui="field"><label for="owner-email">Account email</label><input id="owner-email" data-ui="input" type="email" readonly autocomplete="off" aria-describedby="owner-email-note" />
+      <p id="owner-email-note" data-ui="status-note">Only you can see your account email here. Email changes are not available yet.</p></div>
+      <button id="owner-save-name" type="submit" data-ui="button" data-variant="primary">Save name</button>
+    </form>
+    <section data-ui="panel" aria-labelledby="owner-photo-title"><h2 id="owner-photo-title">Player portrait</h2>
+      <img id="owner-photo-preview" class="owner-photo-preview" alt="Current player portrait" width="160" height="160" hidden />
+      <p id="owner-photo-notice">Your portrait appears to authorised league viewers and in any player card images you share.</p>
+      <div data-ui="field"><label for="owner-photo-file">Choose a photo</label><input id="owner-photo-file" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="owner-photo-limits" />
+      <p id="owner-photo-limits" data-ui="status-note">JPEG, PNG or WebP. Up to 8 MB and 16 megapixels. You can adjust the crop before saving.</p></div>
+      <div data-ui="button-row"><button id="owner-photo-save" type="button" data-ui="button" data-variant="primary" disabled>Save portrait</button>
+      <button id="owner-photo-remove" type="button" data-ui="button-secondary" hidden>Remove portrait</button></div>
+    </section>
+  </section>
+  <dialog id="portrait-crop-dialog" class="player-dialog" aria-labelledby="portrait-crop-title">
+    <h2 id="portrait-crop-title">Frame your portrait</h2><p>Adjust the position and zoom. The circle shows how your portrait will appear.</p>
+    <canvas id="portrait-crop-canvas" width="512" height="512" aria-label="Portrait crop preview"></canvas>
+    <div class="portrait-crop-controls">
+      <label for="portrait-crop-zoom">Zoom</label><input id="portrait-crop-zoom" type="range" min="1" max="4" step="0.01" value="1" />
+      <label for="portrait-crop-x">Horizontal position</label><input id="portrait-crop-x" type="range" min="-1" max="1" step="0.01" value="0" />
+      <label for="portrait-crop-y">Vertical position</label><input id="portrait-crop-y" type="range" min="-1" max="1" step="0.01" value="0" />
+    </div><p id="portrait-crop-status" role="status" aria-live="polite"></p>
+    <div data-ui="button-row"><button id="portrait-crop-confirm" type="button" data-ui="button" data-variant="primary">Use this crop</button>
+    <button id="portrait-crop-cancel" type="button" data-ui="button-secondary">Cancel</button></div>
+  </dialog>`);
+}

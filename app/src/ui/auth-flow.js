@@ -96,6 +96,15 @@
 
     try {
       const target = new URL(value, window.location.origin);
+      if (/^\/player(?:-settings)?\/?$/.test(target.pathname)) {
+        const allowed = target.pathname.startsWith("/player-settings")
+          ? ["playerId", "leagueId", "seasonId", "viewerPlayerId"] : ["leagueId", "playerId", "seasonId", "viewerPlayerId"];
+        if (target.hash || !target.searchParams.get("playerId")?.trim() ||
+          (!target.pathname.startsWith("/player-settings") && !target.searchParams.get("leagueId")?.trim())) return null;
+        for (const [key, item] of target.searchParams) {
+          if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
+        }
+      }
       const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
         ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
       if (

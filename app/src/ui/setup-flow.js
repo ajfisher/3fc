@@ -2280,6 +2280,7 @@
         row.setAttribute("data-player-id", player.playerId);
         const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
         heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          profile: { leagueId, playerId: player.playerId, ...(submittedScope ? { seasonId: submittedScope } : {}) },
           linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
           context: (player.seasons ?? []).map(season => season.name).join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "") });
         if (canManage() && !player.claimed) {
@@ -4727,11 +4728,11 @@
           return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(goal.eventId)}" data-has-third="true">
             <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
             <div data-ui="final-goal-details">
-              <strong>${escapeHtml(playerNickname(goal.scorerPlayerId))}</strong>
+              <strong>${playerProfileName(goal.scorerPlayerId)}</strong>
               <span data-ui="goal-team-relationship">${goal.ownGoal ? '<span data-ui="own-goal-marker" aria-label="Own goal">OG</span>' : renderGoalTeamChip(goal.scoringTeamId, "Scoring team")}
                 <span data-ui="goal-team-arrow" aria-hidden="true">→</span>${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
               </span>
-              ${goal.assistPlayerIds.length ? `<small>Assists: ${escapeHtml(goal.assistPlayerIds.map((id) => playerNickname(id)).join(", "))}</small>` : ""}
+              ${goal.assistPlayerIds.length ? `<small>Assists: ${goal.assistPlayerIds.map((id) => playerProfileName(id)).join(", ")}</small>` : ""}
             </div>
             ${renderThirdIndicator(goal.third)}
           </li>`;
@@ -4767,7 +4768,7 @@
         ${entries
           .map(
             (entry) => `<li>
-              <span>${escapeHtml(entry.name)}</span>
+              <span>${playerProfileName(entry.playerId, entry.name)}</span>
               <strong>${escapeHtml(String(entry.count))}</strong>
             </li>`,
           )
@@ -4880,14 +4881,14 @@
             <div data-ui="goal-event-main">
               <div data-ui="goal-primary-row">
                 <strong data-ui="goal-time">${escapeHtml(displayTime)}</strong>
-                <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${escapeHtml(scorer)}</span>
+                <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${playerProfileName(goal.scorerPlayerId, scorer)}</span>
                 <span data-ui="goal-team-relationship">${scoringContext}
                   <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
                   ${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
                 </span>
                 ${renderThirdIndicator(goal.third)}
               </div>
-              ${assists ? `<small>Assists: ${escapeHtml(assists)}</small>` : ""}
+              ${assists ? `<small>Assists: ${goal.assistPlayerIds.map(id => playerProfileName(id)).join(", ")}</small>` : ""}
               ${addressable ? "" : `<small id="${unavailableId}">Editing isn’t available for this goal.</small>`}
             </div>
             <div data-ui="row-action-buttons">
@@ -5349,8 +5350,20 @@
         : typeof verified.access?.userId === "string" && verified.access.userId.trim() ? "linked" : "unknown";
     }
 
+    function playerProfileContext(playerId) {
+      const canonical = verifiedAdminPlayers.get(playerId)?.canonicalPlayerId;
+      return { leagueId: currentLeagueId, playerId: usableEntityId(canonical) ? canonical : playerId,
+        ...(currentSeasonId ? { seasonId: currentSeasonId } : {}) };
+    }
+
+    function playerProfileName(playerId, name = playerNickname(playerId)) {
+      const href = window.ThreeFcPlayers.profileHref(playerProfileContext(playerId));
+      return href ? `<a href="${escapeHtml(href)}" data-ui="player-profile-link">${escapeHtml(name)}</a>` : escapeHtml(name);
+    }
+
     function renderRosterIdentity(player) {
-      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState: rosterLinkState(player) });
+      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState: rosterLinkState(player),
+        profile: playerProfileContext(player?.playerId) });
     }
 
     function playerAccessPanel(player) {
@@ -5849,6 +5862,7 @@
         const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
         const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
         heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          profile: { leagueId: currentLeagueId, playerId: player.playerId, ...(currentSeasonId ? { seasonId: currentSeasonId } : {}) },
           linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
           context: (player.seasons ?? []).map(season => season.name).join(" · ") });
         const button = document.createElement("button"); button.type = "button"; button.setAttribute("data-ui", "button");
