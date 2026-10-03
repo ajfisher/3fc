@@ -370,3 +370,29 @@ another player now fail closed. Two independent subagent delta reviews pass.
 Test compilation(group61429),32 affected tests(group61512),app build(group61649)
 and12 card/gallery browser cases(group61722) pass; all exited0 without children,
 peak1052144KiB. Fresh remote gates follow this correction.
+
+Slice10 final head `afa7927ac8decffbaa60b6303b76bb08b66cfe53` passed
+CI37140381611, QA37140381544 and actual current-head review-gate111253444969.
+Both cloud findings are resolved. Cloud review on the corrected head remains
+unavailable because of the account allowance; two independent delta reviews
+passed. The PR remains unmerged.
+
+Slice11: `codex/player-profile-qa`, based on PR #213, adds QA-only provenance,
+bounded league inventory/projection auditing and synthetic authenticated
+acceptance tooling. The deployment helper requires current passing gates and
+exact live core/worker fingerprints; acceptance also requires readiness for the
+accepted head. Operator tools cannot activate flags or target production.
+The [QA runbook](../runbooks/player-profiles-qa.md) records the final backfill,
+feature-enable, reconciliation, media-cleanup and browser checks. Deployed feature
+acceptance is pending; these tools do not themselves constitute that evidence.
+
+Slice11 independent reviews accepted and fixed exact-head readiness binding,
+raw Scan-cursor privacy, inventory results lost after checkpoint persistence,
+recovered mutation scope, cleanup ordering, interrupted player claims and the
+directory query contract. Final independent privacy/operations and contract
+reviews pass. Focused validation then complete files passed; the full90-case
+operator suite passed(group63603, exit0, peak135312KiB, no children). This includes
+15 audit,5 provenance and13 synthetic HTTP/recovery cases. JavaScript syntax and
+diff checks pass. Cloud backfill, feature activation and authenticated deployed
+acceptance remain blocked by the expired `3fc-agent` SSO session. QA exposure
+flags have not been enabled, and no production operation or merge was performed.
