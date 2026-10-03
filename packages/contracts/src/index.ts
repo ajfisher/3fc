@@ -381,3 +381,6 @@ export function validateAssistPlayerIds(
     throw new Error("Scorer cannot be listed as an assister.");
   }
 }
+
+export * from "./achievements.js";
+export * from "./player-profile.js";
