@@ -9,7 +9,7 @@ build:
 
 provider:
   name: aws
-  runtime: nodejs20.x
+  runtime: nodejs22.x
   region: ${opt:region, env:AWS_REGION, 'ap-southeast-2'}
   stage: ${opt:stage, 'qa'}
   architecture: arm64
@@ -48,14 +48,12 @@ functions:
     role: ${env:HISTORY_DISPATCH_ROLE_ARN}
     memorySize: 256
     timeout: 30
-    reservedConcurrency: 2
   work:
     name: 3fc-${sls:stage}-player-history-worker
     handler: api/src/lambda-player-history.workHandler
     role: ${env:HISTORY_WORKER_ROLE_ARN}
     memorySize: 512
     timeout: 60
-    reservedConcurrency: 2
 
 resources:
   Resources:

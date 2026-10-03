@@ -137,3 +137,14 @@ credentialed QA workflow must verify actual packaging, deployment and fingerprin
 Full `make build` passed (group 16586, exit 0, peak 622096 KiB, no children).
 Remote current-head checks are pending. Readers, owner media and app UI follow;
 this slice does not claim user-visible feature completion.
+
+
+Initial slice-5 CI found an outdated assertion expecting a single manifest path;
+the workflow now preserves both API and worker evidence. The corrected single case
+and full 13-test deployment file pass. QA packaging succeeded but AWS rejected
+reserved concurrency because this account has 10 total/unreserved slots and must
+retain 10 unreserved. The fix uses shared capacity, retains SQS maximum concurrency
+2 and stream parallelism 1 per shard, and uses Node 22 for the new functions.
+Seven operator/deployment tests pass (group 19559, exit 0, no children). Processing
+remains disabled; capacity/throttling checks precede activation. Revised-head
+remote checks and independent delta review must pass before the read slice starts.

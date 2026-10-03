@@ -278,7 +278,7 @@ test("QA deployment evidence records the full head and live API fingerprint with
   assert.deepEqual(apiDeployScript.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED", "Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED"]);
   assert.match(qaWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
   assert.match(qaWorkflow, /name: qa-api-core-deployment/);
-  assert.match(qaWorkflow, /path: out\/deploy\/qa\/api-core-deploy-manifest\.json/);
+  assert.match(qaWorkflow, /path: \|\n\s+out\/deploy\/qa\/api-core-deploy-manifest\.json\n\s+out\/deploy\/qa\/player-history-deploy-manifest\.json\n/);
   assert.match(qaWorkflow, /if-no-files-found: error/);
 });
 

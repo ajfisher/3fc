@@ -26,9 +26,9 @@ function fixture(enabled = 'false') {
     manifest.snapshot.functions[kind] = { functionName, functionArn, codeSha256: manifest.packageHashes[kind], revisionId: `${kind}-revision`,
       lastUpdateStatus: 'Successful', state: 'Active', role,
       handler: `api/src/lambda-player-history.${kind === 'dispatch' ? 'dispatchHandler' : 'workHandler'}`,
-      runtime: 'nodejs20.x', architectures: ['arm64'], timeout: kind === 'dispatch' ? 30 : 60, memorySize: kind === 'dispatch' ? 256 : 512,
+      runtime: 'nodejs22.x', architectures: ['arm64'], timeout: kind === 'dispatch' ? 30 : 60, memorySize: kind === 'dispatch' ? 256 : 512,
       tableName: manifest.tableName, queueUrl, processingEnabled: enabled };
-    manifest.snapshot.concurrency[kind] = { ReservedConcurrentExecutions: 2 };
+    manifest.snapshot.concurrency[kind] = {};
     manifest.snapshot.mappings[kind] = [{ UUID: `${kind}-mapping`, FunctionArn: functionArn, State: enabled === 'true' ? 'Enabled' : 'Disabled',
       EventSourceArn: kind === 'dispatch' ? manifest.streamArn : prefix, BatchSize: kind === 'dispatch' ? 100 : 1,
       MaximumBatchingWindowInSeconds: kind === 'dispatch' ? 1 : 0, FunctionResponseTypes: ['ReportBatchItemFailures'],
@@ -68,6 +68,18 @@ test('missing or changed live function evidence cannot pass, including a second 
   assert.throws(() => verifyHistoryManifest(wrongTable, wrongTable.snapshot, 'qa', wrongTable.gitCommit));
 });
 
+test('accepted manifests cannot reserve shared capacity or select the old runtime', () => {
+  for (const kind of ['dispatch', 'worker']) {
+    for (const reservation of [0, 2, 10]) {
+      const manifest = fixture();
+      manifest.snapshot.concurrency[kind] = { ReservedConcurrentExecutions: reservation };
+      assert.throws(() => verifyHistoryManifest(manifest, manifest.snapshot, 'qa', manifest.gitCommit));
+    }
+    const manifest = fixture(); manifest.snapshot.functions[kind].runtime = 'nodejs20.x';
+    assert.throws(() => verifyHistoryManifest(manifest, manifest.snapshot, 'qa', manifest.gitCommit));
+  }
+});
+
 test('mapping drift, duplicate consumers, queue policy changes and missing evidence fail closed', () => {
   const manifest = fixture();
   const mutations = [
@@ -82,6 +94,9 @@ test('mapping drift, duplicate consumers, queue policy changes and missing evide
     live => { live.mappings.dispatch[0].MaximumBatchingWindowInSeconds = 0; },
     live => { live.mappings.worker[0].ScalingConfig.MaximumConcurrency = 10; },
     live => { live.concurrency.worker.ReservedConcurrentExecutions = 10; },
+    live => { live.concurrency.dispatch.ReservedConcurrentExecutions = 2; },
+    live => { delete live.concurrency.worker; },
+    live => { live.functions.worker.runtime = 'nodejs20.x'; },
     live => { live.queue.VisibilityTimeout = '60'; },
     live => { live.queue.RedrivePolicy = JSON.stringify({ deadLetterTargetArn: manifest.deadQueueArn, maxReceiveCount: 100 }); },
     live => { live.dead.MessageRetentionPeriod = '60'; },
@@ -104,6 +119,9 @@ test('history deployment stays in serialized jobs and requires separately provis
   const service = read('serverless.player-history.yml');
   assert.match(service, /HISTORY_PROCESSING_ENABLED, 'false'/);
   assert.match(service, /MaximumConcurrency: 2/);
+  assert.match(service, /ParallelizationFactor: 1/);
+  assert.match(service, /runtime: nodejs22\.x/);
+  assert.doesNotMatch(service, /reservedConcurrency:/);
   assert.match(service, /BatchSize: 100\n        MaximumBatchingWindowInSeconds: 1/);
   assert.match(service, /BatchSize: 1\n        MaximumBatchingWindowInSeconds: 0/);
   assert.equal((service.match(/ReportBatchItemFailures/g) ?? []).length, 2);

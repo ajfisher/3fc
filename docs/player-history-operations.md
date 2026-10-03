@@ -47,6 +47,16 @@ variable must remain false until activation is approved. Example local QA deploy
 AWS_PROFILE=3fc-agent HISTORY_PROCESSING_ENABLED=false make deploy ENV=qa SERVICE=player-history
 ```
 
+Both functions run Node.js 22 and use shared unreserved Lambda capacity. The QA
+account currently has a concurrency quota of 10 and an unreserved minimum of 10,
+so it cannot allocate reserved concurrency to these functions. The SQS mapping
+limits worker concurrency to two. Stream parallelisation is one batch per shard;
+this does not impose a global dispatcher concurrency limit. Other functions share
+the same account capacity and may contend with history processing. Check current
+account capacity, API latency and Lambda throttling before activation, and monitor
+them alongside queue age after activation. This change neither increases the
+account quota nor reserves or changes production capacity.
+
 Deployment captures `out/deploy/qa/player-history-deploy-manifest.json` (or `prod`).
 The manifest contains the exact commit, both local ZIP hashes, live function
 revision IDs, selected nonsecret configuration, queue settings and mapping IDs and

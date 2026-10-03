@@ -55,10 +55,10 @@ export function verifyHistorySnapshot(intent, snapshot) {
     assert.equal(f.role, `arn:aws:iam::${intent.accountId}:role/3fc-${intent.env}-player-history-${kind}`);
     assert.equal(f.role, intent.roles[kind]);
     assert.equal(f.handler, `api/src/lambda-player-history.${kind === 'dispatch' ? 'dispatchHandler' : 'workHandler'}`);
-    assert.equal(f.runtime, 'nodejs20.x'); assert.deepEqual(f.architectures, ['arm64']);
+    assert.equal(f.runtime, 'nodejs22.x'); assert.deepEqual(f.architectures, ['arm64']);
     assert.equal(f.timeout, kind === 'dispatch' ? 30 : 60);
     assert.equal(f.memorySize, kind === 'dispatch' ? 256 : 512);
-    assert.equal(snapshot.concurrency[kind].ReservedConcurrentExecutions, 2);
+    assert.deepEqual(snapshot.concurrency[kind], {}, 'History functions must use shared unreserved capacity');
     const mappings = snapshot.mappings[kind];
     assert(Array.isArray(mappings) && mappings.length === 1, 'Expected exactly one mapping per function');
     const mapping = mappings[0]; assert(nonempty(mapping.UUID), 'Missing mapping identity');
