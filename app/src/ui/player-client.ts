@@ -162,9 +162,10 @@ export function createPlayerClient(options: { baseUrl: string; fetch?: typeof fe
       const result = access(await json(`/v1/player-access?${params({ leagueId, ...page, limit: 20 })}`, signal)); if (result.leagueId !== leagueId) return bad(); return result;
     },
     async catalogue(signal?: AbortSignal): Promise<AchievementCatalogue> { return parseAchievementCatalogue(await json('/v1/achievement-catalogue', signal)); },
+    // Callers resolve aliases through performance() before requesting personal honours.
     async achievements(context: PlayerContext, scope: AchievementScopeContext, signal?: AbortSignal): Promise<PlayerAchievements> {
       const result = parsePlayerAchievements(await json(`/v1/player-achievements?${params({ ...context, ...scopeQuery(scope) })}`, signal));
-      if (result.leagueId !== context.leagueId || !matchesScope(result, scope)) return bad(); return result;
+      if (result.playerId !== context.playerId || result.leagueId !== context.leagueId || !matchesScope(result, scope)) return bad(); return result;
     },
     async unlocks(context: PlayerContext, scope: AchievementScopeContext, page: { cursor?: string } = {}, signal?: AbortSignal): Promise<PlayerUnlockPage> {
       const result = parsePlayerUnlocks(await json(`/v1/player-unlocks?${params({ ...context, ...scopeQuery(scope), ...page })}`, signal));

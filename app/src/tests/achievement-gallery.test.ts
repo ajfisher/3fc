@@ -119,3 +119,14 @@ test('partial projection coverage downgrades zero class progress and never claim
   const g = fixture({ achievements: async (_context, scope) => ({ ...personal(scope), freshness: { ...performance.freshness, coverage: 'unknown' } }) });
   try { await g.mounted.ready; assert.match(g.get('achievement-grid').textContent!, /Progress unavailable/); assert.doesNotMatch(g.get('achievement-grid').textContent!, /0 confirmed/); g.get<HTMLButtonElement>('achievement-open-goal').click(); assert.equal(g.get('achievement-detail-first').textContent, 'First unlock date unavailable.'); } finally { g.close(); }
 });
+
+test('gallery cannot render another player achievements from a same-league response', async () => {
+  const reader = createPlayerClient({ baseUrl: 'https://3fc.football', fetch: async () => new Response(JSON.stringify({ ...personal(), playerId: 'different-player' })) });
+  const f = fixture({ achievements: reader.achievements });
+  try {
+    await f.mounted.ready;
+    assert.equal(f.get('achievements-content').hidden, true); assert.equal(f.get('achievement-grid').children.length, 0);
+    assert.equal(f.get('achievements-player').textContent, ''); assert.equal(f.get('achievements-retry').hidden, false);
+    assert.doesNotMatch(f.root.textContent!, /different-player/);
+  } finally { f.close(); }
+});

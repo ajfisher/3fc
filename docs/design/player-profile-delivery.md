@@ -359,3 +359,14 @@ mobile OS file sharing remains AJ's device acceptance; browser user-activation
 and cancellation behavior are covered. Local AWS SSO expired before the new
 CloudFront function could be applied; static HTML aliases support the route on
 the existing distribution. No production operation was performed.
+
+Late cloud review on slice10 found two valid boundaries: a prepared PNG needed
+a bounded authorization lifetime, and achievement responses needed to match the
+canonical player as well as league/scope. Both are fixed: a30-second monotonic
+lease includes authorization/render time, cannot be renewed by flipping, and is
+checked synchronously before file release; Refresh card rechecks session,
+performance and portrait without losing period/side. Same-league responses for
+another player now fail closed. Two independent subagent delta reviews pass.
+Test compilation(group61429),32 affected tests(group61512),app build(group61649)
+and12 card/gallery browser cases(group61722) pass; all exited0 without children,
+peak1052144KiB. Fresh remote gates follow this correction.

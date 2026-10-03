@@ -36,3 +36,9 @@ test('career requests omit season and unlock pages must match their requested sc
   assert.equal(urls[0].searchParams.get('scope'), 'career'); assert.equal(urls[0].searchParams.has('seasonId'), false);
   await assert.rejects(client.unlocks({ leagueId: 'league', playerId: 'player/root' }, { scope: 'career', seasonId: null }), PlayerClientError);
 });
+
+test('achievement reads reject another canonical player even with matching league scope and revision', async () => {
+  const wrongPlayer = { ...personal(), playerId: 'different-player' };
+  const client = createPlayerClient({ baseUrl: 'https://3fc.football', fetch: async () => new Response(JSON.stringify(wrongPlayer)) });
+  await assert.rejects(client.achievements({ leagueId: wrongPlayer.leagueId, playerId: 'player/root' }, { scope: 'season', seasonId: 'winter' }), PlayerClientError);
+});
