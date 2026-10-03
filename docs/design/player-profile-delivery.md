@@ -158,3 +158,11 @@ live QA configuration check pass (groups 20031/20041, exit 0, no children). The
 live check validates disabled mappings, roles and transport; package provenance
 still requires the corrected-head workflow manifest. Independent delta review
 precedes the final push and gates.
+
+
+Cloud finding 4173226563 was accepted: final comparison persistence now fences the
+exact observed publication (including absence), so a same-source publication cannot
+race its final read. Two real concurrent-publication cases pass, then all 18
+coordinator cases and 366 affected regression/deployment tests pass (group 20628,
+exit 0, peak 182272 KiB, no children). Independent source/evidence review passes.
+Fresh current-head CI, QA and review gates are required after this fix.

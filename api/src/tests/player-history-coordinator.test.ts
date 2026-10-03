@@ -22,7 +22,7 @@ class MemoryClient {
   items = new Map<string, HistoryItem>();
   transactions: TransactWriteItem[][] = [];
   queries: QueryCommand['input'][] = [];
-  beforeCommit: ((actions: TransactWriteItem[]) => void) | null = null;
+  beforeCommit: ((actions: TransactWriteItem[]) => void | Promise<void>) | null = null;
   loseAck: ((actions: TransactWriteItem[]) => boolean) | null = null;
   seed(pk: string, sk: string, type: string, data: unknown) {
     const item = historyRow(pk, sk, type, data); this.items.set(key(item), item); return item;
@@ -52,7 +52,7 @@ class MemoryClient {
     const actions = command.input.TransactItems!; this.transactions.push(structuredClone(actions));
     assert(actions.length <= 100); assert(Buffer.byteLength(JSON.stringify(actions)) <= 3_500_000);
     assert.equal(new Set(actions.map(action => key(action.Put?.Item ?? action.ConditionCheck!.Key!))).size, actions.length);
-    this.beforeCommit?.(actions);
+    if (this.beforeCommit) await this.beforeCommit(actions);
     const valid = actions.map(action => {
       const operation = action.Put ?? action.ConditionCheck!, target = action.Put?.Item ?? action.ConditionCheck!.Key;
       assert(target); const stored = this.items.get(key(target));
@@ -404,3 +404,52 @@ test('rebuild collects real completed game records and corrections revoke goals 
   assert.equal(afterAwards?.items.some(award => award.achievementId === 'goal'), false);
   assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryPublicationAudit').length, 2);
 });
+
+for (const hadPublication of [false, true]) {
+  test(`comparison fences ${hadPublication ? 'an existing publication swap' : 'the first publication'} committed after its final read`, async () => {
+    const { client, coordinator, store, ref } = await fixture();
+    if (hadPublication) await drain(coordinator, ref);
+    const previous = await store.getPublication('league', 'player');
+    assert.equal(previous !== null, hadPublication);
+    const revision = sourceRevision(client);
+    // Prepare a real complete generation that a concurrent publisher can install.
+    // Both publishers share the same source token, so a source-only fence cannot catch this race.
+    const publishingId = await coordinator.startComparison('league', 'player');
+    let prepared = false;
+    for (let step = 0; step < 20; step++) {
+      if ((await coordinator.stepComparison('league', publishingId)).done) { prepared = true; break; }
+    }
+    assert(prepared);
+    const publishingSpec = body(client.read('LEAGUE#league', `HISTORY_COMPARE#${publishingId}`)!).spec;
+    const comparisonId = await coordinator.startComparison('league', 'player');
+    let raced = false;
+    client.beforeCommit = async actions => {
+      if (!writes(actions, 'playerHistoryComparison')) return;
+      client.beforeCommit = null;
+      const publication = await store.publish(publishingSpec);
+      assert.equal(publication.sourceRevision, revision);
+      assert.equal(publication.generation, publishingId);
+      raced = true;
+    };
+    await assert.rejects(async () => {
+      for (let step = 0; step < 20; step++) {
+        const result = await coordinator.stepComparison('league', comparisonId);
+        assert.equal(result.done, false, 'the stale before/priorGeneration must never be accepted');
+      }
+      assert.fail('comparison should have reached the publication fence');
+    }, /conditional failure|Published comparison source changed/);
+    assert.equal(raced, true, 'the publication changed inside the comparison commit window');
+    assert.equal(sourceRevision(client), revision);
+    assert.equal(body(client.read('LEAGUE#league', `HISTORY_COMPARE#${comparisonId}`)!).result, null,
+      'no stale comparison result is persisted');
+    const resumed = await coordinator.stepComparison('league', comparisonId);
+    assert.equal(resumed.done, true);
+    const result = resumed.result as { priorGeneration: string; totalsChanged: boolean; achievementsChanged: boolean };
+    assert.equal(result.priorGeneration, publishingId);
+    assert.equal(result.totalsChanged, false); assert.equal(result.achievementsChanged, false);
+    assert.deepEqual(body(client.read('LEAGUE#league', `HISTORY_COMPARE#${comparisonId}`)!).result, resumed.result);
+    assert.equal((await store.getPublication('league', 'player'))?.generation, publishingId);
+    assert.equal([...client.items.values()].filter(item => item.entityType.S === 'playerHistoryPublicationAudit').length,
+      hadPublication ? 2 : 1, 'comparison retry does not publish its own generation');
+  });
+}

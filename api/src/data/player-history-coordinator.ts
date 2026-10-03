@@ -8,7 +8,7 @@ import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identity
 import { HistorySource } from './player-history-source.js';
 import { ResumableHistoryCollector } from './player-history-collector.js';
 import { PlayerHistoryStore } from './player-history-store.js';
-import { historyBody, historyHash, historyKey, historyRow, PlayerHistoryError,
+import { historyBody, historyHash, historyKey, historyRow, historyPartition, PlayerHistoryError,
   type HistoryClient, type HistoryContext, type HistoryGeneration, type HistoryItem, type HistoryPublication } from './player-history-model.js';
 import { readHistoryReadiness } from './player-history-readiness.js';
 import { historyMutationItems, historyWorkSchema, sendHistoryTransaction } from './player-history-work.js';
@@ -281,7 +281,11 @@ export class HistoryCoordinator {
     else if (step.phase === 'evaluating') {
       if (step.evaluationDone) await this.store.markComplete(spec); else await this.store.evaluateNext(spec);
     } else if (step.phase === 'complete') {
+      const publicationPk = historyPartition(leagueId, value.playerId);
+      const publicationRow = await this.get(publicationPk, 'PUBLISHED');
       const publication = await this.store.getPublication(leagueId, value.playerId);
+      if ((publicationRow ? historyBody<HistoryPublication>(publicationRow, publicationPk, 'PUBLISHED', 'playerHistoryPublication').generation : undefined)
+        !== publication?.generation) throw new PlayerHistoryError('history_changed', 'Published comparison source changed.');
       const before = await this.store.getSummary(leagueId, value.playerId, { scope: 'career', seasonId: null });
       const after = await this.store.previewCareer(spec);
       const current = await this.store.getPublication(leagueId, value.playerId);
@@ -290,7 +294,8 @@ export class HistoryCoordinator {
         totalsChanged: JSON.stringify(before?.state.totals ?? null) !== JSON.stringify(after.state.totals),
         achievementsChanged: JSON.stringify(semanticAchievements(before?.state ?? null)) !== JSON.stringify(semanticAchievements(after.state)),
         before: before?.state ?? null, after: after.state };
-      await this.transact([...context.checks, this.put(row, pk, key, 'playerHistoryComparison', { ...value, result })]);
+      await this.transact([...context.checks, this.check(publicationRow, publicationPk, 'PUBLISHED'),
+        this.put(row, pk, key, 'playerHistoryComparison', { ...value, result })]);
       return { done: true, result };
     } else failure('Comparison generation was unexpectedly published.');
     return { done: false, result: null };
