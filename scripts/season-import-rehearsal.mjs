@@ -7,8 +7,10 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { DynamoDBClient, ScanCommand, DescribeTableCommand, CreateTableCommand, DeleteTableCommand,
-  ListTagsOfResourceCommand, TransactWriteItemsCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+  ListTagsOfResourceCommand, TransactWriteItemsCommand } from "@aws-sdk/client-dynamodb";
 import { buildPlan, validatePlan, decode, key, inventoryDigest, excludedTypes, envelope } from "./season-import-plan.mjs";
+
+import { cutoverManifest, SeasonImportExecutor } from "./season-import-executor.mjs";
 
 export const sourceTable = "3fc-qa-app", productionTable = "3fc-prod-app", region = "ap-southeast-2";
 export function assertDisposable(name) {
@@ -45,8 +47,8 @@ export function assertDestinationEmptyOfBusiness(items) {
 const aws = (profile, ...args) => JSON.parse(execFileSync("aws", [...args, "--profile", profile, "--region", region, "--output", "json"],
   { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] }));
 const log = (stage, more = {}) => process.stdout.write(`${JSON.stringify({ stage, ...more })}\n`);
-async function privateFile(path, value) { await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" }); }
-async function loadPrivate(path) {
+export async function privateFile(path, value) { await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" }); }
+export async function loadPrivate(path) {
   const stat = await lstat(path);
   if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) throw new Error("Private inputs must be regular files readable only by the operator.");
   return JSON.parse(await readFile(path, "utf8"));
@@ -83,7 +85,7 @@ export async function writeItems(client, name, items, progress = () => {}) {
   }
 }
 export function readOnlyRepositoryClient(client, name) {
-  assertDisposable(name);
+  if (name !== productionTable) assertDisposable(name);
   return { async send(command) {
     const allowed = ["GetItemCommand", "QueryCommand", "ScanCommand"].includes(command.constructor.name) && command.input.TableName === name;
     const batch = command.constructor.name === "BatchGetItemCommand" && command.input.RequestItems &&
@@ -106,7 +108,7 @@ export async function collectOwnedPlayers(repository, input) {
   }
   throw new Error("Repository acceptance: ownership page budget");
 }
-async function repositoryAcceptance(client, name, plan, interrupted) {
+export async function repositoryAcceptance(client, name, plan, interrupted = () => false) {
   const { ThreeFcRepository } = await import("../api/dist/data/repository.js");
   const { PlayerIdentityPlanner } = await import("../api/dist/data/player-identity.js");
   const ro = readOnlyRepositoryClient(client, name), repository = new ThreeFcRepository(ro, name), planner = new PlayerIdentityPlanner(ro, name);
@@ -144,6 +146,12 @@ async function repositoryAcceptance(client, name, plan, interrupted) {
   for (const row of expected.filter(r => r.type === "playerClaim")) {
     const players = await collectOwnedPlayers(repository, { joinCode: games[0].joinCode, userId: row.d.userId });
     check(players.some(p => p.playerId === row.d.playerId), "returning_player_ownership");
+  }
+  for (const transfer of plan.ownershipBindings ?? []) {
+    const former = transfer.from === transfer.to ? [] : await collectOwnedPlayers(repository, { joinCode: games[0].joinCode, userId: transfer.from });
+    check(!former.some(p => p.playerId === transfer.playerId), "former_owner_removed");
+    const view = await repository.getPlayerView(transfer.playerId);
+    check(view?.player.claimedByUserId === transfer.to, "transferred_profile_owner");
   }
   return { games: games.length, profileResolutions: expected.filter(r => r.type === "playerIdentity").length, directoryPlayers: directory.length, adminGrants: acl.length };
 }
@@ -203,19 +211,36 @@ async function main(args) {
       const tags = (await client.send(new ListTagsOfResourceCommand({ ResourceArn: owned.arn }))).Tags ?? [];
       assertOwned(table, owned, tags);
       log("disposable-created", { table: name });
-      await writeItems(client, name, plan.items, count => { log("copied", { records: count }); if (interrupted) throw new Error("Rehearsal interrupted."); });
-      const imported = await scan(client, name);
-      if (inventoryDigest(imported) !== inventoryDigest(plan.items)) throw new Error("Imported records do not match plan.");
-      validatePlan({ ...plan, items: imported.sort((a, b) => key(a).localeCompare(key(b), "en")) });
-      // Only the disposable table gets a fresh verified control, after complete validation.
-      const control = envelope("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl", { mode: "fenced", coverage: "verified", writerVersion: 1, epoch: plan.nonce }, plan.at);
-      const original = plan.items.find(i => i.pk.S === "PLAYER_IDENTITY");
-      await client.send(new PutItemCommand({ TableName: name, Item: control, ConditionExpression: "#data = :old",
-        ExpressionAttributeNames: { "#data": "data" }, ExpressionAttributeValues: { ":old": original.data } }));
-      const acceptance = await repositoryAcceptance(client, name, plan, () => interrupted);
-      const final = await scan(client, name);
-      if (inventoryDigest(final) !== inventoryDigest(plan.items.map(i => i.pk.S === "PLAYER_IDENTITY" ? control : i))) throw new Error("Read acceptance changed imported data.");
-      report = { ...report, mode: "rehearse", table: name, planDigest: plan.planDigest, sourceDigest: plan.sourceDigest, summary: plan.summary, repositoryAcceptance: acceptance };
+      const baseline = [envelope("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl",
+        { mode: "fenced", coverage: "verified", writerVersion: 1, epoch: `baseline-${owner}` }, plan.at),
+      envelope("PLAYER_MIGRATION#rehearsal-baseline", "AUDIT", "playerIdentityMigration", { phase: "active" }, plan.at)];
+      await writeItems(client, name, baseline);
+      const manifest = cutoverManifest(plan, baseline, { purpose: "disposable-engine-acceptance" });
+      await privateFile(`${out}/cutover-manifest.json`, manifest);
+      const guard = async () => {
+        if (interrupted) throw new Error("Rehearsal interrupted.");
+        const current = (await client.send(new DescribeTableCommand({ TableName: name }))).Table;
+        const currentTags = (await client.send(new ListTagsOfResourceCommand({ ResourceArn: owned.arn }))).Tags ?? [];
+        assertOwned(current, owned, currentTags);
+      };
+      // Drop one successful transaction response, then resume from DynamoDB's
+      // committed checkpoint. This tests recovery on real DynamoDB, not a mock.
+      let writes = 0, dropped = false;
+      const lostResponse = new Error("Injected lost transaction response");
+      const uncertainClient = { async send(command) {
+        const response = await client.send(command);
+        if (command.constructor.name === "TransactWriteItemsCommand" && ++writes === 3) { dropped = true; throw lostResponse; }
+        return response;
+      } };
+      const engineOptions = { scan: () => scan(client, name), guard, progress: progress => log("import-progress", progress),
+        acceptance: () => repositoryAcceptance(client, name, plan, () => interrupted) };
+      try { await new SeasonImportExecutor(uncertainClient, name, manifest, engineOptions).run(); }
+      catch (error) { if (error !== lostResponse) throw error; log("lost-response-injected"); }
+      if (!dropped) throw new Error("Rehearsal recovery injection was not exercised.");
+      const completed = await new SeasonImportExecutor(client, name, manifest, engineOptions).run();
+      const acceptance = completed.acceptance;
+      report = { ...report, mode: "rehearse", table: name, planDigest: plan.planDigest, sourceDigest: plan.sourceDigest, summary: plan.summary,
+        repositoryAcceptance: acceptance, productionEngine: { phase: completed.phase, lostResponseRecovery: true } };
       log("rehearsal-verified", acceptance);
     }
   } catch (error) { failure = error; }

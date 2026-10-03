@@ -3,10 +3,13 @@ import test from "node:test";
 import { buildPlan, validatePlan, envelope, decode, subject, projection, inventoryDigest } from "../season-import-plan.mjs";
 import { assertDisposable, assertOwned, assertDestinationEmptyOfBusiness, writeItems, scan, readOnlyRepositoryClient, collectOwnedPlayers } from "../season-import-rehearsal.mjs";
 import { BatchGetItemCommand, GetItemCommand, PutItemCommand, TransactWriteItemsCommand } from "@aws-sdk/client-dynamodb";
+import { SeasonImportExecutor, cutoverManifest, validateCutover, isControl } from "../season-import-executor.mjs";
+import { productionArguments, verifyFreeze, verifyBackup, verifyWriter } from "../season-import-production.mjs";
+import { key, digest } from "../season-import-plan.mjs";
 
 const at = "2026-10-03T00:00:00Z", name = "3fc-import-rehearsal-12345678-1234-1234-1234-123456789012";
 const scope = { leagueId: "league", seasonId: "winter", excludedGameIds: ["early"], adminEmails: ["organiser@example.invalid", "second@example.invalid"] };
-function fixture() {
+export function fixture() {
   const rows = [];
   const put = (pk, sk, type, d) => rows.push(envelope(pk, sk, type, d, at));
   put("LEAGUE#league", "METADATA", "league", { leagueId: "league", name: "League", createdByUserId: scope.adminEmails[0] });
@@ -40,6 +43,46 @@ function fixture() {
 }
 const options = { at, nonce: "test-epoch", code: () => "CCCCCCCC" };
 const change = (rows, type, fn) => { const item = rows.find(r => r.entityType.S === type); item.data.S = JSON.stringify(fn(decode(item))); };
+
+test("explicit account repair moves claimed group members and indexes without changing history or QA", () => {
+  const source = fixture(), before = inventoryDigest(source), old = subject(scope.adminEmails[0]), email = "correct@example.invalid";
+  const alias = source.find(i => i.pk.S === "PLAYER#alias" && i.sk.S === "PROFILE");
+  alias.data.S = JSON.stringify({ ...decode(alias), claimedByUserId: old });
+  const frozen = inventoryDigest(source);
+  const transferScope = { ...scope, ownershipMappings: [{ playerId: "root", expectedOwner: old, toEmail: email }] };
+  const plan = buildPlan(source, transferScope, options);
+  assert.equal(inventoryDigest(source), frozen); assert.notEqual(before, frozen);
+  assert(plan.items.filter(i => i.entityType.S === "player").every(i => decode(i).claimedByUserId === subject(email)));
+  assert(!plan.items.some(i => i.pk.S === `USER#${old}`));
+  assert(plan.items.some(i => i.pk.S === `USER#${subject(email)}` && i.entityType.S === "playerClaim"));
+  assert.equal(decode(plan.items.find(i => i.entityType.S === "goal")).scorerPlayerId, "alias");
+  assert.deepEqual(plan.admins, buildPlan(source, scope, options).admins, "account repair never adds administrator authority");
+  assert.equal(plan.summary.ownershipTransfers, 1);
+  const unchanged = buildPlan(source, { ...scope, ownershipMappings: [{ playerId: "root", expectedOwner: old, toEmail: scope.adminEmails[0] }] }, options);
+  assert.equal(unchanged.summary.ownershipTransfers, 0);
+  assert.equal(unchanged.summary.verifiedOwnershipBindings, 1);
+  assert.equal(inventoryDigest(unchanged.items.filter(i => i.entityType.S === "player")),
+    inventoryDigest(source.filter(i => i.entityType.S === "player" && decode(i).playerId !== "excluded-only")));
+  assert.equal(buildPlan([...source].reverse(), transferScope, options).planDigest, plan.planDigest);
+  for (const bad of [
+    { playerId: "alias", expectedOwner: old, toEmail: email },
+    { playerId: "root", expectedOwner: subject("wrong@example.invalid"), toEmail: email },
+  ]) assert.throws(() => buildPlan(source, { ...scope, ownershipMappings: [bad] }, options), /transfer_/);
+  source.push(envelope("PLAYER#outside", "PROFILE", "player", { playerId: "outside", claimedByUserId: subject(email) }, at));
+  assert.throws(() => buildPlan(source, transferScope, options), /transfer_destination_already_claimed/);
+  source.at(-1).data.S = JSON.stringify({ playerId: "outside", claimedByUserId: old });
+  assert.equal(buildPlan(source, { ...scope, ownershipMappings: [{ playerId: "root", expectedOwner: old, toEmail: scope.adminEmails[0] }] }, options).summary.ownershipTransfers, 0,
+    "asserting existing ownership allows other unselected QA profiles owned by the same account");
+});
+
+test("ownership repair leaves unclaimed aliases unclaimed and rejects conflicting owners", () => {
+  const source = fixture(), transferScope = { ...scope, ownershipMappings: [{ playerId: "root", expectedOwner: subject(scope.adminEmails[0]), toEmail: "correct@example.invalid" }] };
+  const plan = buildPlan(source, transferScope, options);
+  assert.equal(decode(plan.items.find(i => i.pk.S === "PLAYER#alias" && i.sk.S === "PROFILE")).claimedByUserId, null);
+  const alias = source.find(i => i.pk.S === "PLAYER#alias" && i.sk.S === "PROFILE");
+  alias.data.S = JSON.stringify({ ...decode(alias), claimedByUserId: subject("other@example.invalid") });
+  assert.throws(() => buildPlan(source, transferScope, options), /conflicting_claim_owners/);
+});
 
 test("selection preserves historical IDs and alias closure, excludes early-only profiles and extra admins, regenerates scoped indexes", () => {
   const source = fixture(), plan = buildPlan(source, scope, options);
@@ -205,4 +248,140 @@ test("returning-player acceptance respects its20-row bound and exhausts even emp
   } }, { userId: "owner", joinCode: "CCCCCCCC" });
   assert.deepEqual(players, [{ playerId: "root" }]); assert.equal(calls, 2);
   await assert.rejects(collectOwnedPlayers({ async listOwnedJoinPlayers() { return { players: [], cursor: "stuck", complete: false }; } }, {}), /invalid ownership continuation/);
+});
+
+function engineFixture() {
+  const plan = buildPlan(fixture(), scope, options);
+  const baseline = [envelope("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl", { mode: "fenced", coverage: "verified", writerVersion: 1, epoch: "previous" }, at),
+    envelope("PLAYER_MIGRATION#old", "AUDIT", "playerIdentityMigration", { phase: "active" }, at)];
+  const manifest = cutoverManifest(plan, baseline, { test: true });
+  let rows = new Map(baseline.map(i => [key(i), structuredClone(i)]));
+  let transactions = 0, dropAt = 0;
+  const client = { async send(command) {
+    if (command instanceof GetItemCommand) return { Item: structuredClone(rows.get(key(command.input.Key))) };
+    assert(command instanceof TransactWriteItemsCommand);
+    const next = new Map(rows);
+    for (const op of command.input.TransactItems) {
+      const action = op.Put ?? op.ConditionCheck, item = action.Item ?? action.Key, current = rows.get(key(item));
+      assert.equal(action.TableName, name);
+      if (action.ConditionExpression.includes("attribute_not_exists")) {
+        if (current) throw new Error("conditional collision");
+      } else {
+        for (const [alias, attr] of Object.entries(action.ExpressionAttributeNames)) {
+          const valueName = { "#data": ":data", "#updated": ":updated", "#type": ":type", "#created": ":created" }[alias];
+          if (digest(current?.[attr]) !== digest(action.ExpressionAttributeValues[valueName])) throw new Error("conditional state changed");
+        }
+      }
+      if (op.Put) next.set(key(item), structuredClone(item));
+    }
+    rows = next;
+    if (++transactions === dropAt) throw new Error("response lost after commit");
+    return {};
+  } };
+  const scanAll = async () => [...rows.values()];
+  const engineOptions = { scan: scanAll, guard: async () => {}, acceptance: async () => {
+    assert.equal(decode([...rows.values()].find(isControl)).coverage, "verified"); return { passed: true };
+  } };
+  return { plan, baseline, manifest, client, engineOptions, scanAll, rows: () => rows, drop: at => { dropAt = at; }, transactions: () => transactions,
+    runner: overrides => new SeasonImportExecutor(client, name, manifest, { ...engineOptions, ...overrides }) };
+}
+
+test("production engine preserves system audit and resumes lost begin, chunk, activation and acceptance responses", async () => {
+  const complete = engineFixture(); await complete.runner().run();
+  for (let lost = 1; lost <= complete.transactions(); lost++) {
+    const f = engineFixture(); f.drop(lost);
+    await assert.rejects(f.runner().run(), /response lost/);
+    const result = await f.runner().run();
+    assert.equal(result.phase, "accepted");
+    assert.equal(inventoryDigest(await f.scanAll()), inventoryDigest(await complete.scanAll()));
+    assert.deepEqual(f.rows().get(key(f.baseline[1])), f.baseline[1]);
+    const count = f.transactions(); await f.runner().run();
+    assert.equal(f.transactions(), count, "already accepted import performs no more writes");
+  }
+});
+
+test("changed destination, previous imported rows and control stop resume without overwriting", async () => {
+  for (const kind of ["extra", "row", "control"]) {
+    const f = engineFixture(); f.drop(2);
+    await assert.rejects(f.runner().run(), /response lost/);
+    if (kind === "extra") { const row = envelope("UNEXPECTED", "DATA", "new", {}, at); f.rows().set(key(row), row); }
+    else {
+      const row = [...f.rows().values()].find(i => kind === "control" ? isControl(i) : i.entityType.S === "game");
+      row.data.S = JSON.stringify({ ...decode(row), changed: true });
+    }
+    const snapshot = inventoryDigest(await f.scanAll()), calls = f.transactions();
+    await assert.rejects(f.runner().run(), /destination differs/);
+    assert.equal(f.transactions(), calls); assert.equal(inventoryDigest(await f.scanAll()), snapshot);
+  }
+});
+
+test("mid-batch collision is atomic and does not advance the checkpoint", async () => {
+  const f = engineFixture(); let injected = false;
+  const wrapped = { async send(command) {
+    if (!injected && command instanceof TransactWriteItemsCommand && command.input.TransactItems.length > 2) {
+      const collision = structuredClone(command.input.TransactItems[2].Put.Item);
+      collision.data.S = JSON.stringify({ unexpected: true }); f.rows().set(key(collision), collision); injected = true;
+    }
+    return f.client.send(command);
+  } };
+  const runner = new SeasonImportExecutor(wrapped, name, f.manifest, f.engineOptions);
+  await assert.rejects(runner.run(), /conditional collision/);
+  assert.equal(decode(await runner.status()).next, 0);
+  assert.equal(decode(f.rows().get(key(f.baseline[0]))).mode, "paused");
+});
+
+test("freeze loss stops writes; failed acceptance leaves a resumable verified checkpoint", async () => {
+  const f = engineFixture();
+  await assert.rejects(f.runner({ guard: async () => { throw new Error("freeze lost"); } }).run(), /freeze lost/);
+  assert.equal(f.transactions(), 0);
+  await assert.rejects(f.runner({ acceptance: async () => { throw new Error("acceptance failed"); } }).run(), /acceptance failed/);
+  assert.equal(decode(await f.runner().status()).phase, "verified");
+  assert.equal((await f.runner().run()).phase, "accepted");
+});
+
+test("manifest tampering, different run ownership and business baseline are rejected", async () => {
+  const f = engineFixture(), changed = structuredClone(f.manifest); changed.plan.items.pop();
+  assert.throws(() => validateCutover(changed), /digest mismatch/);
+  assert.throws(() => cutoverManifest(f.plan, [...f.baseline, fixture()[0]], {}), /only identity system/);
+  f.drop(1); await assert.rejects(f.runner().run(), /response lost/);
+  const other = cutoverManifest(f.plan, f.baseline, { different: true });
+  await assert.rejects(new SeasonImportExecutor(f.client, name, other, f.engineOptions).run(), /checkpoint ownership/);
+});
+
+test("production CLI requires an explicit mode and approved manifest digest, never a configurable destination", () => {
+  const base = ["apply", "--config", "private.json", "--out", "new-dir", "--manifest", "manifest.json"];
+  assert.throws(() => productionArguments(base), /missing/);
+  assert.throws(() => productionArguments([...base, "--approved-digest", "a".repeat(64), "--apply", "disposable-table-only"]), /explicit production/);
+  assert.equal(productionArguments([...base, "--approved-digest", "a".repeat(64), "--apply", "production-season-import"]).command, "apply");
+  assert.throws(() => productionArguments(["observe", "--config", "x", "--out", "x", "--table", "other"]), /invalid/);
+  assert.throws(() => productionArguments(["prepare", "--config", "x", "--out", "x", "--observation", "x", "--apply", "anything"]), /invalid/);
+});
+
+test("freeze drain and physical-table backups must be current, complete and match", () => {
+  const live = { qa: { revision: "q" }, prod: { revision: "p" } }, observed = { at, live }, start = Date.parse(at);
+  assert.throws(() => verifyFreeze(observed, live, start + 904999), /905-second/);
+  assert.throws(() => verifyFreeze(observed, { ...live, prod: { revision: "changed" } }, start + 905000), /writer changed/);
+  verifyFreeze(observed, live, start + 905000);
+  const table = { arn: "exact", id: "physical" };
+  const backup = { BackupDetails: { BackupStatus: "AVAILABLE", BackupType: "USER", BackupCreationDateTime: new Date(start + 905000).toISOString() },
+    SourceTableDetails: { TableArn: "exact", TableId: "physical" } };
+  verifyBackup(backup, table, at);
+  assert.throws(() => verifyBackup({ ...backup, SourceTableDetails: { TableArn: "exact", TableId: "replaced" } }, table, at), /backup/);
+  assert.throws(() => verifyBackup({ ...backup, BackupDetails: { ...backup.BackupDetails, BackupStatus: "CREATING" } }, table, at), /backup/);
+  assert.throws(() => verifyBackup({ ...backup, BackupDetails: { ...backup.BackupDetails, BackupCreationDateTime: at } }, table, at), /backup/);
+});
+
+test("accepted writer pins account, physical endpoint, revision and player feature settings", () => {
+  const live = { name: "3fc-prod-api-core", arn: "arn:aws:lambda:ap-southeast-2:123456789012:function:3fc-prod-api-core",
+    hash: "accepted-package", revision: "accepted-revision", state: "Active", update: "Successful", table: "3fc-prod-app",
+    claim: "proof", returning: "true", consolidation: "false" };
+  const deployment = { packageCodeSha256: live.hash, functionFingerprint: { functionName: live.name, codeSha256: live.hash,
+    revisionId: live.revision, playerClaimMode: "proof", returningJoinEnabled: "true", consolidationEnabled: "false" } };
+  verifyWriter(live, deployment, "prod", "123456789012", "3fc-prod-app");
+  for (const mutation of [{ revision: "changed" }, { hash: "changed" }, { arn: "different-account" }, { table: "3fc-qa-app" },
+    { claim: "disabled" }, { returning: "false" }, { consolidation: "true" }]) {
+    assert.throws(() => verifyWriter({ ...live, ...mutation }, deployment, "prod", "123456789012", "3fc-prod-app"), /writer or player feature/);
+  }
+  const disabled = structuredClone(deployment); disabled.functionFingerprint.returningJoinEnabled = "false";
+  assert.throws(() => verifyWriter({ ...live, returning: "false" }, disabled, "prod", "123456789012", "3fc-prod-app"), /writer or player feature/);
 });

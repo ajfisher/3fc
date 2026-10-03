@@ -68,12 +68,13 @@ receipts. The effects of completed consolidations survive in preserved identity
 sidecars; goal correction history is retained. This is not a complete forensic
 archive of QA's administrative operations.
 
-The new table starts with fresh paused/unknown identity control. Only after the
-complete imported inventory matches the plan and validates does the rehearsal
-activate a fresh fenced/verified control **in that disposable table**. Production
-retains its own control and migration history. A real production import would
-need its own reviewed pause, source freeze, certification and rollback protocol;
-this temporary control activation is not that protocol.
+The new table is seeded with disposable identity system records, then runs the
+same resumable transaction engine as the separately authorised production CLI.
+It pauses control, imports conditionally, verifies the exact inventory and
+certifies its own coverage. It deliberately loses a successful transaction
+response and resumes from the durable checkpoint. Production remains read-only
+during rehearsal. See [the production cutover](season-import-production.md) for
+its separate approval, freeze, backup and recovery requirements.
 
 These operations cross a durable-state ownership boundary and are high risk as
 tooling despite their restricted target. Relevant invariants are INV-001 (private
@@ -105,6 +106,21 @@ The two admin references can instead both be explicit emails. A repeated account
 unclaimed profile, alias instead of a canonical root, or missing admin grant is
 a blocking error. Player ownership is preserved independently of administrator
 access: granting an account admin access does not transfer a claimed player.
+
+Optional `scope.ownershipMappings` entries contain `playerId`, `expectedOwner`
+(the observed magic-link subject) and `toEmail`. The ID must be a selected
+canonical root. If the target email already owns that root, this is an explicit
+ownership assertion and changes no profile. Otherwise it moves every claimed
+member of the group to the new subject, preserves unclaimed aliases, rebuilds
+claim indexes/revisions, and rejects an already-claimed destination elsewhere
+in QA. It never adds an admin grant. A transferred organiser must be selected
+by its explicit destination email, with an existing source grant. Missing or
+changed expected owners, conflicting aliases and duplicate destinations block.
+
+The October 3 live check confirmed AJ's canonical profile already belongs to
+the requested Gmail account. The prior conversational claim that it belonged
+to another address was incorrect. The current private scope asserts Gmail
+ownership; no account transfer is needed for this snapshot.
 
 From the repository root, under the normal process-group resource guard:
 
@@ -146,7 +162,9 @@ node scripts/season-import-rehearsal.mjs rehearse \
 
 Before CreateTable, the CLI re-reads QA, checks the plan digest, and independently
 reconstructs every planned row from the current source and configured scope.
-Imports use bounded conditional transactions and stop at the first failed batch.
+Imports use bounded conditional transactions with an atomic checkpoint. The
+rehearsal injects one lost committed response, verifies the checkpoint inventory,
+and resumes using the same production transaction engine.
 After import, an exact full-inventory hash comparison detects missing, extra or
 altered records. Independent relational checks cover roster registrations,
 canonical registration uniqueness, goal players, assists, goal markers, own-goal
