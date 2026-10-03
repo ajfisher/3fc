@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { profileMediaRetirementSchema, profileMediaRetirementKey } from './data/player-portrait-retirement.js';
 import { historyHash } from './data/player-history-model.js';
 import { historyWorkSchema } from './data/player-history-work.js';
-import { profileNameWorkSchema, profileWorkReference, profileWorkReferenceSchema } from './data/player-profile-work.js';
+import { profileNameWorkSchema, profileWorkReference, profileWorkReferenceSchema, profileMediaWorkSchema, profileMediaWorkReference } from './data/player-profile-work.js';
 
 const identifier = z.string().min(1).refine(value => value.trim().length > 0);
 const leagueId = identifier.refine(value => Buffer.byteLength(`LEAGUE#${value}`, 'utf8') <= 2048);
@@ -22,13 +23,13 @@ interface DispatchDependencies {
   send: (reference: WorkQueueReference, delaySeconds?: number) => Promise<void>;
 }
 interface WorkerDependencies extends DispatchDependencies {
-  process: (reference: WorkQueueReference) => Promise<{ done: boolean }>;
+  process: (reference: WorkQueueReference) => Promise<{ done: boolean; delaySeconds?: number }>;
 }
 
 /** Advance a few durable checkpoints per delivery, sequentially. Budgets are
  * checked between steps; an in-flight transaction always settles before return. */
 export async function processHistorySteps(reference: WorkQueueReference,
-  process: WorkerDependencies['process'], options: { now?: () => number; remaining?: () => number } = {}): Promise<{ done: boolean }> {
+  process: WorkerDependencies['process'], options: { now?: () => number; remaining?: () => number } = {}): Promise<{ done: boolean; delaySeconds?: number }> {
   const now = options.now ?? (() => performance.now()), remaining = options.remaining ?? (() => Infinity);
   const startedAt = now();
   for (let step = 0; step < 8; step++) {
@@ -36,6 +37,10 @@ export async function processHistorySteps(reference: WorkQueueReference,
     const result = await process(reference);
     if (!result || typeof result.done !== 'boolean') throw new Error('history_invalid_processing_result');
     if (result.done) return { done: true };
+    if (result.delaySeconds !== undefined) {
+      if (!Number.isInteger(result.delaySeconds) || result.delaySeconds < 1 || result.delaySeconds > 900) throw new Error('history_invalid_delay');
+      return { done: false, delaySeconds: result.delaySeconds };
+    }
   }
   return { done: false };
 }
@@ -73,6 +78,14 @@ function streamReference(value: unknown): WorkQueueReference | null {
   if (record.eventName === 'REMOVE') return null;
   const image = imageSchema.parse(record.dynamodb.NewImage), keys = record.dynamodb.Keys;
   if (keys.pk.S !== image.pk.S || keys.sk.S !== image.sk.S) throw new Error('history_stream_key_mismatch');
+  if (image.entityType.S === 'playerProfileMediaWork' || image.entityType.S === 'playerProfileMediaRetirement') {
+    const media = image.entityType.S === 'playerProfileMediaWork';
+    const data = media ? profileMediaWorkSchema.parse(JSON.parse(image.data.S)) : profileMediaRetirementSchema.parse(JSON.parse(image.data.S));
+    const reference = media ? profileMediaWorkReference(data.playerId, data.jobId) : profileWorkReferenceSchema.parse({
+      version: 1, kind: 'profile', playerHash: historyHash(data.playerId), key: profileMediaRetirementKey(data.jobId) });
+    if (keys.pk.S !== `PLAYER_PROFILE_WORK#${reference.playerHash}` || keys.sk.S !== reference.key) throw new Error('profile_stream_scope_mismatch');
+    return ['deleted', 'active', 'done'].includes(data.status) ? null : reference;
+  }
   if (image.entityType.S === 'playerProfileNameWork') {
     const data = profileNameWorkSchema.parse(JSON.parse(image.data.S));
     const reference = profileWorkReference(data.playerId, data.nameRevision);
@@ -138,7 +151,11 @@ export function createHistoryWorker(dependencies: WorkerDependencies) {
         const parsed = sqsRecordSchema.parse(record), reference = workQueueReferenceSchema.parse(JSON.parse(parsed.body));
         const result = await dependencies.process(reference);
         if (!result || typeof result.done !== 'boolean') throw new Error('history_invalid_processing_result');
-        if (!result.done) await dependencies.send(reference, 1);
+        if (!result.done) {
+          const delay = result.delaySeconds ?? 1;
+          if (!Number.isInteger(delay) || delay < 1 || delay > 900) throw new Error('history_invalid_delay');
+          await dependencies.send(reference, delay);
+        }
       } catch { batchItemFailures.push({ itemIdentifier: identifiers[index] }); }
     }
     return { batchItemFailures };

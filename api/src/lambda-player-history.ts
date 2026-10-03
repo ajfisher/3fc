@@ -1,6 +1,8 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { HistoryCoordinator } from './data/player-history-coordinator.js';
+import { PlayerPortraitWorker } from './data/player-portrait-worker.js';
+import { createPortraitStore } from './media/portrait-store.js';
 import { ProfileNameWorker } from './data/player-profile-name-worker.js';
 import { createHistoryDispatcher, createHistoryWorker, workQueueReferenceSchema, processHistorySteps,
   type WorkQueueReference } from './history-transport.js';
@@ -23,7 +25,9 @@ export const workHandler = (event: unknown, context?: { getRemainingTimeInMillis
     required('HISTORY_QUEUE_URL');
     const tableName = required('DYNAMODB_TABLE');
     const coordinator = new HistoryCoordinator(dynamodb, tableName), profiles = new ProfileNameWorker(dynamodb, tableName);
-    return processHistorySteps(reference, ref => ref.kind === 'profile' ? profiles.process(ref) : coordinator.process(ref), {
+    return processHistorySteps(reference, ref => ref.kind === 'profile'
+      ? (ref.key.startsWith('NAME#') ? profiles.process(ref) : new PlayerPortraitWorker(dynamodb, tableName, createPortraitStore()).process(ref))
+      : coordinator.process(ref), {
       ...(context ? { remaining: () => context.getRemainingTimeInMillis() } : {})
     });
   } })(event);

@@ -1,6 +1,7 @@
 import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type QueryCommandOutput, type TransactWriteItem } from '@aws-sdk/client-dynamodb';
 import { z } from 'zod';
 import { aclSk, playerClaimSk } from './keys.js';
+import { PLAYER_PRESENTATION_SK, playerPresentationSchema } from './player-profile-work.js';
 import { IdentityReadCache } from './identity-read-cache.js';
 import { readPlayerClaimsRevision } from './player-claims-revision.js';
 import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identityDirectorySk, identityLeagueSk,
@@ -129,10 +130,16 @@ export class PlayerProfileAccess {
     const viewer = !scope.hasLeagueAcl && !owner && input.viewerPlayerId
       ? (await this.players(scope, input.leagueId, [input.viewerPlayerId])).get(input.viewerPlayerId) : undefined;
     if (!scope.hasLeagueAcl && !owner && !(viewer?.inLeague && viewer.ownerId !== null && accounts.includes(viewer.ownerId))) return denied();
-    const checks = [...scope.checks, ...target.checks, ...(viewer ? viewer.checks : [])];
+    // Portrait presence belongs only to the selected target. Discovery may
+    // already fence twenty roots; adding media checks there could exceed100.
+    await scope.cache.prefetch([{ pk: `PLAYER#${target.playerId}`, sk: PLAYER_PRESENTATION_SK }]);
+    const presentation = await this.read(scope.cache, `PLAYER#${target.playerId}`, PLAYER_PRESENTATION_SK, 'playerPresentation');
+    const media = presentation.item ? playerPresentationSchema.parse(presentation.value) : null;
+    if (media && media.playerId !== target.playerId) return unavailable();
+    const checks = [...scope.checks, ...target.checks, ...(viewer ? viewer.checks : []), identityCondition(this.tableName, presentation)];
     this.deadline(scope.deadline);
     await this.assertCurrent(checks);
-    return { player: { playerId: target.playerId, displayName: target.displayName, hasPortrait: false },
+    return { player: { playerId: target.playerId, displayName: target.displayName, hasPortrait: Boolean(media?.portrait) },
       league: { leagueId: input.leagueId, name: scope.league.value.name as string }, owner, checks };
   }
   private deadline(deadline: number): void { if (Date.now() >= deadline) unavailable(); }

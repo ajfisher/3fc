@@ -16,7 +16,7 @@ export const historyFilters = [
   } },
   { eventName: ['INSERT', 'MODIFY'], dynamodb: {
     Keys: { pk: { S: [{ prefix: 'PLAYER_PROFILE_WORK#' }] } },
-    NewImage: { entityType: { S: ['playerProfileNameWork'] } }
+    NewImage: { entityType: { S: ['playerProfileNameWork', 'playerProfileMediaWork', 'playerProfileMediaRetirement'] } }
   } },
 ];
 
@@ -27,6 +27,7 @@ export function verifyHistorySnapshot(intent, snapshot) {
   assert(['true', 'false'].includes(intent.processingEnabled), 'Invalid processing switch');
   assert(/^\d{12}$/.test(intent.accountId), 'Invalid AWS account');
   assert(nonempty(intent.region) && nonempty(intent.tableName), 'Missing deployment scope');
+  assert.equal(intent.portraitBucket, `3fc-${intent.env}-portraits-${intent.accountId}`);
   assert.equal(intent.tableName, `3fc-${intent.env}-app`, 'History must use this environment\'s application table');
   const prefix = `arn:aws:sqs:${intent.region}:${intent.accountId}:3fc-${intent.env}-player-history`;
   assert.equal(intent.queueArn, prefix);
@@ -60,6 +61,7 @@ export function verifyHistorySnapshot(intent, snapshot) {
     assert.equal(f.codeSha256, intent.packageHashes[kind]);
     assert.equal(f.tableName, intent.tableName); assert.equal(f.queueUrl, intent.queueUrl);
     assert.equal(f.processingEnabled, intent.processingEnabled);
+    assert.equal(f.portraitBucket, intent.portraitBucket);
     assert.equal(f.role, `arn:aws:iam::${intent.accountId}:role/3fc-${intent.env}-player-history-${kind}`);
     assert.equal(f.role, intent.roles[kind]);
     assert.equal(f.handler, `api/src/lambda-player-history.${kind === 'dispatch' ? 'dispatchHandler' : 'workHandler'}`);
@@ -124,7 +126,7 @@ export function readHistorySnapshot(intent) {
   for (const kind of ['dispatch', 'worker']) {
     const name = `3fc-${intent.env}-player-history-${kind}`;
     result.functions[kind] = read('lambda', 'get-function-configuration', '--function-name', name, '--query',
-      '{functionName:FunctionName,functionArn:FunctionArn,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,state:State,role:Role,handler:Handler,runtime:Runtime,architectures:Architectures,timeout:Timeout,memorySize:MemorySize,tableName:Environment.Variables.DYNAMODB_TABLE,queueUrl:Environment.Variables.HISTORY_QUEUE_URL,processingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED}');
+      '{functionName:FunctionName,functionArn:FunctionArn,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,state:State,role:Role,handler:Handler,runtime:Runtime,architectures:Architectures,timeout:Timeout,memorySize:MemorySize,tableName:Environment.Variables.DYNAMODB_TABLE,queueUrl:Environment.Variables.HISTORY_QUEUE_URL,processingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED,portraitBucket:Environment.Variables.PORTRAIT_BUCKET}');
     result.concurrency[kind] = read('lambda', 'get-function-concurrency', '--function-name', name);
     result.mappings[kind] = read('lambda', 'list-event-source-mappings', '--function-name', name, '--query',
       'EventSourceMappings[].{UUID:UUID,FunctionArn:FunctionArn,State:State,EventSourceArn:EventSourceArn,BatchSize:BatchSize,MaximumBatchingWindowInSeconds:MaximumBatchingWindowInSeconds,FunctionResponseTypes:FunctionResponseTypes,StartingPosition:StartingPosition,ParallelizationFactor:ParallelizationFactor,BisectBatchOnFunctionError:BisectBatchOnFunctionError,MaximumRetryAttempts:MaximumRetryAttempts,MaximumRecordAgeInSeconds:MaximumRecordAgeInSeconds,DestinationConfig:DestinationConfig,FilterCriteria:FilterCriteria,ScalingConfig:ScalingConfig}');
@@ -143,7 +145,7 @@ function main() {
       region: required('AWS_REGION'), accountId: required('HISTORY_ACCOUNT_ID'), tableName: required('DYNAMODB_TABLE'),
       streamArn: required('HISTORY_STREAM_ARN'), queueArn: required('HISTORY_QUEUE_ARN'), queueUrl: required('HISTORY_QUEUE_URL'),
       deadQueueArn: required('HISTORY_DEAD_QUEUE_ARN'), dispatchDeadQueueArn: required('HISTORY_DISPATCH_DEAD_QUEUE_ARN'),
-      processingEnabled: required('HISTORY_PROCESSING_ENABLED'), roles: { dispatch: required('HISTORY_DISPATCH_ROLE_ARN'), worker: required('HISTORY_WORKER_ROLE_ARN') },
+      portraitBucket: required('PORTRAIT_BUCKET'), processingEnabled: required('HISTORY_PROCESSING_ENABLED'), roles: { dispatch: required('HISTORY_DISPATCH_ROLE_ARN'), worker: required('HISTORY_WORKER_ROLE_ARN') },
       packageHashes: { dispatch: createHash('sha256').update(readFileSync('.serverless/dispatch.zip')).digest('base64'),
         worker: createHash('sha256').update(readFileSync('.serverless/work.zip')).digest('base64') } };
     const live = readHistorySnapshot(intent); verifyHistorySnapshot(intent, live);

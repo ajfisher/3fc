@@ -42,3 +42,12 @@ test('history activation binds rule/writer version, exact account/table/code and
     const fixture = provenance(); fixture[part][field] = value; assert.throws(() => verifyHistoryProvenance(fixture), `${part}.${field}`);
   }
 });
+
+test('portrait recovery has bounded media/retirement selectors and exact keys', () => {
+  for (const kind of ['name', 'media', 'retirement'])
+    assert.equal(historyArguments(['profile-status', ...cloud, '--player', 'p', '--kind', kind]).options['--kind'], kind);
+  for (const prefix of ['MEDIA', 'RETIRE'])
+    assert.equal(historyArguments(['profile-step', ...cloud, '--player', 'p', '--key', `${prefix}#00000000-0000-4000-8000-000000000000`, '--apply', 'reviewed-history']).pages, 1);
+  for (const kind of ['work', 'player', 'directory', 'all'])
+    assert.throws(() => historyArguments(['profile-status', ...cloud, '--player', 'p', '--kind', kind]));
+});

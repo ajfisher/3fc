@@ -24,7 +24,7 @@ function fixture(enabled = 'false') {
   const manifest = { env, service: 'player-history', gitCommit: 'a'.repeat(40), region, accountId, tableName: '3fc-qa-app',
     streamArn: `${tableArn}/stream/2026-10-04T01:00:00.000`, queueUrl, queueArn: prefix,
     deadQueueArn: `${prefix}-dead`, dispatchDeadQueueArn: `${prefix}-dispatch-dead`, processingEnabled: enabled,
-    roles: {}, packageHashes: { dispatch: 'dispatch-package', worker: 'work-package' },
+    portraitBucket: `3fc-${env}-portraits-${accountId}`, roles: {}, packageHashes: { dispatch: 'dispatch-package', worker: 'work-package' },
     snapshot: { table: { TableArn: tableArn, TableStatus: 'ACTIVE', LatestStreamArn: `${tableArn}/stream/2026-10-04T01:00:00.000`,
       StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_IMAGE' } },
       queue: { QueueArn: prefix, VisibilityTimeout: '360', MessageRetentionPeriod: '345600', SqsManagedSseEnabled: 'true',
@@ -40,7 +40,7 @@ function fixture(enabled = 'false') {
       lastUpdateStatus: 'Successful', state: 'Active', role,
       handler: `api/src/lambda-player-history.${kind === 'dispatch' ? 'dispatchHandler' : 'workHandler'}`,
       runtime: 'nodejs22.x', architectures: ['arm64'], timeout: kind === 'dispatch' ? 30 : 60, memorySize: kind === 'dispatch' ? 256 : 512,
-      tableName: manifest.tableName, queueUrl, processingEnabled: enabled };
+      tableName: manifest.tableName, queueUrl, processingEnabled: enabled, portraitBucket: manifest.portraitBucket };
     manifest.snapshot.concurrency[kind] = {};
     manifest.snapshot.mappings[kind] = [{ UUID: `${kind}-mapping`, FunctionArn: functionArn, State: enabled === 'true' ? 'Enabled' : 'Disabled',
       EventSourceArn: kind === 'dispatch' ? manifest.streamArn : prefix, BatchSize: kind === 'dispatch' ? 100 : 1,
@@ -178,7 +178,7 @@ test('history deployment stays in serialized jobs and requires separately provis
   assert.equal(patterns.length, 4);
   assert.deepEqual(patterns[3], { eventName: ['INSERT', 'MODIFY'], dynamodb: {
     Keys: { pk: { S: [{ prefix: 'PLAYER_PROFILE_WORK#' }] } },
-    NewImage: { entityType: { S: ['playerProfileNameWork'] } }
+    NewImage: { entityType: { S: ['playerProfileNameWork', 'playerProfileMediaWork', 'playerProfileMediaRetirement'] } }
   } });
   assert.deepEqual(patterns[2], { eventName: ['INSERT', 'MODIFY'], dynamodb: {
     Keys: { pk: { S: [{ prefix: 'LEAGUE#' }] }, sk: { S: ['PLAYER_DIRECTORY'] } },

@@ -106,7 +106,12 @@ test("history source invalidation and canonical work commit atomically with cons
   assert.equal(payload.revision, source.revision); assert.equal(work[0].entityType.S, "playerHistoryWork");
   assert.deepEqual(Object.keys(payload).sort(), ["createdAt", "leagueId", "playerId", "reason", "revision", "version"]);
   assert(!JSON.stringify(work).includes("private-owner")); assert(!JSON.stringify(work).includes("Retained"));
+  const media = [...client.items.values()].filter(item => item.entityType.S === 'playerProfileMediaRetirement');
+  assert.equal(media.length, 1);
+  assert.deepEqual(JSON.parse(media[0].data.S!).members, ['b']);
+  assert.equal(JSON.parse(media[0].data.S!).playerId, 'a');
   const committed = client.transactions.at(-1)!;
+  assert(committed.some(action => action.Put?.Item?.entityType?.S === 'playerProfileMediaRetirement'));
   assert(committed.some(action => action.Put?.Item?.sk?.S === "HISTORY_SOURCE"));
   assert(committed.some(action => action.Put?.Item?.pk?.S === work[0].pk.S && action.Put?.Item?.sk?.S === work[0].sk.S));
   assert(committed.some(action => action.Put?.Item?.entityType?.S === "playerIdentity"));
@@ -128,6 +133,7 @@ test("failed consolidation condition preserves the prior history revision and wr
   await assert.rejects(service.commit({ proposalId: input.proposalId, userIds: ["admin"] }), /changed/);
   assert.deepEqual(client.read("LEAGUE#league", "HISTORY_SOURCE"), prior);
   assert.deepEqual(consolidationWork(client), []);
+  assert.equal([...client.items.values()].filter(item => item.entityType.S === "playerProfileMediaRetirement").length, 0);
   assert.equal(client.data("PLAYER#b", "IDENTITY").rootId, "b");
   assert.equal(client.data(`PLAYER_CONSOLIDATION#${input.proposalId}`, "PROPOSAL").state, "ready");
 });

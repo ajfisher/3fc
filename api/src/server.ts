@@ -1,4 +1,5 @@
-import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, parseOwnerProfileBody, OWNER_PROFILE_BODY_LIMIT, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
+import { handlePlayerPortraitRoute, isPlayerPortraitRoute, PORTRAIT_JSON_BODY_LIMIT, PORTRAIT_DELETE_BODY_LIMIT, PORTRAIT_HEADERS, type PlayerPortraitRepository } from "./player-portrait-routes.js";
+import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, OWNER_PROFILE_BODY_LIMIT, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
 import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -3023,7 +3024,7 @@ export async function handleLocalPlayerDirectoryRoute(input: {
 
 /** Bounded streaming input for owner edits. Oversized streams are drained
  * without retaining further chunks; Connection: close prevents request reuse. */
-async function readOwnerProfileBody(request: IncomingMessage): Promise<unknown> {
+async function readBoundedProfileBody(request: IncomingMessage, limit: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []; let size = 0;
     const cleanup = () => { request.off("data", data); request.off("end", end); request.off("error", failure); request.off("aborted", aborted); };
@@ -3031,13 +3032,40 @@ async function readOwnerProfileBody(request: IncomingMessage): Promise<unknown> 
     const aborted = () => failure(new Error("Request aborted"));
     const data = (chunk: Buffer) => {
       size += chunk.length;
-      if (size > OWNER_PROFILE_BODY_LIMIT) { cleanup(); chunks.length = 0; request.resume(); reject(new RangeError("Body too large")); return; }
+      if (size > limit) { cleanup(); chunks.length = 0; request.resume(); reject(new RangeError("Body too large")); return; }
       chunks.push(chunk);
     };
-    const end = () => { cleanup(); try { resolve(parseOwnerProfileBody(Buffer.concat(chunks).toString("utf8"))); } catch (error) { reject(error); } };
+    const end = () => { cleanup(); try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch (error) { reject(error); } };
     request.on("data", data); request.on("end", end); request.on("error", failure); request.on("aborted", aborted);
   });
 }
+export async function handleLocalPlayerPortraitRoute(input: {
+  request: IncomingMessage; response: ServerResponse; method: string; route: string;
+  rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: PlayerPortraitRepository;
+}): Promise<number> {
+  let body: unknown;
+  if (["PUT", "DELETE"].includes(input.method) && input.session && process.env.PLAYER_OWNER_EDITING_ENABLED === "true") {
+    try { body = await readBoundedProfileBody(input.request, input.method === "PUT" ? PORTRAIT_JSON_BODY_LIMIT : PORTRAIT_DELETE_BODY_LIMIT); }
+    catch (error) {
+      const status = error instanceof RangeError ? 413 : 400;
+      sendJsonWithCors(input.request, input.response, status, { error: status === 413 ? "payload_too_large" : "bad_request",
+        message: status === 413 ? "Portrait request body is too large." : "Request body must be valid JSON." }, { ...PORTRAIT_HEADERS, "connection": "close" });
+      return status;
+    }
+  }
+  const keys: string[] = [];
+  for (let index = 0; index < input.request.rawHeaders.length; index += 2)
+    if (input.request.rawHeaders[index].toLowerCase() === "idempotency-key") keys.push(input.request.rawHeaders[index + 1]);
+  const result = await handlePlayerPortraitRoute({ ...input, body, idempotencyKey: keys.length === 1 ? keys[0] : undefined,
+    repository: input.playerRepository ?? repository });
+  if (result.kind === "portrait") {
+    input.response.writeHead(200, { ...buildCorsHeaders(input.request.headers.origin, CORS_ALLOWED_ORIGINS), ...PORTRAIT_HEADERS,
+      "content-type": "image/png", "content-length": String(result.bytes.byteLength) });
+    input.response.end(Buffer.from(result.bytes));
+  } else sendJsonWithCors(input.request, input.response, result.statusCode, result.payload, PORTRAIT_HEADERS);
+  return result.statusCode;
+}
+
 export async function handleLocalOwnerPlayerProfileRoute(input: {
   request: IncomingMessage; response: ServerResponse; method: string; route: string;
   rawQueryString?: string; session: AuthSessionRecord | null; playerRepository?: OwnerPlayerProfileRepository;
@@ -3047,7 +3075,7 @@ export async function handleLocalOwnerPlayerProfileRoute(input: {
   // Do not buffer unauthenticated/disabled requests; the shared handler owns
   // their stable 401/404 response and never invokes a repository method.
   if (input.method === "PATCH" && input.session && process.env.PLAYER_OWNER_EDITING_ENABLED === "true") {
-    try { body = await readOwnerProfileBody(input.request); }
+    try { body = await readBoundedProfileBody(input.request, OWNER_PROFILE_BODY_LIMIT); }
     catch (error) {
       const status = error instanceof RangeError ? 413 : 400;
       sendJsonWithCors(input.request, input.response, status, { error: status === 413 ? "payload_too_large" : "bad_request",
@@ -3308,6 +3336,7 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isPlayerPortraitRoute(method, route)) for (const [name, value] of Object.entries(PORTRAIT_HEADERS)) response.setHeader(name, value);
       if (!isStateChangeOriginPermitted(method, request.headers.origin, CORS_ALLOWED_ORIGINS)) {
         status = forbiddenOrigin(request, response);
         return;
@@ -5122,6 +5151,11 @@ async function start(): Promise<void> {
         return;
       }
 
+      if (isPlayerPortraitRoute(method, route)) {
+        status = await handleLocalPlayerPortraitRoute({ request, response, method, route,
+          rawQueryString: requestUrl.search.slice(1), session: authGate.session });
+        return;
+      }
       if (isOwnerPlayerProfileRoute(method, route)) {
         status = await handleLocalOwnerPlayerProfileRoute({ request, response, method, route,
           rawQueryString: requestUrl.search.slice(1), session: authGate.session });

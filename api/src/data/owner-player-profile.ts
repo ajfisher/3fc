@@ -4,20 +4,29 @@ import { z } from 'zod';
 import type { OwnerPlayerProfile } from '@3fc/contracts';
 import { IdentityReadCache } from './identity-read-cache.js';
 import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identityPut, boundedIdentityTransaction,
-  validPlayerIdentityId, type IdentityClient, type IdentitySnapshot } from './player-identity.js';
+  validPlayerIdentityId, type IdentityClient, type IdentitySnapshot, type PlayerIdentity } from './player-identity.js';
 import { historyBody, historyKey, type HistoryItem } from './player-history-model.js';
 import { readHistoryReadiness } from './player-history-readiness.js';
 import { PLAYER_PRESENTATION_SK, playerPresentationSchema, ownerDisplayNameSchema, ownerProfileRevisionSchema, ownerProfileIdempotencyKeySchema,
-  profileWorkPartition, profileNameWorkKey, profileNameWorkSchema } from './player-profile-work.js';
+  profileWorkPartition, profileNameWorkKey, profileNameWorkSchema, type PlayerPresentation } from './player-profile-work.js';
 
 export interface OwnerProfileInput { playerId: string; userId: string; userIds?: readonly string[] }
 export interface RenameOwnerProfileInput extends OwnerProfileInput { displayName: string; expectedRevision: string; idempotencyKey: string }
 export type SafeOwnerPlayerProfile = Omit<OwnerPlayerProfile, 'email'>;
 type Data = Record<string, unknown>;
 const profileSchema = z.object({ playerId: z.string().refine(validPlayerIdentityId), nickname: z.string().min(1), claimedByUserId: z.string().min(1).nullable() });
-const safeSchema = z.object({ playerId: z.string().refine(validPlayerIdentityId), displayName: z.string().min(1), hasPortrait: z.literal(false), revision: ownerProfileRevisionSchema }).strict();
+export const safeOwnerPlayerProfileSchema = z.object({ playerId: z.string().refine(validPlayerIdentityId), displayName: z.string().min(1), hasPortrait: z.boolean(), revision: ownerProfileRevisionSchema }).strict();
+const safeSchema = safeOwnerPlayerProfileSchema;
 const receiptSchema = z.object({ version: z.literal(1), requestHash: ownerProfileRevisionSchema, result: safeSchema }).strict();
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** Semantic revision shared by names and photos; ordinary scoring writeVersion
+ * changes still fence transactions but do not make an open settings form stale. */
+export function ownerProfileResult(identity: PlayerIdentity, profile: Data, presentation: PlayerPresentation | null): SafeOwnerPlayerProfile {
+  const media = presentation ? { version: presentation.version, playerId: presentation.playerId, nameRevision: presentation.nameRevision,
+    portrait: presentation.portrait ?? null } : null;
+  return { playerId: identity.playerId, displayName: identity.displayName, hasPortrait: Boolean(media?.portrait),
+    revision: hash([identity.playerId, identity.identityVersion, identity.displayName, profile.claimedByUserId, profile.nickname, media]) };
+}
 function denied(): never { throw new PlayerIdentityError('owner_profile_forbidden', 403, 'Only the linked player can edit these details.'); }
 function unavailable(): never { throw new PlayerIdentityError('owner_profile_unavailable', 503, 'Player details are temporarily unavailable.'); }
 function changed(): never { throw new PlayerIdentityError('owner_profile_changed', 409, 'Player details changed. Refresh and try again.'); }
@@ -43,7 +52,8 @@ export class OwnerPlayerProfileService {
     const item = (await client.send(new GetItemCommand({ TableName: this.tableName, Key: historyKey(pk, sk), ConsistentRead: true })) as { Item?: HistoryItem }).Item ?? null;
     return { pk, sk, item, value: item ? historyBody<Data>(item, pk, sk, type) : null };
   }
-  private async context(input: OwnerProfileInput) {
+  /** Internal server context only: raw authority snapshots must never be serialized. */
+  async loadContext(input: OwnerProfileInput) {
     const accounts = [...new Set([input.userId, ...(input.userIds ?? [])])];
     if (!validPlayerIdentityId(input.playerId) || accounts.length > 2 || !accounts.every(id => {
       try { encodeURIComponent(id); return id.trim().length > 0 && Buffer.byteLength(`USER#${id}`) <= 2048; } catch { return false; }
@@ -67,18 +77,17 @@ export class OwnerPlayerProfileService {
     const presentation = await this.snapshot(cache, `PLAYER#${rootId}`, PLAYER_PRESENTATION_SK, 'playerPresentation');
     const media = presentation.value ? playerPresentationSchema.parse(presentation.value) : null;
     if (media && media.playerId !== rootId) return unavailable();
-    const revision = hash([rootId, identity.root.value.identityVersion, identity.root.value.displayName, value.claimedByUserId, value.nickname, media]);
-    const result: SafeOwnerPlayerProfile = { playerId: rootId, displayName: identity.root.value.displayName, hasPortrait: false, revision };
+    const result = ownerProfileResult(identity.root.value, profile.value, media);
     const checks = [identityCondition(this.tableName, control), identityCondition(this.tableName, identity.root),
       identityCondition(this.tableName, profile), identityCondition(this.tableName, presentation),
       ...(identity.original.pk !== identity.root.pk ? [identityCondition(this.tableName, identity.original)] : [])];
-    return { planner, control, identity, profile, presentation, result, checks };
+    return { planner, control, identity, profile, presentation, media, result, checks };
   }
   private async fence(checks: TransactWriteItem[]): Promise<void> {
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(checks) }));
   }
   async read(input: OwnerProfileInput): Promise<SafeOwnerPlayerProfile> {
-    const context = await this.context(input);
+    const context = await this.loadContext(input);
     try { await this.fence(context.checks); } catch (error) { if (conditional(error)) return changed(); throw error; }
     return context.result;
   }
@@ -89,7 +98,7 @@ export class OwnerPlayerProfileService {
     const receiptPk = profileWorkPartition(input.playerId), receiptSk = `RECEIPT#${hash([input.userId, input.idempotencyKey])}`;
     const requestHash = hash([input.playerId, name.data, revision.data]);
     for (let attempt = 0; attempt < 3; attempt++) {
-      const context = await this.context(input);
+      const context = await this.loadContext(input);
       const receipt = await this.snapshot(this.client, receiptPk, receiptSk, 'playerProfileReceipt');
       if (receipt.value) {
         const saved = receiptSchema.parse(receipt.value); if (saved.requestHash !== requestHash) return conflict();
@@ -110,10 +119,10 @@ export class OwnerPlayerProfileService {
       if (name.data !== context.result.displayName) {
         const formerNames = [...new Set([...root.value.formerNames, root.value.displayName])].filter(value => value !== name.data);
         if (formerNames.length > 20) throw new PlayerIdentityError('owner_profile_name_history_full', 409, 'This name history needs organiser support.');
-        const nameRevision = randomUUID(), presentation = { version: 1 as const, playerId: root.value.playerId, nameRevision };
+        const nameRevision = randomUUID(), presentation: PlayerPresentation = { ...context.media, version: 1, playerId: root.value.playerId, nameRevision };
         const profile: Data = { ...context.profile.value!, nickname: name.data };
         const nextIdentity = { ...root.value, displayName: name.data, formerNames, writeVersion: randomUUID() };
-        result = { ...context.result, displayName: name.data, revision: hash([root.value.playerId, root.value.identityVersion, name.data, profile.claimedByUserId, name.data, presentation]) };
+        result = ownerProfileResult(nextIdentity, profile, presentation);
         actions.push(identityPut(this.tableName, root, 'playerIdentity', nextIdentity, now),
           identityPut(this.tableName, context.profile, 'player', profile, now), identityPut(this.tableName, context.presentation, 'playerPresentation', presentation, now));
         const job = profileNameWorkSchema.parse({ version: 1, jobId: nameRevision, playerId: root.value.playerId, nameRevision, displayName: name.data,

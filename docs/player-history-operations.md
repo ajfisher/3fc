@@ -266,3 +266,24 @@ the cloud wrapper, after local activation. It never requires a production queue.
 Monitor the worker/DLQ alarms for failed propagation. Disable owner editing or
 processing to stop new saves, preserve pending jobs, repair the source/permissions,
 then resume. Disabling achievements alone does not stop name work.
+
+### Portrait maintenance
+
+The same guarded runner supports `profile-status --player <id> --kind media` and
+`--kind retirement` with an optional continuation cursor. Filtered pages may be
+empty while still having a cursor. `profile-step --player <id> --key MEDIA#<uuid>`
+(or `RETIRE#<uuid>`) uses the same `--apply reviewed-history`, manifest, exact-code,
+account/table and deployment-freeze requirements as name work. Each invocation
+processes only its bounded `--pages` allowance; a lease delay is printed and ends
+that invocation without sleeping or renewing the original upload lease. Cloud
+storage uses the bucket validated in the worker deployment manifest. Local work
+requires `PORTRAIT_LOCAL_DIRECTORY` pointing outside the application's static root.
+
+Do not manually delete an active object. Replacement/removal immediately updates
+visibility and atomically schedules cleanup. Failed or abandoned uploads retain
+work; expiry claims deletion before touching storage so a late finaliser cannot
+publish a missing object. Queue/DLQ failures and media503 responses require
+investigation, not deleting rows or replaying old successful requests as new saves.
+Keep cleanup records and receipts across rollback; disable owner exposure or pause
+processing to isolate failures. Consolidation cleanup keeps the retained identity's
+portrait and retires former root objects through its durable retirement job.

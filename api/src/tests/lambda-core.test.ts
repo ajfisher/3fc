@@ -1,3 +1,4 @@
+import type { PlayerPortraitRepository } from "../player-portrait-routes.js";
 import type { OwnerPlayerProfileRepository } from "../owner-player-profile-routes.js";
 import type { PlayerProfileRepository } from "../player-profile-routes.js";
 import assert from "node:assert/strict";
@@ -261,6 +262,7 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  portraits?: Partial<PlayerPortraitRepository>;
   ownerProfiles?: Partial<OwnerPlayerProfileRepository>;
   profileReads?: Partial<PlayerProfileRepository>;
   onLeagueAccessRead?: () => void;
@@ -1033,6 +1035,10 @@ function createHarness(config: HarnessConfig = {}) {
       async getOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
       async renameOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
       ...config.ownerProfiles,
+      async getPlayerPortrait() { throw new PlayerIdentityError("portrait_unavailable", 503, "Player portrait is unavailable."); },
+      async putOwnerPlayerPortrait() { throw new PlayerIdentityError("portrait_unavailable", 503, "Player portrait is unavailable."); },
+      async removeOwnerPlayerPortrait() { throw new PlayerIdentityError("portrait_unavailable", 503, "Player portrait is unavailable."); },
+      ...config.portraits,
       async listOwnedJoinPlayers() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async joinOwnedPlayer() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
@@ -8539,5 +8545,50 @@ test("owner profile Lambda routes enforce session and origin, keep email private
     assert.equal(calls.length, 2);
   } finally {
     if (previous === undefined) delete process.env.PLAYER_OWNER_EDITING_ENABLED; else process.env.PLAYER_OWNER_EDITING_ENABLED = previous;
+  }
+});
+
+test("portrait Lambda routes return authenticated binary PNG and protect owner-only mutations", async () => {
+  const before = { profile: process.env.PLAYER_PROFILES_ENABLED, owner: process.env.PLAYER_OWNER_EDITING_ENABLED };
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6V0AAAAASUVORK5CYII=', 'base64');
+  const revision = 'a'.repeat(64), details = { playerId: 'canonical', displayName: 'Player', hasPortrait: true, revision };
+  const calls: Array<{ method: string; input: any }> = [];
+  try {
+    process.env.PLAYER_PROFILES_ENABLED = 'true'; process.env.PLAYER_OWNER_EDITING_ENABLED = 'true';
+    const { handler } = createHarness({ sessions: { portrait: { sessionId: 'portrait', subject: 'verified-owner', email: 'private@example.test',
+      createdAt: '2026-10-03T00:00:00.000Z', expiresAt: '2026-10-11T00:00:00.000Z' } }, portraits: {
+      async getPlayerPortrait(input) { calls.push({ method: 'read', input }); return png; },
+      async putOwnerPlayerPortrait(input) { calls.push({ method: 'upload', input }); return details; },
+      async removeOwnerPlayerPortrait(input) { calls.push({ method: 'remove', input }); return { ...details, hasPortrait: false }; },
+    } });
+    const request = (method = 'GET', overrides: Partial<ApiGatewayHttpEvent> = {}) => handler({ ...createEvent({ method,
+      path: method === 'GET' ? '/v1/player-portrait' : '/v1/owner-player-portrait',
+      headers: { origin: 'https://qa.3fc.football', 'idempotency-key': 'portrait:1' }, cookies: ['threefc_session=portrait'],
+      ...(method === 'PUT' ? { body: { expectedRevision: revision, contentType: 'image/png', base64: png.toString('base64') } }
+        : method === 'DELETE' ? { body: { expectedRevision: revision } } : {}) }),
+      rawQueryString: method === 'GET' ? 'leagueId=league&playerId=alias%2F%252F&viewerPlayerId=owned' : 'playerId=alias%2F%252F', ...overrides });
+    const anonymous = await request('GET', { cookies: [] }); assert.equal(anonymous.statusCode, 401);
+    assert.equal(anonymous.headers['cache-control'], 'no-store'); assert.equal(anonymous.headers['x-content-type-options'], 'nosniff');
+    const read = await request(); assert.equal(read.statusCode, 200); assert.equal(read.isBase64Encoded, true);
+    assert.equal(read.headers['content-type'], 'image/png'); assert.equal(read.headers['cache-control'], 'no-store');
+    assert.equal(read.headers['referrer-policy'], 'no-referrer'); assert.equal(read.headers['x-content-type-options'], 'nosniff');
+    assert.deepEqual(Buffer.from(read.body, 'base64'), png);
+    assert.deepEqual(calls[0].input, { leagueId: 'league', playerId: 'alias/%2F', viewerPlayerId: 'owned',
+      userId: 'verified-owner', userIds: ['verified-owner', 'private@example.test'] });
+    const saved = await request('PUT'); assert.equal(saved.statusCode, 200); assert.equal(saved.isBase64Encoded, undefined);
+    assert.deepEqual(JSON.parse(saved.body), details); assert.deepEqual(calls[1].input.bytes, png); assert(!saved.body.includes('private@example'));
+    assert.equal((await request('DELETE')).statusCode, 200);
+    const count = calls.length;
+    assert.equal((await request('PUT', { headers: { origin: 'https://evil.example' } })).statusCode, 403);
+    assert.equal((await request('PUT', { body: ' '.repeat(3 * 1024 * 1024 + 1) })).statusCode, 413);
+    assert.equal((await request('PUT', { body: JSON.stringify({ expectedRevision: revision, contentType: 'image/png', base64: 'YR==' }) })).statusCode, 400);
+    assert.equal((await request('DELETE', { body: '{' })).statusCode, 400);
+    assert.equal((await request('PUT', { headers: { origin: 'https://qa.3fc.football', 'Idempotency-Key': 'one', 'idempotency-key': 'two' } })).statusCode, 400);
+    assert.equal(calls.length, count);
+    process.env.PLAYER_OWNER_EDITING_ENABLED = 'false'; assert.equal((await request()).statusCode, 200); assert.equal((await request('PUT')).statusCode, 404);
+    process.env.PLAYER_PROFILES_ENABLED = 'false'; assert.equal((await request()).statusCode, 404);
+  } finally {
+    if (before.profile === undefined) delete process.env.PLAYER_PROFILES_ENABLED; else process.env.PLAYER_PROFILES_ENABLED = before.profile;
+    if (before.owner === undefined) delete process.env.PLAYER_OWNER_EDITING_ENABLED; else process.env.PLAYER_OWNER_EDITING_ENABLED = before.owner;
   }
 });

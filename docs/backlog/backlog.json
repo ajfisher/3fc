@@ -3410,7 +3410,7 @@
         "wave": "player-profiles-achievements",
         "notes": [
           "Approved Club Card build plan; retain existing issue IDs and dependencies.",
-          "Owner-only name and private-details API with atomic directory work is in progress; portrait storage and owner UI remain subsequent reviewed stack slices."
+          "Owner name/private-details API passed PR #210 review and QA. Private portrait storage, authenticated media routes and durable cleanup are in the next reviewed slice; owner UI remains subsequent work."
         ],
         "githubIssue": 202
       }

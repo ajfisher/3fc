@@ -17,6 +17,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { LeagueDeletionCleanup } from "./league-deletion.js";
 import { PlayerConsolidationService } from "./player-consolidation.js";
 import { readPlayerClaimsRevision, advancePlayerClaimsRevision } from "./player-claims-revision.js";
+import { PlayerPortraitService } from "./owner-player-portrait.js";
 import { OwnerPlayerProfileService } from "./owner-player-profile.js";
 import { PlayerProfileAccess } from "./player-profile-access.js";
 import { PlayerProfileReadService } from "./player-profile-read.js";
@@ -1064,6 +1065,14 @@ function withTimestamps<T extends object>(
 }
 
 export class ThreeFcRepository {
+  private portraitService(owner = false): PlayerPortraitService {
+    if (process.env[owner ? "PLAYER_OWNER_EDITING_ENABLED" : "PLAYER_PROFILES_ENABLED"] !== "true")
+      throw new PlayerIdentityError("player_portrait_disabled", 404, "Player portraits are unavailable.");
+    return new PlayerPortraitService(this.client, this.tableName, { now: () => this.clock.now() });
+  }
+  getPlayerPortrait(input: Parameters<PlayerPortraitService["read"]>[0]) { return this.portraitService().read(input); }
+  putOwnerPlayerPortrait(input: Parameters<PlayerPortraitService["upload"]>[0]) { return this.portraitService(true).upload(input); }
+  removeOwnerPlayerPortrait(input: Parameters<PlayerPortraitService["remove"]>[0]) { return this.portraitService(true).remove(input); }
   private ownerProfileService(): OwnerPlayerProfileService {
     if (process.env.PLAYER_OWNER_EDITING_ENABLED !== "true") throw new PlayerIdentityError("owner_profile_disabled", 503, "Player editing is temporarily unavailable.");
     return new OwnerPlayerProfileService(this.client, this.tableName, { now: () => this.clock.now() });

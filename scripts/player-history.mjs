@@ -27,14 +27,14 @@ export function historyArguments(args) {
   const profileWork = command === 'profile-status' || command === 'profile-step';
   if (profileWork ? !options['--player']?.trim() : command !== 'activate' && !options['--league']?.trim())
     throw new Error(profileWork ? '--player is required.' : '--league is required.');
-  if (profileWork && (options['--league'] || options['--kind'] || options['--comparison'])) throw new Error('Profile work is player-scoped.');
+  if (profileWork && (options['--league'] || options['--comparison'])) throw new Error('Profile work is player-scoped.');
   const pages = options['--pages'] === undefined ? 1 : Number(options['--pages']);
   if (!Number.isInteger(pages) || pages < 1 || pages > 100 || (options['--pages'] && !['step', 'dry-run', 'profile-step'].includes(command)))
     throw new Error('Only step/dry-run/profile-step accept --pages from 1 to 100.');
   if (!['status', 'profile-status'].includes(command) && options['--apply'] !== 'reviewed-history') throw new Error('Mutations require --apply reviewed-history.');
   if (['step', 'profile-step'].includes(command) && !options['--key']) throw new Error('--key is required.');
-  if (command === 'profile-step' && !/^NAME#[0-9a-f-]{36}$/.test(options['--key'])) throw new Error('Choose an exact profile work key.');
-  if (options['--kind'] && !(command === 'step' ? ['work', 'player', 'directory'] : ['work', 'player']).includes(options['--kind']))
+  if (command === 'profile-step' && !/^(?:NAME|MEDIA|RETIRE)#[0-9a-f-]{36}$/.test(options['--key'])) throw new Error('Choose an exact profile work key.');
+  if (options['--kind'] && !(profileWork ? ['name', 'media', 'retirement'] : command === 'step' ? ['work', 'player', 'directory'] : ['work', 'player']).includes(options['--kind']))
     throw new Error('Choose work or player; step also accepts directory.');
   if (command === 'dry-run' && !options['--comparison'] && !options['--player']) throw new Error('Dry-run needs --player or --comparison.');
   return { command, options, pages, local };
@@ -60,7 +60,9 @@ async function main(args) {
   const { activateHistory, historyActivationManifestSchema } = await import('../api/dist/data/player-history-readiness.js');
   const { HistoryCoordinator } = await import('../api/dist/data/player-history-coordinator.js');
   const { ProfileNameWorker } = await import('../api/dist/data/player-profile-name-worker.js');
-  const { profileWorkReference } = await import('../api/dist/data/player-profile-work.js');
+  const { PlayerPortraitWorker } = await import('../api/dist/data/player-portrait-worker.js');
+  const { createPortraitStore } = await import('../api/dist/media/portrait-store.js');
+  const { profileWorkReferenceSchema, profilePlayerHash } = await import('../api/dist/data/player-profile-work.js');
   historyActivationManifestSchema.parse(manifest);
   if (local && manifest.tableName !== options['--local-table']) throw new Error('Local table and manifest differ.');
   if (!local) process.env.AWS_PROFILE = options['--profile'];
@@ -97,11 +99,17 @@ async function main(args) {
     }
     const runner = new HistoryCoordinator(client, manifest.tableName), league = options['--league'];
     if (command === 'profile-status') {
-      emit(await new ProfileNameWorker(client, manifest.tableName).pendingPage(options['--player'], options['--cursor'] ?? null));
+      const kind = options['--kind'] ?? 'name';
+      const worker = kind === 'name' ? new ProfileNameWorker(client, manifest.tableName)
+        : new PlayerPortraitWorker(client, manifest.tableName, { delete: async () => { throw new Error('Read-only status cannot delete media.'); } });
+      emit(kind === 'name' ? await worker.pendingPage(options['--player'], options['--cursor'] ?? null)
+        : await worker.pendingPage(options['--player'], kind, options['--cursor'] ?? null));
     } else if (command === 'profile-step') {
-      const worker = new ProfileNameWorker(client, manifest.tableName);
-      const ref = profileWorkReference(options['--player'], options['--key'].slice(5));
-      for (let step = 1; step <= pages; step++) { verify(); const result = await worker.process(ref); emit({ step, done: result.done }); if (result.done) break; }
+      const isName = options['--key'].startsWith('NAME#');
+      if (!local && !isName) process.env.PORTRAIT_BUCKET = JSON.parse(await readFile(options['--worker-manifest'], 'utf8')).portraitBucket;
+      const worker = isName ? new ProfileNameWorker(client, manifest.tableName) : new PlayerPortraitWorker(client, manifest.tableName, createPortraitStore());
+      const ref = profileWorkReferenceSchema.parse({ version: 1, kind: 'profile', playerHash: profilePlayerHash(options['--player']), key: options['--key'] });
+      for (let step = 1; step <= pages; step++) { verify(); const result = await worker.process(ref); emit({ step, ...result }); if (result.done || result.delaySeconds) break; }
     } else if (command === 'status') {
       const sweep = await runner.status(league), pending = await runner.pendingPage(league, options['--kind'] ?? 'work', options['--cursor'] ?? null);
       emit({ sweep, pending });

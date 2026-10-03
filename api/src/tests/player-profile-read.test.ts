@@ -202,3 +202,12 @@ test('a page row with the wrong season or achievement scope is unavailable', asy
   client.seed(pk, `${prefix}SEASON#${historyHash('winter')}#MATCH#001`, 'playerHistoryAppearance', { ...latest, seasonId: 'other' });
   await assert.rejects(service.history({ ...input, seasonId: 'winter' }), /unavailable/);
 });
+
+
+test('profile performance exposes authorised portrait presence independently of owner editing', async () => {
+  const { access, service } = fixture(); const authorize = access.authorize.bind(access);
+  access.authorize = async input => { const grant = await authorize(input); return { ...grant, player: { ...grant.player, hasPortrait: true } }; };
+  const value = await service.performance(input);
+  assert.equal(value.player.hasPortrait, true); assert.equal(value.capabilities.editProfile, false);
+  assert.deepEqual(Object.keys(value.player).sort(), ['displayName', 'hasPortrait', 'playerId']);
+});

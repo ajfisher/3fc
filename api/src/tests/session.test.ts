@@ -135,3 +135,12 @@ test("owner profile GET and PATCH require sessions without opening unsupported m
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/owner-player-profile"), false);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-profile/other"), false);
 });
+
+
+test("portrait reads and owner writes require sessions without exposing unsupported methods", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/player-portrait"), true);
+  assert.equal(isAuthenticatedApiRoute("PUT", "/v1/owner-player-portrait"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/owner-player-portrait"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-portrait"), false);
+  assert.equal(isAuthenticatedApiRoute("PUT", "/v1/player-portrait"), false);
+});

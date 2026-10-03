@@ -68,6 +68,7 @@ test-results/
 # Local docker-compose persisted data
 local/dynamodb/*
 local/fake-ses/*
+local/portraits/*
 !local/dynamodb/.gitkeep
 !local/fake-ses/.gitkeep
 

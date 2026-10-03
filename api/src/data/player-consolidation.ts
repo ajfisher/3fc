@@ -1,3 +1,4 @@
+import { portraitRetirementItem } from './player-portrait-retirement.js';
 import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue,
   type GetItemCommandOutput, type QueryCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
@@ -348,6 +349,8 @@ export class PlayerConsolidationService {
     actions.push(...historyMutationItems(this.tableName, {
       leagueId: p.leagueId, playerId: p.retainedPlayerId, reason: "identity-consolidated",
     }, now));
+    actions.push(portraitRetirementItem(this.tableName, p.retainedPlayerId,
+      context.members.map(member => member.id).filter(id => id !== p.retainedPlayerId), randomUUID(), now));
     return boundedIdentityTransaction(actions);
   }
   async commit(input: { proposalId: string; userIds: readonly string[] }): Promise<ConsolidationView> {

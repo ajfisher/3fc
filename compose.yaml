@@ -43,6 +43,7 @@ services:
       AWS_SECRET_ACCESS_KEY: "local"
       DYNAMODB_ENDPOINT: "http://dynamodb:8000"
       DYNAMODB_TABLE: "threefc_local"
+      PORTRAIT_LOCAL_DIRECTORY: "/workspace/local/portraits"
       PLAYER_CLAIM_MODE: "${PLAYER_CLAIM_MODE:-proof}"
       PLAYER_CONSOLIDATION_ENABLED: "${PLAYER_CONSOLIDATION_ENABLED:-false}"
       PLAYER_RETURNING_JOIN_ENABLED: "${PLAYER_RETURNING_JOIN_ENABLED:-false}"

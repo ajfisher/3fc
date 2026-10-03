@@ -18,6 +18,7 @@ provider:
   iam:
     role: ${env:HISTORY_DISPATCH_ROLE_ARN}
   environment:
+    PORTRAIT_BUCKET: ${env:PORTRAIT_BUCKET}
     DYNAMODB_TABLE: ${env:DYNAMODB_TABLE}
     HISTORY_QUEUE_URL: ${env:HISTORY_QUEUE_URL}
     HISTORY_PROCESSING_ENABLED: ${env:HISTORY_PROCESSING_ENABLED, 'false'}
@@ -80,7 +81,7 @@ resources:
             - Pattern: '{"eventName":["INSERT"],"dynamodb":{"NewImage":{"entityType":{"S":["playerHistoryWork"]}}}}'
             - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"NewImage":{"entityType":{"S":["playerHistoryJob"]}}}}'
             - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"LEAGUE#"}]},"sk":{"S":["PLAYER_DIRECTORY"]}},"NewImage":{"entityType":{"S":["playerDirectoryRevision"]}}}}'
-            - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"PLAYER_PROFILE_WORK#"}]}},"NewImage":{"entityType":{"S":["playerProfileNameWork"]}}}}'
+            - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"PLAYER_PROFILE_WORK#"}]}},"NewImage":{"entityType":{"S":["playerProfileNameWork","playerProfileMediaWork","playerProfileMediaRetirement"]}}}}'
     HistoryWorkMapping:
       Type: AWS::Lambda::EventSourceMapping
       Properties:

@@ -84,6 +84,16 @@ if [[ "$SERVICE" == "api-core" ]]; then
   configure_player_claim_mode
 fi
 
+# Both producer and cleanup consumer must point at the reviewed private bucket.
+if [[ "$SERVICE" == "api-core" || "$SERVICE" == "player-history" ]]; then
+  PORTRAIT_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+  [[ "$PORTRAIT_ACCOUNT_ID" == "${EXPECTED_AWS_ACCOUNT_ID:-301691475109}" ]] || { echo "Unexpected portrait deployment account" >&2; exit 1; }
+  EXPECTED_PORTRAIT_BUCKET="3fc-${ENV}-portraits-${PORTRAIT_ACCOUNT_ID}"
+  PORTRAIT_BUCKET="${PORTRAIT_BUCKET:-$EXPECTED_PORTRAIT_BUCKET}"
+  [[ "$PORTRAIT_BUCKET" == "$EXPECTED_PORTRAIT_BUCKET" ]] || { echo "Unexpected portrait bucket" >&2; exit 1; }
+  export PORTRAIT_BUCKET
+fi
+
 echo "[deploy] Building workspaces"
 make build >/dev/null
 
@@ -160,7 +170,13 @@ export HTTP_API_ID
 export LAMBDA_EXECUTION_ROLE_ARN
 
 echo "[deploy] Deploying ${SERVICE} with Serverless Framework"
-npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+if [[ "$SERVICE" == "api-core" ]]; then
+  npx serverless package --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+  node scripts/deploy/verify-portrait-package.mjs .serverless/core.zip
+  npx serverless deploy --package .serverless --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+else
+  npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+fi
 
 COMMIT_SHA="$(git rev-parse HEAD)"
 FUNCTION_FINGERPRINT="null"
@@ -172,9 +188,9 @@ if [[ "$SERVICE" == "api-core" ]]; then
   # Record code provenance and these nonsecret switches only, never the full environment.
   FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
     --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
-    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED,historyProcessingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED}' \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED,historyProcessingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED,portraitBucket:Environment.Variables.PORTRAIT_BUCKET,runtime:Runtime,architectures:Architectures}' \
     --output json)"
-  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" --arg profiles "$PLAYER_PROFILES_ENABLED" --arg achievements "$PLAYER_ACHIEVEMENTS_ENABLED" --arg ownerEditing "$PLAYER_OWNER_EDITING_ENABLED" --arg historyProcessing "$HISTORY_PROCESSING_ENABLED" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning and .profilesEnabled == $profiles and .achievementsEnabled == $achievements and .ownerEditingEnabled == $ownerEditing and .historyProcessingEnabled == $historyProcessing' \
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" --arg profiles "$PLAYER_PROFILES_ENABLED" --arg achievements "$PLAYER_ACHIEVEMENTS_ENABLED" --arg ownerEditing "$PLAYER_OWNER_EDITING_ENABLED" --arg historyProcessing "$HISTORY_PROCESSING_ENABLED" --arg portraitBucket "$PORTRAIT_BUCKET" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning and .profilesEnabled == $profiles and .achievementsEnabled == $achievements and .ownerEditingEnabled == $ownerEditing and .historyProcessingEnabled == $historyProcessing and .portraitBucket == $portraitBucket and .runtime == "nodejs22.x" and .architectures == ["arm64"]' \
     <<< "$FUNCTION_FINGERPRINT" >/dev/null
 fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

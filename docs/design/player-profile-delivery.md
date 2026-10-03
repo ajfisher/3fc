@@ -250,3 +250,21 @@ Both fixes passed independent review, three focused tests, all16 affected-file
 cases and518 related regressions (group37846 exit0, peak266288KiB, no children).
 API compilation passes. Live QA IAM simulation passed70 expected boundary cases
 (group37129 exit0, no children). Fresh current-head remote gates are required.
+
+
+PR #210 corrected head `5e6d60dad9aa1edfd5c531500fdb3bf25075de60` passed
+CI37130555866, QA37130555871 and actual current-head review-gate111224663869.
+Cloud review completed without major findings (comment5970244326). Portrait child
+`codex/player-portraits` began after those gates. It adds processed private media,
+owner-fenced upload/removal, authenticated portrait reads and durable cleanup,
+including retirement after consolidation. Owner/card/gallery screens follow.
+
+Portrait slice validation: all559 affected tests pass (group44531 exit0,
+peak188736KiB, no children), full build/backlog and Terraform validation pass
+(group46222 exit0, peak725984KiB). QA plan/apply added seven private media resources,
+changed/deleted none (group46564 exit0). Live QA media IAM32 cases and bucket
+privacy/encryption/ownership checks pass (group46729 exit0). Actual native dependency
+ZIP verification passes after correcting Sharp0.35.5 entry/addon filenames from
+inspected package contents; all14 related deployment/operator tests pass
+(group46930 exit0). Independent service, worker, route and media/infra reviews and
+fix delta reviews pass. Native Lambda execution remains a QA acceptance check.

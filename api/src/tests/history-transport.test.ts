@@ -327,3 +327,43 @@ test('profile continuations preserve identity, retry original messages on failur
   assert.deepEqual(await createHistoryDispatcher({ enabled: () => true, send: async ref => { assert.deepEqual(ref, profile); throw new Error('failed'); } })
     ({ Records: [profileStream('709')] }), { batchItemFailures: [{ itemIdentifier: '709' }] });
 });
+
+test('portrait lease continuations yield immediately with bounded SQS delay', async () => {
+  let calls = 0;
+  assert.deepEqual(await processHistorySteps(work, async () => { calls++; return { done: false, delaySeconds: 120 }; }), { done: false, delaySeconds: 120 });
+  assert.equal(calls, 1);
+  const sent: number[] = [];
+  const handler = createHistoryWorker({ enabled: () => true, process: async () => ({ done: false, delaySeconds: 120 }),
+    send: async (_ref, delay) => { sent.push(delay!); } });
+  assert.deepEqual(await handler({ Records: [sqs()] }), { batchItemFailures: [] }); assert.deepEqual(sent, [120]);
+  for (const delaySeconds of [0, -1, 901, 1.5, NaN]) {
+    await assert.rejects(processHistorySteps(work, async () => ({ done: false, delaySeconds })), /invalid_delay/);
+    const bad = createHistoryWorker({ enabled: () => true, process: async () => ({ done: false, delaySeconds }),
+      send: async () => { assert.fail('bad delay queued'); } });
+    assert.deepEqual(await bad({ Records: [sqs()] }), { batchItemFailures: [{ itemIdentifier: 'message-1' }] });
+  }
+});
+
+test('portrait stream work omits media/account details and ignores active or completed images', async () => {
+  const playerId = 'private/legacy@example.test', playerHash = historyHash(playerId);
+  const media = { version: 1, jobId: revision, playerId, objectKey: `portraits/${playerHash}/${revision}.png`, digest: 'a'.repeat(64),
+    bytes: 123, status: 'uploading', notBefore: '2026-10-03T00:02:00Z', createdAt: '2026-10-03T00:00:00Z', updatedAt: '2026-10-03T00:00:00Z' };
+  const retirement = { version: 1, jobId: revision, playerId, members: ['alias'], memberIndex: 0, status: 'pending',
+    createdAt: '2026-10-03T00:00:00Z', updatedAt: '2026-10-03T00:00:00Z' };
+  const sent: WorkQueueReference[] = [];
+  const handler = createHistoryDispatcher({ enabled: () => true, send: async ref => { sent.push(ref); } });
+  function record(type: string, key: string, data: unknown) {
+    const value = stream(); value.eventName = 'MODIFY';
+    const keys = { pk: { S: `PLAYER_PROFILE_WORK#${playerHash}` }, sk: { S: key } };
+    value.dynamodb.Keys = keys; value.dynamodb.NewImage = { ...keys, entityType: { S: type }, data: { S: JSON.stringify(data) } }; return value;
+  }
+  for (const status of ['uploading', 'cleanup', 'deleting'])
+    assert.deepEqual(await handler({ Records: [record('playerProfileMediaWork', `MEDIA#${revision}`, { ...media, status })] }), { batchItemFailures: [] });
+  for (const status of ['active', 'deleted'])
+    assert.deepEqual(await handler({ Records: [record('playerProfileMediaWork', `MEDIA#${revision}`, { ...media, status })] }), { batchItemFailures: [] });
+  assert.equal(sent.length, 3);
+  assert.deepEqual(await handler({ Records: [record('playerProfileMediaRetirement', `RETIRE#${revision}`, retirement)] }), { batchItemFailures: [] });
+  assert.equal(sent.length, 4); assert(!JSON.stringify(sent).includes('private')); assert(!JSON.stringify(sent).includes('.png'));
+  const wrong = record('playerProfileMediaWork', `MEDIA#${revision}`, { ...media, objectKey: `portraits/${'b'.repeat(64)}/${revision}.png` });
+  assert.deepEqual(await handler({ Records: [wrong] }), { batchItemFailures: [{ itemIdentifier: '123' }] });
+});

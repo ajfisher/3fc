@@ -1,3 +1,4 @@
+import { handlePlayerPortraitRoute, isPlayerPortraitRoute, parsePortraitBody, PORTRAIT_HEADERS, type PlayerPortraitRepository } from "./player-portrait-routes.js";
 import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, parseOwnerProfileBody, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
 import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -118,6 +119,7 @@ export interface ApiGatewayHttpEvent {
 }
 
 export interface ApiGatewayHttpResponse {
+  isBase64Encoded?: boolean;
   statusCode: number;
   headers: Record<string, string>;
   body: string;
@@ -192,7 +194,7 @@ interface RepositoryGameRecord {
   updatedAt: string;
 }
 
-interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository, OwnerPlayerProfileRepository,
+interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository, OwnerPlayerProfileRepository, PlayerPortraitRepository,
   Pick<ThreeFcRepository, "getPlayerView"> {
   listLeaguesForUser(userId: string): Promise<
     Array<{
@@ -2660,7 +2662,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
       if (!isStateChangeOriginPermitted(method, origin, dependencies.corsAllowedOrigins)) {
         status = 403;
-        return forbiddenOrigin(origin, dependencies.corsAllowedOrigins);
+        const denied = forbiddenOrigin(origin, dependencies.corsAllowedOrigins);
+        if (isPlayerPortraitRoute(method, route)) Object.assign(denied.headers, PORTRAIT_HEADERS);
+        return denied;
       }
 
       if (method === "POST" && route === "/v1/auth/logout") {
@@ -3010,7 +3014,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               error: "unauthorized",
               message: "Valid session cookie required.",
             },
-            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store", ...(isPlayerPortraitRoute(method, route) ? PORTRAIT_HEADERS : {}) },
           );
         }
         if (sessionResolution.failure === "invalid_session") {
@@ -3021,7 +3025,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
               error: "unauthorized",
               message: "Session is missing, invalid, or expired.",
             },
-            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store" },
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store", ...(isPlayerPortraitRoute(method, route) ? PORTRAIT_HEADERS : {}) },
           );
         }
 
@@ -5211,6 +5215,25 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
           );
         }
 
+        if (isPlayerPortraitRoute(method, route)) {
+          const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), ...PORTRAIT_HEADERS };
+          let body: unknown;
+          if (["PUT", "DELETE"].includes(method) && process.env.PLAYER_OWNER_EDITING_ENABLED === "true") {
+            try { body = parsePortraitBody(event.body ?? "", method); }
+            catch (error) {
+              status = error instanceof RangeError ? 413 : 400;
+              return createJsonResponse(status, { error: status === 413 ? "payload_too_large" : "bad_request",
+                message: status === 413 ? "Portrait request body is too large." : "Request body must be valid JSON." }, headers);
+            }
+          }
+          const keys = Object.entries(event.headers ?? {}).filter(([name]) => name.toLowerCase() === "idempotency-key");
+          const result = await handlePlayerPortraitRoute({ method, route, body, rawQueryString: event.rawQueryString ?? "",
+            idempotencyKey: keys.length === 1 ? keys[0][1] : undefined, session, repository: dependencies.repository });
+          status = result.statusCode;
+          if (result.kind === "portrait") return { statusCode: 200, headers: { ...headers, "content-type": "image/png" },
+            body: Buffer.from(result.bytes).toString("base64"), isBase64Encoded: true };
+          return createJsonResponse(status, result.payload, headers);
+        }
         if (isOwnerPlayerProfileRoute(method, route)) {
           const headers = { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "cache-control": "no-store", "referrer-policy": "no-referrer" };
           let body: unknown;

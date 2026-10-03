@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BatchGetItemCommand, GetItemCommand, QueryCommand, TransactWriteItemsCommand, type TransactWriteItem } from '@aws-sdk/client-dynamodb';
 import { PlayerProfileAccess } from '../data/player-profile-access.js';
-import { historyRow, historyKey, type HistoryItem } from '../data/player-history-model.js';
+import { historyRow, historyKey, historyHash, type HistoryItem } from '../data/player-history-model.js';
 import { aclSk, playerClaimSk } from '../data/keys.js';
 import { identityDirectorySk, identityLeagueSk, identityTombstoneSk } from '../data/player-identity.js';
 
@@ -332,4 +332,33 @@ test('composition accepts only condition checks and rejects conflicting snapshot
   const altered = structuredClone(grant.checks[0]); altered.ConditionCheck!.ExpressionAttributeValues![':data'] = { S: 'changed' };
   await assert.rejects(access.assertCurrent(grant.checks, [altered]), error => (error as { code?: string }).code === 'player_profile_changed');
   await assert.rejects(access.assertCurrent(grant.checks, [{ Put: { TableName: 'table', Item: historyRow('LEAGUE#league', 'METADATA', 'league', {}) } }]));
+});
+
+
+test('portrait presence is target-only safe metadata with present and absent pointer fences', async () => {
+  const { client, access, caller } = fixture();
+  const jobId = '11111111-1111-4111-8111-111111111111';
+  const pointer = { jobId, objectKey: `portraits/${historyHash('target')}/${jobId}.png`, digest: 'a'.repeat(64),
+    bytes: 1024, contentType: 'image/png', width: 512, height: 512 };
+  const present = { version: 1, playerId: 'target', nameRevision: jobId, portrait: pointer };
+  const absent = await access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'owner' });
+  assert.equal(absent.player.hasPortrait, false);
+  client.seed('PLAYER#target', 'PRESENTATION', 'playerPresentation', present);
+  await assert.rejects(access.assertCurrent(absent.checks), error => (error as any).code === 'player_profile_changed');
+  const grant = await access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'owner' });
+  assert.equal(grant.player.hasPortrait, true); assert(!JSON.stringify(grant.player).includes('objectKey'));
+  assert(!JSON.stringify(grant.player).includes(pointer.digest));
+  assert.deepEqual(grant.checks.filter(action => action.ConditionCheck?.Key?.sk.S === 'PRESENTATION')
+    .map(action => action.ConditionCheck!.Key!.pk.S), ['PLAYER#target']);
+  client.seed('PLAYER#target', 'PRESENTATION', 'playerPresentation', { ...present, portrait: null });
+  await assert.rejects(access.assertCurrent(grant.checks), error => (error as any).code === 'player_profile_changed');
+  assert.equal((await access.authorize({ ...caller, playerId: 'target', viewerPlayerId: 'owner' })).player.hasPortrait, false);
+});
+
+test('portrait pointer scope corruption fails closed and discovery does not add media checks', async () => {
+  const { client, access, caller } = fixture();
+  client.seed('PLAYER#owner', 'PRESENTATION', 'playerPresentation', { version: 1, playerId: 'other', nameRevision: '11111111-1111-4111-8111-111111111111' });
+  await assert.rejects(access.authorize({ ...caller, playerId: 'owner' }));
+  const page = await access.discover(caller); assert.deepEqual(page.players.map(player => player.playerId), ['owner']);
+  assert(client.transactions.at(-1)!.every(action => action.ConditionCheck?.Key?.sk.S !== 'PRESENTATION'));
 });

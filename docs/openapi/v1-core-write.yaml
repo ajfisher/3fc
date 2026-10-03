@@ -11,6 +11,102 @@ servers:
   - url: https://api.3fc.football
     description: Production
 paths:
+  /v1/player-portrait:
+    get:
+      operationId: getPlayerPortrait
+      summary: Read an authorised league player's portrait
+      description: >-
+        Requires profile league visibility, independently of the owner editing flag.
+        Returns processed PNG bytes only, with no-store, no-referrer and nosniff.
+        Opaque identifiers are decoded once; duplicate and unknown parameters are rejected.
+        Current access and the portrait pointer are fenced after reading the object.
+      parameters:
+        - {name: leagueId, in: query, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/DirectoryPlayerId'}
+        - {name: viewerPlayerId, in: query, required: false, schema: {type: string}}
+      responses:
+        '200':
+          description: Processed512px square portrait
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '400': {description: Invalid query}
+        '401': {description: Sign in required}
+        '403': {description: League access denied}
+        '404': {description: Feature disabled or no portrait}
+        '409': {description: Access or portrait changed; retry}
+        '503': {description: Referenced media unavailable}
+  /v1/owner-player-portrait:
+    put:
+      operationId: putOwnerPlayerPortrait
+      summary: Save a processed player portrait
+      description: >-
+        Requires current verified canonical ownership, never league role authority.
+        New saves need processing readiness; committed receipt replay rechecks current
+        ownership and remains available during a processing pause. No object URLs or
+        private account details are returned. Source photos are cropped locally;
+        the server validates the received bitmap up to2MiB, square dimensions up to512px,
+        single frame and JPEG/PNG/WebP format, then re-encodes512PNG without metadata.
+        PUT JSON is limited to3MiB; DELETE JSON to8192bytes. Responses are no-store.
+      parameters:
+        - {$ref: '#/components/parameters/DirectoryPlayerId'}
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UploadPlayerPortrait'}
+      responses:
+        '200':
+          description: Saved safe presentation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerPlayerDetails'}
+        '400': {description: Invalid request or bitmap}
+        '401': {description: Sign in required}
+        '403': {description: Not the canonical owner}
+        '404': {description: Owner editing disabled}
+        '409': {description: Changed revision, expired upload or conflicting request}
+        '413': {description: Request envelope too large}
+        '503': {description: Processing or storage unavailable}
+    delete:
+      operationId: removeOwnerPlayerPortrait
+      summary: Remove your player portrait
+      description: >-
+        Requires current verified canonical ownership, never league role authority.
+        New saves need processing readiness; committed receipt replay rechecks current
+        ownership and remains available during a processing pause. No object URLs or
+        private account details are returned. Source photos are cropped locally;
+        the server validates the received bitmap up to2MiB, square dimensions up to512px,
+        single frame and JPEG/PNG/WebP format, then re-encodes512PNG without metadata.
+        PUT JSON is limited to3MiB; DELETE JSON to8192bytes. Responses are no-store.
+      parameters:
+        - {$ref: '#/components/parameters/DirectoryPlayerId'}
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RemovePlayerPortrait'}
+      responses:
+        '200':
+          description: Saved safe presentation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerPlayerDetails'}
+        '400': {description: Invalid request or bitmap}
+        '401': {description: Sign in required}
+        '403': {description: Not the canonical owner}
+        '404': {description: Owner editing disabled}
+        '409': {description: Changed revision, expired upload or conflicting request}
+        '413': {description: Request envelope too large}
+        '503': {description: Processing or storage unavailable}
   "/v1/owner-player-profile":
     "get":
       "operationId": "getOwnerPlayerProfile"
@@ -2446,6 +2542,20 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    UploadPlayerPortrait:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, contentType, base64]
+      properties:
+        expectedRevision: {type: string, pattern: '^[a-f0-9]{64}$'}
+        contentType: {type: string, enum: [image/jpeg, image/png, image/webp]}
+        base64: {type: string, minLength: 1, maxLength: 2796204, description: Canonical standard base64; decoded content at most2MiB}
+    RemovePlayerPortrait:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision]
+      properties:
+        expectedRevision: {type: string, pattern: '^[a-f0-9]{64}$'}
     "OwnerPlayerDetails":
       "type": "object"
       "additionalProperties": false

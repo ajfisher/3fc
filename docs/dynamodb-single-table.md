@@ -330,3 +330,19 @@ constructors write only `NAME#` jobs; IAM constrains its partition family but ca
 distinguish receipt and job sort keys. Queue messages carry the partition hash and
 job key, with no raw legacy player ID, name or account identifier. See
 [ADR 0008](decisions/0008-owner-profile-name-and-directory-work.md).
+
+### Private portrait state
+
+`PRESENTATION` may also hold a processed portrait pointer (job UUID, object key,
+digest, byte count, PNG format and512px dimensions). It is private persistence;
+safe profile DTOs expose only `hasPortrait`.
+
+Within `PLAYER_PROFILE_WORK#<hash(playerId)>`, API reservations use
+`PORTRAIT_REQUEST#<hash(actor,key)>` and immutable replies use
+`PORTRAIT_RECEIPT#<hash(actor,key)>`. `MEDIA#<uuid>` records a processed object's
+uploading/active/cleanup/deleting/deleted lifecycle, original expiry and digest.
+An upload reserves work before S3 IO; pointer publication and predecessor cleanup
+commit together. `RETIRE#<uuid>` records bounded cleanup of retired identity
+portraits after consolidation. Name jobs remain `NAME#<uuid>`. Worker constructors
+write these job families only, although partition-scoped IAM cannot constrain sort
+keys. Storage has no public route. See [ADR0009](decisions/0009-private-player-portraits.md).

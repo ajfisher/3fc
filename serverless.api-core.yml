@@ -9,7 +9,7 @@ build:
 
 provider:
   name: aws
-  runtime: nodejs20.x
+  runtime: nodejs22.x
   region: ${opt:region, env:AWS_REGION, 'ap-southeast-2'}
   stage: ${opt:stage, 'qa'}
   architecture: arm64
@@ -20,6 +20,7 @@ provider:
   iam:
     role: ${env:LAMBDA_EXECUTION_ROLE_ARN}
   environment:
+    PORTRAIT_BUCKET: ${env:PORTRAIT_BUCKET}
     DYNAMODB_TABLE: ${env:DYNAMODB_TABLE, '3fc-${sls:stage}-app'}
     APP_BASE_URL: ${self:custom.appBaseUrls.${sls:stage}, self:custom.appBaseUrls.default}
     PUBLIC_APP_BASE_URL: ${self:custom.publicAppBaseUrls.${sls:stage}, self:custom.publicAppBaseUrls.default}
@@ -62,6 +63,12 @@ custom:
     prod: https://3fc.football,https://app.3fc.football,https://qa.3fc.football
     default: https://3fc.football,https://app.3fc.football
   esbuild:
+    packagePath: ./api/package.json
+    external:
+      - sharp
+    packagerOptions:
+      scripts:
+        - npm install --os=linux --libc=glibc --cpu=arm64 --include=optional sharp@0.35.5
     bundle: true
     minify: false
     sourcemap: false
@@ -478,3 +485,18 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/sessions/{sessionId}/games
+      - httpApi:
+          method: GET
+          path: /v1/player-portrait
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-portrait
+      - httpApi:
+          method: PUT
+          path: /v1/owner-player-portrait
+      - httpApi:
+          method: DELETE
+          path: /v1/owner-player-portrait
+      - httpApi:
+          method: OPTIONS
+          path: /v1/owner-player-portrait
