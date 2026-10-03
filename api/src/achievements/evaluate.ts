@@ -5,7 +5,7 @@ import {
   type AchievementId, type AchievementProgress, type AchievementScope, type AchievementScopeContext,
   type AchievementUnlock, type PlayerAppearance, type PlayerTotals, type TeamId
 } from '@3fc/contracts';
-import { matchFactsSchema, type MatchFacts, type MatchGoal } from './facts.js';
+import { compareMatchOrder, matchFactsSchema, type MatchFacts, type MatchGoal } from './facts.js';
 export type { MatchFacts, MatchGoal, TimingEvidence } from './facts.js';
 
 export type AwardEvidence = AchievementUnlock & { ruleVersion: number; sourceRevision: string };
@@ -60,8 +60,8 @@ export function applyAppearance(previous: AchievementAccumulator, rawMatch: Matc
   if (previous.context && (previous.context.playerId !== context.playerId || previous.context.leagueId !== context.leagueId
     || previous.context.scope !== context.scope || previous.context.seasonId !== context.seasonId
     || previous.context.ruleVersion !== context.ruleVersion)) throw new Error('Accumulator context mismatch; rebuild required');
-  if (previous.cursor && (match.gameId === previous.cursor.gameId || match.kickoffAt < previous.cursor.kickoffAt ||
-    (match.kickoffAt === previous.cursor.kickoffAt && match.gameId <= previous.cursor.gameId))) throw new Error('Duplicate or out-of-order match; rebuild required');
+  if (previous.cursor && (match.gameId === previous.cursor.gameId || compareMatchOrder(match, previous.cursor) <= 0))
+    throw new Error('Duplicate or out-of-order match; rebuild required');
   const state = structuredClone(previous);
   state.context = context;
   state.cursor = { kickoffAt: match.kickoffAt, gameId: match.gameId, sourceRevision: match.sourceRevision };

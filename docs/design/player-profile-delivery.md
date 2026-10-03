@@ -26,11 +26,12 @@ at fa7e775 found no newer profile/history implementation to duplicate.
 
 1. Scope, catalogue, milestone arithmetic and safe presentation contracts (#199):
    ready for AJ's final review in PR #204. Excludes all runtime endpoints/UI.
-2. Pure evaluator for all 23 classes (#201): in progress on the child branch
-   `codex/achievement-evaluator`; excludes persistence, source adapters and workers.
-3. Complete canonical history, durable work pipeline, persistence and resumable
-   backfill (#139 foundation, #200, remainder of #201): pending; split infrastructure
-   and mutation integration further if needed for reviewability.
+2. Pure evaluator for all 23 classes (#201): ready for AJ's final review in PR #205;
+   excludes persistence, source adapters and workers.
+3. Complete canonical history and generation persistence (#139 foundation, #200,
+   remainder of #201): in progress on `codex/player-history-foundation`.
+   Durable source markers, Streams/SQS delivery, worker and resumable backfill
+   follow in the next child, before any runtime reader is enabled.
 4. Authorised profile/history routes and owner name/photo/media (#37, #202): pending.
 5. Profile UI, card/export and achievement gallery (#37, #203): pending.
 6. Serialised QA coverage verification and feature activation: pending.
@@ -52,6 +53,26 @@ CI 37112836386, QA 37112836382 and current-head review-gate check 111173947603.
 Cloud review completed with no major issues for that head on 3 October 2026.
 The evaluator child started only after these checks and both sub-agent passes.
 PR #204 remains unmerged; AJ retains final merge authority.
+
+Slice 2: [PR #205](https://github.com/ajfisher/3fc/pull/205), base
+`codex/player-profiles`, branch `codex/achievement-evaluator`. Two independent
+sub-agent reviews passed after rule, uncertainty and replay fixes. All 34 focused
+evaluator/contract tests and API test compilation passed (owned group 1900, exit 0,
+peak 515440 KiB, no remaining children). Head
+`38e2689455a25d97409c20a86fe5e25e984fe199` passed CI 37114047673, QA 37114049956
+and review-gate check 111177243508. Cloud review completed with no major issues
+on 3 October 2026. The history child started after these gates. PR #205 remains
+unmerged for AJ.
+
+Slice 3: `codex/player-history-foundation`, based on PR #205. Implements raw
+paginated source reads, canonical fact assembly and immutable history generations.
+Independent source/store reviews resolved uncertain legacy timing, exact-completion
+provenance and mismatched source-revision findings. All 56 focused contracts,
+evaluator, source and store tests pass after fixes, including concurrent evaluation,
+lost acknowledgements and interrupted milestone staging (owned group 6540, exit 0,
+peak 519360 KiB, no remaining children). API test compilation and backlog
+validation/export pass. Remote gates must pass before the worker child begins.
+No runtime reader or worker is enabled by this foundation.
 
 AJ retains merge and production-release authority. All new capabilities remain
 behind separate profiles, owner-editing and achievements flags until coverage and

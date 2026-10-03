@@ -9,7 +9,7 @@
 Evaluate one normalised completed match at a time, persisting an accumulator only
 through the subsequent worker's revision fence. Bind checkpoints to canonical
 player, league, rule version and season/career scope. Require strict kickoff and
-game-ID order. A duplicate, corrected or earlier match cannot be applied to an
+game-ID order (the bounded SHA-256 tie-breaker specified in ADR 0004). A duplicate, corrected or earlier match cannot be applied to an
 already counted state: rebuild from a checkpoint before the affected match.
 The bounded cursor rejects immediate replay even if the last game's kickoff was
 corrected. Detecting an older game's moved kickoff requires the worker's source/index

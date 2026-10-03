@@ -10,6 +10,44 @@ This document defines the baseline key structure and access patterns for the
 - Sort key: `sk` (string)
 - Billing mode: on-demand
 
+## Player history generations (additive, disabled until writer/backfill rollout)
+
+`PLAYER_HISTORY#{sha256(JSON.stringify([leagueId, canonicalPlayerId]))}` owns
+derived history for one canonical player in one league. No account or email data
+is stored here. The generation prefix `GEN#{sha256(JSON.stringify([generationId]))}#`
+isolates immutable facts, summaries, appearances and milestone evidence.
+
+| Sort key | Ownership and access |
+| --- | --- |
+| `PUBLISHED` | Transactionally published generation, source/identity revisions and freshness metadata |
+| `GEN#…#META` | Persisted collection/evaluation checkpoints and summary references |
+| `GEN#…#FACT#{order}` | Complete canonical match facts, queried oldest first for evaluation |
+| `GEN#…#GAME#{digest}` | Immutable game identity guard preventing duplicate collection |
+| `GEN#…#STATE#{ordinal}#CAREER` | Career accumulator at an evaluated checkpoint |
+| `GEN#…#STATE#{ordinal}#SEASON#{digest}` | Season accumulator at an evaluated checkpoint |
+| `GEN#…#MATCH#{order}` | Appearance log, newest first, bounded to 20 per reader page |
+| `GEN#…#SEASON#{digest}#MATCH#{order}` | Direct selected-season appearance index |
+| `GEN#…#AWARD#{scope}#{earnedAt}#{unlockId}` | Every season/career milestone with rule/source evidence and calculation time |
+| `PUBLICATION#{generationDigest}` | Append-only publication transition retaining the previous generation link |
+
+`order` is UTC kickoff followed by the SHA-256 digest of the raw opaque game ID;
+the evaluator uses the identical ordering. Other digests use the shared JSON-array
+hash helper. Reader cursors bind league/player partition, generation and scope.
+All source and projection queries are bounded and strongly consistent. No GSI or
+request-time scan is required. The internal store confers no read authority.
+
+`LEAGUE#{leagueId} / HISTORY_SOURCE` (`playerHistorySource`) is the versioned
+source-writer prerequisite `{leagueId, version: 1, revision}`. The following delivery
+slice must change this revision atomically with relevant source mutations and
+durable work markers. This foundation does not install writers or enable readers.
+Publication conditions include the captured source, identity, identity-control,
+league and deletion boundaries, the completed generation and previous publication.
+
+Retained generations and publication records are the unlock audit history, including
+invalidation and reinstatement. They have no TTL. Incomplete/stale work cannot
+replace an active publication. See [ADR 0004](decisions/0004-player-history-generations.md)
+for rollout and rollback responsibilities.
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable

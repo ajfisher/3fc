@@ -144,7 +144,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-11` | frontend-consistency | review-ready | [#177](https://github.com/ajfisher/3fc/issues/177) | codex/ux-player-row-consistency |
 | `UX-12` | frontend-consistency | review-ready | [#178](https://github.com/ajfisher/3fc/issues/178) | codex/ux-player-picker-search |
 | `UX-13` | frontend-consistency | in-progress | [#179](https://github.com/ajfisher/3fc/issues/179) | codex/ux-scoreboard-consistency |
-| `M3-10` | player-profiles-achievements | planned | [#200](https://github.com/ajfisher/3fc/issues/200) | - |
+| `M3-10` | player-profiles-achievements | in-progress | [#200](https://github.com/ajfisher/3fc/issues/200) | - |
 | `M3-11` | player-profiles-achievements | in-progress | [#201](https://github.com/ajfisher/3fc/issues/201) | codex/achievement-evaluator |
 | `M3-12` | player-profiles-achievements | planned | [#203](https://github.com/ajfisher/3fc/issues/203) | - |
 | `M3-13` | player-profiles-achievements | planned | [#202](https://github.com/ajfisher/3fc/issues/202) | - |

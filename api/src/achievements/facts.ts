@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { TEAM_IDS, validateAssistPlayerIds } from '@3fc/contracts';
 
@@ -44,3 +45,14 @@ export const matchFactsSchema = z.object({
 export type MatchFacts = z.infer<typeof matchFactsSchema>;
 export type MatchGoal = z.infer<typeof goalSchema>;
 export type TimingEvidence = MatchGoal['timing'];
+
+/** Bounded, deterministic ordering shared by persisted history and streak evaluation.
+ * Opaque game identifiers can exceed a storage sort-key budget; their digest is
+ * the stable tie-breaker for equal kickoff times, independent of locale. */
+export function matchOrderKey(match: Pick<MatchFacts, 'kickoffAt' | 'gameId'>): string {
+  return `${new Date(match.kickoffAt).toISOString()}#${createHash('sha256').update(match.gameId).digest('hex')}`;
+}
+export function compareMatchOrder(a: Pick<MatchFacts, 'kickoffAt' | 'gameId'>, b: Pick<MatchFacts, 'kickoffAt' | 'gameId'>): number {
+  const left = matchOrderKey(a), right = matchOrderKey(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}

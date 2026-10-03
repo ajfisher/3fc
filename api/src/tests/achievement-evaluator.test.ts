@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { compareMatchOrder, matchOrderKey } from '../achievements/facts.js';
 import { ACHIEVEMENT_DEFINITIONS, type AchievementId, type TeamId } from '@3fc/contracts';
 import {
   applyAppearance, emptyAccumulator, leaders, progressFor, publicUnlock, stableUnlockId,
@@ -252,7 +253,7 @@ test('season accumulators cannot carry a streak into a different season', () => 
 test('canonical context and chronological cursor reject duplicates, revisions, earlier matches and mixed identities', () => {
   const facts = numbered(2, [goal('goal')]);
   const state = evaluate(facts).state;
-  for (const changed of [facts, { ...facts, sourceRevision: 'corrected' }, numbered(1), { ...facts, gameId: 'game-001' },
+  for (const changed of [facts, { ...facts, sourceRevision: 'corrected' }, numbered(1),
     { ...facts, kickoffAt: '2026-01-02T10:05:00.000Z' }])
     assert.throws(() => applyAppearance(state, changed, player, 'career'), /out-of-order/);
   assert.throws(() => applyAppearance(state, numbered(3), 'alias/not-canonical', 'career'), /context mismatch/);
@@ -260,6 +261,17 @@ test('canonical context and chronological cursor reject duplicates, revisions, e
   assert.throws(() => applyAppearance(state, numbered(3), player, 'season'), /context mismatch/);
   const sameKickoffNextId = applyAppearance(state, { ...facts, gameId: 'game-003' }, player, 'career');
   assert.equal(sameKickoffNextId.state.totals.played, 2);
+  assert.throws(() => applyAppearance(sameKickoffNextId.state, facts, player, 'career'), /out-of-order/);
+});
+
+test('persisted history and evaluator use bounded UTC kickoff and stable game digest ordering', () => {
+  const facts = numbered(2);
+  assert.equal(matchOrderKey(facts), '2026-01-02T10:00:00.000Z#20ed8d343cf7e6642340fad992e0b246183d148b8dd67669e863a6d16e3d2607');
+  assert.equal(matchOrderKey({ ...facts, kickoffAt: '2026-01-02T21:00:00+11:00' }), matchOrderKey(facts));
+  assert.equal(compareMatchOrder(facts, { ...facts, gameId: 'game-003' }), -1);
+  assert.equal(compareMatchOrder(facts, facts), 0);
+  assert.equal(compareMatchOrder(numbered(3), facts), 1);
+  assert.equal(Buffer.byteLength(matchOrderKey({ ...facts, gameId: '試合/#'.repeat(1000) })), 89);
 });
 
 test('invalid canonical facts fail before awarding or mutating the checkpoint', () => {
