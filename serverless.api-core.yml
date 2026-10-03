@@ -87,7 +87,9 @@ functions:
     description: 3FC API core authenticated routes
     handler: api/src/lambda-core.handler
     memorySize: 256
-    timeout: 10
+    # Encoding (3s), object IO (5s), and fenced database writes share this budget.
+    # Stay below the HTTP API integration limit (30s).
+    timeout: 28
     events:
       - httpApi:
           method: POST

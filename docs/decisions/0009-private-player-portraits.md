@@ -69,6 +69,12 @@ are ignored; delayed upload continuations use bounded SQS delays.
 Terraform owns bucket protections and scoped API/worker permissions. Serverless
 owns routes, environment and compatible stream filters. The API uses Node22/arm64;
 packaging explicitly includes Sharp and its Linux/arm64 native dependencies.
+The core function has a 28-second timeout: the 3-second encoder and 5-second object
+IO deadline leave time for identity reads and transactional publication. This
+remains below the [HTTP API 30-second integration limit](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html).
+The deployment captures the verified ZIP digest before Serverless deploys and
+removes its temporary package; live acceptance checks the retained digest and
+28-second timeout, without reading a deleted artifact.
 Worker code imports the storage adapter independently of the encoder. Deploy and
 verify the worker/filter before the API producer. Feature flags and processing
 readiness remain separate. A guarded operator can inspect or resume bounded name,

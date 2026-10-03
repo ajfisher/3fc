@@ -39,7 +39,7 @@ test("final deployment guard fails closed for missing, changed or updating API p
   assert.deepEqual(source.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED", "Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED", "Environment.Variables.PLAYER_PROFILES_ENABLED", "Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED", "Environment.Variables.PLAYER_OWNER_EDITING_ENABLED", "Environment.Variables.HISTORY_PROCESSING_ENABLED", "Environment.Variables.PORTRAIT_BUCKET"]);
   const directory = mkdtempSync(resolve(tmpdir(), "3fc-deploy-guard-"));
   const head = "a".repeat(40);
-  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"] };
+  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 };
   const manifest = { gitCommit: head, env: "qa", service: "api-core", region: "ap-southeast-2", packageCodeSha256: "package", functionFingerprint: fingerprint };
   const manifestPath = resolve(directory, "out/deploy/qa/api-core-deploy-manifest.json");
   mkdirSync(resolve(directory, "out/deploy/qa"), { recursive: true });
@@ -87,6 +87,10 @@ test("final deployment guard fails closed for missing, changed or updating API p
         const invalid = { ...fingerprint, [field]: value };
         assert.notEqual(run(invalid, { ...manifest, functionFingerprint: invalid }).status, 0, `invalid ${field} cannot match itself`);
       }
+    }
+    for (const timeout of [10, 29, 30, "28", null]) {
+      const invalid = { ...fingerprint, timeout };
+      assert.notEqual(run(invalid, { ...manifest, functionFingerprint: invalid }).status, 0, "matching unsupported timeouts must not pass");
     }
     const returning = { ...fingerprint, returningJoinEnabled: "true" };
     assert.equal(run(returning, { ...manifest, functionFingerprint: returning }).status, 0);
@@ -338,7 +342,7 @@ test("core deploy validates, exports and verifies the configured claim and conso
         PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: expected,
         FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision",
           playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false",
-          achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: deployed, portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"] }),
+          achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: deployed, portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
       } });
       assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
     }
@@ -346,7 +350,7 @@ test("core deploy validates, exports and verifies the configured claim and conso
   for (const deployed of ["proof", "disabled", null]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
       ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "disabled", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: "false",
-      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed, consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"] }),
+      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed, consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
     } });
     assert.equal(result.status, deployed === "disabled" ? 0 : 1, result.stderr);
   }
@@ -354,7 +358,7 @@ test("core deploy validates, exports and verifies the configured claim and conso
     for (const deployed of ["true", "false", null, undefined, true, false, "invalid"]) {
       const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
         ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: expected, PLAYER_RETURNING_JOIN_ENABLED: "false",
-        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: deployed, returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"] }),
+        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: deployed, returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
       } });
       assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
     }
@@ -363,7 +367,7 @@ test("core deploy validates, exports and verifies the configured claim and conso
     for (const deployed of ["true", "false", null, undefined, true, false, "invalid"]) {
       const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
         ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: expected,
-        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: deployed, profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"] }),
+        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: deployed, profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
       } });
       assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
     }

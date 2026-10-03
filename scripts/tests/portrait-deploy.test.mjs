@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +34,7 @@ test('only processed private objects are allowed and cleanup has no write or rea
 });
 test('native packaging is checked before deploying the exact prepared artifact', () => {
   const core = source('serverless.api-core.yml');
+  assert.match(core, /timeout: 28/);
   assert.match(core, /runtime: nodejs22.x/); assert.match(core, /architecture: arm64/);
   assert.match(core, /packagePath: .\/api\/package.json/); assert.match(core, /external:\s+- sharp/);
   assert.match(core, /npm install --os=linux --libc=glibc --cpu=arm64 --include=optional sharp@0.35.5/);
@@ -71,4 +74,44 @@ test('native pruning touches only foreign addons in the generated dependency tre
     await writeFile(join(build, 'package.json'), JSON.stringify({ name: 'real-workspace', private: true, dependencies: { sharp: '0.35.5' } }));
     await assert.rejects(prunePortraitNative(build, service));
   } finally { await rm(service, { recursive: true, force: true }); }
+});
+
+test('accepted package digest survives deployment removing the temporary ZIP', async () => {
+  const directory = await mkdtemp(join(tmpdir(), '3fc-package-capture-'));
+  try {
+    const deploy = source('scripts/deploy/deploy-app.sh');
+    const start = deploy.indexOf('PACKAGE_CODE_SHA256=""');
+    const stop = deploy.indexOf('\nCOMMIT_SHA=', start);
+    assert(start >= 0 && stop > start);
+    const operation = deploy.slice(start, stop);
+    const shell = `set -euo pipefail
+npx() {
+  if [[ "$1 $2" == "serverless package" ]]; then
+    mkdir -p .serverless
+    printf 'accepted portrait artifact' > .serverless/core.zip
+  elif [[ "$1 $2 $3 $4" == "serverless deploy --package .serverless" ]]; then
+    rm .serverless/core.zip
+  else
+    return 99
+  fi
+}
+node() {
+  if [[ "$1" == "scripts/deploy/verify-portrait-package.mjs" ]]; then
+    test -s .serverless/core.zip
+  else
+    command node "$@"
+  fi
+}
+${operation}
+test ! -e .serverless/core.zip
+printf 'DIGEST=%s\\n' "$PACKAGE_CODE_SHA256"
+`;
+    const result = spawnSync('bash', ['-c', shell], { cwd: directory, encoding: 'utf8',
+      env: { ...process.env, SERVICE: 'api-core', CONFIG_FILE: 'serverless.api-core.yml', ENV: 'qa', AWS_REGION: 'ap-southeast-2' } });
+    assert.equal(result.status, 0, result.stderr);
+    const expected = createHash('sha256').update('accepted portrait artifact').digest('base64');
+    assert(result.stdout.includes(`DIGEST=${expected}`), result.stdout);
+    assert.equal((deploy.match(/PACKAGE_CODE_SHA256=""/g) ?? []).length, 1, 'later initialization must not erase the accepted digest');
+    assert(!deploy.slice(stop).includes('readFileSync(".serverless/core.zip")'), 'post-deploy verification uses the captured hash');
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
