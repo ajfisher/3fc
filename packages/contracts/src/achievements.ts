@@ -182,11 +182,12 @@ export function milestoneOrdinal(rarity: AchievementRarity, count: number): numb
   return count <= scale[scale.length - 1] ? scale.filter(value => value <= count).length
     : scale.length + Math.floor((count - scale[scale.length - 1]) / (rarity === "Common" ? 100 : 10));
 }
-export interface AchievementUnlock {
+export type AchievementScopeContext =
+  | { scope: "season"; seasonId: string }
+  | { scope: "career"; seasonId: null };
+export type AchievementUnlock = AchievementScopeContext & {
   id: string;
   achievementId: AchievementId;
-  scope: AchievementScope;
-  seasonId: string | null;
   ordinal: number;
   threshold: number;
   earnedAt: string;
@@ -203,7 +204,7 @@ export interface AchievementProgress {
 }
 const rarityRank: Record<AchievementRarity, number> = { Epic: 4, Legendary: 3, Rare: 2, Common: 1 };
 /** A card groups matching unlocks without discarding their original scope records. */
-export interface CardHonour extends AchievementUnlock {
+export type CardHonour = AchievementUnlock & {
   scopes: AchievementScope[];
 }
 /** One highest milestone per class. Callers supply active awards for the selected period. */

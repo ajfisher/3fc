@@ -39,7 +39,16 @@ complete independent sub-agent reviews, address findings, run focused validation
 then obtain a completed passing review gate for that slice's current head. Review
 agents remain read-only and do not launch tests; the primary agent serialises local
 validation under the 4 GiB process-tree ceiling. QA deployments are serialised.
-Record each PR and evidence here as created. No PR has yet been opened.
+Record each PR and evidence here as created.
+
+Slice 1: [PR #204](https://github.com/ajfisher/3fc/pull/204), base `main`, branch
+`codex/player-profiles`. Two read-only sub-agent reviews passed after scope/privacy
+fixes. The first automated review identified scope-ID type combinations and missing
+backlog issue IDs; both were accepted, fixed and re-reviewed. Eight focused tests,
+API test compilation and backlog validation/export pass after those fixes (owned
+group 99481, exit 0, peak 497040 KiB, no remaining children). The first head passed
+CI and QA, but the corrected head requires fresh CI, QA and review; the PR packet
+and GitHub checks hold current-head evidence. No child implementation has begun.
 
 AJ retains merge and production-release authority. All new capabilities remain
 behind separate profiles, owner-editing and achievements flags until coverage and

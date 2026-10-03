@@ -3,15 +3,17 @@ import test from 'node:test';
 import {
   ACHIEVEMENT_DEFINITIONS, ACHIEVEMENT_RULE_VERSION, milestoneOrdinal,
   milestoneThreshold, selectCardHonours,
-  type AchievementId, type AchievementRarity, type AchievementUnlock,
+  type AchievementId, type AchievementRarity, type AchievementScopeContext, type AchievementUnlock,
   type PlayerAchievements, type PlayerHistoryPage, type PlayerPerformance, type PlayerUnlockPage
 } from '@3fc/contracts';
 
-function unlock(achievementId: AchievementId, ordinal = 1, extra: Partial<AchievementUnlock> = {}): AchievementUnlock {
+function unlock(achievementId: AchievementId, ordinal = 1, extra: Partial<Omit<AchievementUnlock, "scope" | "seasonId">> & (AchievementScopeContext | { scope?: never; seasonId?: never }) = {}): AchievementUnlock {
   const rarity = ACHIEVEMENT_DEFINITIONS.find(value => value.id === achievementId)!.rarity;
   return { id: `${achievementId}-${ordinal}`, achievementId, ordinal,
-    threshold: milestoneThreshold(rarity, ordinal), scope: 'career', seasonId: null,
-    gameId: 'game-1', earnedAt: '2026-09-20T10:00:00.000Z', ...extra };
+    threshold: milestoneThreshold(rarity, ordinal),
+    gameId: 'game-1', earnedAt: '2026-09-20T10:00:00.000Z', ...extra,
+    ...(extra.scope === 'season' ? { scope: 'season' as const, seasonId: extra.seasonId }
+      : { scope: 'career' as const, seasonId: null }) };
 }
 
 test('launch catalogue contains the approved 23 unique classes and trusted vector artwork', () => {
@@ -122,3 +124,11 @@ test('unavailable projection contracts carry no fabricated totals, progress or p
   const noPrivateKeys: [PrivateField] extends [never] ? true : false = true;
   assert.equal(noPrivateKeys, true);
 });
+
+// These negative examples must fail compilation: a scope determines its season ID.
+// @ts-expect-error A season unlock must identify its season.
+const missingSeason: AchievementUnlock = { ...unlock('goal'), scope: 'season', seasonId: null };
+// @ts-expect-error Career progress cannot be attached to one season.
+const careerSeason: PlayerAchievements = { playerId: 'p', leagueId: 'l', scope: 'career', seasonId: 'winter', progress: null, honours: null, latestUnlocks: null, freshness: { status: 'unavailable', coverage: 'unknown', revision: null, computedAt: null } };
+void missingSeason;
+void careerSeason;

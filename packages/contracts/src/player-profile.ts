@@ -1,4 +1,4 @@
-import type { AchievementProgress, AchievementUnlock } from './achievements.js';
+import type { AchievementProgress, AchievementScopeContext, AchievementUnlock } from './achievements.js';
 import type { TeamId } from './index.js';
 export interface PlayerTotals {
   played: number; goals: number; assists: number; ownGoals: number;
@@ -29,8 +29,8 @@ export interface PlayerPerformance {
   capabilities: { editProfile: boolean; achievements: boolean };
 }
 export interface PlayerHistoryPage { matches: PlayerAppearance[] | null; cursor: string | null; freshness: ProjectionFreshness }
-export interface PlayerAchievements {
-  playerId: string; leagueId: string; scope: 'season' | 'career'; seasonId: string | null;
+export type PlayerAchievements = AchievementScopeContext & {
+  playerId: string; leagueId: string;
   progress: AchievementProgress[] | null; honours: AchievementUnlock[] | null;
   latestUnlocks: AchievementUnlock[] | null; freshness: ProjectionFreshness;
 }
