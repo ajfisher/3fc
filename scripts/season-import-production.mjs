@@ -42,6 +42,7 @@ export function verifyWriter(f, deployment, env, accountId, tableName, baseline)
   const expected = deployment.functionFingerprint, functionName = `3fc-${env}-api-core`;
   need(f.arn === `arn:aws:lambda:${region}:${accountId}:function:${functionName}` && f.name === functionName &&
     f.name === expected?.functionName && f.hash === deployment.packageCodeSha256 && f.hash === expected.codeSha256 &&
+    typeof expected.revisionId === "string" && expected.revisionId.length > 0 &&
     typeof f.revision === "string" && f.revision.length > 0 && f.state === "Active" && f.update === "Successful" && f.table === tableName &&
     f.claim === "proof" && f.claim === expected.playerClaimMode && ["true", "false"].includes(f.returning) &&
     f.returning === expected.returningJoinEnabled && f.consolidation === expected.consolidationEnabled &&

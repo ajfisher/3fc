@@ -407,6 +407,9 @@ test("concurrency revision changes require the original accepted baseline; runti
   }
   const resumedBaseline = writerBaseline(paused, deployments, account, baseline, "2026-09-03T00:00:00Z");
   assert.equal(resumedBaseline.environments.prod.live.revision, "accepted-prod", "keep original provenance after an abandoned window");
+  const missingRevision = structuredClone(deployments.prod), missingAnchor = structuredClone(baseline);
+  delete missingRevision.functionFingerprint.revisionId; delete missingAnchor.environments.prod.live.revision;
+  assert.throws(() => verifyWriter(paused.prod.function, missingRevision, "prod", account, "3fc-prod-app", missingAnchor), /writer or player feature/);
   for (const mutate of [
     b => { b.accountId = "999999999999"; },
     b => { b.environments.prod.acceptedDeploymentSha = "c".repeat(40); },
