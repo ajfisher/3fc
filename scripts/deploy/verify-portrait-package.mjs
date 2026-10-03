@@ -14,7 +14,8 @@ export function verifyPortraitPackage(entries) {
     assert(paths.has(required), `Missing Lambda dependency: ${required}`);
   }
   assert(entries.some(path => /^node_modules\/@img\/sharp-libvips-linux-arm64\/lib\/libvips-cpp\.so\.\d+(?:\.\d+)*$/.test(path)), 'Missing Linux arm64 libvips');
-  assert(!entries.some(path => /node_modules\/@img\/sharp-(?:libvips-)?(?:darwin|win32|linux-x64|linuxmusl)/.test(path)), 'Unexpected native platform in Lambda artifact');
+  const foreign = entries.filter(path => /node_modules\/@img\/sharp-(?:libvips-)?(?:darwin|win32|linux-x64|linuxmusl)/.test(path));
+  assert.equal(foreign.length, 0, `Unexpected native platform in Lambda artifact: ${foreign.join(', ')}`);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const zip = process.argv[2]; assert(zip, 'Expected core ZIP path');

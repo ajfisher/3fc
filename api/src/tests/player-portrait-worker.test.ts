@@ -90,7 +90,7 @@ function fixture(status = 'uploading', referenced = false, playerId = 'player') 
   client.seed(`PLAYER#${playerId}`, 'PRESENTATION', 'playerPresentation', { version: 1, playerId, nameRevision: randomUUID(), portrait: referenced ? portrait : null });
   client.seed(profileWorkPartition(playerId), profileMediaWorkKey(jobId), 'playerProfileMediaWork', {
     version: 1, jobId, playerId, objectKey, digest: portrait.digest, bytes: portrait.bytes,
-    status, notBefore: new Date(Date.parse(at) + 120_000).toISOString(), createdAt: at, updatedAt: at,
+    status, notBefore: new Date(Date.parse(at) + (status === 'uploading' ? 120_000 : 0)).toISOString(), createdAt: at, updatedAt: at,
   });
   let current = at;
   const store = { delete: async (key: string) => { deleted.push(key); } };
@@ -205,4 +205,16 @@ test('duplicate deliveries and filtered operator pages retain safe continuations
   const page = await f.worker.pendingPage(f.playerId); assert.deepEqual(page.refs, []); assert(page.cursor);
   const next = await f.worker.pendingPage(f.playerId, 'media', page.cursor); assert.deepEqual(next.refs, []); assert.equal(next.cursor, null);
   f.client.advanceCursor = true; await assert.rejects(f.worker.pendingPage(f.playerId));
+});
+
+
+test('recently removed or retired portraits retain the upload lease before physical deletion', async () => {
+  for (const status of ['cleanup', 'active']) {
+    const f = fixture(status);
+    alter(f.client, profileWorkPartition(f.playerId), f.ref.key, { notBefore: new Date(Date.parse(at) + 120_000).toISOString() });
+    assert.equal(body(f.client.read(`PLAYER#${f.playerId}`, 'PRESENTATION')!).portrait, null);
+    assert.deepEqual(await f.worker.process(f.ref), { done: false, delaySeconds: 120 }); assert.deepEqual(f.deleted, []);
+    f.advance(); assert.equal((await f.worker.process(f.ref)).done, false); assert.equal(state(f).status, 'deleting');
+    assert.equal((await f.worker.process(f.ref)).done, true); assert.deepEqual(f.deleted, [f.portrait.objectKey]);
+  }
 });

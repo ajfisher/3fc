@@ -50,7 +50,10 @@ never trigger speculative deletion of a possibly published object.
 The worker waits until an abandoned upload's lease expires, then claims `deleting`
 with a transaction-fenced pointer/identity snapshot before touching S3. Publication
 requires `uploading`, so a claimed cleanup cannot be revived. Deletes are idempotent;
-failures preserve the checkpoint and retry through the existing queue/DLQ. Replaced
+failures preserve the checkpoint and retry through the existing queue/DLQ. Cleanup
+retains the original upload lease even after publication: a concurrent identical
+retry can still be finishing its immutable put. Deletion waits until that window
+closes, preventing a late retry from recreating an already deleted object. Replaced
 or removed portraits are immediately absent from authorised reads; physical cleanup
 follows asynchronously. Active referenced objects cannot be deleted.
 

@@ -16,7 +16,8 @@ const keyOf = (row: HistoryItem) => JSON.stringify([row.pk.S, row.sk.S]);
 const body = (row: HistoryItem) => JSON.parse(row.data.S!);
 class Memory {
   rows = new Map<string, HistoryItem>(); transactions: TransactWriteItem[][] = [];
-  beforeCommit: ((actions: TransactWriteItem[]) => void) | null = null;
+  beforeCommit: ((actions: TransactWriteItem[]) => void | Promise<void>) | null = null;
+  beforeGet: ((key: HistoryItem) => void | Promise<void>) | null = null;
   loseAck: ((actions: TransactWriteItem[]) => boolean) | null = null;
   seed(pk: string, sk: string, type: string, data: unknown) { const row = historyRow(pk, sk, type, data); this.rows.set(keyOf(row), row); return row; }
   get(pk: string, sk: string) { return this.rows.get(keyOf(historyKey(pk, sk))); }
@@ -24,7 +25,8 @@ class Memory {
   ofType(type: string) { return [...this.rows.values()].filter(row => row.entityType.S === type); }
   async send(command: unknown): Promise<unknown> {
     if (command instanceof GetItemCommand) {
-      assert.equal(command.input.ConsistentRead, true); return { Item: structuredClone(this.rows.get(keyOf(command.input.Key!))) };
+      assert.equal(command.input.ConsistentRead, true); if (this.beforeGet) await this.beforeGet(command.input.Key!);
+      return { Item: structuredClone(this.rows.get(keyOf(command.input.Key!))) };
     }
     if (command instanceof BatchGetItemCommand) {
       const request = command.input.RequestItems!.table; assert.equal(request.ConsistentRead, true); assert(request.Keys!.length <= 100);
@@ -33,7 +35,7 @@ class Memory {
     assert(command instanceof TransactWriteItemsCommand, 'portrait operations never scan or enumerate history');
     const actions = command.input.TransactItems!; this.transactions.push(structuredClone(actions)); assert(actions.length <= 100);
     const keys = actions.map(action => keyOf(action.Put?.Item ?? action.ConditionCheck!.Key!)); assert.equal(new Set(keys).size, keys.length);
-    this.beforeCommit?.(actions);
+    if (this.beforeCommit) await this.beforeCommit(actions);
     const validity = actions.map(action => {
       const op = action.Put ?? action.ConditionCheck!, row = this.rows.get(keyOf(action.Put?.Item ?? action.ConditionCheck!.Key!));
       return op.ConditionExpression!.split(' AND ').every(expression => {
@@ -66,7 +68,7 @@ function fixture() {
   const store: PortraitStore = {
     async put(key, bytes) {
       const intent = client.ofType('playerProfileMediaWork').find(row => body(row).objectKey === key); assert(intent, 'durable intent precedes all object puts');
-      assert.equal(body(intent).status, 'uploading'); puts.push(key);
+      assert(['uploading', 'active'].includes(body(intent).status)); puts.push(key);
       const existing = objects.get(key); if (existing) assert.deepEqual(existing, bytes, 'immutable object retry');
       objects.set(key, Buffer.from(bytes)); await onPut?.();
     },
@@ -102,10 +104,12 @@ test('replace and remove durably schedule the previous immutable object while re
   await f.service.upload(await f.request('second', 'two')); const second = f.presentation().portrait!;
   assert.notEqual(first.objectKey, second.objectKey);
   assert.equal(body(f.client.get(profileWorkPartition('root'), profileMediaWorkKey(first.jobId))!).status, 'cleanup');
+  assert.equal(body(f.client.get(profileWorkPartition('root'), profileMediaWorkKey(first.jobId))!).notBefore, '2026-10-04T12:02:00.000Z');
   const nameRevision = f.presentation().nameRevision, current = await f.owner.read(input);
   const removed = await f.service.remove({ ...input, expectedRevision: current.revision, idempotencyKey: 'remove' });
   assert.equal(removed.hasPortrait, false); assert.equal(f.presentation().nameRevision, nameRevision); assert.equal(f.presentation().portrait, null);
   assert.equal(body(f.client.get(profileWorkPartition('root'), profileMediaWorkKey(second.jobId))!).status, 'cleanup');
+  assert.equal(body(f.client.get(profileWorkPartition('root'), profileMediaWorkKey(second.jobId))!).notBefore, '2026-10-04T12:02:00.000Z');
   assert.equal(await f.service.read(readInput), null); assert.deepEqual(f.deletes, [], 'request path never deletes potentially published objects');
 });
 
@@ -132,6 +136,84 @@ test('lost final acknowledgement and exact paused retries never restore an older
   await assert.rejects(f.service.upload({ ...firstRequest, bytes: Buffer.from('different') }), error => (error as any).status === 409);
   f.client.update('PLAYER#root', 'PROFILE', { claimedByUserId: 'stranger' });
   await assert.rejects(f.service.upload(firstRequest), error => (error as any).status === 403);
+});
+
+test('concurrent identical uploads join one winning reservation and both return the same committed response', async () => {
+  for (const replacement of [false, true]) {
+  const f = fixture(); if (replacement) await f.service.upload(await f.request('previous', 'old'));
+  const request = await f.request(), previousCount = replacement ? 1 : 0;
+  let arrivals = 0, release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
+  f.client.beforeCommit = async actions => {
+    if (!actions.some(action => action.Put?.Item?.entityType?.S === 'playerPortraitRequest')) return;
+    arrivals++; if (arrivals === 2) release(); await barrier;
+  };
+  const [first, second] = await Promise.all([f.service.upload(request), f.service.upload(request)]);
+  assert.equal(arrivals, 2, 'both requests attempted independent reservations before either committed');
+  assert.deepEqual(first, second); assert.equal(first.hasPortrait, true);
+  assert.equal(f.client.ofType('playerPortraitRequest').length, previousCount + 1); assert.equal(f.client.ofType('playerProfileMediaWork').length, previousCount + 1);
+  assert.equal(f.client.ofType('playerPortraitReceipt').length, previousCount + 1); assert.equal(f.objects.size, previousCount + 1);
+  assert.equal(new Set(f.puts).size, previousCount + 1, 'the losing random job ID never reaches object storage');
+  }
+});
+
+test('reservation lost acknowledgement joins its durable intent without creating a second object', async () => {
+  const f = fixture(), request = await f.request();
+  f.client.loseAck = actions => {
+    if (!actions.some(action => action.Put?.Item?.entityType?.S === 'playerPortraitRequest')) return false;
+    f.client.loseAck = null; return true;
+  };
+  const result = await f.service.upload(request); assert.equal(result.hasPortrait, true);
+  assert.equal(f.client.ofType('playerPortraitRequest').length, 1); assert.equal(f.client.ofType('playerProfileMediaWork').length, 1);
+  assert.equal(f.client.ofType('playerPortraitReceipt').length, 1); assert.equal(f.objects.size, 1); assert.equal(f.puts.length, 1);
+});
+
+test('entry replay refreshes ownership when an identical winner commits between context and receipt reads', async () => {
+  for (const remove of [false, true]) {
+    const f = fixture(); if (remove) await f.service.upload(await f.request('existing', 'existing'));
+    const request = await f.request('entry-race', 'photo');
+    let winner: Awaited<ReturnType<PlayerPortraitService['upload']>> | undefined;
+    const invoke = () => remove ? f.service.remove(request) : f.service.upload(request);
+    f.client.beforeGet = async key => {
+      if (!key.sk.S?.startsWith('PORTRAIT_RECEIPT#')) return;
+      f.client.beforeGet = null;
+      winner = await invoke();
+    };
+    const result = await invoke();
+    assert(winner); assert.deepEqual(result, winner); assert.equal(result.hasPortrait, !remove);
+    assert.equal(f.client.ofType('playerPortraitReceipt').length, remove ? 2 : 1);
+    assert.equal(f.client.ofType('playerProfileMediaWork').length, 1);
+    assert.equal(f.puts.length, 1, 'the entry loser replays without uploading another object');
+  }
+});
+
+test('a winner finalizing after initial receipt lookup is replayed before an active intent can return conflict', async () => {
+  const f = fixture(), request = await f.request(); let winner: Awaited<ReturnType<PlayerPortraitService['upload']>> | undefined;
+  f.client.beforeGet = async key => {
+    if (!key.sk.S?.startsWith('MEDIA#')) return;
+    f.client.beforeGet = null;
+    winner = await f.service.upload(request);
+  };
+  const result = await f.service.upload(request);
+  assert(winner); assert.deepEqual(result, winner); assert.equal(f.puts.length, 1);
+  assert.equal(f.client.ofType('playerProfileMediaWork').length, 1);
+});
+
+test('competing reservation payloads conflict and a revoked owner cannot join the winning reservation', async () => {
+  for (const revoke of [false, true]) {
+    const f = fixture(), request = await f.request(); let arrivals = 0, release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    f.client.beforeCommit = async actions => {
+      if (!actions.some(action => action.Put?.Item?.entityType?.S === 'playerPortraitRequest')) return;
+      arrivals++; if (arrivals === 2) release(); await barrier;
+    };
+    if (revoke) f.onPut(() => f.client.update('PLAYER#root', 'PROFILE', { claimedByUserId: 'stranger' }));
+    const results = await Promise.allSettled([f.service.upload(request), f.service.upload({ ...request, bytes: revoke ? request.bytes : Buffer.from('different') })]);
+    const rejected = results.filter((value): value is PromiseRejectedResult => value.status === 'rejected');
+    if (revoke) { assert.equal(rejected.length, 2); assert(rejected.every(value => value.reason.status === 403)); }
+    else { assert.equal(results.filter(value => value.status === 'fulfilled').length, 1); assert.equal(rejected[0].reason.code, 'player_portrait_request_conflict'); }
+    assert.equal(f.client.ofType('playerPortraitRequest').length, 1); assert.equal(f.client.ofType('playerProfileMediaWork').length, 1);
+    assert.equal(f.objects.size, 1);
+  }
 });
 
 test('an abandoned upload is retryable only inside its original lease and before cleanup claims it', async () => {

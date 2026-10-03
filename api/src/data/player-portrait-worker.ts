@@ -64,9 +64,10 @@ export class PlayerPortraitWorker {
       await this.commit([...checks, identityCondition(this.tableName, snapshot)]);
       return { done: true };
     }
-    // Every attempt uses the original lease. The API refuses to begin object IO
-    // near its expiry, and publishing requires the same uploading state.
-    if (work.status === 'uploading') {
+    // Preserve the original lease even after publication/replacement: an identical
+    // retry may still be completing its immutable put after another request won.
+    // Waiting keeps that late put ahead of deletion, never behind it.
+    if (work.status !== 'deleting') {
       const remaining = Date.parse(work.notBefore) - Date.parse(this.now());
       if (remaining > 0) return { done: false, delaySeconds: Math.min(900, Math.max(1, Math.ceil(remaining / 1000))) };
     }

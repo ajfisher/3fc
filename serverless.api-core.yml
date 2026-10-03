@@ -68,7 +68,7 @@ custom:
       - sharp
     packagerOptions:
       scripts:
-        - npm install --os=linux --libc=glibc --cpu=arm64 --include=optional sharp@0.35.5
+        - npm install --os=linux --libc=glibc --cpu=arm64 --include=optional sharp@0.35.5 && node ../../scripts/deploy/prune-portrait-native.mjs
     bundle: true
     minify: false
     sourcemap: false

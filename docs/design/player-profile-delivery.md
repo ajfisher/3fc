@@ -268,3 +268,17 @@ ZIP verification passes after correcting Sharp0.35.5 entry/addon filenames from
 inspected package contents; all14 related deployment/operator tests pass
 (group46930 exit0). Independent service, worker, route and media/infra reviews and
 fix delta reviews pass. Native Lambda execution remains a QA acceptance check.
+
+
+Portrait slice is [PR #211](https://github.com/ajfisher/3fc/pull/211). Initial
+head46837de passed CI37132468087; QA37132469202 safely stopped before core deployment
+because npm retained a foreign native addon. Packaging now prunes only foreign
+Sharp packages inside the validated generated dependency tree, sequentially after
+installation, with refusal/retention regressions. Cloud finding4173704477 was
+accepted: concurrent identical uploads reuse the winning reservation and recover
+lost acknowledgements; initial and later receipt races refresh current ownership.
+Cleanup retains the original upload lease to avoid late duplicate puts recreating
+deleted objects. Independent delta review passed. Seven focused race cases,
+all26 changed-file cases and all566 affected regressions pass (group47963 exit0,
+peak189296KiB, no children). API compilation, YAML and diff checks pass; fresh
+current-head CI/QA/review follow before the UI child begins.

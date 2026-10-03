@@ -72,6 +72,28 @@ export class PlayerPortraitService {
     catch (error) { if (conditional(error)) return changed(); throw error; }
     return { receipt, result: value.result };
   }
+  private async reloadReplay(input: PortraitMutationInput, request: ReturnType<PlayerPortraitService['request']>) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const context = await this.owner.loadContext(input);
+      try { return { context, ...await this.replay(input, request, context) }; }
+      catch (error) {
+        if (error instanceof PlayerIdentityError && error.code === 'player_portrait_changed' && attempt < 2) continue;
+        throw error;
+      }
+    }
+    return changed();
+  }
+  private async completedOrChanged(input: PortraitMutationInput, request: ReturnType<PlayerPortraitService['request']>): Promise<SafeOwnerPlayerProfile> {
+    const replay = await this.reloadReplay(input, request); return replay.result ?? changed();
+  }
+  private async recoverFinal(input: PortraitMutationInput, request: ReturnType<PlayerPortraitService['request']>, error: unknown): Promise<SafeOwnerPlayerProfile> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const replay = await this.reloadReplay(input, request); if (replay.result) return replay.result;
+      if (conditional(error) && attempt < 2) await new Promise(resolve => setTimeout(resolve, 25 * 2 ** attempt));
+      else break;
+    }
+    if (conditional(error)) return changed(); throw error;
+  }
   private async readiness() { if (!this.processingEnabled()) return unavailable(); return readHistoryReadiness(this.client, this.tableName); }
   private mediaValue(snapshot: Snapshot, playerId: string, jobId: string): ProfileMediaWork {
     const work = profileMediaWorkSchema.parse(snapshot.value);
@@ -83,7 +105,11 @@ export class PlayerPortraitService {
     const snapshot = await this.snapshot(profileWorkPartition(context.result.playerId), profileMediaWorkKey(pointer.jobId), 'playerProfileMediaWork');
     const value = this.mediaValue(snapshot, context.result.playerId, pointer.jobId);
     if (value.status !== 'active' || value.objectKey !== pointer.objectKey || value.digest !== pointer.digest || value.bytes !== pointer.bytes) return unavailable();
-    return [identityPut(this.tableName, snapshot, 'playerProfileMediaWork', { ...value, status: 'cleanup', notBefore: now, updatedAt: now }, now)];
+    // Identical requests can still have a bounded object put in flight after
+    // this intent was published. Keep its original lease before deletion so a
+    // late immutable retry cannot recreate an object after cleanup removes it.
+    const notBefore = Date.parse(value.notBefore) > Date.parse(now) ? value.notBefore : now;
+    return [identityPut(this.tableName, snapshot, 'playerProfileMediaWork', { ...value, status: 'cleanup', notBefore, updatedAt: now }, now)];
   }
   private async complete(input: PortraitMutationInput, request: ReturnType<PlayerPortraitService['request']>, context: OwnerContext,
     receipt: Snapshot, presentation: PlayerPresentation | null, other: TransactWriteItem[], readiness: Awaited<ReturnType<PlayerPortraitService['readiness']>>) {
@@ -94,16 +120,15 @@ export class PlayerPortraitService {
     catch (error) {
       // Never delete a candidate object on an ambiguous commit: the receipt may
       // already point at it. Cleanup owns abandoned intent objects durably.
-      const latest = await this.owner.loadContext(input), replay = await this.replay(input, request, latest);
-      if (replay.result) return replay.result;
-      if (conditional(error)) return changed(); throw error;
+      return this.recoverFinal(input, request, error);
     }
   }
   async upload(input: PortraitUploadInput): Promise<SafeOwnerPlayerProfile> {
     if (!(input.bytes instanceof Uint8Array) || !input.bytes.byteLength || input.bytes.byteLength > 2 * 1024 * 1024
       || !['image/jpeg', 'image/png', 'image/webp'].includes(input.contentType)) return invalid();
-    const request = this.request(input, 'upload', [input.contentType, digest(input.bytes)]), initial = await this.owner.loadContext(input);
-    const replay = await this.replay(input, request, initial); if (replay.result) return replay.result;
+    const request = this.request(input, 'upload', [input.contentType, digest(input.bytes)]), replay = await this.reloadReplay(input, request);
+    if (replay.result) return replay.result;
+    const initial = replay.context;
     const readiness = await this.readiness();
     if (initial.result.revision !== input.expectedRevision) return changed();
     let reservation = await this.snapshot(request.pk, `PORTRAIT_REQUEST#${request.token}`, 'playerPortraitRequest');
@@ -120,35 +145,63 @@ export class PlayerPortraitService {
       try { await this.transact([...initial.checks, identityCondition(this.tableName, readiness),
         identityPut(this.tableName, reservation, 'playerPortraitRequest', saved, now),
         identityPut(this.tableName, { pk: profileWorkPartition(saved.playerId), sk: profileMediaWorkKey(jobId), item: null, value: null }, 'playerProfileMediaWork', work, now)]); }
-      catch (error) { if (conditional(error)) return changed(); throw error; }
+      catch (error) {
+        // Another identical request may have won the reservation, or this
+        // request may have committed despite a lost acknowledgement. Join only
+        // its verified canonical reservation; never upload the losing job ID.
+        saved = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const latest = await this.reloadReplay(input, request); if (latest.result) return latest.result;
+          reservation = await this.snapshot(request.pk, reservation.sk, 'playerPortraitRequest');
+          if (reservation.value) {
+            const winner = requestSchema.parse(reservation.value);
+            if (winner.requestHash !== request.requestHash) return conflict();
+            if (winner.playerId !== latest.context.result.playerId || winner.expectedRevision !== input.expectedRevision
+              || latest.context.result.revision !== input.expectedRevision) return this.completedOrChanged(input, request);
+            saved = winner; break;
+          }
+          if (latest.context.result.revision !== input.expectedRevision) return this.completedOrChanged(input, request);
+          if (attempt < 2 && conditional(error)) await new Promise(resolve => setTimeout(resolve, 25 * 2 ** attempt));
+          else break;
+        }
+        if (!saved) { if (conditional(error)) return changed(); throw error; }
+      }
       reservation = await this.snapshot(request.pk, reservation.sk, 'playerPortraitRequest');
     }
     let intent = await this.snapshot(profileWorkPartition(saved.playerId), profileMediaWorkKey(saved.jobId), 'playerProfileMediaWork');
     let work = this.mediaValue(intent, saved.playerId, saved.jobId);
-    if (work.status !== 'uploading' || work.digest !== encoded.sha256 || work.bytes !== encoded.bytes.length) return changed();
+    if (work.status !== 'uploading') return this.completedOrChanged(input, request);
+    if (work.digest !== encoded.sha256 || work.bytes !== encoded.bytes.length) return changed();
     // Never renew an old lease: cleanup may already be about to claim it. A
     // bounded5s put starts only with30s left inside the original120s window.
     if (Date.parse(work.notBefore) - Date.parse(this.now()) < 30_000) return changed();
     await this.store().put(work.objectKey, encoded.bytes, AbortSignal.timeout(5000));
-    const current = await this.owner.loadContext(input), finalReplay = await this.replay(input, request, current);
+    const finalReplay = await this.reloadReplay(input, request), current = finalReplay.context;
     if (finalReplay.result) return finalReplay.result;
-    if (current.result.playerId !== saved.playerId || current.result.revision !== input.expectedRevision) return changed();
+    if (current.result.playerId !== saved.playerId || current.result.revision !== input.expectedRevision) return this.completedOrChanged(input, request);
     const finalReadiness = await this.readiness();
     intent = await this.snapshot(intent.pk, intent.sk, 'playerProfileMediaWork'); work = this.mediaValue(intent, saved.playerId, saved.jobId);
-    if (work.status !== 'uploading' || Date.parse(work.notBefore) <= Date.parse(this.now())) return changed();
+    if (work.status !== 'uploading') return this.completedOrChanged(input, request);
+    if (Date.parse(work.notBefore) <= Date.parse(this.now())) return changed();
     const now = this.now(), pointer: PortraitPointer = { jobId: work.jobId, objectKey: work.objectKey, digest: work.digest, bytes: work.bytes,
       contentType: 'image/png', width: 512, height: 512 };
     const presentation: PlayerPresentation = { ...current.media, version: 1, playerId: saved.playerId, nameRevision: current.media?.nameRevision ?? randomUUID(), portrait: pointer };
-    const writes = [...await this.predecessor(current, now), identityPut(this.tableName, intent, 'playerProfileMediaWork', { ...work, status: 'active', updatedAt: now }, now),
+    let predecessor: TransactWriteItem[];
+    try { predecessor = await this.predecessor(current, now); }
+    catch (error) { return this.recoverFinal(input, request, error); }
+    const writes = [...predecessor, identityPut(this.tableName, intent, 'playerProfileMediaWork', { ...work, status: 'active', updatedAt: now }, now),
       identityCondition(this.tableName, reservation)];
     return this.complete(input, request, current, finalReplay.receipt, presentation, writes, finalReadiness);
   }
   async remove(input: PortraitMutationInput): Promise<SafeOwnerPlayerProfile> {
-    const request = this.request(input, 'remove'), context = await this.owner.loadContext(input), replay = await this.replay(input, request, context);
+    const request = this.request(input, 'remove'), replay = await this.reloadReplay(input, request), context = replay.context;
     if (replay.result) return replay.result;
     const readiness = await this.readiness(); if (context.result.revision !== input.expectedRevision) return changed();
     const now = this.now(), presentation = context.media ? { ...context.media, portrait: null } : null;
-    return this.complete(input, request, context, replay.receipt, presentation, await this.predecessor(context, now), readiness);
+    let predecessor: TransactWriteItem[];
+    try { predecessor = await this.predecessor(context, now); }
+    catch (error) { return this.recoverFinal(input, request, error); }
+    return this.complete(input, request, context, replay.receipt, presentation, predecessor, readiness);
   }
   async read(input: ProfileAccessInput): Promise<Uint8Array | null> {
     const grant = await this.access.authorize(input), snapshot = await this.snapshot(`PLAYER#${grant.player.playerId}`, PLAYER_PRESENTATION_SK, 'playerPresentation');
