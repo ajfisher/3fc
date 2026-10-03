@@ -1,5 +1,11 @@
 /** Approved 3FC collection. Artwork is trusted, authored SVG; never accept user SVG. */
 export const ACHIEVEMENT_RULE_VERSION = 1;
+/** Numeric eligibility boundaries shared with the evaluator and gallery detail. */
+export const ACHIEVEMENT_CONDITIONS = {
+  openingSecondsExclusive: 120, closingSecondsBeforeRegulationEnd: 60,
+  defenceDeficitExclusive: 2, hatTrickGoals: 3, masterProviderAssists: 3,
+  streakAppearances: { 'on-fire': 5, 'helping-hand': 3, 'unbeaten-run': 5 }
+} as const;
 export const ACHIEVEMENT_DEFINITIONS = [
   {
     "id": "goal",

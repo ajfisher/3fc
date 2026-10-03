@@ -3310,12 +3310,14 @@
       ],
       "delivery": {
         "asOf": "2026-10-03",
-        "status": "planned",
+        "status": "in-progress",
         "wave": "player-profiles-achievements",
         "notes": [
-          "Approved Club Card build plan; retain existing issue IDs and dependencies."
+          "Approved Club Card build plan; retain existing issue IDs and dependencies.",
+          "Pure evaluator child starts after PR #204 current-head gates; durable ledger, source adapters and worker/backfill responsibilities remain incomplete."
         ],
-        "githubIssue": 201
+        "githubIssue": 201,
+        "branch": "codex/achievement-evaluator"
       }
     },
     {
@@ -3446,12 +3448,14 @@
       ],
       "delivery": {
         "asOf": "2026-10-03",
-        "status": "in-progress",
+        "status": "review-ready",
         "wave": "player-profiles-achievements",
         "notes": [
-          "First stacked PR; no runtime feature activation."
+          "First stacked PR; no runtime feature activation.",
+          "PR #204 at f38c9a3 passed CI37112836386, QA37112836382 and current-head review-gate111173947603; two sub-agent passes and cloud no-major-issues. Unmerged, AJ final authority."
         ],
-        "githubIssue": 199
+        "githubIssue": 199,
+        "branch": "codex/player-profiles"
       }
     }
   ],

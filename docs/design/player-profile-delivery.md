@@ -25,8 +25,9 @@ at fa7e775 found no newer profile/history implementation to duplicate.
 ## Stack and gates
 
 1. Scope, catalogue, milestone arithmetic and safe presentation contracts (#199):
-   in progress. Excludes the evaluator and all runtime endpoints/UI.
-2. Pure evaluator for all 23 classes (#201): pending.
+   ready for AJ's final review in PR #204. Excludes all runtime endpoints/UI.
+2. Pure evaluator for all 23 classes (#201): in progress on the child branch
+   `codex/achievement-evaluator`; excludes persistence, source adapters and workers.
 3. Complete canonical history, durable work pipeline, persistence and resumable
    backfill (#139 foundation, #200, remainder of #201): pending; split infrastructure
    and mutation integration further if needed for reviewability.
@@ -46,9 +47,11 @@ Slice 1: [PR #204](https://github.com/ajfisher/3fc/pull/204), base `main`, branc
 fixes. The first automated review identified scope-ID type combinations and missing
 backlog issue IDs; both were accepted, fixed and re-reviewed. Eight focused tests,
 API test compilation and backlog validation/export pass after those fixes (owned
-group 99481, exit 0, peak 497040 KiB, no remaining children). The first head passed
-CI and QA, but the corrected head requires fresh CI, QA and review; the PR packet
-and GitHub checks hold current-head evidence. No child implementation has begun.
+group 99481, exit 0, peak 497040 KiB, no remaining children). Corrected head `f38c9a3c2358c8e718f731c23df8962428fbe996` passed
+CI 37112836386, QA 37112836382 and current-head review-gate check 111173947603.
+Cloud review completed with no major issues for that head on 3 October 2026.
+The evaluator child started only after these checks and both sub-agent passes.
+PR #204 remains unmerged; AJ retains final merge authority.
 
 AJ retains merge and production-release authority. All new capabilities remain
 behind separate profiles, owner-editing and achievements flags until coverage and
