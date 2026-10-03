@@ -80,6 +80,16 @@ AWS_PROFILE=3fc-agent node scripts/deploy/verify-player-history.mjs qa <reviewed
 
 ## Delivery, recovery and activation
 
+Historical completed games may predate saved finalisation metadata. When the
+saved finish is absent or null, the source adapter uses the recorded end of the
+third third only if all three uniquely numbered thirds have valid, chronological,
+non-overlapping completed intervals. An absent result is derived with the normal
+conceded/scored comparator only after the complete goal stream reconciles with
+all three stored team totals. Present malformed or contradictory metadata still
+fails closed. Neither fallback rewrites source records or substitutes processing
+time for the achievement date. Existing event timing evidence requirements remain
+unchanged; aggregate recovery cannot invent timed achievements.
+
 The stream dispatcher admits three event classes: work inserts, job inserts/updates,
 and league directory revision inserts/updates. Directory events must have partition
 key `LEAGUE#*`, sort key `PLAYER_DIRECTORY` and type `playerDirectoryRevision`.

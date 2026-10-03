@@ -154,13 +154,12 @@ export function assembleMatchFacts(input: {
 }): MatchFacts | null {
   if (input.roster.length + input.goals.length + input.audits.length + input.teams.length > 10000) fail('Game source exceeds assembly budget.');
   const metadata = z.object({ gameId: text, leagueId: text, seasonId: text, gameStartTs: instant,
-    status: z.enum(['scheduled', 'live', 'finished']), finishedAt: instant.nullable(), thirdLengthMinutes: z.union([z.literal(20), z.literal(25), z.literal(30)]),
+    status: z.enum(['scheduled', 'live', 'finished']), finishedAt: instant.nullish(), thirdLengthMinutes: z.union([z.literal(20), z.literal(25), z.literal(30)]),
     thirds: z.unknown().optional(),
-    result: z.unknown() }).parse(historyBody(input.game, input.game.pk!.S!, 'METADATA', 'game'));
+    result: z.unknown().optional() }).parse(historyBody(input.game, input.game.pk!.S!, 'METADATA', 'game'));
   const pk = `GAME#${metadata.gameId}`;
   if (input.game.pk?.S !== pk || metadata.leagueId !== input.context.leagueId) fail('Game scope mismatch.');
   if (metadata.status !== 'finished') return null;
-  if (!metadata.finishedAt) fail('Incomplete finished match metadata.');
   const canonical = (id: string) => { const result = input.canonicalIds.get(id); if (!result?.trim()) fail('Unresolved canonical player.'); return result; };
   const roster = input.roster.map(item => {
     const value = z.object({ gameId: text, playerId: text, teamId: team }).parse(historyBody(item, pk, item.sk!.S!, 'roster'));
@@ -173,11 +172,18 @@ export function assembleMatchFacts(input: {
     const candidates = thirdRows.filter(value => value && typeof value === 'object' && value.third === number);
     if (candidates.length !== 1) return null;
     const parsed = thirdSchema.safeParse(candidates[0]);
-    if (!parsed.success || parsed.data.finishedAt < parsed.data.startedAt || parsed.data.finishedAt > metadata.finishedAt!) return null;
+    if (!parsed.success || parsed.data.finishedAt < parsed.data.startedAt
+      || (metadata.finishedAt && parsed.data.finishedAt > metadata.finishedAt)) return null;
     return parsed.data;
   });
   // Contradictory or overlapping third intervals cannot establish live provenance.
   if (thirds.some((value, index) => value && thirds.slice(0, index).some(prior => prior && prior.finishedAt > value.startedAt))) thirds.fill(null);
+  // Older finished matches may lack finalisation metadata. Only a complete,
+  // unambiguous clock history can supply their recorded end of play; never use
+  // migration time or row updatedAt as the historical achievement date.
+  const finishedAt = metadata.finishedAt
+    ?? (thirdRows.length === 3 && thirds.every(Boolean) ? thirds[2]!.finishedAt : null);
+  if (!finishedAt) fail('Incomplete finished match metadata.');
   const ends = thirds.map(third => {
     if (!third) return null;
     const elapsed = Math.floor((Date.parse(third.finishedAt) - Date.parse(third.startedAt)) / 1000);
@@ -218,9 +224,9 @@ export function assembleMatchFacts(input: {
     const auditProof = thirdMinute.success && audit && createdAt !== null && audit.createdAt === createdAt && auditAfter && auditAfter.eventId === raw.eventId
       && ['third', 'elapsedSeconds', 'gameMinute', 'thirdMinute'].every(key =>
         raw[key as keyof typeof raw] !== undefined && auditAfter[key] === raw[key as keyof typeof raw]);
-    const timing = raw.timingProvenance?.kind === 'post_completion' || (createdAt !== null && createdAt > metadata.finishedAt!) ? 'post_completion'
+    const timing = raw.timingProvenance?.kind === 'post_completion' || (createdAt !== null && createdAt > finishedAt!) ? 'post_completion'
       // A legacy creation at the exact completion instant may be a finished-game insertion.
-      : intervalProof && (raw.timingProvenance?.kind === 'live' || (createdAt !== null && createdAt < metadata.finishedAt! && auditProof)) ? 'live' : 'unknown';
+      : intervalProof && (raw.timingProvenance?.kind === 'live' || (createdAt !== null && createdAt < finishedAt! && auditProof)) ? 'live' : 'unknown';
     return { eventId: raw.eventId, scorerPlayerId: canonical(raw.scorerPlayerId), assistPlayerIds: raw.assistPlayerIds.map(canonical),
       scoringTeamId: raw.scoringTeamId, concedingTeamId: raw.concedingTeamId, ownGoal: raw.ownGoal,
       createdAt, timing, third: timing === 'live' ? thirdNumber : null, elapsedSeconds: timing === 'live' && elapsed.success ? elapsed.data : null };
@@ -235,13 +241,18 @@ export function assembleMatchFacts(input: {
   if (storedTeams.length !== 3 || new Set(storedTeams.map(value => value.teamId)).size !== 3) fail('All three team totals are required.');
   for (const value of storedTeams) if (value.scored !== totals[value.teamId].scored || value.conceded !== totals[value.teamId].conceded) fail('Goal history and team totals disagree.');
   const winners = leaders(totals);
-  const result = z.object({ winnerTeamId: team.nullable(), outcome: z.enum(['win', 'draw']), comparator: z.literal('fewest_conceded_then_most_scored'),
-    teams: z.array(z.object({ teamId: team, scored: nonnegative, conceded: nonnegative, outcome: z.enum(['win', 'draw', 'loss']) })) }).parse(metadata.result);
-  if (result.winnerTeamId !== (winners.length === 1 ? winners[0] : null) || result.outcome !== (winners.length === 1 ? 'win' : 'draw')
-    || result.teams.length !== 3 || new Set(result.teams.map(value => value.teamId)).size !== 3) fail('Stored final result disagrees with goals.');
-  for (const value of result.teams) if (value.scored !== totals[value.teamId].scored || value.conceded !== totals[value.teamId].conceded
-    || value.outcome !== (winners.includes(value.teamId) ? winners.length === 1 ? 'win' : 'draw' : 'loss')) fail('Stored team result disagrees with goals.');
+  // With all goals and all three stored totals agreeing, the canonical
+  // comparator is assessable even when a legacy result was never saved.
+  // A present result remains independent evidence and must agree exactly.
+  if (metadata.result !== null && metadata.result !== undefined) {
+    const result = z.object({ winnerTeamId: team.nullable(), outcome: z.enum(['win', 'draw']), comparator: z.literal('fewest_conceded_then_most_scored'),
+      teams: z.array(z.object({ teamId: team, scored: nonnegative, conceded: nonnegative, outcome: z.enum(['win', 'draw', 'loss']) })) }).parse(metadata.result);
+    if (result.winnerTeamId !== (winners.length === 1 ? winners[0] : null) || result.outcome !== (winners.length === 1 ? 'win' : 'draw')
+      || result.teams.length !== 3 || new Set(result.teams.map(value => value.teamId)).size !== 3) fail('Stored final result disagrees with goals.');
+    for (const value of result.teams) if (value.scored !== totals[value.teamId].scored || value.conceded !== totals[value.teamId].conceded
+      || value.outcome !== (winners.includes(value.teamId) ? winners.length === 1 ? 'win' : 'draw' : 'loss')) fail('Stored team result disagrees with goals.');
+  }
   return matchFactsSchema.parse({ gameId: metadata.gameId, leagueId: metadata.leagueId, seasonId: metadata.seasonId,
-    kickoffAt: metadata.gameStartTs, finishedAt: metadata.finishedAt, sourceRevision: input.context.sourceRevision,
+    kickoffAt: metadata.gameStartTs, finishedAt, sourceRevision: input.context.sourceRevision,
     thirdLengthMinutes: metadata.thirdLengthMinutes, thirdEndsSeconds: ends, roster, goals });
 }

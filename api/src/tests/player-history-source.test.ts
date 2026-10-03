@@ -235,3 +235,89 @@ test('unusable or duplicate creation audit snapshots remain ambiguous evidence',
     assert.equal(applyAppearance(emptyAccumulator(), facts, 'root', 'career').state.totals.goals, 1, scenario);
   }
 });
+
+test('legacy completed match without finalisation metadata retains its recorded end and draw honours', () => {
+  for (const absent of [false, true]) {
+    const input = fixture(), metadata = JSON.parse(input.game.data!.S!);
+    metadata.finishedAt = null; metadata.result = null;
+    if (absent) { delete metadata.finishedAt; delete metadata.result; }
+    input.game.data = { S: JSON.stringify(metadata) };
+    input.goals = []; input.audits = [];
+    input.teams.forEach(item => change(item, { scored: 0, conceded: 0 }));
+    const original = structuredClone(input), facts = assembleMatchFacts(input)!;
+    assert.equal(facts.finishedAt, '2026-01-01T11:00:00.000Z');
+    const result = applyAppearance(emptyAccumulator(), facts, 'root', 'career');
+    assert.equal(result.state.totals.played, 1); assert.equal(result.state.totals.draws, 1);
+    assert.equal(result.state.totals.goals, 0);
+    assert(result.unlocks.some(award => award.achievementId === 'draw'));
+    assert(result.unlocks.every(award => award.earnedAt === facts.finishedAt));
+    assert.deepEqual(input, original, 'The adapter must not repair or rewrite source records');
+  }
+});
+
+test('missing legacy results derive from reconciled goals and totals, including own goals', () => {
+  const input = fixture(); change(input.game, { result: null });
+  const win = applyAppearance(emptyAccumulator(), assembleMatchFacts(input)!, 'root', 'career').state;
+  assert.equal(win.totals.goals, 1); assert.equal(win.totals.wins, 1);
+  change(input.goals[0], { ownGoal: true, scoringTeamId: null, concedingTeamId: 'red', assistPlayerIds: [] });
+  input.teams.forEach(item => change(item, { scored: 0, conceded: JSON.parse(item.data!.S!).teamId === 'red' ? 1 : 0 }));
+  const loss = applyAppearance(emptyAccumulator(), assembleMatchFacts(input)!, 'root', 'career').state;
+  assert.equal(loss.totals.goals, 0); assert.equal(loss.totals.ownGoals, 1); assert.equal(loss.totals.losses, 1);
+  assert.equal(loss.counts.goal, 0); assert.equal(loss.counts['own-goal'], 1);
+});
+
+test('fallback completion requires exactly three unique valid chronological intervals', () => {
+  for (const scenario of ['missing', 'duplicate', 'extra', 'malformed', 'reversed', 'overlapping', 'before-kickoff']) {
+    const input = fixture(), metadata = JSON.parse(input.game.data!.S!);
+    metadata.finishedAt = null; metadata.result = null;
+    if (scenario === 'missing') metadata.thirds.pop();
+    if (scenario === 'duplicate') metadata.thirds[1].third = 1;
+    if (scenario === 'extra') metadata.thirds.push({ ...metadata.thirds[2], third: 4 });
+    if (scenario === 'malformed') metadata.thirds[2].finishedAt = 'unknown';
+    if (scenario === 'reversed') metadata.thirds[2].finishedAt = '2026-01-01T10:39:59.000Z';
+    if (scenario === 'overlapping') metadata.thirds[1].startedAt = '2026-01-01T10:19:00.000Z';
+    if (scenario === 'before-kickoff') metadata.gameStartTs = '2026-01-01T12:00:00.000Z';
+    input.game.data = { S: JSON.stringify(metadata) };
+    assert.throws(() => assembleMatchFacts(input), scenario);
+  }
+});
+
+test('legacy fallbacks never hide contradictory present metadata or unreconciled totals', () => {
+  for (const scenario of ['invalid-finish', 'invalid-result', 'wrong-result', 'missing-team', 'wrong-total']) {
+    const input = fixture();
+    change(input.game, { finishedAt: null, result: null });
+    if (scenario === 'invalid-finish') change(input.game, { finishedAt: 'unknown' });
+    if (scenario === 'invalid-result') change(input.game, { result: {} });
+    if (scenario === 'wrong-result') change(input.game, { result: { ...JSON.parse(fixture().game.data!.S!).result, winnerTeamId: 'blue' } });
+    if (scenario === 'missing-team') input.teams.pop();
+    if (scenario === 'wrong-total') change(input.teams[0], { scored: 2 });
+    assert.throws(() => assembleMatchFacts(input), scenario);
+  }
+  const input = fixture(); change(input.game, { result: null, thirds: null });
+  const facts = assembleMatchFacts(input)!;
+  assert.equal(facts.finishedAt, '2026-01-01T11:05:00.000Z', 'A saved finish takes precedence');
+  assert.equal(facts.goals[0].timing, 'unknown');
+  assert.equal(applyAppearance(emptyAccumulator(), facts, 'root', 'career').state.totals.wins, 1);
+});
+
+test('derived legacy finish preserves timing proof and excludes post-end goals', () => {
+  const input = fixture(); change(input.game, { finishedAt: null, result: null });
+  assert.equal(assembleMatchFacts(input)!.goals[0].timing, 'live');
+  input.audits = [];
+  assert.equal(assembleMatchFacts(input)!.goals[0].timing, 'unknown');
+  input.goals[0].createdAt = { S: '2026-01-01T11:00:00.001Z' };
+  change(input.goals[0], { timingProvenance: { version: 1, kind: 'live' } });
+  const facts = assembleMatchFacts(input)!;
+  assert.equal(facts.goals[0].timing, 'post_completion');
+  const state = applyAppearance(emptyAccumulator(), facts, 'root', 'career').state;
+  assert.equal(state.totals.goals, 1); assert.equal(state.counts.clutch, 0);
+  const at = '2026-01-01T11:00:00.000Z', equal = fixture();
+  change(equal.game, { finishedAt: null, result: null });
+  change(equal.goals[0], { third: 3, elapsedSeconds: 1200, gameMinute: 60, thirdMinute: 20 });
+  equal.goals[0].sk = { S: goalSk(3, 60, 1200, 'event') }; equal.goals[0].createdAt = { S: at };
+  change(equal.audits[0], { after: JSON.parse(equal.goals[0].data!.S!) });
+  equal.audits[0].createdAt = { S: at }; equal.audits[0].sk = { S: goalAuditSk(at, 'audit') };
+  assert.equal(assembleMatchFacts(equal)!.goals[0].timing, 'unknown');
+  change(equal.goals[0], { timingProvenance: { version: 1, kind: 'live' } });
+  assert.equal(assembleMatchFacts(equal)!.goals[0].timing, 'live');
+});
