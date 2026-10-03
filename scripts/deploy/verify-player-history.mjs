@@ -90,11 +90,19 @@ export function verifyHistoryManifest(manifest, snapshot, environment, head) {
   assert.deepEqual(snapshot, manifest.snapshot, 'Worker deployment changed after acceptance');
 }
 
+export function parseHistoryAwsResponse(args, stdout) {
+  // The CLI emits no JSON for a successful, unreserved function concurrency read.
+  // Every other read still requires valid JSON; execution failures never get here.
+  if (args[0] === 'lambda' && args[1] === 'get-function-concurrency' && stdout.trim() === '') return {};
+  return JSON.parse(stdout);
+}
+
 function aws(region, ...args) {
   // An operator-selected profile must also win over ambient static credentials.
   const profile = process.env.AWS_PROFILE;
-  return JSON.parse(execFileSync('aws', [...args, ...(profile ? ['--profile', profile] : []),
-    '--region', region, '--output', 'json'], { encoding: 'utf8', timeout: 30000 }));
+  const stdout = execFileSync('aws', [...args, ...(profile ? ['--profile', profile] : []),
+    '--region', region, '--output', 'json'], { encoding: 'utf8', timeout: 30000 });
+  return parseHistoryAwsResponse(args, stdout);
 }
 
 export function readHistorySnapshot(intent) {

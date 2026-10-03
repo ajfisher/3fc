@@ -148,3 +148,13 @@ retain 10 unreserved. The fix uses shared capacity, retains SQS maximum concurre
 Seven operator/deployment tests pass (group 19559, exit 0, no children). Processing
 remains disabled; capacity/throttling checks precede activation. Revised-head
 remote checks and independent delta review must pass before the read slice starts.
+
+
+At `6a5a39b`, CI passed and QA CloudFormation deployed both Node 22 functions.
+The post-deploy verifier exposed AWS CLI's successful empty concurrency response.
+A narrow parser fix accepts that empty response only for get-function-concurrency;
+all other malformed/empty responses still fail. Six deployment tests and a read-only
+live QA configuration check pass (groups 20031/20041, exit 0, no children). The
+live check validates disabled mappings, roles and transport; package provenance
+still requires the corrected-head workflow manifest. Independent delta review
+precedes the final push and gates.

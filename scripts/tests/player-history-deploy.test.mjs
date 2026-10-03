@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { verifyHistoryManifest, historyFilters } from '../deploy/verify-player-history.mjs';
+import { verifyHistoryManifest, historyFilters, parseHistoryAwsResponse } from '../deploy/verify-player-history.mjs';
+
+test('only successful empty concurrency responses represent unreserved capacity', () => {
+  const concurrency = ['lambda', 'get-function-concurrency', '--function-name', '3fc-qa-player-history-worker'];
+  for (const blank of ['', ' \n\t']) {
+    assert.deepEqual(parseHistoryAwsResponse(concurrency, blank), {});
+    for (const command of [['lambda', 'get-function-configuration'], ['sqs', 'get-queue-attributes'], ['dynamodb', 'describe-table'], []])
+      assert.throws(() => parseHistoryAwsResponse(command, blank), SyntaxError);
+  }
+  assert.deepEqual(parseHistoryAwsResponse(concurrency, '{"ReservedConcurrentExecutions":2}'), { ReservedConcurrentExecutions: 2 });
+  assert.deepEqual(parseHistoryAwsResponse(['dynamodb', 'describe-table'], '{"TableStatus":"ACTIVE"}'), { TableStatus: 'ACTIVE' });
+  for (const command of [concurrency, ['lambda', 'get-function-configuration']])
+    assert.throws(() => parseHistoryAwsResponse(command, '{broken'), SyntaxError);
+});
 
 function fixture(enabled = 'false') {
   const env = 'qa', accountId = '301691475109', region = 'ap-southeast-2';
