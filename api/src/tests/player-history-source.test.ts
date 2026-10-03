@@ -171,3 +171,17 @@ test('legacy exact-completion timestamps stay unknown despite a matching audit; 
   assert.equal(explicit.goals[0].timing, 'live');
   assert.equal(applyAppearance(emptyAccumulator(), explicit, 'root', 'career').state.counts.clutch, 1);
 });
+
+test('unusable audit timestamp evidence cannot discard valid aggregate statistics', () => {
+  for (const scenario of ['missing', 'malformed', 'key-disagreement']) {
+    const input = fixture();
+    if (scenario === 'missing') delete input.audits[0].createdAt;
+    if (scenario === 'malformed') input.audits[0].createdAt = { S: 'legacy-time' };
+    if (scenario === 'key-disagreement') input.audits[0].createdAt = { S: '2026-01-01T10:05:01.000Z' };
+    const facts = assembleMatchFacts(input)!;
+    assert.equal(facts.goals[0].timing, 'unknown', scenario);
+    const scorer = applyAppearance(emptyAccumulator(), facts, 'root', 'career').state;
+    assert.equal(scorer.totals.goals, 1, scenario); assert.equal(scorer.totals.wins, 1, scenario);
+    assert.equal(scorer.counts['message-sent'], 0, scenario); assert.equal(scorer.counts.clutch, 0, scenario);
+  }
+});

@@ -67,10 +67,13 @@ unmerged for AJ.
 Slice 3: `codex/player-history-foundation`, based on PR #205. Implements raw
 paginated source reads, canonical fact assembly and immutable history generations.
 Independent source/store reviews resolved uncertain legacy timing, exact-completion
-provenance and mismatched source-revision findings. All 56 focused contracts,
+provenance and mismatched source-revision findings. Cloud review then identified
+unusable legacy audit timestamps rejecting valid aggregates; the fix preserves
+credit while excluding the audit from timing proof and passed independent review.
+All 57 focused contracts,
 evaluator, source and store tests pass after fixes, including concurrent evaluation,
-lost acknowledgements and interrupted milestone staging (owned group 6540, exit 0,
-peak 519360 KiB, no remaining children). API test compilation and backlog
+lost acknowledgements and interrupted milestone staging (owned group 7879, exit 0,
+peak 518992 KiB, no remaining children). API test compilation and backlog
 validation/export pass. Remote gates must pass before the worker child begins.
 No runtime reader or worker is enabled by this foundation.
 

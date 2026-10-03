@@ -156,8 +156,12 @@ export function assembleMatchFacts(input: {
   for (const item of input.audits) {
     const value = z.object({ auditId: text, gameId: text, eventId: text, action: z.enum(['goal_created', 'goal_updated', 'goal_deleted', 'goal_undo_last']),
       after: z.record(z.string(), z.unknown()).nullable() }).parse(historyBody(item, pk, item.sk!.S!, 'goalAudit'));
-    const createdAt = instant.parse(item.createdAt?.S);
-    if (value.gameId !== metadata.gameId || item.sk?.S !== goalAuditSk(item.createdAt!.S!, value.auditId)) fail('Malformed goal audit.');
+    if (value.gameId !== metadata.gameId || !item.sk?.S?.startsWith('AUDIT#GOAL#') || !item.sk.S.endsWith(`#${value.auditId}`)) fail('Malformed goal audit.');
+    // Audits are optional timing evidence. A damaged legacy timestamp cannot
+    // invalidate otherwise consistent goal credit and final aggregate statistics.
+    const parsedAt = instant.safeParse(item.createdAt?.S);
+    if (!parsedAt.success || item.sk.S !== goalAuditSk(item.createdAt!.S!, value.auditId)) continue;
+    const createdAt = parsedAt.data;
     if (value.action === 'goal_created' && value.after) creationAudits.set(value.eventId, [...(creationAudits.get(value.eventId) ?? []), { createdAt, after: value.after }]);
   }
   const goals: MatchGoal[] = input.goals.map(item => {
