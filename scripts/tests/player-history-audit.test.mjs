@@ -190,6 +190,32 @@ test('zero-appearance players require a real CAREER summary and complete safely'
   await assert.rejects(step(value, first.cursor), /Required published summary/);
 });
 
+test('audit accepts reordered attributes in history and identity control reads', async () => {
+  const value = fixture();
+  for (const name of ['readiness', 'control']) {
+    const read = value.runtime[name];
+    value.runtime[name] = async () => {
+      const snapshot = await read();
+      const item = Object.fromEntries(Object.entries(snapshot.item).reverse());
+      assert.notEqual(JSON.stringify(item), JSON.stringify(snapshot.item));
+      return { ...snapshot, item };
+    };
+  }
+  const first = await step(value), career = await step(value, first.cursor);
+  assert.equal((await step(value, career.cursor)).status, 'complete');
+});
+
+test('audit still rejects changed values in either control read', async () => {
+  for (const name of ['readiness', 'control']) {
+    const value = fixture(), read = value.runtime[name];
+    value.runtime[name] = async () => {
+      const snapshot = await read();
+      return { ...snapshot, item: { ...snapshot.item, data: { S: '{"revision":"changed"}' } } };
+    };
+    await assert.rejects(step(value), /League changed during audit/);
+  }
+});
+
 test('audit catches missing or stale publication and changed readiness or directory snapshots', async () => {
   const value = fixture(), first = await step(value);
   value.publication.generation = 'new'; await assert.rejects(step(value, first.cursor), /Player changed/);

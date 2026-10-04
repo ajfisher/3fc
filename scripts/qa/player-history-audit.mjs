@@ -164,7 +164,7 @@ async function leagueFence(client, runtime, leagueId) {
   const sweep = body(rows[3], pk, 'HISTORY_SWEEP', 'playerHistorySweep');
   const fallback = runtime.profileSeasonDefaultSchema.parse(body(rows[4], pk, 'PROFILE_SEASON_DEFAULT', 'playerProfileSeasonDefault'));
   const ready = await runtime.readiness(), control = await runtime.control();
-  if (JSON.stringify(ready.item) !== JSON.stringify(rows[5]) || JSON.stringify(control.item) !== JSON.stringify(rows[6])) fail('League changed during audit.');
+  if (digest(ready.item) !== digest(rows[5]) || digest(control.item) !== digest(rows[6])) fail('League changed during audit.');
   if (league.leagueId !== leagueId || source.version !== 1 || source.leagueId !== leagueId || !source.revision || (directory && typeof directory.revision !== 'string')
     || sweep.version !== 1 || sweep.leagueId !== leagueId || sweep.phase !== 'complete' || !sweep.completedAt || sweep.cursor !== null || sweep.seasonCatalogueVersion !== 1
     || sweep.revision !== source.revision || sweep.readinessRevision !== ready.value.revision || sweep.directoryData !== (rows[2]?.data?.S ?? null)
