@@ -23,6 +23,7 @@ function setup(options: { hasPortrait?: boolean; context?: boolean } = {}) {
   let owner = { ...original, hasPortrait: Boolean(options.hasPortrait) }, session = { authenticated: true, session: { sessionId: 'session', subject: 'account', email: 'private@example.test' } };
   const calls: Array<{ kind: string; playerId: string; body: any }> = [];
   let behavior: (kind: string, body: any) => Promise<void> = async () => {};
+  let sessionBehavior: () => Promise<void> = async () => {};
   let ownerFailure = false, sessionFailure = false, receipt: OwnerDetails | null = null;
   const mutate = async (kind: string, playerId: string, body: any) => {
     calls.push({ kind, playerId, body: { ...body } }); await behavior(kind, body);
@@ -31,7 +32,7 @@ function setup(options: { hasPortrait?: boolean; context?: boolean } = {}) {
   };
   let disposedSource = 0;
   let decode: () => Promise<PortraitSource> = async () => ({ image: {} as CanvasImageSource, width: 800, height: 600, dispose() { disposedSource++; } });
-  const client = { async logout() {}, async session() { if (sessionFailure) throw new Error('session unavailable'); return session; }, async owner() { if (ownerFailure) throw new Error('owner unavailable'); return { ...owner, email: 'private@example.test' }; },
+  const client = { async logout() {}, async session() { await sessionBehavior(); if (sessionFailure) throw new Error('session unavailable'); return session; }, async owner() { if (ownerFailure) throw new Error('owner unavailable'); return { ...owner, email: 'private@example.test' }; },
     rename: (playerId: string, body: any) => mutate('name', playerId, body), uploadPortrait: (playerId: string, body: any) => mutate('photo', playerId, body), removePortrait: (playerId: string, body: any) => mutate('remove', playerId, body),
     async portrait() { return new Blob(['portrait'], { type: 'image/png' }); } };
   const ui = initializeRestoringPlayerSettings({ root: d.getElementById('player-settings')!, client, playerId: 'alias',
@@ -42,6 +43,7 @@ function setup(options: { hasPortrait?: boolean; context?: boolean } = {}) {
   const submit = (value: string) => { el<HTMLInputElement>('owner-name').value = value; el('owner-name-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })); };
   const choose = async () => { const file = el<HTMLInputElement>('owner-photo-file'); Object.defineProperty(file, 'files', { value: [new dom.window.File(['data'], 'photo.png', { type: 'image/png' })], configurable: true }); file.focus(); file.dispatchEvent(new dom.window.Event('change')); await settle(); };
   return { dom, ui, el, click, submit, choose, calls, get ready() { return ui.ready; }, get owner() { return owner; }, get disposedSource() { return disposedSource; },
+    sessionBehavior(fn: typeof sessionBehavior) { sessionBehavior = fn; },
     behavior(fn: typeof behavior) { behavior = fn; }, failOwner(value: boolean) { ownerFailure = value; }, failSession(value: boolean) { sessionFailure = value; }, staleReceipt(value: OwnerDetails) { receipt = value; }, decode(fn: typeof decode) { decode = fn; }, changeOwner(value: Partial<OwnerDetails>) { owner = { ...owner, ...value }; },
     switchAccount() { session = { authenticated: true, session: { sessionId: 'new-session', subject: 'another-account', email: 'other@example.test' } }; },
     close() { ui.dispose(); dom.window.close(); } };
@@ -203,4 +205,46 @@ test('settings browser entry with full league context loads the existing portrai
     assert.equal(back.pathname, '/player'); assert.equal(back.searchParams.get('seasonId'), 'winter'); assert.equal(back.searchParams.get('leagueId'), 'league/one');
     assert.equal(dom.window.document.getElementById('owner-photo-remove')!.hidden, false);
   } finally { dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pagehide')); dom.window.close(); }
+});
+
+
+test('native picker selection waits for the same focus account check and opens one crop', async () => {
+  const f = setup(); try {
+    await f.ready;
+    let release!: () => void, checks = 0, decodes = 0;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    f.sessionBehavior(() => { checks++; return pending; });
+    f.decode(async () => { decodes++; return { image: {} as CanvasImageSource, width: 400, height: 400, dispose() {} }; });
+    f.dom.window.dispatchEvent(new f.dom.window.Event('focus'));
+    f.dom.window.dispatchEvent(new f.dom.window.Event('focus'));
+    await f.choose();
+    f.el('owner-photo-file').dispatchEvent(new f.dom.window.Event('change'));
+    assert.equal(checks, 1); assert.equal(decodes, 0);
+    assert.equal(f.el<HTMLDialogElement>('portrait-crop-dialog').open, false);
+    release(); await settle();
+    assert.equal(decodes, 1); assert.equal(f.el<HTMLDialogElement>('portrait-crop-dialog').open, true);
+    f.click('portrait-crop-confirm'); await settle();
+    assert.equal(f.el('owner-photo-preview').hidden, false);
+    assert.equal(f.el<HTMLButtonElement>('owner-photo-save').disabled, false);
+    assert.equal(f.calls.length, 0, 'choosing and cropping does not upload before Save portrait');
+  } finally { f.close(); }
+});
+
+for (const outcome of ['account-changed', 'check-failed', 'disposed'] as const)
+test(`native picker selection is discarded when focus verification is ${outcome}`, async () => {
+  const f = setup(); try {
+    await f.ready;
+    let release!: () => void, decodes = 0;
+    f.sessionBehavior(() => new Promise<void>(resolve => { release = resolve; }));
+    f.decode(async () => { decodes++; return { image: {} as CanvasImageSource, width: 400, height: 400, dispose() {} }; });
+    f.dom.window.dispatchEvent(new f.dom.window.Event('focus'));
+    await f.choose();
+    if (outcome === 'account-changed') f.switchAccount();
+    if (outcome === 'check-failed') f.failSession(true);
+    if (outcome === 'disposed') f.ui.dispose();
+    release(); await settle();
+    assert.equal(decodes, 0); assert.equal(f.el<HTMLDialogElement>('portrait-crop-dialog').open, false);
+    assert.equal(f.el('owner-photo-preview').hidden, true); assert.equal(f.calls.length, 0);
+    assert.equal(f.el('owner-form').hidden, true);
+  } finally { f.close(); }
 });

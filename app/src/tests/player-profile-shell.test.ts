@@ -17,7 +17,7 @@ test('player shells render no fixture data and keep account fields on the owner 
     assert.equal(s.querySelector('#owner-form')?.hasAttribute('hidden'), true);
     assert.equal(s.querySelector<HTMLInputElement>('#owner-email')?.readOnly, true);
     assert.equal(s.querySelector<HTMLInputElement>('#owner-email')?.value, '');
-    assert.match(s.querySelector('#owner-photo-notice')?.textContent ?? '', /authorised league viewers.*card images/);
+    assert.match(s.querySelector('#owner-photo-notice')?.textContent ?? '', /signed in players in your league or images you share/);
     assert.equal(s.querySelector('#portrait-crop-dialog')?.getAttribute('aria-labelledby'), 'portrait-crop-title');
     for (const id of ['zoom', 'x', 'y']) assert(s.querySelector(`label[for=portrait-crop-${id}]`));
     for (const doc of [p, s]) {

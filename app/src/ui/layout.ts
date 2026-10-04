@@ -1487,7 +1487,7 @@ export function renderPlayerProfilePage(apiBaseUrl: string): string {
 
 export function renderPlayerSettingsPage(apiBaseUrl: string): string {
   return renderPlayerScreen(apiBaseUrl, "settings", "Your player profile", `
-  <a id="owner-back" href="/setup">Back</a><header><h1>Your player profile</h1><p>Make it yours.</p></header>
+  <a id="owner-back" href="/setup">Back</a><header><h1>Your player profile</h1></header>
   <p id="owner-status" role="status" aria-live="polite">Loading your profile…</p>
   <a id="owner-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to edit your profile</a>
   <div data-ui="button-row"><button id="owner-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
@@ -1496,12 +1496,12 @@ export function renderPlayerSettingsPage(apiBaseUrl: string): string {
     <form id="owner-name-form" data-ui="panel"><h2>Your details</h2>
       <div data-ui="field"><label for="owner-name">Display name</label><input id="owner-name" data-ui="input" maxlength="80" required autocomplete="nickname" /></div>
       <div data-ui="field"><label for="owner-email">Account email</label><input id="owner-email" data-ui="input" type="email" readonly autocomplete="off" aria-describedby="owner-email-note" />
-      <p id="owner-email-note" data-ui="status-note">Only you can see your account email here. Email changes are not available yet.</p></div>
+      <p id="owner-email-note" data-ui="status-note">Change of email not yet available</p></div>
       <button id="owner-save-name" type="submit" data-ui="button" data-variant="primary">Save name</button>
     </form>
     <section data-ui="panel" aria-labelledby="owner-photo-title"><h2 id="owner-photo-title">Player portrait</h2>
       <img id="owner-photo-preview" alt="Current player portrait" width="160" height="160" hidden />
-      <p id="owner-photo-notice">Your portrait appears to authorised league viewers and in any player card images you share.</p>
+      <p id="owner-photo-notice">Player portrait only visible to signed in players in your league or images you share</p>
       <div data-ui="field"><label for="owner-photo-file">Choose a photo</label><input id="owner-photo-file" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="owner-photo-limits" />
       <p id="owner-photo-limits" data-ui="status-note">JPEG, PNG or WebP. Up to 8 MB and 16 megapixels. You can adjust the crop before saving.</p></div>
       <div data-ui="button-row"><button id="owner-photo-save" type="button" data-ui="button" data-variant="primary" disabled>Save portrait</button>

@@ -30,7 +30,8 @@ export function initializePlayerSettings(options: PlayerSettingsOptions) {
   const decode = options.media?.decode ?? decodePortraitSource, draw = options.media?.draw ?? drawPortraitCrop;
   const encode = options.media?.encode ?? encodePortraitCrop, dataUrl = options.media?.dataUrl ?? blobDataUrl;
   const controller = new AbortController();
-  let generation = 0, cropGeneration = 0, disposed = false, busy = false, blocked = false, conflict = false, preparing = false, accountUnconfirmed = false, checkingAccount = false;
+  let generation = 0, cropGeneration = 0, disposed = false, busy = false, blocked = false, conflict = false, preparing = false, accountUnconfirmed = false;
+  let accountCheck: Promise<void> | null = null;
   let identity: OwnerDetails | null = null, account: string | null = null, attempt: Attempt | null = null;
   let source: PortraitSource | null = null, crop: Crop | null = null, currentPhoto: string | null = null, cropTrigger: HTMLElement | null = null;
   const listeners: Array<() => void> = [];
@@ -153,11 +154,17 @@ export function initializePlayerSettings(options: PlayerSettingsOptions) {
     catch (error) { cropStatus.textContent = error instanceof PortraitCropError ? error.message : 'The crop could not be displayed.'; confirm.disabled = true; }
   }
   async function choosePhoto() {
-    if (busy || preparing || accountUnconfirmed || blocked || conflict || attempt || !identity || disposed) return;
     const selected = file.files?.[0]; if (!selected) return;
+    if (busy || preparing || blocked || conflict || attempt || !identity || disposed || accountUnconfirmed && !accountCheck) return;
     const token = ++cropGeneration, ownerToken = generation;
-    source?.dispose(); source = null; preparing = true; controls(); say('Preparing your photo…');
+    preparing = true; controls();
     try {
+      // Native file pickers restore window focus before dispatching change.
+      // Keep that selection while the existing account check finishes.
+      if (accountCheck) await accountCheck;
+      if (disposed || token !== cropGeneration || ownerToken !== generation) return;
+      if (accountUnconfirmed || blocked || conflict || attempt || !identity) { preparing = false; return; }
+      source?.dispose(); source = null; say('Preparing your photo…');
       const value = await decode(selected);
       if (disposed || token !== cropGeneration || ownerToken !== generation) { value.dispose(); return; }
       source = value; zoom.value = '1'; x.value = '0'; y.value = '0'; confirm.disabled = false;
@@ -176,7 +183,7 @@ export function initializePlayerSettings(options: PlayerSettingsOptions) {
     try {
       const value = await encode(canvas);
       if (disposed || token !== cropGeneration) return;
-      crop = value; closeCrop(); showPhoto(); say('Your crop is ready. Save photo to make it visible to league viewers.'); controls();
+      crop = value; closeCrop(); showPhoto(); say('Your crop is ready. Select Save portrait to upload it.'); controls();
     } catch (error) {
       if (disposed || token !== cropGeneration) return;
       cropStatus.textContent = error instanceof PortraitCropError ? error.message : 'The crop could not be prepared. Try again.';
@@ -200,13 +207,17 @@ export function initializePlayerSettings(options: PlayerSettingsOptions) {
     if (keyboard.shiftKey && document.activeElement === first) { keyboard.preventDefault(); last?.focus(); }
     else if (!keyboard.shiftKey && document.activeElement === last) { keyboard.preventDefault(); first?.focus(); }
   });
-  async function recheckAccount() {
-    if (!account || disposed || blocked || checkingAccount) return;
-    checkingAccount = true; accountUnconfirmed = true;
+  function recheckAccount(): Promise<void> {
+    if (accountCheck) return accountCheck;
+    if (!account || disposed || blocked) return Promise.resolve();
+    accountUnconfirmed = true;
     const message = status.textContent ?? ''; controls(); say('Checking your account…');
-    try { await verifyAccount(); if (!disposed && !blocked) { accountUnconfirmed = false; say(message); } }
-    catch (error) { if (!disposed && !denied(error)) { closeCrop(); say('Your account could not be verified. Retry before continuing.'); } }
-    finally { checkingAccount = false; if (!disposed) controls(); }
+    accountCheck = (async () => {
+      try { await verifyAccount(); if (!disposed && !blocked) { accountUnconfirmed = false; say(message); } }
+      catch (error) { if (!disposed && !denied(error)) { closeCrop(); say('Your account could not be verified. Retry before continuing.'); } }
+      finally { accountCheck = null; if (!disposed) controls(); }
+    })();
+    return accountCheck;
   }
   listen(window, 'focus', () => { void recheckAccount(); });
   for (const event of ['threefc:player-proof-cleared', 'threefc:player-proof-invalidated'])
