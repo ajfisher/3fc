@@ -3421,6 +3421,15 @@ code {
 #club-card-dialog {
   width: min(34rem, calc(100% - 1rem));
 
+  > header {
+    align-items: center;
+    gap: 0.5rem;
+
+    h2 {
+      min-width: 0;
+    }
+  }
+
   #club-card-art {
     width: min(100%, 25rem);
     margin-inline: auto;
@@ -3432,16 +3441,16 @@ code {
     }
   }
 
-  > ul {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem 1.25rem;
-    padding-inline-start: 1.25rem;
+  > [data-ui="button-row"] {
+    justify-content: center;
+    margin-top: 1rem;
+  }
 
-    a {
-      display: inline-block;
-      padding-block: 0.35rem;
-    }
+  > a {
+    display: flex;
+    justify-content: center;
+    margin-top: 0.75rem;
+    text-decoration: none;
   }
 }
 

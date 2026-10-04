@@ -1,4 +1,4 @@
-import { ACHIEVEMENT_DEFINITIONS, type AchievementId, type PlayerAchievements, type PlayerPerformance } from '@3fc/contracts';
+import { type PlayerAchievements, type PlayerPerformance } from '@3fc/contracts';
 import type { PlayerClient, PlayerContext, PlayerSession } from './player-client.js';
 import { buildClubCardModel, renderClubCardSvg, type ClubCardModel, type ClubCardPeriod, type ClubCardSide } from './player-card-art.js';
 
@@ -41,7 +41,7 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
   prepare?: (svg: string, signal: AbortSignal) => Promise<Blob>; now?: () => number }) {
   const { dialog, client } = options, document = dialog.ownerDocument, window = document.defaultView!;
   const el = <T extends HTMLElement>(id: string) => { const found = dialog.querySelector<T>(`#${id}`); if (!found) throw new Error(`Missing ${id}`); return found; };
-  const art = el('club-card-art'), title = el('club-card-title'), status = el('club-card-status'), links = el('club-card-honours-links');
+  const art = el('club-card-art'), title = el('club-card-title'), status = el('club-card-status');
   const flip = el<HTMLButtonElement>('club-card-flip'), share = el<HTMLButtonElement>('club-card-share'), download = el<HTMLButtonElement>('club-card-download'), retry = el<HTMLButtonElement>('club-card-retry');
   const gallery = el<HTMLAnchorElement>('club-card-gallery'), closeButton = el<HTMLButtonElement>('club-card-close');
   const prepare = options.prepare ?? ((svg, signal) => rasterizeClubCard(svg, document, signal));
@@ -52,7 +52,7 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
   let authorizedUntil = 0, expiryTimer: number | null = null, artifactVersion = 0;
   const cleanups: Array<() => void> = [], urls = new Set<string>();
   const listen = (target: EventTarget, event: string, handler: EventListener) => { target.addEventListener(event, handler); cleanups.push(() => target.removeEventListener(event, handler)); };
-  function say(message: string) { status.textContent = message; }
+  function say(message: string) { status.textContent = message; status.hidden = !message; }
   function current(id: number) {
     const live = options.getSnapshot();
     return !disposed && !suspended && dialog.open && id === generation && frozen !== null && live !== null && live.period === frozen.period
@@ -70,9 +70,12 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
     artifactVersion++; if (expiryTimer !== null) window.clearTimeout(expiryTimer); expiryTimer = null;
     file = null; for (const url of urls) window.URL.revokeObjectURL(url); urls.clear(); controls();
   }
-  function expireAuthorization() {
-    release(); recheckRequired = true; retry.hidden = false; retry.textContent = 'Refresh card';
-    say('Refresh this card to confirm your current access before sharing.'); controls();
+  function expireAuthorization(automatically = true) {
+    release(); recheckRequired = true; retry.hidden = automatically; retry.textContent = 'Try again';
+    say(automatically ? '' : 'The card took too long to prepare. Try again to confirm your access.'); controls();
+    // Never release an expired file. Renew through the same resource-authorized
+    // read in the background; an open native share finishes before we resume.
+    if (automatically && !sharing) void resumeVisible(true);
   }
   function armExpiry() {
     const version = artifactVersion, prepared = file;
@@ -86,29 +89,23 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
   }
   function invalidate() {
     signal.abort(); generation++; shareAttempt++; release(); authorizedUntil = 0; frozen = null; model = null; awards = null; identity = null; preparing = false; sharing = false; suspended = false; needsRefresh = false; recheckRequired = false;
-    art.replaceChildren(); links.replaceChildren(); title.textContent = 'Club Card'; gallery.removeAttribute('href'); say(''); controls();
+    art.replaceChildren(); title.textContent = 'Club Card'; gallery.removeAttribute('href'); say(''); controls();
     if (dialog.open) dialog.close();
     if (trigger?.isConnected && !(trigger as HTMLButtonElement).disabled) trigger.focus(); trigger = null;
   }
-  function href(achievementId?: AchievementId, scope = frozen?.period === 'season' ? 'season' : 'career', seasonId: string | null = frozen?.performance.selectedSeasonId ?? null) {
+  function href() {
+    const scope = frozen!.period === 'season' ? 'season' : 'career', seasonId = frozen!.performance.selectedSeasonId;
     const query = new URLSearchParams({ ...frozen!.context, scope });
+    query.delete('seasonId');
     if (scope === 'season' && seasonId) query.set('seasonId', seasonId);
-    if (achievementId) query.set('achievementId', achievementId);
     return `/achievements?${query}`;
   }
   function render() {
     if (!frozen) return;
     model = buildClubCardModel({ performance: frozen.performance, period: frozen.period, portraitDataUrl: frozen.portraitDataUrl, achievements: awards });
     art.innerHTML = renderClubCardSvg(model, side); title.textContent = `${model.name} · Club Card`;
-    flip.textContent = side === 'front' ? 'View honours' : 'View performance'; flip.setAttribute('aria-pressed', String(side === 'honours'));
+    flip.textContent = side === 'front' ? 'Achievements' : 'Statistics'; flip.setAttribute('aria-pressed', String(side === 'honours'));
     gallery.href = href(); gallery.hidden = !frozen.performance.capabilities.achievements;
-    links.replaceChildren(); links.hidden = side !== 'honours';
-    for (const honour of model.honours) {
-      const item = document.createElement('li'), link = document.createElement('a');
-      link.href = href(honour.achievementId, honour.scopes.includes('career') ? 'career' : 'season', honour.seasonId);
-      link.textContent = `${ACHIEVEMENT_DEFINITIONS.find(value => value.id === honour.achievementId)!.name} · ${honour.ordinal} ${honour.ordinal === 1 ? 'star' : 'stars'}${frozen.period === 'last' ? ` · ${honour.scopes.join(' + ')}` : ''}`;
-      item.append(link); links.append(item);
-    }
   }
   async function confirmAccount(id: number) {
     let session: PlayerSession;
@@ -119,10 +116,10 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
     if (!key || identity && key !== identity) { invalidate(); return false; }
     identity = key; return true;
   }
-  async function prepareSide(loadAwards: boolean) {
-    if (now() >= authorizedUntil) { expireAuthorization(); return; }
+  async function prepareSide(loadAwards: boolean, silently = false) {
+    if (now() >= authorizedUntil) { expireAuthorization(false); return; }
     signal.abort(); signal = new AbortController(); const id = ++generation;
-    release(); preparing = true; retry.hidden = true; retry.textContent = 'Retry'; controls(); say('Preparing your card…'); render();
+    release(); preparing = true; retry.hidden = true; retry.textContent = 'Try again'; controls(); say(silently ? '' : 'Preparing your card…'); render();
     try {
       if (!frozen || !await confirmAccount(id)) return;
       // A portrait may have completed loading after the dialog opened. This is the
@@ -141,13 +138,13 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
       if (!model!.exportable || side === 'honours' && model!.honoursState !== 'ready') { say(!model!.exportable ? model!.unavailableReason : 'Honours are updating or unavailable. Retry to check this record again.'); retry.hidden = false; return; }
       const blob = await prepare(renderClubCardSvg(model!, side), signal.signal);
       if (!current(id) || !await confirmAccount(id)) return;
-      if (now() >= authorizedUntil) { expireAuthorization(); return; }
+      if (now() >= authorizedUntil) { expireAuthorization(false); return; }
       if (blob.type !== 'image/png' || !blob.size) throw new Error('Invalid image');
       const name = model!.name.normalize('NFKD').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55) || 'player';
       file = new window.File([blob], `${name}-${frozen.period}-${side}.png`, { type: 'image/png' });
       armExpiry();
-      share.hidden = !canShare(file); say('Ready to share · 1200 × 1560 PNG');
-      if (model!.honoursState === 'unavailable' && frozen.performance.capabilities.achievements) { retry.hidden = false; say('Performance ready to share. Honours are unavailable; retry to check them.'); }
+      share.hidden = !canShare(file); say('');
+      if (model!.honoursState === 'unavailable' && frozen.performance.capabilities.achievements) { retry.hidden = false; say('Achievements are unavailable. Try again to check them.'); }
     } catch { if (current(id)) { release(); retry.hidden = false; say('The card could not be prepared. Retry to keep this period and side.'); } }
     finally { if (id === generation) { preparing = false; controls(); } }
   }
@@ -167,10 +164,10 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
       say('Card downloaded.');
     } catch { say('The download could not start. Try Download again.'); }
   }
-  async function resumeVisible() {
+  async function resumeVisible(silently = false) {
     if (!frozen || disposed || document.hidden) return;
     signal.abort(); release(); authorizedUntil = 0;
-    suspended = false; signal = new AbortController(); const id = ++generation, checkedAt = now(); preparing = true; controls(); say('Checking your current record…');
+    suspended = false; signal = new AbortController(); const id = ++generation, checkedAt = now(); preparing = true; retry.hidden = true; controls(); say(silently ? '' : 'Checking your current record…');
     try {
       if (!await confirmAccount(id) || !frozen) return;
       const record = await client.performance({ ...frozen.context, ...(frozen.performance.selectedSeasonId ? { seasonId: frozen.performance.selectedSeasonId } : {}) }, signal.signal);
@@ -189,7 +186,7 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
       // Include network/preparation time in the bounded grant. Flipping or
       // re-rendering cannot extend it without another resource-authorized read.
       authorizedUntil = checkedAt + 30_000;
-      recheckRequired = false; await prepareSide(true);
+      recheckRequired = false; await prepareSide(true, silently);
     } catch (error) { if (current(id)) { if (denied(error)) { invalidate(); return; } recheckRequired = true; retry.hidden = false; say('Your access could not be confirmed. Retry to check again without changing this card.'); } }
     finally { if (id === generation) { preparing = false; controls(); } }
   }
@@ -200,7 +197,7 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
     // No awaited work before this call: keep the browser's user activation.
     let request: Promise<void>; try { request = window.navigator.share({ files: [value], title: `${model!.name} · 3FC Club Card` }); }
     catch { sharing = false; controls(); say('Sharing is unavailable. Download your card instead.'); return; }
-    void request.then(() => { if (current(id) && !recheckRequired) say('Card shared.'); }, error => { if (current(id) && !recheckRequired) say(error?.name === 'AbortError' ? 'Sharing cancelled. Your card is ready.' : 'Sharing is unavailable. Download your card instead.'); }).finally(() => { if (attempt === shareAttempt) { sharing = false; controls(); } });
+    void request.then(() => { if (current(id) && !recheckRequired) say('Card shared.'); }, error => { if (current(id) && !recheckRequired) say(error?.name === 'AbortError' ? '' : 'Sharing is unavailable. Download your card instead.'); }).finally(() => { if (attempt === shareAttempt) { sharing = false; controls(); if (recheckRequired && !preparing && retry.hidden && !needsRefresh) void resumeVisible(true); } });
   }
   listen(closeButton, 'click', invalidate); listen(dialog, 'cancel', event => { event.preventDefault(); invalidate(); });
   listen(dialog, 'close', () => { if (frozen) invalidate(); });
@@ -209,8 +206,8 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
   listen(share, 'click', shareCard); listen(download, 'click', downloadCard);
   listen(document, 'visibilitychange', () => {
     if (!frozen) return;
-    if (document.hidden) { suspended = true; recheckRequired = true; signal.abort(); generation++; release(); preparing = false; art.replaceChildren(); links.replaceChildren(); controls(); }
-    else void resumeVisible();
+    if (document.hidden) { suspended = true; recheckRequired = true; signal.abort(); generation++; release(); preparing = false; art.replaceChildren(); controls(); }
+    else void resumeVisible(true);
   });
   for (const event of ['threefc:player-proof-cleared', 'threefc:player-proof-invalidated', 'pagehide']) listen(window, event, invalidate);
   return {

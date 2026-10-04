@@ -1476,12 +1476,12 @@ export function renderPlayerProfilePage(apiBaseUrl: string): string {
   <dialog id="club-card-dialog" aria-labelledby="club-card-title">
     <header><h2 id="club-card-title">Player card</h2><button id="club-card-close" type="button" data-ui="button-secondary">Close</button></header>
     <div id="club-card-art"></div>
-    <p id="club-card-status" role="status" aria-live="polite"></p>
-    <div data-ui="button-row"><button id="club-card-flip" type="button" data-ui="button-secondary" aria-pressed="false">See honours</button>
-      <button id="club-card-share" type="button" data-ui="button" data-variant="primary" disabled>Share card</button>
-      <button id="club-card-download" type="button" data-ui="button-secondary" disabled>Download PNG</button>
+    <p id="club-card-status" role="status" aria-live="polite" hidden></p>
+    <div data-ui="button-row"><button id="club-card-flip" type="button" data-ui="button-secondary" aria-pressed="false">Achievements</button>
+      ${renderIconButton({ icon: "share-2", label: "Share card", variant: "primary", attributes: { id: "club-card-share", disabled: "" } })}
+      ${renderIconButton({ icon: "download", label: "Download PNG", attributes: { id: "club-card-download", disabled: "" } })}
       <button id="club-card-retry" type="button" data-ui="button-secondary" hidden>Try again</button></div>
-    <ul id="club-card-honours-links"></ul><a id="club-card-gallery" href="/achievements">Explore achievements</a>
+    <a id="club-card-gallery" data-ui="button-secondary" href="/achievements">All achievements</a>
   </dialog>`);
 }
 

@@ -23,7 +23,7 @@ test('five honour classes rank by rarity and highest milestone; repeated tiers d
   const model = buildClubCardModel({ performance, period: 'season', portraitDataUrl: null, achievements: achievements(honours) });
   assert.deepEqual(model.honours.map(a => a.achievementId), ['lockdown', 'own-goal', 'wins', 'draw', 'played']); assert.equal(model.additionalHonours, 2);
   const reverse = new JSDOM(renderClubCardSvg(model, 'honours'), { contentType: 'image/svg+xml' });
-  assert.equal(reverse.window.document.querySelectorAll('svg.badge-art').length, 5); assert.match(reverse.window.document.documentElement.textContent!, /2 MORE HONOUR CLASSES/); reverse.window.close();
+  assert.equal(reverse.window.document.querySelectorAll('svg.badge-art').length, 5); assert.match(reverse.window.document.documentElement.textContent!, /TOP ACHIEVEMENTS/); assert.match(reverse.window.document.documentElement.textContent!, /\+2 OTHER ACHIEVEMENTS/); reverse.window.close();
 });
 test('last-game identical scope awards merge and earlier-game milestones do not appear', () => {
   const season = award('goal', 2), career: AchievementUnlock = { ...season, id: 'career-goal', scope: 'career', seasonId: null };

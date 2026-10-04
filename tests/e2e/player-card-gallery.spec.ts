@@ -61,7 +61,11 @@ test('both Club Card sides export 1200 by 1560 PNG with five honours and focus r
     await expect(page.locator('#club-card-art')).not.toContainText('private@example.invalid');
     if (side === 'front') await page.locator('#club-card-flip').click();
   }
-  await expect(page.locator('#club-card-honours-links li')).toHaveCount(5);
+  await expect(page.locator('#club-card-honours-links')).toHaveCount(0);
+  await expect(page.locator('#club-card-gallery')).toHaveText('All achievements');
+  await expect(page.locator('#club-card-gallery')).toHaveAttribute('href', /scope=season/);
+  await expect(page.locator('#club-card-flip')).toHaveText('Statistics');
+  await expect(page.locator('#club-card-art')).toContainText('TOP ACHIEVEMENTS');
   expect(await page.locator('#club-card-art .badge-art').evaluateAll(nodes => nodes.map(node => ({ css: getComputedStyle(node).width, width: (node as SVGSVGElement).width.baseVal.value })))).toEqual(Array(5).fill({ css: 'auto', width: 160 }));
   await page.keyboard.press('Escape'); await expect(page.locator('#player-card')).toBeFocused();
 });
@@ -76,7 +80,7 @@ test('contextless gallery and empty card are honest, with keyboard usable at enl
   await page.goto('/achievements'); await expect(page.locator('#achievement-grid > *')).toHaveCount(23); await expect(page.locator('#achievement-earned-field')).not.toBeVisible();
   await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.goto('/player?leagueId=league-one&playerId=player-one'); await page.locator('#player-card').click(); await page.locator('#club-card-flip').click();
-  await expect(page.locator('#club-card-art')).toContainText(/first|next|honours|story/i); await expect(page.locator('#club-card-honours-links li')).toHaveCount(0);
+  await expect(page.locator('#club-card-art')).toContainText(/first|next|honours|story/i); await expect(page.locator('#club-card-honours-links')).toHaveCount(0);
   await expect(page.locator('#club-card-download')).toBeEnabled();
 });
 
@@ -89,4 +93,16 @@ test('the authorised portrait is embedded in the actual exported PNG', async ({ 
   const png = await readFile((await downloaded.path())!);
   const pixel = await page.evaluate(async bytes => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 1560; const context = canvas.getContext('2d')!; context.drawImage(bitmap, 0, 0); const result = Array.from(context.getImageData(600, 450, 1, 1).data); bitmap.close(); return result; }, Array.from(png));
   expect(pixel).toEqual([217, 183, 105, 255]);
+});
+
+
+test('card title and close stay aligned at enlarged text on a narrow screen', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 }); await mock(page, { name: 'Alexandra Riverstone Fernández-Williams' });
+  await page.goto('/player?leagueId=league-one&playerId=player-one');
+  await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; });
+  await page.locator('#player-card').click();
+  const header = page.locator('#club-card-dialog > header');
+  await expect(header).toHaveCSS('align-items', 'center');
+  expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.locator('#club-card-close').click(); await expect(page.locator('#player-card')).toBeFocused();
 });

@@ -79,7 +79,7 @@ export function renderClubCardSvg(model: ClubCardModel, side: ClubCardSide): str
   const text = (x: number, y: number, value: string, size = 12, colour = ivory, weight = 600, anchor = 'middle', fit?: number) => `<text x="${x}" y="${y}" text-anchor="${anchor}"${fit ? ` textLength="${fit}" lengthAdjust="spacingAndGlyphs"` : ''} font-size="${size}" fill="${colour}" font-weight="${weight}">${esc(value)}</text>`;
   const centre = (y: number, value: string, size = 12, colour = ivory, weight = 600) => text(200, y, value, size, colour, weight);
   let art = '<path d="M14 10H386V414Q386 470 200 517Q14 470 14 414Z" fill="#14291f"/><path d="M25 21H375V411Q375 459 200 505Q25 459 25 411Z" fill="none" stroke="#d9b769" stroke-width="1.2"/>';
-  art += text(36, 50, '3FC', 22, ivory, 900, 'start') + text(364, 47, side === 'honours' ? 'THE HONOURS' : `${model.period === 'last' ? 'MATCH' : model.period.toUpperCase()} EDITION`, 10, gold, 750, 'end');
+  art += text(36, 50, '3FC', 22, ivory, 900, 'start') + text(364, 47, side === 'honours' ? 'TOP ACHIEVEMENTS' : `${model.period === 'last' ? 'MATCH' : model.period.toUpperCase()} EDITION`, 10, gold, 750, 'end');
   if (side === 'front') {
     art += '<circle cx="200" cy="151" r="78" fill="#233c2d" stroke="#b9d9bd" stroke-width="1.2"/>';
     if (model.portraitDataUrl && validCardPortrait(model.portraitDataUrl)) art += `<defs><clipPath id="club-portrait"><circle cx="200" cy="151" r="75"/></clipPath></defs><image href="${esc(model.portraitDataUrl)}" x="125" y="76" width="150" height="150" clip-path="url(#club-portrait)"/>`;
@@ -111,7 +111,7 @@ export function renderClubCardSvg(model: ClubCardModel, side: ClubCardSide): str
       });
     }
     if (model.additionalHonours && model.honoursNote.startsWith('Confirmed')) art += centre(479, 'Some history cannot be assessed', 7, mint);
-    art += centre(467, model.additionalHonours ? `+${model.additionalHonours} MORE HONOUR ${model.additionalHonours === 1 ? 'CLASS' : 'CLASSES'}` : lines(model.honoursNote, 51, 1)[0], 8, mint);
+    art += centre(467, model.additionalHonours ? `+${model.additionalHonours} OTHER ACHIEVEMENTS` : lines(model.honoursNote, 51, 1)[0], 8, mint);
   }
   if (!model.exportable) art += centre(side === 'front' ? 490 : 485, 'RECORD NOT READY TO SHARE', 8, gold);
   else art += centre(side === 'front' ? 491 : 488, '3FC.FOOTBALL', 8, mint);

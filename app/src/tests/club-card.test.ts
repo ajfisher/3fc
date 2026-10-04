@@ -5,7 +5,8 @@ import { ACHIEVEMENT_DEFINITIONS, type PlayerAchievements } from '@3fc/contracts
 import { mountClubCard, rasterizeClubCard, type ClubCardSnapshot } from '../ui/club-card.js';
 import { PlayerClientError } from '../ui/player-client.js';
 import { performance } from './player-profile-fixtures.js';
-const markup = `<button id="opener">Card</button><dialog id="club-card-dialog"><h2 id="club-card-title"></h2><button id="club-card-close">Close</button><div id="club-card-art"></div><button id="club-card-flip">Flip</button><button id="club-card-share">Share</button><button id="club-card-download">Download</button><button id="club-card-retry">Retry</button><p id="club-card-status"></p><ul id="club-card-honours-links"></ul><a id="club-card-gallery">Collection</a></dialog>`;
+import { renderPlayerProfilePage } from '../ui/layout.js';
+const markup = `<button id="opener">Card</button><dialog id="club-card-dialog"><h2 id="club-card-title"></h2><button id="club-card-close">Close</button><div id="club-card-art"></div><button id="club-card-flip">Flip</button><button id="club-card-share">Share</button><button id="club-card-download">Download</button><button id="club-card-retry">Retry</button><p id="club-card-status"></p><a id="club-card-gallery">All achievements</a></dialog>`;
 const awards: PlayerAchievements = { leagueId: 'league', playerId: 'player/root', scope: 'season', seasonId: 'winter', progress: [], honours: [], firstUnlocks: [], latestUnlocks: [], freshness: performance.freshness };
 async function settle() { for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve)); }
 function fixture(manualTimers = false) {
@@ -41,6 +42,8 @@ function fixture(manualTimers = false) {
 }
 test('prepared native sharing starts synchronously in click and carries a safe PNG file', async () => {
   const f = fixture(); try { await f.open(); assert.equal(f.reads, 1); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, false);
+    assert.equal(f.el('club-card-status').textContent, ''); assert.equal(f.el('club-card-status').hidden, true);
+    assert.equal(f.el('club-card-flip').textContent, 'Achievements');
     f.click('club-card-share'); assert.equal(f.shared.length, 1); assert.equal(f.shared[0].files?.[0].type, 'image/png'); assert.match(f.shared[0].files![0].name, /season-front.png$/);
     assert(!f.exports.join('').includes('private@example')); assert(!f.el('club-card-dialog').textContent!.includes('private@example'));
   } finally { f.close(); }
@@ -48,7 +51,7 @@ test('prepared native sharing starts synchronously in click and carries a safe P
 test('failed reverse export retries the frozen side and period without refetching a different record', async () => {
   const f = fixture(); try { await f.open(); let fails = true; f.setPrepare(async () => { if (fails) throw new Error('canvas failure'); return new f.dom.window.Blob(['png'], { type: 'image/png' }); });
     f.click('club-card-flip'); await settle(); assert.equal(f.el('club-card-retry').hidden, false); assert.equal(f.el('club-card-flip').getAttribute('aria-pressed'), 'true');
-    fails = false; f.click('club-card-retry'); await settle(); f.click('club-card-download'); assert.match(f.downloads[0], /season-honours.png$/); assert.match(f.exports.at(-1)!, /THE HONOURS/);
+    fails = false; f.click('club-card-retry'); await settle(); f.click('club-card-download'); assert.match(f.downloads[0], /season-honours.png$/); assert.match(f.exports.at(-1)!, /TOP ACHIEVEMENTS/);
   } finally { f.close(); }
 });
 test('close restores focus and discards late raster results', async () => {
@@ -117,13 +120,14 @@ test('explicit session or resource denial on visibility return clears the frozen
     } finally { f.close(); }
   }
 });
-test('prepared authorization expires visibly and refresh revalidates the same reverse before native sharing', async () => {
+test('routine expiry silently revalidates the same reverse before native sharing without a refresh button', async () => {
   const f = fixture(true); try {
     await f.open(); f.click('club-card-flip'); await settle(); const reads = f.reads;
     f.advance(30_000); f.runDue();
     assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true); assert.equal(f.el<HTMLButtonElement>('club-card-download').disabled, true);
-    assert.equal(f.el('club-card-retry').textContent, 'Refresh card'); assert.equal(f.el<HTMLDialogElement>('club-card-dialog').open, true); assert.equal(f.el('club-card-flip').getAttribute('aria-pressed'), 'true');
-    f.click('club-card-retry'); await settle(); assert.equal(f.reads, reads + 1); assert.equal(f.el('club-card-flip').getAttribute('aria-pressed'), 'true');
+    assert.equal(f.el('club-card-retry').hidden, true); assert.equal(f.el('club-card-status').hidden, true); assert.equal(f.el<HTMLDialogElement>('club-card-dialog').open, true); assert.equal(f.el('club-card-flip').getAttribute('aria-pressed'), 'true');
+    await settle(); assert.equal(f.reads, reads + 1); assert.equal(f.el('club-card-flip').getAttribute('aria-pressed'), 'true');
+    assert.equal(f.el('club-card-status').textContent, ''); assert.equal(f.el('club-card-retry').hidden, true); assert.equal(f.el('club-card-flip').textContent, 'Statistics');
     f.click('club-card-share'); assert.equal(f.shared.length, 1, 'native share still starts before yielding the click'); assert.match(f.shared[0].files![0].name, /season-honours.png$/);
   } finally { f.close(); }
 });
@@ -132,7 +136,8 @@ test('synchronous deadline blocks both release paths when the expiry timer is th
     const f = fixture(true); try {
       await f.open(); f.advance(30_000);
       assert.equal(f.el<HTMLButtonElement>(button).disabled, false, 'no timer has run'); f.click(button);
-      assert.equal(f.shared.length, 0); assert.equal(f.downloads.length, 0); assert.equal(f.el('club-card-retry').textContent, 'Refresh card');
+      assert.equal(f.shared.length, 0); assert.equal(f.downloads.length, 0); assert.equal(f.el('club-card-retry').hidden, true);
+      await settle(); assert.equal(f.reads, 2); assert.equal(f.el<HTMLButtonElement>(button).disabled, false);
     } finally { f.close(); }
   }
 });
@@ -140,24 +145,69 @@ test('resource revocation while continuously visible cannot release the expired 
   const f = fixture(true); try {
     await f.open(); f.setRead(async () => { throw new PlayerClientError(403, 'player_profile_forbidden', 'Forbidden'); });
     f.advance(30_001); f.click('club-card-share'); assert.equal(f.shared.length, 0);
-    f.click('club-card-retry'); await settle(); assert.equal(f.el<HTMLDialogElement>('club-card-dialog').open, false); assert.equal(f.el('club-card-art').children.length, 0); assert.equal(f.downloads.length, 0);
+    await settle(); assert.equal(f.el<HTMLDialogElement>('club-card-dialog').open, false); assert.equal(f.el('club-card-art').children.length, 0); assert.equal(f.downloads.length, 0);
   } finally { f.close(); }
 });
 test('flipping and slow rendering do not renew resource authority; old timers cannot clear a refreshed file', async () => {
   const f = fixture(true); try {
     await f.open(); const oldExpiry = f.scheduled.at(-1)!;
     f.advance(29_000); f.click('club-card-flip'); await settle(); f.advance(1_000); f.runDue(); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true);
-    f.click('club-card-retry'); await settle(); oldExpiry(); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, false, 'superseded artifact expiry is fenced');
+    await settle(); oldExpiry(); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, false, 'superseded artifact expiry is fenced');
+    const reads = f.reads;
     f.setPrepare(async () => { f.advance(30_000); return new f.dom.window.Blob(['png'], { type: 'image/png' }); });
-    f.click('club-card-flip'); await settle(); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true); assert.equal(f.el('club-card-retry').textContent, 'Refresh card');
+    f.click('club-card-flip'); await settle(); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true); assert.equal(f.el('club-card-retry').hidden, false); assert.match(f.el('club-card-status').textContent!, /took too long/);
+    assert.equal(f.reads, reads, 'slow preparation does not start an unbounded refresh loop');
+    f.click('club-card-retry'); await settle(); assert.equal(f.reads, reads + 1); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true); assert.equal(f.el('club-card-retry').hidden, false);
   } finally { f.close(); }
 });
-test('an already-open native share cannot authorize another release after the lease expires', async () => {
+test('an already-open native share defers automatic renewal and cannot authorize another release', async () => {
   const f = fixture(true); try {
     await f.open(); let finish!: () => void; f.setShare(() => new Promise(resolve => { finish = resolve; }));
-    f.click('club-card-share'); f.advance(30_000); f.runDue(); finish(); await settle();
-    assert.equal(f.shared.length, 1); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true); assert.equal(f.el<HTMLButtonElement>('club-card-download').disabled, true); assert.equal(f.el('club-card-retry').textContent, 'Refresh card');
+    f.click('club-card-share'); f.advance(30_000); f.runDue(); f.click('club-card-share'); f.click('club-card-download');
+    assert.equal(f.reads, 1); assert.equal(f.shared.length, 1); assert.equal(f.downloads.length, 0); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, true);
+    finish(); await settle(); assert.equal(f.reads, 2); assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, false); assert.equal(f.el('club-card-status').hidden, true);
   } finally { f.close(); }
+});
+test('failed automatic access checks expose retry and recover the frozen side without releasing stale files', async () => {
+  const f = fixture(true); try {
+    await f.open(); f.click('club-card-flip'); await settle();
+    f.setRead(async () => { throw new PlayerClientError(503, 'unavailable', 'Unavailable'); });
+    f.advance(30_000); f.runDue(); await settle();
+    assert.equal(f.el('club-card-retry').hidden, false); assert.match(f.el('club-card-status').textContent!, /access could not be confirmed/);
+    f.click('club-card-share'); f.click('club-card-download'); assert.equal(f.shared.length, 0); assert.equal(f.downloads.length, 0);
+    const reads = f.reads; f.advance(60_000); f.runDue(); await settle(); assert.equal(f.reads, reads, 'failure stops background retries');
+    f.setRead(async () => structuredClone(f.snapshot.performance)); f.click('club-card-retry'); await settle();
+    assert.equal(f.el('club-card-flip').textContent, 'Statistics'); assert.equal(f.el('club-card-status').hidden, true);
+    f.click('club-card-download'); assert.match(f.downloads[0], /season-honours.png$/);
+  } finally { f.close(); }
+});
+test('All achievements preserves season or career context without the old per-badge link list', async () => {
+  for (const period of ['season', 'career', 'last'] as const) {
+    const f = fixture(); try {
+      f.snapshot.period = period; Object.assign(f.snapshot.context, { seasonId: 'winter' });
+      await f.open();
+      const link = new URL(f.el<HTMLAnchorElement>('club-card-gallery').href);
+      assert.equal(link.pathname, '/achievements'); assert.equal(link.searchParams.get('leagueId'), 'league');
+      assert.equal(link.searchParams.get('playerId'), 'alias'); assert.equal(link.searchParams.get('viewerPlayerId'), 'viewer');
+      assert.equal(link.searchParams.get('scope'), period === 'season' ? 'season' : 'career');
+      assert.equal(link.searchParams.get('seasonId'), period === 'season' ? 'winter' : null);
+      assert.equal(f.dom.window.document.querySelector('#club-card-honours-links'), null);
+    } finally { f.close(); }
+  }
+});
+test('card shell uses named icon actions and one gallery button', () => {
+  const dom = new JSDOM(renderPlayerProfilePage('https://qa-api.3fc.football')); try {
+    const dialog = dom.window.document.querySelector('#club-card-dialog')!;
+    for (const [id, icon, name] of [['club-card-share', 'share-2', 'Share card'], ['club-card-download', 'download', 'Download PNG']]) {
+      const button = dialog.querySelector(`#${id}`)!;
+      assert.equal(button.getAttribute('data-ui'), 'icon-button'); assert.equal(button.getAttribute('aria-label'), name);
+      assert.equal(button.querySelector('[data-icon]')?.getAttribute('data-icon'), icon);
+    }
+    assert.equal(dialog.querySelector('#club-card-close')?.textContent, 'Close');
+    assert.equal(dialog.querySelector('ul'), null); assert.equal(dialog.querySelector('#club-card-gallery')?.textContent, 'All achievements');
+    assert.equal(dialog.querySelector('#club-card-gallery')?.getAttribute('data-ui'), 'button-secondary');
+    assert.equal(dialog.querySelector('#club-card-status')?.hasAttribute('hidden'), true);
+  } finally { dom.window.close(); }
 });
 test('rasterization uses CSP-allowed data SVG and an exact 1200 by 1560 canvas', async () => {
   const dom = new JSDOM('', { pretendToBeVisual: true }); try {
