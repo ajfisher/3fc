@@ -48,6 +48,42 @@ test('prepared native sharing starts synchronously in click and carries a safe P
     assert(!f.exports.join('').includes('private@example')); assert(!f.el('club-card-dialog').textContent!.includes('private@example'));
   } finally { f.close(); }
 });
+for (const capability of ['files-unsupported', 'missing-share', 'missing-canShare', 'throws'] as const) {
+  test(`share stays available and downloads the selected card when ${capability}`, async () => {
+    const f = fixture(); try {
+      Object.assign(f.dom.window.navigator, capability === 'missing-share' ? { share: undefined }
+        : capability === 'missing-canShare' ? { canShare: undefined }
+        : { canShare: () => { if (capability === 'throws') throw new Error('Unavailable'); return false; } });
+      await f.open();
+      for (const side of ['front', 'honours']) {
+        assert.equal(f.el('club-card-share').hidden, false);
+        assert.equal(f.el<HTMLButtonElement>('club-card-share').disabled, false);
+        f.click('club-card-share');
+        assert.match(f.downloads.at(-1)!, new RegExp(`season-${side}\\.png$`));
+        assert.equal(f.shared.length, 0, 'do not invoke text/link sharing without the image');
+        assert.match(f.el('club-card-status').textContent!, /Open the saved image and use Share/);
+        if (side === 'front') { f.click('club-card-flip'); await settle(); }
+      }
+      assert.equal(f.downloads.length, 2);
+    } finally { f.close(); }
+  });
+}
+test('share fallback retains download failure and never claims the image was saved', async () => {
+  const f = fixture(); try {
+    Object.assign(f.dom.window.navigator, { canShare: () => false });
+    await f.open(); Object.assign(f.dom.window.URL, { createObjectURL() { throw new Error('Unavailable'); } });
+    f.click('club-card-share'); assert.equal(f.downloads.length, 0);
+    assert.equal(f.el('club-card-status').textContent, 'The download could not start. Try Download again.');
+  } finally { f.close(); }
+});
+test('cancelling native share does not start a fallback download', async () => {
+  const f = fixture(); try {
+    f.setShare(async () => { throw Object.assign(new Error('cancel'), { name: 'AbortError' }); });
+    await f.open(); f.click('club-card-share'); await settle();
+    assert.equal(f.downloads.length, 0); assert.equal(f.shared.length, 1);
+    assert.equal(f.el('club-card-status').hidden, true);
+  } finally { f.close(); }
+});
 test('failed reverse export retries the frozen side and period without refetching a different record', async () => {
   const f = fixture(); try { await f.open(); let fails = true; f.setPrepare(async () => { if (fails) throw new Error('canvas failure'); return new f.dom.window.Blob(['png'], { type: 'image/png' }); });
     f.click('club-card-flip'); await settle(); assert.equal(f.el('club-card-retry').hidden, false); assert.equal(f.el('club-card-flip').getAttribute('aria-pressed'), 'true');
@@ -201,6 +237,8 @@ test('card shell uses named icon actions and one gallery button', () => {
     for (const [id, icon, name] of [['club-card-share', 'share-2', 'Share card'], ['club-card-download', 'download', 'Download PNG']]) {
       const button = dialog.querySelector(`#${id}`)!;
       assert.equal(button.getAttribute('data-ui'), 'icon-button'); assert.equal(button.getAttribute('aria-label'), name);
+      assert.equal(button.getAttribute('data-variant'), dialog.querySelector('#club-card-download')!.getAttribute('data-variant'));
+      assert.notEqual(button.getAttribute('data-variant'), 'primary');
       assert.equal(button.querySelector('[data-icon]')?.getAttribute('data-icon'), icon);
     }
     assert.equal(dialog.querySelector('#club-card-close')?.textContent, 'Close');

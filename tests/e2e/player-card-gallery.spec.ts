@@ -77,6 +77,30 @@ test('native file sharing is invoked during user activation with a prepared PNG'
   await expect(page.locator('#club-card-share')).toBeEnabled(); await page.locator('#club-card-share').click();
   expect(await page.evaluate(() => (window as unknown as { shared: unknown }).shared)).toMatchObject({ active: true, type: 'image/png' });
 });
+for (const capability of ['text-only', 'absent'] as const) {
+  test(`share stays visible with neutral styling and saves both sides when native sharing is ${capability}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.addInitScript(mode => {
+      Object.defineProperty(navigator, 'canShare', { value: mode === 'absent' ? undefined : (data: ShareData) => !data.files });
+      Object.defineProperty(navigator, 'share', { value: mode === 'absent' ? undefined : async () => { throw new Error('Image sharing must use the download fallback'); } });
+    }, capability);
+    await mock(page); await page.goto('/player?leagueId=league-one&playerId=player-one'); await page.locator('#player-card').click();
+    for (const side of ['front', 'honours']) {
+      const share = page.getByRole('button', { name: 'Share card', exact: true });
+      await expect(share).toBeVisible(); await expect(share).toBeEnabled();
+      const appearance = await page.locator('#club-card-share, #club-card-download').evaluateAll(nodes => nodes.map(node => {
+        const style = getComputedStyle(node); return { background: style.backgroundColor, color: style.color, border: style.borderColor };
+      }));
+      expect(appearance[0]).toEqual(appearance[1]);
+      const pending = page.waitForEvent('download'); await share.click(); const download = await pending;
+      expect(download.suggestedFilename()).toBe(`Alex-Rivera-season-${side}.png`);
+      const png = await readFile((await download.path())!);
+      expect(png.subarray(1, 4).toString()).toBe('PNG'); expect(png.readUInt32BE(16)).toBe(1200); expect(png.readUInt32BE(20)).toBe(1560);
+      await expect(page.locator('#club-card-status')).toHaveText('Download started. Open the saved image and use Share to send it.');
+      if (side === 'front') await page.locator('#club-card-flip').click();
+    }
+  });
+}
 test('contextless gallery and empty card are honest, with keyboard usable at enlarged text', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 900 }); await mock(page, { empty: true, name: 'Alexandra Riverstone Fernández-Williams' });
   await page.goto('/achievements'); await expect(page.locator('#achievement-grid > *')).toHaveCount(23); await expect(page.locator('#achievement-earned-field')).not.toBeVisible();

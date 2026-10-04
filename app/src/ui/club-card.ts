@@ -143,7 +143,7 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
       const name = model!.name.normalize('NFKD').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 55) || 'player';
       file = new window.File([blob], `${name}-${frozen.period}-${side}.png`, { type: 'image/png' });
       armExpiry();
-      share.hidden = !canShare(file); say('');
+      say('');
       if (model!.honoursState === 'unavailable' && frozen.performance.capabilities.achievements) { retry.hidden = false; say('Achievements are unavailable. Try again to check them.'); }
     } catch { if (current(id)) { release(); retry.hidden = false; say('The card could not be prepared. Retry to keep this period and side.'); } }
     finally { if (id === generation) { preparing = false; controls(); } }
@@ -156,13 +156,14 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
     if (!current(generation)) { invalidate(); return null; } return file;
   }
   function downloadCard() {
-    const value = readyFile(); if (!value) return;
+    const value = readyFile(); if (!value) return false;
     try {
       const url = window.URL.createObjectURL(value); urls.add(url);
       const anchor = document.createElement('a'); anchor.href = url; anchor.download = value.name; document.body.append(anchor); anchor.click(); anchor.remove();
       window.setTimeout(() => { if (urls.delete(url)) window.URL.revokeObjectURL(url); }, 30_000);
       say('Card downloaded.');
-    } catch { say('The download could not start. Try Download again.'); }
+      return true;
+    } catch { say('The download could not start. Try Download again.'); return false; }
   }
   async function resumeVisible(silently = false) {
     if (!frozen || disposed || document.hidden) return;
@@ -192,7 +193,10 @@ export function mountClubCard(options: { dialog: HTMLDialogElement; client: Clie
   }
   function shareCard() {
     const value = readyFile(); if (!value) return;
-    if (!canShare(value)) { downloadCard(); return; }
+    if (!canShare(value)) {
+      if (downloadCard()) say('Download started. Open the saved image and use Share to send it.');
+      return;
+    }
     const id = generation, attempt = ++shareAttempt; sharing = true; controls();
     // No awaited work before this call: keep the browser's user activation.
     let request: Promise<void>; try { request = window.navigator.share({ files: [value], title: `${model!.name} · 3FC Club Card` }); }

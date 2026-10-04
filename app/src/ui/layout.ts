@@ -1478,7 +1478,7 @@ export function renderPlayerProfilePage(apiBaseUrl: string): string {
     <div id="club-card-art"></div>
     <p id="club-card-status" role="status" aria-live="polite" hidden></p>
     <div data-ui="button-row"><button id="club-card-flip" type="button" data-ui="button-secondary" aria-pressed="false">Achievements</button>
-      ${renderIconButton({ icon: "share-2", label: "Share card", variant: "primary", attributes: { id: "club-card-share", disabled: "" } })}
+      ${renderIconButton({ icon: "share-2", label: "Share card", attributes: { id: "club-card-share", disabled: "" } })}
       ${renderIconButton({ icon: "download", label: "Download PNG", attributes: { id: "club-card-download", disabled: "" } })}
       <button id="club-card-retry" type="button" data-ui="button-secondary" hidden>Try again</button></div>
     <a id="club-card-gallery" data-ui="button-secondary" href="/achievements">All achievements</a>
