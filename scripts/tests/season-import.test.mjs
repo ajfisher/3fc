@@ -250,10 +250,11 @@ test("returning-player acceptance respects its20-row bound and exhausts even emp
   await assert.rejects(collectOwnedPlayers({ async listOwnedJoinPlayers() { return { players: [], cursor: "stuck", complete: false }; } }, {}), /invalid ownership continuation/);
 });
 
-function engineFixture() {
+function engineFixture(disabledHistory = false) {
   const plan = buildPlan(fixture(), scope, options);
   const baseline = [envelope("PLAYER_IDENTITY", "CONTROL", "playerIdentityControl", { mode: "fenced", coverage: "verified", writerVersion: 1, epoch: "previous" }, at),
     envelope("PLAYER_MIGRATION#old", "AUDIT", "playerIdentityMigration", { phase: "active" }, at)];
+  if (disabledHistory) baseline.push(envelope('PLAYER_HISTORY', 'CONTROL', 'playerHistoryReadiness', { version: 1, enabled: false, revision: 'paused' }, at));
   const manifest = cutoverManifest(plan, baseline, { test: true });
   let rows = new Map(baseline.map(i => [key(i), structuredClone(i)]));
   let transactions = 0, dropAt = 0;
@@ -424,4 +425,16 @@ test("concurrency revision changes require the original accepted baseline; runti
   const observed = { at: "2026-09-03T00:00:00Z", live: paused }, changed = structuredClone(paused);
   changed.prod.function.revision = "another-change-after-freeze";
   assert.throws(() => verifyFreeze(observed, changed, Date.parse(observed.at) + 905000), /writer changed/);
+});
+
+
+test('import preserves disabled history activation and refuses an enabled history baseline', async () => {
+  const f = engineFixture(true); assertDestinationEmptyOfBusiness(f.baseline);
+  await f.runner().run();
+  const row = (await f.scanAll()).find(item => item.pk.S === 'PLAYER_HISTORY');
+  assert.deepEqual(decode(row), { version: 1, enabled: false, revision: 'paused' });
+  const enabled = envelope('PLAYER_HISTORY', 'CONTROL', 'playerHistoryReadiness', { version: 1, enabled: true, revision: 'active' }, at);
+  const baseline = [...f.baseline.filter(item => item.pk.S !== 'PLAYER_HISTORY'), enabled];
+  assert.throws(() => cutoverManifest(f.plan, baseline, {}), /identity system/);
+  assert.throws(() => assertDestinationEmptyOfBusiness(baseline), /Production contains/);
 });

@@ -1794,7 +1794,7 @@
     updateDerivedId();
   }
 
-  async function initDashboardPage() {
+  async function initDashboardPage(authenticatedSession) {
     const leagueNameInput = document.getElementById("league-name");
     const leagueFriendlyUrlInput = document.getElementById("league-friendly-url");
     const leagueIdDisplay = document.getElementById("league-id-display");
@@ -1834,6 +1834,42 @@
       setFieldMessage("league-friendly-url");
     });
 
+    const controller = new AbortController(), stop = () => controller.abort();
+    // Capture interaction before the league request: a slow response must not
+    // redirect someone who has already started using the dashboard.
+    const events = ['pagehide', 'threefc:player-proof-cleared', 'threefc:player-proof-invalidated'];
+    events.forEach(event => window.addEventListener(event, stop, { once: true }));
+    root.addEventListener('pointerdown', stop, { once: true }); root.addEventListener('keydown', stop, { once: true });
+    async function openParticipantProfile(payload) {
+      if (controller.signal.aborted || payload?.hasManagementAccess !== false || !authenticatedSession) return;
+      const timeout = window.setTimeout(stop, 15000);
+      try {
+        const profiles = new Map(), seen = new Set(); let cursor;
+        for (let pageNumber = 0; pageNumber < 20 && !controller.signal.aborted && hasAuthenticatedAccount && !signOutPending && !signOutUnconfirmed; pageNumber++) {
+          const page = await requestJsonOrThrow(`/v1/my-player-profiles${cursor ? `?${new URLSearchParams({ cursor })}` : ''}`, { method: 'GET', cache: 'no-store', signal: controller.signal });
+          if (!Array.isArray(page.profiles) || page.profiles.length > 5 || typeof page.complete !== 'boolean'
+            || (page.cursor !== null && (typeof page.cursor !== 'string' || !page.cursor || page.cursor.length > 8192)) || page.complete !== (page.cursor === null)) return;
+          for (const profile of page.profiles) {
+            if (!profile || ![profile.playerId, profile.leagueId, profile.displayName, profile.leagueName].every(usableEntityId)) return;
+            profiles.set(JSON.stringify([profile.leagueId, profile.playerId]), profile);
+          }
+          if (page.complete) {
+            if (!profiles.size) return;
+            const current = await requestJsonOrThrow('/v1/auth/session', { method: 'GET', cache: 'no-store', signal: controller.signal });
+            if (controller.signal.aborted || !hasAuthenticatedAccount || signOutPending || signOutUnconfirmed || current.authenticated !== true
+              || current.session?.sessionId !== authenticatedSession.sessionId
+              || (current.session?.subject ?? current.session?.email) !== (authenticatedSession.subject ?? authenticatedSession.email)) return;
+            const profile = [...profiles.values()][0];
+            navigateTo(profiles.size === 1 ? `/player?${new URLSearchParams({ leagueId: profile.leagueId, playerId: profile.playerId })}` : '/player', 'replace');
+            return;
+          }
+          if (seen.has(page.cursor)) return;
+          seen.add(page.cursor); cursor = page.cursor;
+        }
+      } catch { /* Keep the working dashboard when profile discovery is unavailable. */ }
+      finally { window.clearTimeout(timeout); }
+    }
+
     async function renderLeagues() {
       const payload = await requestJsonOrThrow("/v1/leagues", { method: "GET" });
       const leagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
@@ -1850,7 +1886,7 @@
           setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true, { focus: false });
         }
         setStatus("");
-        return;
+        return payload;
       }
 
       const rows = leagues
@@ -1869,6 +1905,7 @@
         leaguesEmpty.hidden = true;
       }
       setStatus("");
+      return payload;
     }
 
     let creationPending = false;
@@ -1914,7 +1951,13 @@
       }
     });
 
-    await renderLeagues();
+    try {
+      const payload = await renderLeagues();
+      await openParticipantProfile(payload);
+    } finally {
+      events.forEach(event => window.removeEventListener(event, stop));
+      root.removeEventListener('pointerdown', stop); root.removeEventListener('keydown', stop);
+    }
   }
 
   function trackInteractionFocus(scope) {
@@ -2280,6 +2323,7 @@
         row.setAttribute("data-player-id", player.playerId);
         const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
         heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          profile: { leagueId, playerId: player.playerId, ...(submittedScope ? { seasonId: submittedScope } : {}) },
           linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
           context: (player.seasons ?? []).map(season => season.name).join(" · ") + (player.hasMoreSeasons ? " · More seasons" : "") });
         if (canManage() && !player.claimed) {
@@ -4727,11 +4771,11 @@
           return `<li data-ui="final-goal-item" data-event-id="${escapeHtml(goal.eventId)}" data-has-third="true">
             <span data-ui="goal-time">${escapeHtml(goalDisplayTime(goal))}</span>
             <div data-ui="final-goal-details">
-              <strong>${escapeHtml(playerNickname(goal.scorerPlayerId))}</strong>
+              <strong>${playerProfileName(goal.scorerPlayerId)}</strong>
               <span data-ui="goal-team-relationship">${goal.ownGoal ? '<span data-ui="own-goal-marker" aria-label="Own goal">OG</span>' : renderGoalTeamChip(goal.scoringTeamId, "Scoring team")}
                 <span data-ui="goal-team-arrow" aria-hidden="true">→</span>${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
               </span>
-              ${goal.assistPlayerIds.length ? `<small>Assists: ${escapeHtml(goal.assistPlayerIds.map((id) => playerNickname(id)).join(", "))}</small>` : ""}
+              ${goal.assistPlayerIds.length ? `<small>Assists: ${goal.assistPlayerIds.map((id) => playerProfileName(id)).join(", ")}</small>` : ""}
             </div>
             ${renderThirdIndicator(goal.third)}
           </li>`;
@@ -4767,7 +4811,7 @@
         ${entries
           .map(
             (entry) => `<li>
-              <span>${escapeHtml(entry.name)}</span>
+              <span>${playerProfileName(entry.playerId, entry.name)}</span>
               <strong>${escapeHtml(String(entry.count))}</strong>
             </li>`,
           )
@@ -4880,14 +4924,14 @@
             <div data-ui="goal-event-main">
               <div data-ui="goal-primary-row">
                 <strong data-ui="goal-time">${escapeHtml(displayTime)}</strong>
-                <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${escapeHtml(scorer)}</span>
+                <span data-ui="goal-scorer" title="${escapeHtml(scorer)}">${playerProfileName(goal.scorerPlayerId, scorer)}</span>
                 <span data-ui="goal-team-relationship">${scoringContext}
                   <span data-ui="goal-team-arrow" aria-hidden="true">→</span>
                   ${renderGoalTeamChip(goal.concedingTeamId, "Conceding team")}
                 </span>
                 ${renderThirdIndicator(goal.third)}
               </div>
-              ${assists ? `<small>Assists: ${escapeHtml(assists)}</small>` : ""}
+              ${assists ? `<small>Assists: ${goal.assistPlayerIds.map(id => playerProfileName(id)).join(", ")}</small>` : ""}
               ${addressable ? "" : `<small id="${unavailableId}">Editing isn’t available for this goal.</small>`}
             </div>
             <div data-ui="row-action-buttons">
@@ -5349,8 +5393,20 @@
         : typeof verified.access?.userId === "string" && verified.access.userId.trim() ? "linked" : "unknown";
     }
 
+    function playerProfileContext(playerId) {
+      const canonical = verifiedAdminPlayers.get(playerId)?.canonicalPlayerId;
+      return { leagueId: currentLeagueId, playerId: usableEntityId(canonical) ? canonical : playerId,
+        ...(currentSeasonId ? { seasonId: currentSeasonId } : {}) };
+    }
+
+    function playerProfileName(playerId, name = playerNickname(playerId)) {
+      const href = window.ThreeFcPlayers.profileHref(playerProfileContext(playerId));
+      return href ? `<a href="${escapeHtml(href)}" data-ui="player-profile-link">${escapeHtml(name)}</a>` : escapeHtml(name);
+    }
+
     function renderRosterIdentity(player) {
-      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState: rosterLinkState(player) });
+      return window.ThreeFcPlayers.renderPlayerIdentity({ name: player?.nickname ?? "Player", linkState: rosterLinkState(player),
+        profile: playerProfileContext(player?.playerId) });
     }
 
     function playerAccessPanel(player) {
@@ -5849,6 +5905,7 @@
         const row = document.createElement("li"); row.setAttribute("data-player-id", player.playerId);
         const heading = document.createElement("div"); heading.setAttribute("data-ui", "player-row");
         heading.innerHTML = window.ThreeFcPlayers.renderPlayerIdentity({ name: player.nickname,
+          profile: { leagueId: currentLeagueId, playerId: player.playerId, ...(currentSeasonId ? { seasonId: currentSeasonId } : {}) },
           linkState: typeof player.claimed === "boolean" ? player.claimed ? "linked" : "unlinked" : "unknown",
           context: (player.seasons ?? []).map(season => season.name).join(" · ") });
         const button = document.createElement("button"); button.type = "button"; button.setAttribute("data-ui", "button");

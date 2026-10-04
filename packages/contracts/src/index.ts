@@ -1,3 +1,5 @@
+import { ACHIEVEMENT_DEFINITIONS } from "./achievements.js";
+
 export type TeamId = "red" | "blue" | "yellow";
 export type ThirdNumber = 1 | 2 | 3;
 export type ThirdLengthMinutes = 20 | 25 | 30;
@@ -12,6 +14,9 @@ export const DEFAULT_THIRD_LENGTH_MINUTES = 20 satisfies ThirdLengthMinutes;
 export const APP_RETURN_TARGET_PATTERN_SOURCES = [
   "^/$",
   "^/setup/?$",
+  "^/player/?$",
+  "^/player-settings/?$",
+  "^/achievements/?$",
   "^/leagues/[^/]+(?:/seasons/[^/]+)?/?$",
   "^/seasons/[^/]+/?$",
   "^/games/[^/]+/?$",
@@ -62,6 +67,30 @@ export function normalizeAppReturnTarget(value: unknown): string | null {
   try {
     const base = "https://return-target.invalid";
     const target = new URL(value, base);
+    if (/^\/player(?:-settings)?\/?$/.test(target.pathname)) {
+      const allowed = target.pathname.startsWith("/player-settings")
+        ? ["playerId", "leagueId", "seasonId", "viewerPlayerId"] : ["leagueId", "playerId", "seasonId", "viewerPlayerId"];
+      const discovery = /^\/player\/?$/.test(target.pathname) && !target.search;
+      if (target.hash || !discovery && (!target.searchParams.get("playerId")?.trim() ||
+        !target.searchParams.get("leagueId")?.trim())) return null;
+      for (const [key, item] of target.searchParams) {
+        if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
+      }
+    }
+    if (/^\/achievements\/?$/.test(target.pathname)) {
+      const allowed = ["leagueId", "playerId", "seasonId", "viewerPlayerId", "scope", "achievementId"];
+      for (const [key, item] of target.searchParams) {
+        if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
+      }
+      const paired = target.searchParams.has("leagueId") && target.searchParams.has("playerId");
+      const scope = target.searchParams.get("scope");
+      const achievementId = target.searchParams.get("achievementId");
+      if (target.hash || target.searchParams.has("leagueId") !== target.searchParams.has("playerId") ||
+        (!paired && ["scope", "seasonId", "viewerPlayerId"].some(key => target.searchParams.has(key))) ||
+        (scope !== null && scope !== "season" && scope !== "career") ||
+        (scope === "career" && target.searchParams.has("seasonId"))) return null;
+      if (achievementId !== null && !(ACHIEVEMENT_DEFINITIONS.some(item => item.id === achievementId))) return null;
+    }
     const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
       ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
     if (target.origin !== base || !APP_RETURN_TARGET_PATHS.some((pattern) => pattern.test(candidate))) {
@@ -381,3 +410,6 @@ export function validateAssistPlayerIds(
     throw new Error("Scorer cannot be listed as an assister.");
   }
 }
+
+export * from "./achievements.js";
+export * from "./player-profile.js";

@@ -1355,16 +1355,17 @@
       "summary": "Give each league player a useful performance profile while keeping account and personal information in an owner-only view.",
       "scope": [
         "Add a mobile-first player profile card reachable from authorised league, season, roster and results contexts.",
-        "Lead with the player's latest completed match and its personal contribution totals, team and result.",
+        "Open on the selected/latest played season while retaining the latest completed match summary; provide Last game, Season and league Career views.",
         "Provide a bounded, paginated match log with per-match goals, assists, own goals, team, result and played date.",
         "Show current-season totals and league-career totals from the same canonical aggregation source, including games played, goals, assists and own goals.",
         "Resolve consolidated aliases as one player without rewriting historical registrations or scoring events, and count a finished game once.",
         "Provide a separately authorised private view for the owning account's personal information and profile linkage; expose only stored, product-approved fields.",
         "Use owner-only API responses for private fields and keep email or account identifiers out of public/league profile responses, page source, logs and analytics.",
-        "Define clear loading, empty, unavailable and no-completed-match states without presenting partial history as complete."
+        "Define clear loading, empty, unavailable and no-completed-match states without presenting partial history as complete.",
+        "Use canonical statistics for a shareable Club Card; integrate the achievement gallery and automatic five-badge honours reverse."
       ],
       "outOfScope": [
-        "Editable profile settings, account recovery or identity consolidation UI.",
+        "Email changes, notification preferences, recovery and identity consolidation UI. Owner display-name/photo editing is separately delivered by M3-13.",
         "Public account search, social/following features or cross-league career totals.",
         "New scoring rules, attendance tracking or inferring participation from organiser/scorer duties."
       ],
@@ -1385,13 +1386,15 @@
         "Long and Unicode names, empty states, keyboard/focus, screen reader, light/dark, 200% zoom and 320/390/430px layouts."
       ],
       "delivery": {
-        "asOf": "2026-09-20",
-        "wave": "deferred-player-portal",
-        "status": "planned",
+        "asOf": "2026-10-03",
+        "wave": "player-profiles-achievements",
+        "status": "in-progress",
         "githubIssue": 37,
         "notes": [
           "Expanded after AJ's request to cover the player card, latest-match summary, match-by-match contributions, season/career league totals and a separate private personal-information view.",
-          "M3-08 owns the bounded linked-player history foundation; this issue owns the profile presentation and owner-only personal view."
+          "M3-08 owns the bounded linked-player history foundation; this issue owns the profile presentation and owner-only personal view.",
+          "AJ approved the Club Card build on 2026-10-03: league access, PNG sharing, all 23 achievements, automatic five-badge selection, name/photo editing; no XP or levels.",
+          "Authorised read interfaces and bounded verified-participant discovery are implemented in the profile-read child; owner editing and the app presentation follow before issue completion."
         ]
       },
       "reviewRequirements": [
@@ -2609,12 +2612,14 @@
         "Current-head local evidence, GitHub Codex formal review, serialized QA deploy and review:ready before child implementation; no merge."
       ],
       "delivery": {
-        "asOf": "2026-09-07",
-        "wave": "deferred-player-portal",
+        "asOf": "2026-10-03",
+        "wave": "player-profiles-achievements",
         "status": "planned",
         "githubIssue": 139,
         "notes": [
-          "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack."
+          "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack.",
+          "Approved player-profile build reactivates the complete linked-history foundation. M3-10 depends on that work; participant-home responsibilities remain in #139 and are not silently closed by projection delivery.",
+          "2026-10-04 UI follow-up adds verified My profile discovery and participant-only dashboard landing, preserving organiser/scorer workflows. This delivers personal profile navigation; scheduled/live next-game home selection remains in #139, so the issue is not closed by this follow-up."
         ]
       }
     },
@@ -3222,6 +3227,239 @@
       "testScenarios": ["Scheduled/live/finished computed alignment, narrow containers and200% zoom.", "Radio arrow keys, focus-visible, label/SVG child clicks, normal/own goals and unchanged winner/contributions."],
       "reviewRequirements": ["Independent UX, frontend, engineering and QA; unchanged scoring invariants explicitly reviewed.", "Serialized full validation, controlled M2 smoke, exact-head Codex, QA and review:ready."],
       "delivery": {"asOf":"2026-09-12","wave":"frontend-consistency","status":"in-progress","githubIssue":179,"branch":"codex/ux-scoreboard-consistency","notes":["Parent PR #181 reached review:ready at413112f with CI34683681591, QA34683681580 and verified exact-head Codex no-findings comment5644824093 before implementation. Shared presentation and native-radio styling are undergoing validation; no backend or deployment configuration changes."]}
+    },
+    {
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "id": "M3-10",
+      "title": "Canonical player projections and achievement work delivery",
+      "dependsOn": [
+        "M3-08",
+        "M3-14"
+      ],
+      "summary": "Bounded chronological history, complete coverage, canonical contributions and transactional work markers with Streams/SQS processing.",
+      "scope": [
+        "Bounded chronological history, complete coverage, canonical contributions and transactional work markers with Streams/SQS processing."
+      ],
+      "outOfScope": [
+        "XP/levels, email changes, notification preferences, public profiles and manual badge pinning."
+      ],
+      "acceptanceCriteria": [
+        "Incomplete history never appears complete.",
+        "Source changes and dirty work commit together; duplicate/stale jobs cannot publish incorrect projections.",
+        "Backfill is resumable and has dry-run comparison and recovery."
+      ],
+      "testScenarios": [
+        "Incomplete history never appears complete.",
+        "Source changes and dirty work commit together; duplicate/stale jobs cannot publish incorrect projections.",
+        "Backfill is resumable and has dry-run comparison and recovery."
+      ],
+      "delivery": {
+        "asOf": "2026-10-03",
+        "status": "in-progress",
+        "wave": "player-profiles-achievements",
+        "notes": [
+          "PR #206 supplies immutable history generations; PR #207 adds atomic source/work writers. PR #208 adds bounded Streams/SQS processing, explicit activation, resumable backfill, career-summary dry-run comparison and recovery. The profile-read child adds complete default-season derivation and authorised runtime readers; QA coverage activation follows."
+        ],
+        "githubIssue": 200
+      }
+    },
+    {
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "id": "M3-11",
+      "title": "All 23 achievements and durable milestone history",
+      "dependsOn": [
+        "M3-10",
+        "M3-14"
+      ],
+      "summary": "Versioned shared definitions and evaluators for every approved badge, with season/career tracks and historical corrections.",
+      "scope": [
+        "Versioned shared definitions and evaluators for every approved badge, with season/career tracks and historical corrections."
+      ],
+      "outOfScope": [
+        "XP/levels, email changes, notification preferences, public profiles and manual badge pinning."
+      ],
+      "acceptanceCriteria": [
+        "All thresholds, timing and counting rules match the approved plan.",
+        "All milestone unlocks retain source evidence and earned/recorded dates; corrections invalidate/reinstate without duplicates.",
+        "Career streaks cross seasons; season streaks reset; post-completion goals never qualify for timing."
+      ],
+      "testScenarios": [
+        "All thresholds, timing and counting rules match the approved plan.",
+        "All milestone unlocks retain source evidence and earned/recorded dates; corrections invalidate/reinstate without duplicates.",
+        "Career streaks cross seasons; season streaks reset; post-completion goals never qualify for timing."
+      ],
+      "delivery": {
+        "asOf": "2026-10-03",
+        "status": "in-progress",
+        "wave": "player-profiles-achievements",
+        "notes": [
+          "Approved Club Card build plan; retain existing issue IDs and dependencies.",
+          "PR #205 supplies all 23 evaluators; PR #206 retains every milestone in immutable generations; PR #207 records corrections atomically. PR #208 supplies worker/backfill delivery. The profile-read child retains first-unlock metadata and exposes validated progress, honours and paginated unlocks; QA activation follows."
+        ],
+        "githubIssue": 201,
+        "branch": "codex/achievement-evaluator"
+      }
+    },
+    {
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "id": "M3-12",
+      "title": "Club Card sharing and player achievement gallery",
+      "dependsOn": [
+        "M3-06",
+        "M3-11",
+        "M3-14"
+      ],
+      "summary": "Approved profile, five-badge reverse, PNG/native file sharing and searchable gallery with real personal progress.",
+      "scope": [
+        "Approved profile, five-badge reverse, PNG/native file sharing and searchable gallery with real personal progress."
+      ],
+      "outOfScope": [
+        "XP/levels, email changes, notification preferences, public profiles and manual badge pinning."
+      ],
+      "acceptanceCriteria": [
+        "All 23 badges are discoverable with accurate rules and milestones.",
+        "Automatic selection sorts rarity, milestone, recency and ID; five badges form a die-five layout.",
+        "1200x1560 exports exclude private data and preserve selected scope."
+      ],
+      "testScenarios": [
+        "All 23 badges are discoverable with accurate rules and milestones.",
+        "Automatic selection sorts rarity, milestone, recency and ID; five badges form a die-five layout.",
+        "1200x1560 exports exclude private data and preserve selected scope."
+      ],
+      "delivery": {
+        "asOf": "2026-10-03",
+        "status": "planned",
+        "wave": "player-profiles-achievements",
+        "notes": [
+          "Approved Club Card build plan; retain existing issue IDs and dependencies."
+        ],
+        "githubIssue": 203
+      }
+    },
+    {
+      "storyPoints": 8,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "area:data",
+        "area:qa",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "id": "M3-13",
+      "title": "Owner display name and private portrait storage",
+      "dependsOn": [
+        "M3-06",
+        "M3-14"
+      ],
+      "summary": "Verified owners may change display name and processed portrait; account email remains private and read-only.",
+      "scope": [
+        "Verified owners may change display name and processed portrait; account email remains private and read-only."
+      ],
+      "outOfScope": [
+        "XP/levels, email changes, notification preferences, public profiles and manual badge pinning."
+      ],
+      "acceptanceCriteria": [
+        "Owner authority is rechecked; league management rights never substitute for ownership.",
+        "Server validates and re-encodes portraits, removes metadata and cleans replaced objects.",
+        "Local and Lambda endpoints, private media storage, CSP and deployment paths have evidence."
+      ],
+      "testScenarios": [
+        "Owner authority is rechecked; league management rights never substitute for ownership.",
+        "Server validates and re-encodes portraits, removes metadata and cleans replaced objects.",
+        "Local and Lambda endpoints, private media storage, CSP and deployment paths have evidence."
+      ],
+      "delivery": {
+        "asOf": "2026-10-04",
+        "status": "in_progress",
+        "wave": "player-profiles-achievements",
+        "notes": [
+          "Approved Club Card build plan; retain existing issue IDs and dependencies.",
+          "Owner name/private-details API passed PR #210 review and QA. Private portrait storage, authenticated media routes and durable cleanup are in the next reviewed slice; owner UI remains subsequent work."
+        ],
+        "githubIssue": 202
+      }
+    },
+    {
+      "id": "M3-14",
+      "title": "Lock player-card build scope and shared achievement contracts",
+      "storyPoints": 3,
+      "parentEpic": "EPIC-M3",
+      "milestone": "M3 Public Results and Season Stats",
+      "labels": [
+        "area:api",
+        "area:app",
+        "type:feature",
+        "milestone:M3",
+        "priority:P1"
+      ],
+      "dependsOn": [],
+      "summary": "Record the approved player-card release and provide one shared 23-badge definition/contract library before implementing projections or UI.",
+      "scope": [
+        "Versioned 23-badge catalogue, milestone arithmetic, scope-safe public types and automatic five-badge selection.",
+        "Record league-only visibility, owner name/photo editing, correction behaviour and retrospective XP readiness.",
+        "Create linked GitHub work items and a dependency-ordered PR stack with sub-agent review before each next slice."
+      ],
+      "outOfScope": [
+        "Runtime endpoints, durable projections, badge evaluation, profile UI, deployment activation and production release."
+      ],
+      "acceptanceCriteria": [
+        "All 23 approved classes and milestone scales are represented once in shared code.",
+        "Selection is deterministic across input order: rarity, star ordinal, latest milestone and stable badge ID, at most one class each.",
+        "Performance contracts carry no email/account fields; owner response remains separate.",
+        "Backlog, implementation brief and GitHub work items agree on release scope."
+      ],
+      "testScenarios": [
+        "Threshold boundaries and large safe counts; deterministic tie ordering and empty/fewer-than-five collections.",
+        "Contract compilation, backlog validation/export and independent engineering/privacy review."
+      ],
+      "delivery": {
+        "asOf": "2026-10-03",
+        "status": "review-ready",
+        "wave": "player-profiles-achievements",
+        "notes": [
+          "First stacked PR; no runtime feature activation.",
+          "PR #204 at f38c9a3 passed CI37112836386, QA37112836382 and current-head review-gate111173947603; two sub-agent passes and cloud no-major-issues. Unmerged, AJ final authority."
+        ],
+        "githubIssue": 199,
+        "branch": "codex/player-profiles"
+      }
     }
   ],
   "globalTestScenarios": [

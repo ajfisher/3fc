@@ -1,3 +1,6 @@
+import type { PlayerPortraitRepository } from "../player-portrait-routes.js";
+import type { OwnerPlayerProfileRepository } from "../owner-player-profile-routes.js";
+import type { PlayerProfileRepository } from "../player-profile-routes.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -259,6 +262,9 @@ interface StoredIdempotencyRecord {
 }
 
 interface HarnessConfig {
+  portraits?: Partial<PlayerPortraitRepository>;
+  ownerProfiles?: Partial<OwnerPlayerProfileRepository>;
+  profileReads?: Partial<PlayerProfileRepository>;
   onLeagueAccessRead?: () => void;
   resumeLeagueDeletion?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
   deleteLeagueOverride?: (leagueId: string, userIds: readonly string[]) => Promise<boolean>;
@@ -1020,6 +1026,20 @@ function createHarness(config: HarnessConfig = {}) {
       },
     },
     repository: {
+      async getPlayerPerformance() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async getPlayerHistory() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async getPlayerAchievements() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async getPlayerUnlocks() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async listMyPlayerProfiles() { return { profiles: [], cursor: null, complete: true }; },
+      async listPlayerAccess() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      ...config.profileReads,
+      async getOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
+      async renameOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
+      ...config.ownerProfiles,
+      async getPlayerPortrait() { throw new PlayerIdentityError("portrait_unavailable", 503, "Player portrait is unavailable."); },
+      async putOwnerPlayerPortrait() { throw new PlayerIdentityError("portrait_unavailable", 503, "Player portrait is unavailable."); },
+      async removeOwnerPlayerPortrait() { throw new PlayerIdentityError("portrait_unavailable", 503, "Player portrait is unavailable."); },
+      ...config.portraits,
       async listOwnedJoinPlayers() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async joinOwnedPlayer() { throw new PlayerIdentityError("returning_join_unavailable", 503, "Joining with a linked player is temporarily unavailable."); },
       async listLeaguePlayers() { throw new Error("Player directory reads require a real repository fixture."); },
@@ -1040,7 +1060,8 @@ function createHarness(config: HarnessConfig = {}) {
         const uniqueIds = new Set(accessibleLeagueIds);
         return [...uniqueIds]
           .map((leagueId) => leagues.get(leagueId))
-          .filter((league): league is MockLeagueRecord => Boolean(league));
+          .filter((league): league is MockLeagueRecord => Boolean(league))
+          .map(league => ({ ...league, hasManagementAccess: Object.values(config.leagueAccess ?? {}).some(entry => entry.userId === userId && entry.leagueId === league.leagueId && ["admin", "scorekeeper"].includes(entry.role)) }));
       },
       async createLeague(input) {
         createdLeagues.push(input);
@@ -8450,4 +8471,146 @@ test("core lambda rejects invalid idempotency key header", async () => {
 
   assert.equal(response.statusCode, 400);
   assert.equal(harness.createdLeagues.length, 0);
+});
+
+test("profile Lambda routes share session binding, safe responses and independent exposure flags", async () => {
+  const saved = Object.fromEntries(["PLAYER_PROFILES_ENABLED", "PLAYER_ACHIEVEMENTS_ENABLED", "PLAYER_OWNER_EDITING_ENABLED"].map(key => [key, process.env[key]]));
+  const calls: unknown[] = [];
+  try {
+    process.env.PLAYER_PROFILES_ENABLED = "true";
+    process.env.PLAYER_ACHIEVEMENTS_ENABLED = "true";
+    process.env.PLAYER_OWNER_EDITING_ENABLED = "false";
+    const { handler } = createHarness({ sessions: { profile: { sessionId: "profile", subject: "verified-subject", email: "private@example.invalid",
+      createdAt: "2026-10-03T00:00:00.000Z", expiresAt: "2026-10-11T00:00:00.000Z" } }, profileReads: {
+      async getPlayerHistory(input) { calls.push(input); return { matches: [], cursor: null,
+        freshness: { status: "ready", coverage: "complete", revision: "r1", computedAt: "2026-10-03T00:00:00.000Z" } }; },
+    } });
+    const request = (path: string, query: string, signedIn = true) => handler({ ...createEvent({ method: "GET", path,
+      headers: { origin: "https://qa.3fc.football" }, cookies: signedIn ? ["threefc_session=profile"] : [] }), rawQueryString: query });
+    const query = "leagueId=league&playerId=opaque%2FPlayer%252F&viewerPlayerId=owned";
+    assert.equal((await request("/v1/player-history", query, false)).statusCode, 401);
+    assert.equal(calls.length, 0);
+    const result = await request("/v1/player-history", query);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.headers?.["cache-control"], "no-store");
+    assert.equal(result.headers?.["referrer-policy"], "no-referrer");
+    assert.deepEqual(calls, [{ leagueId: "league", playerId: "opaque/Player%2F", viewerPlayerId: "owned",
+      userId: "verified-subject", userIds: ["verified-subject", "private@example.invalid"], seasonId: undefined, cursor: undefined }]);
+    assert.doesNotMatch(result.body, /private@example|verified-subject/);
+    assert.equal((await request("/v1/player-history", query + "&userId=spoofed")).statusCode, 400);
+    assert.equal(calls.length, 1);
+    const mine = await request("/v1/my-player-profiles", "");
+    assert.equal(mine.statusCode, 200);
+    assert.equal(mine.headers?.["cache-control"], "no-store");
+    assert.deepEqual(JSON.parse(mine.body), { profiles: [], cursor: null, complete: true });
+    assert.equal((await request("/v1/my-player-profiles", "", false)).statusCode, 401);
+    const catalogue = await request("/v1/achievement-catalogue", "");
+    assert.equal(catalogue.statusCode, 200); assert.equal(JSON.parse(catalogue.body).achievements.length, 23);
+    process.env.PLAYER_ACHIEVEMENTS_ENABLED = "false";
+    assert.equal((await request("/v1/achievement-catalogue", "")).statusCode, 404);
+    assert.equal((await request("/v1/player-history", query)).statusCode, 200);
+    process.env.PLAYER_PROFILES_ENABLED = "false";
+    assert.equal((await request("/v1/player-history", query)).statusCode, 404);
+    assert.equal(calls.length, 2);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+});
+
+test("owner profile Lambda routes enforce session and origin, keep email private, and bound rename input", async () => {
+  const previous = process.env.PLAYER_OWNER_EDITING_ENABLED;
+  const calls: Array<{ method: string; input: any }> = [];
+  const revision = "a".repeat(64), details = { playerId: "canonical", displayName: "Player", hasPortrait: false, revision };
+  try {
+    process.env.PLAYER_OWNER_EDITING_ENABLED = "true";
+    const { handler } = createHarness({ sessions: { owner: { sessionId: "owner", subject: "verified-owner", email: "private@example.test",
+      createdAt: "2026-10-03T00:00:00.000Z", expiresAt: "2026-10-11T00:00:00.000Z" } }, ownerProfiles: {
+      async getOwnerPlayerProfile(input) { calls.push({ method: "read", input }); return details; },
+      async renameOwnerPlayerProfile(input) { calls.push({ method: "rename", input }); return { ...details, displayName: input.displayName }; },
+    } });
+    const request = (method = "GET", overrides: Partial<ApiGatewayHttpEvent> = {}) => handler({ ...createEvent({ method,
+      path: "/v1/owner-player-profile", headers: { origin: "https://qa.3fc.football", "idempotency-key": "save:1" },
+      cookies: ["threefc_session=owner"], ...(method === "PATCH" ? { body: { displayName: "New name", expectedRevision: revision } } : {}) }),
+      rawQueryString: "playerId=alias%2F%252F", ...overrides });
+    assert.equal((await request("GET", { cookies: [] })).statusCode, 401); assert.deepEqual(calls, []);
+    const read = await request(); assert.equal(read.statusCode, 200);
+    assert.deepEqual(JSON.parse(read.body), { ...details, email: "private@example.test" });
+    assert.equal(read.headers?.["cache-control"], "no-store"); assert.equal(read.headers?.["referrer-policy"], "no-referrer");
+    const saved = await request("PATCH"); assert.equal(saved.statusCode, 200); assert(!saved.body.includes("private@example"));
+    assert.deepEqual(calls, [{ method: "read", input: { playerId: "alias/%2F", userId: "verified-owner", userIds: ["verified-owner", "private@example.test"] } },
+      { method: "rename", input: { playerId: "alias/%2F", userId: "verified-owner", userIds: ["verified-owner", "private@example.test"],
+        displayName: "New name", expectedRevision: revision, idempotencyKey: "save:1" } }]);
+    assert.equal((await request("PATCH", { headers: { origin: "https://evil.example", "idempotency-key": "save:1" } })).statusCode, 403);
+    assert.equal((await request("PATCH", { body: "{" })).statusCode, 400);
+    assert.equal((await request("PATCH", { body: JSON.stringify({ displayName: "é".repeat(5000), expectedRevision: revision }) })).statusCode, 413);
+    assert.equal((await request("PATCH", { headers: { origin: "https://qa.3fc.football", "Idempotency-Key": "one", "idempotency-key": "two" } })).statusCode, 400);
+    assert.equal((await request("PATCH", { headers: { origin: "https://qa.3fc.football", "idempotency-key": "one,two" } })).statusCode, 400);
+    assert.equal((await request("PATCH", { rawQueryString: "playerId=alias&userId=attacker" })).statusCode, 400);
+    assert.equal(calls.length, 2);
+    process.env.PLAYER_OWNER_EDITING_ENABLED = "false";
+    assert.equal((await request("GET")).statusCode, 404); assert.equal((await request("PATCH", { body: "{" })).statusCode, 404);
+    assert.equal(calls.length, 2);
+  } finally {
+    if (previous === undefined) delete process.env.PLAYER_OWNER_EDITING_ENABLED; else process.env.PLAYER_OWNER_EDITING_ENABLED = previous;
+  }
+});
+
+test("portrait Lambda routes return authenticated binary PNG and protect owner-only mutations", async () => {
+  const before = { profile: process.env.PLAYER_PROFILES_ENABLED, owner: process.env.PLAYER_OWNER_EDITING_ENABLED };
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6V0AAAAASUVORK5CYII=', 'base64');
+  const revision = 'a'.repeat(64), details = { playerId: 'canonical', displayName: 'Player', hasPortrait: true, revision };
+  const calls: Array<{ method: string; input: any }> = [];
+  try {
+    process.env.PLAYER_PROFILES_ENABLED = 'true'; process.env.PLAYER_OWNER_EDITING_ENABLED = 'true';
+    const { handler } = createHarness({ sessions: { portrait: { sessionId: 'portrait', subject: 'verified-owner', email: 'private@example.test',
+      createdAt: '2026-10-03T00:00:00.000Z', expiresAt: '2026-10-11T00:00:00.000Z' } }, portraits: {
+      async getPlayerPortrait(input) { calls.push({ method: 'read', input }); return png; },
+      async putOwnerPlayerPortrait(input) { calls.push({ method: 'upload', input }); return details; },
+      async removeOwnerPlayerPortrait(input) { calls.push({ method: 'remove', input }); return { ...details, hasPortrait: false }; },
+    } });
+    const request = (method = 'GET', overrides: Partial<ApiGatewayHttpEvent> = {}) => handler({ ...createEvent({ method,
+      path: method === 'GET' ? '/v1/player-portrait' : '/v1/owner-player-portrait',
+      headers: { origin: 'https://qa.3fc.football', 'idempotency-key': 'portrait:1' }, cookies: ['threefc_session=portrait'],
+      ...(method === 'PUT' ? { body: { expectedRevision: revision, contentType: 'image/png', base64: png.toString('base64') } }
+        : method === 'DELETE' ? { body: { expectedRevision: revision } } : {}) }),
+      rawQueryString: method === 'GET' ? 'leagueId=league&playerId=alias%2F%252F&viewerPlayerId=owned' : 'playerId=alias%2F%252F', ...overrides });
+    const anonymous = await request('GET', { cookies: [] }); assert.equal(anonymous.statusCode, 401);
+    assert.equal(anonymous.headers['cache-control'], 'no-store'); assert.equal(anonymous.headers['x-content-type-options'], 'nosniff');
+    const read = await request(); assert.equal(read.statusCode, 200); assert.equal(read.isBase64Encoded, true);
+    assert.equal(read.headers['content-type'], 'image/png'); assert.equal(read.headers['cache-control'], 'no-store');
+    assert.equal(read.headers['referrer-policy'], 'no-referrer'); assert.equal(read.headers['x-content-type-options'], 'nosniff');
+    assert.deepEqual(Buffer.from(read.body, 'base64'), png);
+    assert.deepEqual(calls[0].input, { leagueId: 'league', playerId: 'alias/%2F', viewerPlayerId: 'owned',
+      userId: 'verified-owner', userIds: ['verified-owner', 'private@example.test'] });
+    const saved = await request('PUT'); assert.equal(saved.statusCode, 200); assert.equal(saved.isBase64Encoded, undefined);
+    assert.deepEqual(JSON.parse(saved.body), details); assert.deepEqual(calls[1].input.bytes, png); assert(!saved.body.includes('private@example'));
+    assert.equal((await request('DELETE')).statusCode, 200);
+    const count = calls.length;
+    assert.equal((await request('PUT', { headers: { origin: 'https://evil.example' } })).statusCode, 403);
+    assert.equal((await request('PUT', { body: ' '.repeat(3 * 1024 * 1024 + 1) })).statusCode, 413);
+    assert.equal((await request('PUT', { body: JSON.stringify({ expectedRevision: revision, contentType: 'image/png', base64: 'YR==' }) })).statusCode, 400);
+    assert.equal((await request('DELETE', { body: '{' })).statusCode, 400);
+    assert.equal((await request('PUT', { headers: { origin: 'https://qa.3fc.football', 'Idempotency-Key': 'one', 'idempotency-key': 'two' } })).statusCode, 400);
+    assert.equal(calls.length, count);
+    process.env.PLAYER_OWNER_EDITING_ENABLED = 'false'; assert.equal((await request()).statusCode, 200); assert.equal((await request('PUT')).statusCode, 404);
+    process.env.PLAYER_PROFILES_ENABLED = 'false'; assert.equal((await request()).statusCode, 404);
+  } finally {
+    if (before.profile === undefined) delete process.env.PLAYER_PROFILES_ENABLED; else process.env.PLAYER_PROFILES_ENABLED = before.profile;
+    if (before.owner === undefined) delete process.env.PLAYER_OWNER_EDITING_ENABLED; else process.env.PLAYER_OWNER_EDITING_ENABLED = before.owner;
+  }
+});
+
+
+for (const roles of [['viewer', 'viewer'], ['scorekeeper', 'viewer'], ['viewer', 'admin']] as const)
+test(`league navigation management signal combines subject/email roles ${roles.join('/')}`, async () => {
+  const stamp = '2026-02-23T00:00:00.000Z';
+  const harness = createHarness({ sessions: { owner: { sessionId: 'owner', subject: 'subject', email: 'legacy@example.test', createdAt: stamp, expiresAt: '2026-02-24T00:00:00.000Z' } },
+    leagues: { league: { leagueId: 'league', name: 'League', slug: null, createdByUserId: 'organiser', createdAt: stamp, updatedAt: stamp } },
+    leagueAccess: Object.fromEntries(['subject', 'legacy@example.test'].map((userId, index) => [`league:${userId}`, { leagueId: 'league', userId, role: roles[index], grantedByUserId: 'organiser', createdAt: stamp, updatedAt: stamp }])) });
+  const response = await harness.handler(createEvent({ method: 'GET', path: '/v1/leagues', cookies: ['threefc_session=owner'] }));
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.hasManagementAccess, roles.some(role => role === 'admin' || role === 'scorekeeper'));
+  assert.equal(body.leagues.length, 1);
+  assert.equal(body.leagues[0].hasManagementAccess, undefined);
 });

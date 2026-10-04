@@ -9,7 +9,7 @@ build:
 
 provider:
   name: aws
-  runtime: nodejs20.x
+  runtime: nodejs22.x
   region: ${opt:region, env:AWS_REGION, 'ap-southeast-2'}
   stage: ${opt:stage, 'qa'}
   architecture: arm64
@@ -20,6 +20,7 @@ provider:
   iam:
     role: ${env:LAMBDA_EXECUTION_ROLE_ARN}
   environment:
+    PORTRAIT_BUCKET: ${env:PORTRAIT_BUCKET}
     DYNAMODB_TABLE: ${env:DYNAMODB_TABLE, '3fc-${sls:stage}-app'}
     APP_BASE_URL: ${self:custom.appBaseUrls.${sls:stage}, self:custom.appBaseUrls.default}
     PUBLIC_APP_BASE_URL: ${self:custom.publicAppBaseUrls.${sls:stage}, self:custom.publicAppBaseUrls.default}
@@ -31,6 +32,10 @@ provider:
     PLAYER_CLAIM_MODE: ${env:PLAYER_CLAIM_MODE, 'proof'}
     PLAYER_CONSOLIDATION_ENABLED: ${env:PLAYER_CONSOLIDATION_ENABLED, 'false'}
     PLAYER_RETURNING_JOIN_ENABLED: ${env:PLAYER_RETURNING_JOIN_ENABLED, 'false'}
+    PLAYER_PROFILES_ENABLED: ${env:PLAYER_PROFILES_ENABLED, 'false'}
+    PLAYER_ACHIEVEMENTS_ENABLED: ${env:PLAYER_ACHIEVEMENTS_ENABLED, 'false'}
+    PLAYER_OWNER_EDITING_ENABLED: ${env:PLAYER_OWNER_EDITING_ENABLED, 'false'}
+    HISTORY_PROCESSING_ENABLED: ${env:HISTORY_PROCESSING_ENABLED, 'false'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_MAX_ATTEMPTS, '3'}
     MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS: ${env:MAGIC_LINK_RATE_LIMIT_EMAIL_WINDOW_SECONDS, '900'}
     MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS: ${env:MAGIC_LINK_RATE_LIMIT_IP_MAX_ATTEMPTS, '20'}
@@ -58,6 +63,12 @@ custom:
     prod: https://3fc.football,https://app.3fc.football,https://qa.3fc.football
     default: https://3fc.football,https://app.3fc.football
   esbuild:
+    packagePath: ./api/package.json
+    external:
+      - sharp
+    packagerOptions:
+      scripts:
+        - npm install --os=linux --libc=glibc --cpu=arm64 --include=optional sharp@0.35.5 && node ../../scripts/deploy/prune-portrait-native.mjs
     bundle: true
     minify: false
     sourcemap: false
@@ -76,7 +87,9 @@ functions:
     description: 3FC API core authenticated routes
     handler: api/src/lambda-core.handler
     memorySize: 256
-    timeout: 10
+    # Encoding (3s), object IO (5s), and fenced database writes share this budget.
+    # Stay below the HTTP API integration limit (30s).
+    timeout: 28
     events:
       - httpApi:
           method: POST
@@ -332,6 +345,57 @@ functions:
           path: /v1/player-proofs/preview
       - httpApi:
           method: GET
+          path: /v1/owner-player-profile
+      - httpApi:
+          method: PATCH
+          path: /v1/owner-player-profile
+      - httpApi:
+          method: OPTIONS
+          path: /v1/owner-player-profile
+      - httpApi:
+          method: GET
+          path: /v1/my-player-profiles
+      - httpApi:
+          method: OPTIONS
+          path: /v1/my-player-profiles
+      - httpApi:
+          method: GET
+          path: /v1/player-access
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-access
+      - httpApi:
+          method: GET
+          path: /v1/player-profile
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-profile
+      - httpApi:
+          method: GET
+          path: /v1/player-history
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-history
+      - httpApi:
+          method: GET
+          path: /v1/player-achievements
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-achievements
+      - httpApi:
+          method: GET
+          path: /v1/player-unlocks
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-unlocks
+      - httpApi:
+          method: GET
+          path: /v1/achievement-catalogue
+      - httpApi:
+          method: OPTIONS
+          path: /v1/achievement-catalogue
+      - httpApi:
+          method: GET
           path: /v1/player-consolidations
       - httpApi:
           method: POST
@@ -429,3 +493,18 @@ functions:
       - httpApi:
           method: OPTIONS
           path: /v1/sessions/{sessionId}/games
+      - httpApi:
+          method: GET
+          path: /v1/player-portrait
+      - httpApi:
+          method: OPTIONS
+          path: /v1/player-portrait
+      - httpApi:
+          method: PUT
+          path: /v1/owner-player-portrait
+      - httpApi:
+          method: DELETE
+          path: /v1/owner-player-portrait
+      - httpApi:
+          method: OPTIONS
+          path: /v1/owner-player-portrait

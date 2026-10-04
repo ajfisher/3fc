@@ -59,13 +59,79 @@ configure_player_claim_mode() {
     true|false) export PLAYER_RETURNING_JOIN_ENABLED ;;
     *) echo "PLAYER_RETURNING_JOIN_ENABLED must be true or false" >&2; return 1 ;;
   esac
+  PLAYER_PROFILES_ENABLED="${PLAYER_PROFILES_ENABLED:-false}"
+  case "$PLAYER_PROFILES_ENABLED" in
+    true|false) export PLAYER_PROFILES_ENABLED ;;
+    *) echo "PLAYER_PROFILES_ENABLED must be true or false" >&2; return 1 ;;
+  esac
+  PLAYER_ACHIEVEMENTS_ENABLED="${PLAYER_ACHIEVEMENTS_ENABLED:-false}"
+  case "$PLAYER_ACHIEVEMENTS_ENABLED" in
+    true|false) export PLAYER_ACHIEVEMENTS_ENABLED ;;
+    *) echo "PLAYER_ACHIEVEMENTS_ENABLED must be true or false" >&2; return 1 ;;
+  esac
+  PLAYER_OWNER_EDITING_ENABLED="${PLAYER_OWNER_EDITING_ENABLED:-false}"
+  case "$PLAYER_OWNER_EDITING_ENABLED" in
+    true|false) export PLAYER_OWNER_EDITING_ENABLED ;;
+    *) echo "PLAYER_OWNER_EDITING_ENABLED must be true or false" >&2; return 1 ;;
+  esac
+  HISTORY_PROCESSING_ENABLED="${HISTORY_PROCESSING_ENABLED:-false}"
+  case "$HISTORY_PROCESSING_ENABLED" in
+    true|false) export HISTORY_PROCESSING_ENABLED ;;
+    *) echo "HISTORY_PROCESSING_ENABLED must be true or false" >&2; return 1 ;;
+  esac
 }
 if [[ "$SERVICE" == "api-core" ]]; then
   configure_player_claim_mode
 fi
 
+# Both producer and cleanup consumer must point at the reviewed private bucket.
+if [[ "$SERVICE" == "api-core" || "$SERVICE" == "player-history" ]]; then
+  PORTRAIT_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+  [[ "$PORTRAIT_ACCOUNT_ID" == "${EXPECTED_AWS_ACCOUNT_ID:-301691475109}" ]] || { echo "Unexpected portrait deployment account" >&2; exit 1; }
+  EXPECTED_PORTRAIT_BUCKET="3fc-${ENV}-portraits-${PORTRAIT_ACCOUNT_ID}"
+  PORTRAIT_BUCKET="${PORTRAIT_BUCKET:-$EXPECTED_PORTRAIT_BUCKET}"
+  [[ "$PORTRAIT_BUCKET" == "$EXPECTED_PORTRAIT_BUCKET" ]] || { echo "Unexpected portrait bucket" >&2; exit 1; }
+  export PORTRAIT_BUCKET
+fi
+
 echo "[deploy] Building workspaces"
 make build >/dev/null
+
+# Background history transport has dedicated roles and no HTTP API dependency.
+if [[ "$SERVICE" == "player-history" ]]; then
+  HISTORY_PROCESSING_ENABLED="${HISTORY_PROCESSING_ENABLED:-false}"
+  case "$HISTORY_PROCESSING_ENABLED" in true|false) ;; *) echo "HISTORY_PROCESSING_ENABLED must be true or false" >&2; exit 1 ;; esac
+  DYNAMODB_TABLE="${DYNAMODB_TABLE:-3fc-${ENV}-app}"
+  if [[ "$DYNAMODB_TABLE" != "3fc-${ENV}-app" ]]; then
+    echo "Player history must target the selected environment's application table." >&2
+    exit 1
+  fi
+  HISTORY_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+  if [[ "$HISTORY_ACCOUNT_ID" != "${EXPECTED_AWS_ACCOUNT_ID:-301691475109}" ]]; then
+    echo "Player history deployment account differs from the reviewed account." >&2
+    exit 1
+  fi
+  HISTORY_STREAM_ARN="$(aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" --region "$AWS_REGION" \
+    --query 'Table.LatestStreamArn' --output text)"
+  HISTORY_QUEUE_URL="$(aws sqs get-queue-url --queue-name "3fc-${ENV}-player-history" --region "$AWS_REGION" --query QueueUrl --output text)"
+  HISTORY_QUEUE_ARN="$(aws sqs get-queue-attributes --queue-url "$HISTORY_QUEUE_URL" --attribute-names QueueArn --region "$AWS_REGION" --query Attributes.QueueArn --output text)"
+  HISTORY_DEAD_QUEUE_ARN="$(aws sqs get-queue-attributes --queue-url "${HISTORY_QUEUE_URL}-dead" --attribute-names QueueArn --region "$AWS_REGION" --query Attributes.QueueArn --output text)"
+  HISTORY_DISPATCH_DEAD_QUEUE_ARN="$(aws sqs get-queue-attributes --queue-url "${HISTORY_QUEUE_URL}-dispatch-dead" --attribute-names QueueArn --region "$AWS_REGION" --query Attributes.QueueArn --output text)"
+  HISTORY_DISPATCH_ROLE_ARN="$(aws iam get-role --role-name "3fc-${ENV}-player-history-dispatch" --query Role.Arn --output text)"
+  HISTORY_WORKER_ROLE_ARN="$(aws iam get-role --role-name "3fc-${ENV}-player-history-worker" --query Role.Arn --output text)"
+  for history_input in HISTORY_STREAM_ARN HISTORY_QUEUE_URL HISTORY_QUEUE_ARN HISTORY_DEAD_QUEUE_ARN HISTORY_DISPATCH_DEAD_QUEUE_ARN HISTORY_DISPATCH_ROLE_ARN HISTORY_WORKER_ROLE_ARN; do
+    if [[ -z "${!history_input}" || "${!history_input}" == "None" ]]; then
+      echo "Missing $history_input. Apply the reviewed environment Terraform before deploying history." >&2
+      exit 1
+    fi
+  done
+  export AWS_REGION DYNAMODB_TABLE HISTORY_ACCOUNT_ID HISTORY_PROCESSING_ENABLED HISTORY_STREAM_ARN HISTORY_QUEUE_URL HISTORY_QUEUE_ARN
+  export HISTORY_DEAD_QUEUE_ARN HISTORY_DISPATCH_DEAD_QUEUE_ARN HISTORY_DISPATCH_ROLE_ARN HISTORY_WORKER_ROLE_ARN
+  echo "[deploy] Deploying player history; processing=${HISTORY_PROCESSING_ENABLED}"
+  npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+  node scripts/deploy/verify-player-history.mjs "$ENV" "$(git rev-parse HEAD)" --capture
+  exit 0
+fi
 
 HTTP_API_ID="${HTTP_API_ID:-}"
 LAMBDA_EXECUTION_ROLE_ARN="${LAMBDA_EXECUTION_ROLE_ARN:-}"
@@ -103,22 +169,29 @@ fi
 export HTTP_API_ID
 export LAMBDA_EXECUTION_ROLE_ARN
 
+PACKAGE_CODE_SHA256=""
 echo "[deploy] Deploying ${SERVICE} with Serverless Framework"
-npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+if [[ "$SERVICE" == "api-core" ]]; then
+  npx serverless package --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+  node scripts/deploy/verify-portrait-package.mjs .serverless/core.zip
+  # Capture accepted bytes before Serverless removes its packaging directory.
+  PACKAGE_CODE_SHA256="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(".serverless/core.zip")).digest("base64"))')"
+  npx serverless deploy --package .serverless --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+else
+  npx serverless deploy --config "$CONFIG_FILE" --stage "$ENV" --region "$AWS_REGION"
+fi
 
 COMMIT_SHA="$(git rev-parse HEAD)"
 FUNCTION_FINGERPRINT="null"
-PACKAGE_CODE_SHA256=""
 if [[ "$SERVICE" == "api-core" ]]; then
-  # Bind the live revision to this invocation's individually packaged core ZIP.
+  # Bind the live revision to the accepted ZIP hash captured before deployment.
   # Another PR can deploy to shared QA between Serverless returning and this read.
-  PACKAGE_CODE_SHA256="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(".serverless/core.zip")).digest("base64"))')"
   # Record code provenance and these nonsecret switches only, never the full environment.
   FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
     --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
-    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED}' \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED,historyProcessingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED,portraitBucket:Environment.Variables.PORTRAIT_BUCKET,runtime:Runtime,architectures:Architectures,timeout:Timeout}' \
     --output json)"
-  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning' \
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" --arg profiles "$PLAYER_PROFILES_ENABLED" --arg achievements "$PLAYER_ACHIEVEMENTS_ENABLED" --arg ownerEditing "$PLAYER_OWNER_EDITING_ENABLED" --arg historyProcessing "$HISTORY_PROCESSING_ENABLED" --arg portraitBucket "$PORTRAIT_BUCKET" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning and .profilesEnabled == $profiles and .achievementsEnabled == $achievements and .ownerEditingEnabled == $ownerEditing and .historyProcessingEnabled == $historyProcessing and .portraitBucket == $portraitBucket and .runtime == "nodejs22.x" and .architectures == ["arm64"] and .timeout == 28' \
     <<< "$FUNCTION_FINGERPRINT" >/dev/null
 fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

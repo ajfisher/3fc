@@ -91,6 +91,11 @@ Generated from `docs/backlog/backlog.json`.
 | `UX-11` | Unify player identity rows and season player navigation | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `PLAYER-07`, `UX-07` |
 | `UX-12` | Make adding reusable players search-first | 5 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-11` |
 | `UX-13` | Unify live and finished score presentation | 3 | `EPIC-UX` | UX Mobile-First Frontend Redesign | `UX-12` |
+| `M3-10` | Canonical player projections and achievement work delivery | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-08`, `M3-14` |
+| `M3-11` | All 23 achievements and durable milestone history | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-10`, `M3-14` |
+| `M3-12` | Club Card sharing and player achievement gallery | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-06`, `M3-11`, `M3-14` |
+| `M3-13` | Owner display name and private portrait storage | 8 | `EPIC-M3` | M3 Public Results and Season Stats | `M3-06`, `M3-14` |
+| `M3-14` | Lock player-card build scope and shared achievement contracts | 3 | `EPIC-M3` | M3 Public Results and Season Stats | - |
 
 ## Delivery Tracking
 
@@ -105,7 +110,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `M3-03` | deferred-player-portal | planned | [#34](https://github.com/ajfisher/3fc/issues/34) | - |
 | `M3-04` | deferred-player-portal | planned | [#35](https://github.com/ajfisher/3fc/issues/35) | - |
 | `M3-05` | deferred-player-portal | partial | [#36](https://github.com/ajfisher/3fc/issues/36) | - |
-| `M3-06` | deferred-player-portal | planned | [#37](https://github.com/ajfisher/3fc/issues/37) | - |
+| `M3-06` | player-profiles-achievements | in-progress | [#37](https://github.com/ajfisher/3fc/issues/37) | - |
 | `M4-03` | partial-existing | partial | [#40](https://github.com/ajfisher/3fc/issues/40) | - |
 | `M1-09` | separate | planned | [#68](https://github.com/ajfisher/3fc/issues/68) | - |
 | `M1-10` | historical | merged | [#76](https://github.com/ajfisher/3fc/issues/76) | - |
@@ -124,7 +129,7 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-10` | frontend-stack | implemented | [#153](https://github.com/ajfisher/3fc/issues/153) | codex/design-match-refresh |
 | `UX-06` | frontend-stack | partial | [#137](https://github.com/ajfisher/3fc/issues/137) | codex/design-results-entry |
 | `M3-07` | reusable-players | planned | [#138](https://github.com/ajfisher/3fc/issues/138) | codex/player-claim-proof |
-| `M3-08` | deferred-player-portal | planned | [#139](https://github.com/ajfisher/3fc/issues/139) | - |
+| `M3-08` | player-profiles-achievements | planned | [#139](https://github.com/ajfisher/3fc/issues/139) | - |
 | `M3-09` | deferred-player-portal | planned | [#140](https://github.com/ajfisher/3fc/issues/140) | - |
 | `PLAYER-00` | reusable-players | planned | [#158](https://github.com/ajfisher/3fc/issues/158) | codex/player-identity-backlog |
 | `PLAYER-01` | reusable-players | in-progress | [#159](https://github.com/ajfisher/3fc/issues/159) | codex/league-player-directory |
@@ -139,6 +144,11 @@ As-of planning metadata, not fresh test results or issue-closure evidence. See [
 | `UX-11` | frontend-consistency | review-ready | [#177](https://github.com/ajfisher/3fc/issues/177) | codex/ux-player-row-consistency |
 | `UX-12` | frontend-consistency | review-ready | [#178](https://github.com/ajfisher/3fc/issues/178) | codex/ux-player-picker-search |
 | `UX-13` | frontend-consistency | in-progress | [#179](https://github.com/ajfisher/3fc/issues/179) | codex/ux-scoreboard-consistency |
+| `M3-10` | player-profiles-achievements | in-progress | [#200](https://github.com/ajfisher/3fc/issues/200) | - |
+| `M3-11` | player-profiles-achievements | in-progress | [#201](https://github.com/ajfisher/3fc/issues/201) | codex/achievement-evaluator |
+| `M3-12` | player-profiles-achievements | planned | [#203](https://github.com/ajfisher/3fc/issues/203) | - |
+| `M3-13` | player-profiles-achievements | in_progress | [#202](https://github.com/ajfisher/3fc/issues/202) | - |
+| `M3-14` | player-profiles-achievements | review-ready | [#199](https://github.com/ajfisher/3fc/issues/199) | codex/player-profiles |
 
 ## Global Test Scenarios
 

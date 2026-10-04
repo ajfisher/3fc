@@ -1,4 +1,4 @@
-import { APP_RETURN_TARGET_PATTERN_SOURCES } from "@3fc/contracts";
+import { ACHIEVEMENT_DEFINITIONS, APP_RETURN_TARGET_PATTERN_SOURCES } from "@3fc/contracts";
 
 import {
   renderActionMenu,
@@ -76,7 +76,7 @@ function renderAccountActions(): string {
 
 function renderManagementNavigation(home = false): string {
   return `<div data-ui="site-header">
-    <nav data-ui="site-nav" aria-label="Primary"><a href="/setup"${home ? ' aria-current="page"' : ""}>Home</a></nav>
+    <nav data-ui="site-nav" aria-label="Primary"><a href="/setup"${home ? ' aria-current="page"' : ""}>Home</a><a href="/player">My profile</a></nav>
     ${renderAccountActions()}
   </div>`;
 }
@@ -457,7 +457,7 @@ export function renderInvitePage(apiBaseUrl: string, inviteCode: string): string
     <title>3FC Organiser Invite</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
     <main data-ui="app-shell" data-testid="invite-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth">
         ${renderAccountActions()}
@@ -645,7 +645,7 @@ export function renderSignInPage(apiBaseUrl: string, returnTo: string): string {
     <title>Sign in to 3FC</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
     <main data-ui="app-shell" data-testid="signin-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth" data-testid="panel-signin-flow">
         <h1>Sign in to 3FC</h1>
@@ -906,7 +906,7 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
     <title>Complete your sign-in | 3FC</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
     <main data-ui="app-shell" data-testid="auth-callback-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth">
         <h1 id="auth-callback-title">Complete your sign-in</h1>
@@ -932,7 +932,7 @@ export function renderMagicLinkCallbackPage(apiBaseUrl: string): string {
 export function renderPlayerConsolidationPage(apiBaseUrl: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="referrer" content="no-referrer" /><title>3FC Review profiles</title>${renderStylesheetLink()}</head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
   <main data-ui="app-shell"><section data-ui="panel" id="consolidation-approval"><h1>Review profiles to combine</h1></section></main>
   ${renderAuthScriptTag()}</body></html>`;
 }
@@ -980,7 +980,7 @@ export function renderJoinPage(apiBaseUrl: string, joinCode: string): string {
     <title>3FC Join</title>
     ${renderStylesheetLink()}
   </head>
-  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}">
+  <body data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
     <main data-ui="app-shell" data-testid="join-shell" data-api-base-url="${escapeHtml(apiBaseUrl)}">
       <section data-ui="hero" data-layout="auth">
         ${renderAccountActions()}
@@ -1428,4 +1428,138 @@ export function renderGamePage(apiBaseUrl: string, input: GameContextPageInput):
     ${renderSetupScriptTag()}
   </body>
 </html>`;
+}
+
+/** Authenticated shells contain no player/account data; the fixed-route clients
+ * obtain only the response appropriate to this screen after session checks. */
+function renderPlayerScreen(apiBaseUrl: string, kind: "profile" | "settings", title: string, content: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="referrer" content="no-referrer" />
+  <title>${escapeHtml(title)} · 3FC</title>${renderStylesheetLink()}</head>
+  <body data-page="player-${kind}" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
+  <main data-ui="app-shell" id="player-${kind}">${renderManagementNavigation()}${content}</main>
+  ${renderAuthScriptTag()}<script src="${escapeHtml(renderAssetPath(`/ui/player-${kind}-browser.js`))}" defer></script>
+  </body></html>`;
+}
+
+export function renderPlayerProfilePage(apiBaseUrl: string): string {
+  return renderPlayerScreen(apiBaseUrl, "profile", "Player profile", `
+  <p id="player-status" role="status" aria-live="polite">Loading player profile…</p>
+  <button id="player-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
+  <a id="player-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to view profile</a>
+  <div id="player-access"></div>
+  <section id="player-content" hidden>
+    <header>
+      <div id="player-avatar" aria-hidden="true"></div>
+      <hgroup><h1 id="player-name"></h1><p id="player-league"></p></hgroup>
+      <a id="player-edit" data-ui="button-secondary" hidden>Edit profile</a>
+    </header>
+    <div data-ui="period-controls">
+      <fieldset id="player-period"><legend class="sr-only">Statistics period</legend>
+        <label><input type="radio" name="player-period" value="last" /><span>Last game</span></label>
+        <label><input type="radio" name="player-period" value="season" checked /><span>Season</span></label>
+        <label><input type="radio" name="player-period" value="career" /><span>Career</span></label>
+      </fieldset>
+      <div data-ui="field"><label for="player-season">Season</label><select id="player-season" data-ui="input"></select></div>
+    </div>
+    <section data-ui="panel" aria-labelledby="player-period-title">
+      <header><h2 id="player-period-title">Season statistics</h2>
+        <button id="player-card" type="button" hidden>Player card</button></header><dl id="player-stats"></dl>
+    </section>
+    <section aria-labelledby="player-latest-title"><h2 id="player-latest-title">Last match summary</h2><div id="player-latest"></div></section>
+    <section aria-labelledby="player-history-title"><h2 id="player-history-title">Match history</h2>
+      <p id="player-history-status" role="status" aria-live="polite"></p><ol id="player-history-list"></ol>
+      <button id="player-history-more" type="button" data-ui="button-secondary" hidden>Load more</button>
+    </section>
+    <a id="player-achievements" data-ui="button-secondary" hidden>Explore achievements</a>
+  </section>
+  <dialog id="club-card-dialog" aria-labelledby="club-card-title">
+    <header><h2 id="club-card-title">Player card</h2><button id="club-card-close" type="button" data-ui="button-secondary">Close</button></header>
+    <div id="club-card-art"></div>
+    <p id="club-card-status" role="status" aria-live="polite" hidden></p>
+    <div data-ui="button-row"><button id="club-card-flip" type="button" data-ui="button-secondary" aria-pressed="false">Achievements</button>
+      ${renderIconButton({ icon: "share-2", label: "Share card", attributes: { id: "club-card-share", disabled: "" } })}
+      ${renderIconButton({ icon: "download", label: "Download PNG", attributes: { id: "club-card-download", disabled: "" } })}
+      <button id="club-card-retry" type="button" data-ui="button-secondary" hidden>Try again</button></div>
+    <a id="club-card-gallery" data-ui="button-secondary" href="/achievements">All achievements</a>
+  </dialog>`);
+}
+
+export function renderPlayerSettingsPage(apiBaseUrl: string): string {
+  return renderPlayerScreen(apiBaseUrl, "settings", "Your player profile", `
+  <a id="owner-back" href="/setup">Back</a><header><h1>Your player profile</h1></header>
+  <p id="owner-status" role="status" aria-live="polite">Loading your profile…</p>
+  <a id="owner-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to edit your profile</a>
+  <div data-ui="button-row"><button id="owner-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
+  <button id="owner-refresh" type="button" data-ui="button-secondary" hidden>Refresh profile</button></div>
+  <section id="owner-form" hidden>
+    <form id="owner-name-form" data-ui="panel"><h2>Your details</h2>
+      <div data-ui="field"><label for="owner-name">Display name</label><input id="owner-name" data-ui="input" maxlength="80" required autocomplete="nickname" /></div>
+      <div data-ui="field"><label for="owner-email">Account email</label><input id="owner-email" data-ui="input" type="email" readonly autocomplete="off" aria-describedby="owner-email-note" />
+      <p id="owner-email-note" data-ui="status-note">Change of email not yet available</p></div>
+      <button id="owner-save-name" type="submit" data-ui="button" data-variant="primary">Save name</button>
+    </form>
+    <section data-ui="panel" aria-labelledby="owner-photo-title"><h2 id="owner-photo-title">Player portrait</h2>
+      <img id="owner-photo-preview" alt="Current player portrait" width="160" height="160" hidden />
+      <p id="owner-photo-notice">Player portrait only visible to signed in players in your league or images you share</p>
+      <div data-ui="field"><label for="owner-photo-file">Choose a photo</label><input id="owner-photo-file" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="owner-photo-limits" />
+      <p id="owner-photo-limits" data-ui="status-note">JPEG, PNG or WebP. Up to 8 MB and 16 megapixels. You can adjust the crop before saving.</p></div>
+      <div data-ui="button-row"><button id="owner-photo-save" type="button" data-ui="button" data-variant="primary" disabled>Save portrait</button>
+      <button id="owner-photo-remove" type="button" data-ui="button-secondary" hidden>Remove portrait</button></div>
+    </section>
+  </section>
+  <dialog id="portrait-crop-dialog" aria-labelledby="portrait-crop-title">
+    <h2 id="portrait-crop-title">Frame your portrait</h2><p>Adjust the position and zoom. The circle shows how your portrait will appear.</p>
+    <canvas id="portrait-crop-canvas" width="512" height="512" aria-label="Portrait crop preview"></canvas>
+    <fieldset><legend class="sr-only">Crop adjustments</legend>
+      <label for="portrait-crop-zoom">Zoom</label><input id="portrait-crop-zoom" type="range" min="1" max="4" step="0.01" value="1" />
+      <label for="portrait-crop-x">Horizontal position</label><input id="portrait-crop-x" type="range" min="-1" max="1" step="0.01" value="0" />
+      <label for="portrait-crop-y">Vertical position</label><input id="portrait-crop-y" type="range" min="-1" max="1" step="0.01" value="0" />
+    </fieldset><p id="portrait-crop-status" role="status" aria-live="polite"></p>
+    <div data-ui="button-row"><button id="portrait-crop-confirm" type="button" data-ui="button" data-variant="primary">Use this crop</button>
+    <button id="portrait-crop-cancel" type="button" data-ui="button-secondary">Cancel</button></div>
+  </dialog>`);
+}
+
+
+export function renderAchievementGalleryPage(apiBaseUrl: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="referrer" content="no-referrer" />
+    <title>Achievements · 3FC</title>${renderStylesheetLink()}</head>
+    <body data-page="achievement-gallery" data-api-base-url="${escapeHtml(apiBaseUrl)}" data-return-target-patterns="${renderAuthReturnTargetPatterns()}" data-achievement-ids="${escapeHtml(JSON.stringify(ACHIEVEMENT_DEFINITIONS.map(value => value.id)))}">
+    <main data-ui="app-shell" id="achievement-gallery">${renderManagementNavigation()}
+      <p id="achievements-status" role="status" aria-live="polite">Loading achievements…</p>
+      <button id="achievements-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
+      <a id="achievements-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to explore achievements</a>
+      <div id="achievements-access"></div>
+      <section id="achievements-content" hidden>
+        <header><div><p id="achievements-context"></p><h1 id="achievements-player">Achievement collection</h1>
+          <p>Every match has a story. Make your mark.</p></div></header>
+        <div id="achievements-personal-controls" data-ui="period-controls">
+          <fieldset id="achievements-scope"><legend class="sr-only">Achievement scope</legend>
+            <label><input type="radio" name="achievement-scope" value="season" checked /><span>Season</span></label>
+            <label><input type="radio" name="achievement-scope" value="career" /><span>Career</span></label></fieldset>
+          <div id="achievements-season-field" data-ui="field"><label for="achievements-season">Season</label><select id="achievements-season" data-ui="input"></select></div>
+        </div>
+        <search>
+          <div id="achievement-earned-field" data-ui="field"><label for="achievement-earned">Collection</label><select id="achievement-earned" data-ui="input"><option value="all">All</option><option value="earned">Earned</option><option value="to-unlock">To unlock</option></select></div>
+          <div data-ui="field"><label for="achievement-rarity">Rarity</label><select id="achievement-rarity" data-ui="input"><option value="All">All rarities</option><option>Common</option><option>Rare</option><option>Legendary</option><option>Epic</option></select></div>
+          <div data-ui="field"><label for="achievement-search">Find an achievement</label><input id="achievement-search" type="search" data-ui="input" placeholder="Search achievements" /></div>
+          <button id="achievement-reset" type="button" data-ui="button-secondary">Reset filters</button>
+        </search>
+        <p id="achievement-count" role="status" aria-live="polite"></p><div id="achievement-grid"></div>
+        <p id="achievement-empty" hidden>No achievements match these filters. Try another search.</p>
+      </section>
+      <dialog id="achievement-detail" aria-labelledby="achievement-detail-title">
+        <header><h2 id="achievement-detail-title"></h2><button id="achievement-detail-close" type="button" data-ui="button-secondary">Close</button></header>
+        <div><div id="achievement-detail-art"></div><div>
+          <p id="achievement-detail-rarity"></p><p id="achievement-detail-rule"></p>
+          <ul id="achievement-detail-conditions"></ul><div id="achievement-detail-progression"></div>
+          <section id="achievement-detail-personal"><h3>Your collection</h3>
+            <ol id="achievement-detail-unlocks"></ol><button id="achievement-detail-more" type="button" data-ui="button-secondary" hidden>Try again</button>
+            <p id="achievement-detail-progress"></p></section>
+          <p id="achievement-detail-status" role="status" aria-live="polite"></p>
+        </div></div>
+      </dialog>
+    </main>${renderAuthScriptTag()}<script src="${escapeHtml(renderAssetPath('/ui/achievement-gallery-browser.js'))}" defer></script></body></html>`;
 }

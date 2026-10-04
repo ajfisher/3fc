@@ -57,12 +57,25 @@ jobs:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
         run: make deploy ENV=qa SERVICE=api-health
 
+      # Infrastructure is provisioned separately from the reviewed local Terraform plan.
+      # Install and verify compatible consumers before the API can emit new work types.
+      # Older stream filters can permanently skip new records, even if they are updated later.
+      - name: Deploy player history to qa
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
+        run: make deploy ENV=qa SERVICE=player-history
+
       - name: Deploy API core service to QA
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
           PLAYER_CLAIM_MODE: ${{ vars.PLAYER_CLAIM_MODE || 'proof' }}
           PLAYER_CONSOLIDATION_ENABLED: ${{ vars.PLAYER_CONSOLIDATION_ENABLED || 'false' }}
           PLAYER_RETURNING_JOIN_ENABLED: ${{ vars.PLAYER_RETURNING_JOIN_ENABLED || 'false' }}
+          PLAYER_PROFILES_ENABLED: ${{ vars.PLAYER_PROFILES_ENABLED || 'false' }}
+          PLAYER_ACHIEVEMENTS_ENABLED: ${{ vars.PLAYER_ACHIEVEMENTS_ENABLED || 'false' }}
+          PLAYER_OWNER_EDITING_ENABLED: ${{ vars.PLAYER_OWNER_EDITING_ENABLED || 'false' }}
+          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
         run: make deploy ENV=qa SERVICE=api-core
 
       - name: Smoke test deployed QA core endpoints
@@ -312,11 +325,18 @@ jobs:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/deploy/verify-api-core.sh qa "$EXPECTED_HEAD"
 
+      - name: Verify history deployment after acceptance
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/deploy/verify-player-history.mjs qa "$EXPECTED_HEAD"
+
       - name: Preserve exact-head API deployment evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: qa-api-core-deployment
-          path: out/deploy/qa/api-core-deploy-manifest.json
+          path: |
+            out/deploy/qa/api-core-deploy-manifest.json
+            out/deploy/qa/player-history-deploy-manifest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -326,7 +346,7 @@ jobs:
             echo "## QA deploy complete"
             echo "- PR: #${{ github.event.pull_request.number }}"
             echo "- Commit: ${{ github.event.pull_request.head.sha }}"
-            echo "- Services: site, api-health, api-core"
+            echo "- Services: site, api-health, api-core, player-history"
             echo "- Site URL: ${SITE_URL}"
             echo "- Site root status: HTTP ${SITE_ROOT_HTTP_CODE}"
             echo "- Site sign-in status: HTTP ${SITE_SIGNIN_HTTP_CODE}"

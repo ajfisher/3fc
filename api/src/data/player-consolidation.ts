@@ -1,3 +1,4 @@
+import { portraitRetirementItem } from './player-portrait-retirement.js';
 import { GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue,
   type GetItemCommandOutput, type QueryCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,6 +7,7 @@ import { PlayerIdentityPlanner, PlayerIdentityError, identityCondition, identity
   identityGameSk, identityLeagueSk, boundedIdentityTransaction, validPlayerIdentityId,
   type IdentityClient, type IdentitySnapshot, type PlayerIdentity, type IdentityControl } from "./player-identity.js";
 import { playerClaimSk } from "./keys.js";
+import { historyMutationItems, sendHistoryTransaction } from "./player-history-work.js";
 
 type Item = Record<string, AttributeValue>;
 type RecordData = Record<string, unknown>;
@@ -342,6 +344,13 @@ export class PlayerConsolidationService {
       directoryBefore: context.members.map(m => m.directory.value), indexesBefore,
       indexesAfter: p.ownerId ? [{ userId: p.ownerId, playerId: retained.id }] : [] };
     actions.push(identityPut(this.tableName, { pk: stored.pk, sk: "AUDIT", item: null, value: {} }, "playerConsolidationAudit", audit, now));
+    // The same transaction invalidates derived history and records durable work.
+    // Retained identity is canonical; historical member rows remain unchanged.
+    actions.push(...historyMutationItems(this.tableName, {
+      leagueId: p.leagueId, playerId: p.retainedPlayerId, reason: "identity-consolidated",
+    }, now));
+    actions.push(portraitRetirementItem(this.tableName, p.retainedPlayerId,
+      context.members.map(member => member.id).filter(id => id !== p.retainedPlayerId), randomUUID(), now));
     return boundedIdentityTransaction(actions);
   }
   async commit(input: { proposalId: string; userIds: readonly string[] }): Promise<ConsolidationView> {
@@ -354,7 +363,7 @@ export class PlayerConsolidationService {
     const context = await this.current(p);
     const actions = await this.commitPlan(context, stored);
     if (Date.parse(p.expiresAt) <= Date.parse(this.now())) fail("proposal_expired", "This proposal has expired. Prepare a new proposal.");
-    try { await this.client.send(new TransactWriteItemsCommand({ TransactItems: actions })); }
+    try { await sendHistoryTransaction(this.client, new TransactWriteItemsCommand({ TransactItems: actions })); }
     catch (error) {
       if (!cancelled(error)) throw error;
       const latest = await this.proposal(p.proposalId);

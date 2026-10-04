@@ -69,6 +69,10 @@ test("expired session cookies match the host-only session scope and expire immed
 });
 
 test("isAuthenticatedApiRoute marks protected routes only", () => {
+  for (const path of ["my-player-profiles", "player-access", "player-profile", "player-history", "player-achievements", "player-unlocks", "achievement-catalogue"]) {
+    assert.equal(isAuthenticatedApiRoute("GET", `/v1/${path}`), true);
+    assert.equal(isAuthenticatedApiRoute("OPTIONS", `/v1/${path}`), false);
+  }
   for (const method of ["GET", "POST"]) assert.equal(isAuthenticatedApiRoute(method, "/v1/player-consolidations"), true);
   for (const action of ["approve", "commit"]) {
     assert.equal(isAuthenticatedApiRoute("POST", `/v1/player-consolidations/${action}`), true);
@@ -123,4 +127,20 @@ test("isAuthenticatedApiRoute marks protected routes only", () => {
   assert.equal(isAuthenticatedApiRoute("POST", "/v1/auth/logout"), false);
   assert.equal(isAuthenticatedApiRoute("GET", "/v1/unknown"), false);
   assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/unknown"), false);
+});
+
+test("owner profile GET and PATCH require sessions without opening unsupported methods", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-profile"), true);
+  assert.equal(isAuthenticatedApiRoute("PATCH", "/v1/owner-player-profile"), true);
+  assert.equal(isAuthenticatedApiRoute("POST", "/v1/owner-player-profile"), false);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-profile/other"), false);
+});
+
+
+test("portrait reads and owner writes require sessions without exposing unsupported methods", () => {
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/player-portrait"), true);
+  assert.equal(isAuthenticatedApiRoute("PUT", "/v1/owner-player-portrait"), true);
+  assert.equal(isAuthenticatedApiRoute("DELETE", "/v1/owner-player-portrait"), true);
+  assert.equal(isAuthenticatedApiRoute("GET", "/v1/owner-player-portrait"), false);
+  assert.equal(isAuthenticatedApiRoute("PUT", "/v1/player-portrait"), false);
 });

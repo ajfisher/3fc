@@ -10,6 +10,74 @@ This document defines the baseline key structure and access patterns for the
 - Sort key: `sk` (string)
 - Billing mode: on-demand
 
+## Player history generations (additive, disabled until writer/backfill rollout)
+
+`PLAYER_HISTORY#{sha256(JSON.stringify([leagueId, canonicalPlayerId]))}` owns
+derived history for one canonical player in one league. Performance projections
+exclude private account data. Raw staging and transaction fences are private
+operational records which can retain source account identifiers; they must never
+be exposed as presentation payloads. The generation prefix `GEN#{sha256(JSON.stringify([generationId]))}#`
+isolates immutable facts, summaries, appearances and milestone evidence.
+
+| Sort key | Ownership and access |
+| --- | --- |
+| `PUBLISHED` | Transactionally published generation, source/identity revisions and freshness metadata |
+| `GEN#…#META` | Persisted collection/evaluation checkpoints and summary references |
+| `GEN#…#FACT#{order}` | Complete canonical match facts, queried oldest first for evaluation |
+| `GEN#…#GAME#{digest}` | Immutable game identity guard preventing duplicate collection |
+| `GEN#…#STATE#{ordinal}#CAREER` | Career accumulator at an evaluated checkpoint |
+| `GEN#…#STATE#{ordinal}#SEASON#{digest}` | Season accumulator at an evaluated checkpoint |
+| `GEN#…#MATCH#{order}` | Appearance log, newest first, bounded to 20 per reader page |
+| `GEN#…#SEASON#{digest}#MATCH#{order}` | Direct selected-season appearance index |
+| `GEN#…#AWARD#{scope}#{earnedAt}#{unlockId}` | Every season/career milestone with rule/source evidence and calculation time |
+| `PUBLICATION#{generationDigest}` | Append-only publication transition retaining the previous generation link |
+
+`order` is UTC kickoff followed by the SHA-256 digest of the raw opaque game ID;
+the evaluator uses the identical ordering. Other digests use the shared JSON-array
+hash helper. Reader cursors bind league/player partition, generation and scope.
+All source and projection queries are bounded and strongly consistent. No GSI or
+request-time scan is required. The internal store confers no read authority.
+
+`LEAGUE#{leagueId} / HISTORY_SOURCE` (`playerHistorySource`) is the versioned
+source-writer prerequisite `{leagueId, version: 1, revision}`. The following delivery
+slice installs revision-aware source writers: relevant mutations atomically replace
+the token and insert `LEAGUE#{leagueId} / HISTORY_WORK#{revision}`
+(`playerHistoryWork`). Each immutable marker holds `{version:1, leagueId, reason,
+revision, createdAt}` plus the relevant game, season or canonical-player identifier.
+The token is not a coverage assertion. Queue delivery/processing and reader
+activation remain subsequent rollout steps; pending markers must be recoverable.
+Publication conditions include the captured source, identity, identity-control,
+league and deletion boundaries, the completed generation and previous publication.
+
+Retained generations and publication records are the unlock audit history, including
+invalidation and reinstatement. They have no TTL. Incomplete/stale work cannot
+replace an active publication. See [ADR 0004](decisions/0004-player-history-generations.md)
+for rollout and rollback responsibilities.
+
+## History work, activation and recovery
+
+`PLAYER_HISTORY / CONTROL` stores a validated writer/rule activation manifest,
+readiness revision and enabled state. It is not a source coverage inference.
+Identity migration disables it atomically; imports preserve only a disabled
+record. See [ADR 0006](decisions/0006-player-history-worker-and-activation.md).
+
+Within `LEAGUE#{leagueId}`:
+
+| Sort key | Ownership and access |
+| --- | --- |
+| `HISTORY_SWEEP` | Coalesced directory fanout/verification checkpoint, source/readiness fences |
+| `HISTORY_JOB#{playerDigest}` | Canonical player generation and pending/done/failed state |
+| `HISTORY_ACK#{revision}` | Strict receipt proving a marker satisfied by a completed sweep or scope deletion |
+| `HISTORY_COMPARE#{comparisonId}` | Resumable isolated career-summary comparison; never changes publication |
+
+Within the player-history generation, `COLLECT#{memberDigest}#…` contains
+immutable cursor receipts, paginated raw/resolved rows and canonical mappings.
+Caches bind the generation, member and captured identity/source/readiness context.
+A cursor is progress, never authorization. Stream/SQS payloads contain only strict
+scope references; workers re-read these records and apply the same source fences.
+The dispatcher and worker have separate roles. Queue delivery does not remove
+work obligations; operator recovery uses bounded keyed queries, never table scans.
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable
@@ -239,3 +307,42 @@ Implementation lives in:
 Tests live in:
 
 - `api/src/tests/repository.test.ts`
+
+### Profile default season
+
+`LEAGUE#<leagueId> / PROFILE_SEASON_DEFAULT` is a worker-owned complete latest-season
+projection, scoped to history source and readiness revisions. The bounded season phase
+selects metadata by startsOn (creation date fallback), creation timestamp and stable ID.
+Readers never infer a latest season from opaque key order or a truncated directory sample.
+See [ADR 0007](decisions/0007-player-profile-read-boundary.md).
+
+### Owner presentation and name work
+
+`PLAYER#<canonicalPlayerId> / PRESENTATION` holds the owner presentation revision.
+Only a verified-owner mutation writes it. A name save atomically changes canonical
+presentation and creates `PLAYER_PROFILE_WORK#<hash(canonicalPlayerId)> / NAME#<uuid>`.
+This worker-owned job checkpoints a bounded traversal of member league references;
+it never changes historical IDs or source game facts.
+
+`PLAYER_PROFILE_WORK#<hash(submittedPlayerId)> / RECEIPT#<hash(actor,key)>` is an
+API-owned immutable retry receipt with a request digest and safe response. Worker
+constructors write only `NAME#` jobs; IAM constrains its partition family but cannot
+distinguish receipt and job sort keys. Queue messages carry the partition hash and
+job key, with no raw legacy player ID, name or account identifier. See
+[ADR 0008](decisions/0008-owner-profile-name-and-directory-work.md).
+
+### Private portrait state
+
+`PRESENTATION` may also hold a processed portrait pointer (job UUID, object key,
+digest, byte count, PNG format and512px dimensions). It is private persistence;
+safe profile DTOs expose only `hasPortrait`.
+
+Within `PLAYER_PROFILE_WORK#<hash(playerId)>`, API reservations use
+`PORTRAIT_REQUEST#<hash(actor,key)>` and immutable replies use
+`PORTRAIT_RECEIPT#<hash(actor,key)>`. `MEDIA#<uuid>` records a processed object's
+uploading/active/cleanup/deleting/deleted lifecycle, original expiry and digest.
+An upload reserves work before S3 IO; pointer publication and predecessor cleanup
+commit together. `RETIRE#<uuid>` records bounded cleanup of retired identity
+portraits after consolidation. Name jobs remain `NAME#<uuid>`. Worker constructors
+write these job families only, although partition-scoped IAM cannot constrain sort
+keys. Storage has no public route. See [ADR0009](decisions/0009-private-player-portraits.md).

@@ -36,17 +36,17 @@ test("shared deployments cannot interleave or cancel the running API/site pair",
 test("final deployment guard fails closed for missing, changed or updating API provenance", () => {
   const script = resolve(process.cwd(), "../scripts/deploy/verify-api-core.sh");
   const source = readFileSync(script, "utf8");
-  assert.deepEqual(source.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED", "Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED"]);
+  assert.deepEqual(source.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED", "Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED", "Environment.Variables.PLAYER_PROFILES_ENABLED", "Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED", "Environment.Variables.PLAYER_OWNER_EDITING_ENABLED", "Environment.Variables.HISTORY_PROCESSING_ENABLED", "Environment.Variables.PORTRAIT_BUCKET"]);
   const directory = mkdtempSync(resolve(tmpdir(), "3fc-deploy-guard-"));
   const head = "a".repeat(40);
-  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: "false" };
+  const fingerprint = { functionName: "3fc-qa-api-core", codeSha256: "package", revisionId: "revision", lastUpdateStatus: "Successful", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 };
   const manifest = { gitCommit: head, env: "qa", service: "api-core", region: "ap-southeast-2", packageCodeSha256: "package", functionFingerprint: fingerprint };
   const manifestPath = resolve(directory, "out/deploy/qa/api-core-deploy-manifest.json");
   mkdirSync(resolve(directory, "out/deploy/qa"), { recursive: true });
   const run = (live: unknown, record: unknown = manifest, awsStatus = 0, expected = head) => {
     writeFileSync(manifestPath, JSON.stringify(record));
     return spawnSync("bash", ["-c", 'aws() { test "$1 $2" = "lambda get-function-configuration" || return 99; printf %s "$TEST_LIVE"; return "$TEST_AWS_STATUS"; }; export -f aws; bash "$TEST_SCRIPT" qa "$TEST_HEAD"'], {
-      cwd: directory, encoding: "utf8", env: { ...process.env, TEST_LIVE: JSON.stringify(live), TEST_AWS_STATUS: String(awsStatus), TEST_SCRIPT: script, TEST_HEAD: expected },
+      cwd: directory, encoding: "utf8", env: { ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", TEST_LIVE: JSON.stringify(live), TEST_AWS_STATUS: String(awsStatus), TEST_SCRIPT: script, TEST_HEAD: expected },
     });
   };
   try {
@@ -78,6 +78,19 @@ test("final deployment guard fails closed for missing, changed or updating API p
     for (const value of [true, false, null, "invalid", ""]) {
       const invalid = { ...fingerprint, consolidationEnabled: value };
       assert.notEqual(run(invalid, { ...manifest, functionFingerprint: invalid }).status, 0, "matching invalid switches must not pass");
+    }
+    for (const field of ["profilesEnabled", "achievementsEnabled", "ownerEditingEnabled", "historyProcessingEnabled"]) {
+      const enabled = { ...fingerprint, [field]: "true" };
+      assert.equal(run(enabled, { ...manifest, functionFingerprint: enabled }).status, 0);
+      assert.notEqual(run(enabled).status, 0, `${field} drift fails`);
+      for (const value of [true, false, null, "invalid", ""]) {
+        const invalid = { ...fingerprint, [field]: value };
+        assert.notEqual(run(invalid, { ...manifest, functionFingerprint: invalid }).status, 0, `invalid ${field} cannot match itself`);
+      }
+    }
+    for (const timeout of [10, 29, 30, "28", null]) {
+      const invalid = { ...fingerprint, timeout };
+      assert.notEqual(run(invalid, { ...manifest, functionFingerprint: invalid }).status, 0, "matching unsupported timeouts must not pass");
     }
     const returning = { ...fingerprint, returningJoinEnabled: "true" };
     assert.equal(run(returning, { ...manifest, functionFingerprint: returning }).status, 0);
@@ -275,10 +288,10 @@ test("QA deployment evidence records the full head and live API fingerprint with
   assert.match(apiDeployScript, /digest\("base64"\)/);
   assert.match(apiDeployScript, /\.codeSha256 == \$expected/);
   assert.match(apiDeployScript, /"packageCodeSha256": "\$PACKAGE_CODE_SHA256"/);
-  assert.deepEqual(apiDeployScript.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED", "Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED"]);
+  assert.deepEqual(apiDeployScript.match(/Environment\.Variables[^}'\s,]*/g), ["Environment.Variables.PLAYER_CLAIM_MODE", "Environment.Variables.PLAYER_CONSOLIDATION_ENABLED", "Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED", "Environment.Variables.PLAYER_PROFILES_ENABLED", "Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED", "Environment.Variables.PLAYER_OWNER_EDITING_ENABLED", "Environment.Variables.HISTORY_PROCESSING_ENABLED", "Environment.Variables.PORTRAIT_BUCKET"]);
   assert.match(qaWorkflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
   assert.match(qaWorkflow, /name: qa-api-core-deployment/);
-  assert.match(qaWorkflow, /path: out\/deploy\/qa\/api-core-deploy-manifest\.json/);
+  assert.match(qaWorkflow, /path: \|\n\s+out\/deploy\/qa\/api-core-deploy-manifest\.json\n\s+out\/deploy\/qa\/player-history-deploy-manifest\.json\n/);
   assert.match(qaWorkflow, /if-no-files-found: error/);
 });
 
@@ -288,21 +301,31 @@ test("core deploy validates, exports and verifies the configured claim and conso
   assert.ok(configure.includes("case"));
   for (const [input, expected] of [["", "proof"], ["proof", "proof"], ["disabled", "disabled"], ["invalid", null]]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$PLAYER_CLAIM_MODE"'`],
-      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: input!, PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: "false" } });
+      { encoding: "utf8", env: { ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PLAYER_CLAIM_MODE: input!, PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: "false" } });
     assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
     assert.equal(result.stdout, expected ?? "");
   }
   for (const [input, expected] of [["", "false"], ["false", "false"], ["true", "true"], ["invalid", null], ["TRUE", null], ["1", null]]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$PLAYER_CONSOLIDATION_ENABLED"'`],
-      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: input!, PLAYER_RETURNING_JOIN_ENABLED: "false" } });
+      { encoding: "utf8", env: { ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: input!, PLAYER_RETURNING_JOIN_ENABLED: "false" } });
     assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
     assert.equal(result.stdout, expected ?? "");
   }
   for (const [input, expected] of [["", "false"], ["false", "false"], ["true", "true"], ["invalid", null], ["TRUE", null], ["1", null]]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$PLAYER_RETURNING_JOIN_ENABLED"'`],
-      { encoding: "utf8", env: { ...process.env, PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: input! } });
+      { encoding: "utf8", env: { ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: input! } });
     assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
     assert.equal(result.stdout, expected ?? "");
+  }
+  for (const variable of ["PLAYER_PROFILES_ENABLED", "PLAYER_ACHIEVEMENTS_ENABLED", "PLAYER_OWNER_EDITING_ENABLED", "HISTORY_PROCESSING_ENABLED"]) {
+    for (const [input, expected] of [["", "false"], ["false", "false"], ["true", "true"], ["invalid", null], ["TRUE", null]]) {
+      const result = spawnSync("bash", ["-c", `set -euo pipefail\n${configure}\nconfigure_player_claim_mode\nbash -c 'printf %s "$${variable}"'`], {
+        encoding: "utf8", env: { ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: "false",
+          PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", [variable]: input! },
+      });
+      assert.equal(result.status, expected === null ? 1 : 0, result.stderr);
+      assert.equal(result.stdout, expected ?? "");
+    }
   }
   assert.ok(apiDeployScript.indexOf("  configure_player_claim_mode\n") < apiDeployScript.indexOf("make build"));
   const verify = apiDeployScript.slice(apiDeployScript.indexOf('  jq -e --arg expected "$PACKAGE_CODE_SHA256"'),
@@ -310,18 +333,32 @@ test("core deploy validates, exports and verifies the configured claim and conso
   assert.ok(verify.includes(".playerClaimMode == $mode"));
   assert.ok(verify.includes(".consolidationEnabled == $consolidation"));
   assert.ok(verify.includes(".returningJoinEnabled == $returning"));
+  assert.ok(verify.includes(".historyProcessingEnabled == $historyProcessing"));
+  for (const expected of ["true", "false"]) {
+    for (const deployed of ["true", "false", null, undefined, true, false, "invalid"]) {
+      const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
+        ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false",
+        PLAYER_RETURNING_JOIN_ENABLED: "false", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false",
+        PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: expected,
+        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision",
+          playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false",
+          achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: deployed, portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
+      } });
+      assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
+    }
+  }
   for (const deployed of ["proof", "disabled", null]) {
     const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
-      ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "disabled", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: "false",
-      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed, consolidationEnabled: "false", returningJoinEnabled: "false" }),
+      ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "disabled", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: "false",
+      FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: deployed, consolidationEnabled: "false", returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
     } });
     assert.equal(result.status, deployed === "disabled" ? 0 : 1, result.stderr);
   }
   for (const expected of ["true", "false"]) {
     for (const deployed of ["true", "false", null, undefined, true, false, "invalid"]) {
       const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
-        ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: expected, PLAYER_RETURNING_JOIN_ENABLED: "false",
-        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: deployed, returningJoinEnabled: "false" }),
+        ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: expected, PLAYER_RETURNING_JOIN_ENABLED: "false",
+        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: deployed, returningJoinEnabled: "false", profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
       } });
       assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
     }
@@ -329,8 +366,8 @@ test("core deploy validates, exports and verifies the configured claim and conso
   for (const expected of ["true", "false"]) {
     for (const deployed of ["true", "false", null, undefined, true, false, "invalid"]) {
       const result = spawnSync("bash", ["-c", `set -euo pipefail\n${verify}`], { encoding: "utf8", env: {
-        ...process.env, PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: expected,
-        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: deployed }),
+        ...process.env, PORTRAIT_BUCKET: "3fc-qa-portraits-301691475109", PLAYER_PROFILES_ENABLED: "false", PLAYER_ACHIEVEMENTS_ENABLED: "false", PLAYER_OWNER_EDITING_ENABLED: "false", HISTORY_PROCESSING_ENABLED: "false", PACKAGE_CODE_SHA256: "package", PLAYER_CLAIM_MODE: "proof", PLAYER_CONSOLIDATION_ENABLED: "false", PLAYER_RETURNING_JOIN_ENABLED: expected,
+        FUNCTION_FINGERPRINT: JSON.stringify({ lastUpdateStatus: "Successful", codeSha256: "package", revisionId: "revision", playerClaimMode: "proof", consolidationEnabled: "false", returningJoinEnabled: deployed, profilesEnabled: "false", achievementsEnabled: "false", ownerEditingEnabled: "false", historyProcessingEnabled: "false", portraitBucket: "3fc-qa-portraits-301691475109", runtime: "nodejs22.x", architectures: ["arm64"], timeout: 28 }),
       } });
       assert.equal(result.status, deployed === expected ? 0 : 1, result.stderr);
     }
@@ -363,4 +400,22 @@ test("static CloudFront distribution applies app security headers", () => {
   assert.match(applicationTerraformConfig, /Cross-Origin-Opener-Policy/);
   assert.match(applicationTerraformConfig, /Cross-Origin-Resource-Policy/);
   assert.match(applicationTerraformConfig, /Permissions-Policy/);
+});
+
+test("profile read routes and exposure switches have local and deployed paths", () => {
+  const compose = readFileSync(resolve(process.cwd(), "../compose.yaml"), "utf8");
+  const openapi = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
+  for (const route of ["my-player-profiles", "player-access", "player-profile", "player-history", "player-achievements", "player-unlocks", "achievement-catalogue"]) {
+    for (const method of ["GET", "OPTIONS"]) assert.ok(serverlessCoreConfig.includes(`method: ${method}\n          path: /v1/${route}\n`));
+    assert.ok(openapi.includes(`/v1/${route}`));
+  }
+  for (const method of ["GET", "PATCH", "OPTIONS"]) assert.ok(serverlessCoreConfig.includes(`method: ${method}\n          path: /v1/owner-player-profile\n`));
+  for (const variable of ["PLAYER_PROFILES_ENABLED", "PLAYER_ACHIEVEMENTS_ENABLED", "PLAYER_OWNER_EDITING_ENABLED", "HISTORY_PROCESSING_ENABLED"]) {
+    assert.ok(serverlessCoreConfig.includes(`${variable}: \${env:${variable}, 'false'}`));
+    assert.ok(compose.includes(`${variable}: "\${${variable}:-false}"`));
+    for (const stage of ["qa", "prod"]) {
+      const workflow = readFileSync(resolve(process.cwd(), `../.github/workflows/deploy-${stage}.yml`), "utf8");
+      assert.ok(workflow.includes(`${variable}: \${{ vars.${variable} || 'false' }}`));
+    }
+  }
 });

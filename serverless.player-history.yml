@@ -1,0 +1,96 @@
+service: threefc-player-history
+frameworkVersion: "4"
+
+plugins:
+  - serverless-esbuild
+
+build:
+  esbuild: false
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: ${opt:region, env:AWS_REGION, 'ap-southeast-2'}
+  stage: ${opt:stage, 'qa'}
+  architecture: arm64
+  logRetentionInDays: 14
+  versionFunctions: false
+  iam:
+    role: ${env:HISTORY_DISPATCH_ROLE_ARN}
+  environment:
+    PORTRAIT_BUCKET: ${env:PORTRAIT_BUCKET}
+    DYNAMODB_TABLE: ${env:DYNAMODB_TABLE}
+    HISTORY_QUEUE_URL: ${env:HISTORY_QUEUE_URL}
+    HISTORY_PROCESSING_ENABLED: ${env:HISTORY_PROCESSING_ENABLED, 'false'}
+  tags:
+    Project: 3FC
+    Environment: ${sls:stage}
+    ManagedBy: serverless
+
+custom:
+  processingEnabled: ${strToBool(${env:HISTORY_PROCESSING_ENABLED, 'false'})}
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: false
+    keepNames: true
+    platform: node
+    target: node22
+    format: cjs
+    tsconfig: ./api/tsconfig.json
+
+package:
+  individually: true
+
+functions:
+  dispatch:
+    name: 3fc-${sls:stage}-player-history-dispatch
+    handler: api/src/lambda-player-history.dispatchHandler
+    role: ${env:HISTORY_DISPATCH_ROLE_ARN}
+    memorySize: 256
+    timeout: 30
+  work:
+    name: 3fc-${sls:stage}-player-history-worker
+    handler: api/src/lambda-player-history.workHandler
+    role: ${env:HISTORY_WORKER_ROLE_ARN}
+    memorySize: 512
+    timeout: 60
+
+resources:
+  Resources:
+    HistoryDispatchMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Fn::GetAtt: [DispatchLambdaFunction, Arn]
+        EventSourceArn: ${env:HISTORY_STREAM_ARN}
+        Enabled: ${self:custom.processingEnabled}
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 1
+        ParallelizationFactor: 1
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 3
+        MaximumRecordAgeInSeconds: 3600
+        FunctionResponseTypes: [ReportBatchItemFailures]
+        DestinationConfig:
+          OnFailure:
+            Destination: ${env:HISTORY_DISPATCH_DEAD_QUEUE_ARN}
+        FilterCriteria:
+          Filters:
+            - Pattern: '{"eventName":["INSERT"],"dynamodb":{"NewImage":{"entityType":{"S":["playerHistoryWork"]}}}}'
+            - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"NewImage":{"entityType":{"S":["playerHistoryJob"]}}}}'
+            - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"LEAGUE#"}]},"sk":{"S":["PLAYER_DIRECTORY"]}},"NewImage":{"entityType":{"S":["playerDirectoryRevision"]}}}}'
+            - Pattern: '{"eventName":["INSERT","MODIFY"],"dynamodb":{"Keys":{"pk":{"S":[{"prefix":"PLAYER_PROFILE_WORK#"}]}},"NewImage":{"entityType":{"S":["playerProfileNameWork","playerProfileMediaWork","playerProfileMediaRetirement"]}}}}'
+    HistoryWorkMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Fn::GetAtt: [WorkLambdaFunction, Arn]
+        EventSourceArn: ${env:HISTORY_QUEUE_ARN}
+        Enabled: ${self:custom.processingEnabled}
+        BatchSize: 1
+        MaximumBatchingWindowInSeconds: 0
+        FunctionResponseTypes: [ReportBatchItemFailures]
+        ScalingConfig:
+          MaximumConcurrency: 2

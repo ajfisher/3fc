@@ -94,7 +94,7 @@ gameId.
 ## 6. Auth + identity
 
 - Public pages show nickname + optional avatar only; no emails.
-- Emails visible only to self + admins.
+- Player-profile account emails and private settings are visible only to their owning account; league administration does not grant owner-profile access.
 - Admin permissions scoped per League/Season/Game via ACL items.
 - Social sign-in: Cognito Hosted UI (Google + Facebook).
 - Magic-link: custom flow using SES + Dynamo TTL + Cognito CUSTOM_AUTH (open

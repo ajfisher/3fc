@@ -85,12 +85,25 @@ jobs:
           node scripts/deploy/verify-production-head.mjs
           make deploy ENV=prod SERVICE=api-health
 
+      # Infrastructure is provisioned separately from the reviewed local Terraform plan.
+      # Install and verify compatible consumers before the API can emit new work types.
+      # Older stream filters can permanently skip new records, even if they are updated later.
+      - name: Deploy player history to prod
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
+        run: make deploy ENV=prod SERVICE=player-history
+
       - name: Deploy API core service to production
         env:
           SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
           PLAYER_CLAIM_MODE: ${{ vars.PLAYER_CLAIM_MODE || 'proof' }}
           PLAYER_CONSOLIDATION_ENABLED: ${{ vars.PLAYER_CONSOLIDATION_ENABLED || 'false' }}
           PLAYER_RETURNING_JOIN_ENABLED: ${{ vars.PLAYER_RETURNING_JOIN_ENABLED || 'false' }}
+          PLAYER_PROFILES_ENABLED: ${{ vars.PLAYER_PROFILES_ENABLED || 'false' }}
+          PLAYER_ACHIEVEMENTS_ENABLED: ${{ vars.PLAYER_ACHIEVEMENTS_ENABLED || 'false' }}
+          PLAYER_OWNER_EDITING_ENABLED: ${{ vars.PLAYER_OWNER_EDITING_ENABLED || 'false' }}
+          HISTORY_PROCESSING_ENABLED: ${{ vars.HISTORY_PROCESSING_ENABLED || 'false' }}
         run: make deploy ENV=prod SERVICE=api-core
 
       # Preserve the successfully fingerprinted core even if site publication
@@ -350,12 +363,18 @@ jobs:
           EXPECTED_HEAD: ${{ github.sha }}
         run: bash scripts/deploy/verify-api-core.sh prod "$EXPECTED_HEAD"
 
+      - name: Verify history deployment after acceptance
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: node scripts/deploy/verify-player-history.mjs prod "$EXPECTED_HEAD"
+
       - name: Preserve completed production release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: prod-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             out/deploy/prod/api-core-deploy-manifest.json
+            out/deploy/prod/player-history-deploy-manifest.json
             out/deploy/prod/api-health-deploy-manifest.json
             out/deploy/prod/site-deploy-manifest.json
           if-no-files-found: error
@@ -367,7 +386,7 @@ jobs:
             echo "## Production deploy complete"
             echo "- Branch: main"
             echo "- Commit: ${{ github.sha }}"
-            echo "- Services: site, api-health, api-core"
+            echo "- Services: site, api-health, api-core, player-history"
             echo "- Site URL: ${SITE_URL}"
             echo "- Site root status: HTTP ${SITE_ROOT_HTTP_CODE}"
             echo "- Site sign-in status: HTTP ${SITE_SIGNIN_HTTP_CODE}"

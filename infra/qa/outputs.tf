@@ -72,3 +72,31 @@ output "github_actions_deploy_role_arn" {
   description = "OIDC-assumable IAM role ARN for GitHub Actions deployments"
   value       = module.app.github_actions_deploy_role_arn
 }
+
+output "player_history_stream_arn" {
+  value = module.app.player_history_stream_arn
+}
+
+output "player_history_queue_url" {
+  value = module.app.player_history_queue_url
+}
+
+output "player_history_queue_arn" {
+  value = module.app.player_history_queue_arn
+}
+
+output "player_history_dead_queue_arn" {
+  value = module.app.player_history_dead_queue_arn
+}
+
+output "player_history_dispatch_dead_queue_arn" {
+  value = module.app.player_history_dispatch_dead_queue_arn
+}
+
+output "player_history_dispatch_role_arn" {
+  value = module.app.player_history_dispatch_role_arn
+}
+
+output "player_history_worker_role_arn" {
+  value = module.app.player_history_worker_role_arn
+}

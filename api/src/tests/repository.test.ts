@@ -7143,3 +7143,14 @@ test("repository enforces goal validation rules", async () => {
     /ownGoal=true requires scoringTeamId to be null/,
   );
 });
+
+test("league discovery identifies management from existing ACL roles without treating viewers as managers", async () => {
+  const { repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "managed", name: "Managed", createdByUserId: "organiser" });
+  await repository.grantLeagueAccess({ leagueId: "managed", userId: "scorer", role: "scorekeeper", grantedByUserId: "organiser" });
+  await repository.grantLeagueAccess({ leagueId: "managed", userId: "reader", role: "viewer", grantedByUserId: "organiser" });
+  assert.equal((await repository.listLeaguesForUser("organiser"))[0].hasManagementAccess, true);
+  assert.equal((await repository.listLeaguesForUser("scorer"))[0].hasManagementAccess, true);
+  assert.equal((await repository.listLeaguesForUser("reader"))[0].hasManagementAccess, false);
+  assert.deepEqual(await repository.listLeaguesForUser("participant"), []);
+});

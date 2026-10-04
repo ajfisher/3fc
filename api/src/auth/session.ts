@@ -43,6 +43,8 @@ export function buildExpiredSessionCookie(cookieName: string, secure: boolean): 
 }
 
 export function isAuthenticatedApiRoute(method: string, route: string): boolean {
+  if ((method === "GET" && route === "/v1/player-portrait") || (["PUT", "DELETE"].includes(method) && route === "/v1/owner-player-portrait")) return true;
+  if (["GET", "PATCH"].includes(method) && route === "/v1/owner-player-profile") return true;
   if ((method === "GET" && /^\/v1\/join\/[^/]+\/linked-players$/.test(route)) ||
       (method === "POST" && /^\/v1\/join\/[^/]+\/linked-player$/.test(route))) return true;
   if (method === "GET" && /^\/v1\/join\/[^/]+\/player-context$/.test(route)) {
@@ -169,6 +171,8 @@ export function isAuthenticatedApiRoute(method: string, route: string): boolean 
     return true;
   }
 
+  if (method === "GET" && ["/v1/my-player-profiles", "/v1/player-access", "/v1/player-profile", "/v1/player-history",
+    "/v1/player-achievements", "/v1/player-unlocks", "/v1/achievement-catalogue"].includes(route)) return true;
   if (method === "POST" && route === "/v1/player-proofs/preview") return true;
   if ((method === "GET" || method === "POST") && route === "/v1/league-players") return true;
   if ((method === "GET" || method === "POST") && route === "/v1/player-consolidations") return true;

@@ -144,6 +144,10 @@ AWS_PROFILE=3fc-agent make deploy ENV=qa SERVICE=api-health
 
 Serverless definitions live in `serverless.<service>.yml` (for example `serverless.api-health.yml`). This allows endpoint services to be split and deployed independently.
 
+Player history uses the separate `player-history` service with dedicated roles and
+queue/stream mappings. Provision its reviewed Terraform changes before deploying;
+processing defaults to disabled. See [player history operations](docs/player-history-operations.md).
+
 Serverless manages API/Lambda provisioning through CloudFormation stacks per service and stage.
 
 Current API services:

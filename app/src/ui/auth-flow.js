@@ -96,6 +96,32 @@
 
     try {
       const target = new URL(value, window.location.origin);
+      if (/^\/player(?:-settings)?\/?$/.test(target.pathname)) {
+        const allowed = target.pathname.startsWith("/player-settings")
+          ? ["playerId", "leagueId", "seasonId", "viewerPlayerId"] : ["leagueId", "playerId", "seasonId", "viewerPlayerId"];
+        const discovery = /^\/player\/?$/.test(target.pathname) && !target.search;
+        if (target.hash || !discovery && (!target.searchParams.get("playerId")?.trim() ||
+          !target.searchParams.get("leagueId")?.trim())) return null;
+        for (const [key, item] of target.searchParams) {
+          if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
+        }
+      }
+      if (/^\/achievements\/?$/.test(target.pathname)) {
+        const allowed = ["leagueId", "playerId", "seasonId", "viewerPlayerId", "scope", "achievementId"];
+        for (const [key, item] of target.searchParams) {
+          if (!allowed.includes(key) || target.searchParams.getAll(key).length !== 1 || !item.trim() || /[\\\u0000-\u001f\u007f]/u.test(item)) return null;
+        }
+        const paired = target.searchParams.has("leagueId") && target.searchParams.has("playerId");
+        const scope = target.searchParams.get("scope");
+        const achievementId = target.searchParams.get("achievementId");
+        if (target.hash || target.searchParams.has("leagueId") !== target.searchParams.has("playerId") ||
+          (!paired && ["scope", "seasonId", "viewerPlayerId"].some(key => target.searchParams.has(key))) ||
+          (scope !== null && scope !== "season" && scope !== "career") ||
+          (scope === "career" && target.searchParams.has("seasonId"))) return null;
+        const achievementIds = JSON.parse(document.body.getAttribute("data-achievement-ids") || "[]");
+        if (!Array.isArray(achievementIds) || !achievementIds.every(id => typeof id === "string")) return null;
+        if (achievementId !== null && !(achievementIds.includes(achievementId))) return null;
+      }
       const candidate = /^\/(?:link-player|combine-players)\/?$/.test(target.pathname)
         ? `${target.pathname}${target.search}${target.hash}` : target.pathname;
       if (

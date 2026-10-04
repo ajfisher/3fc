@@ -5,9 +5,14 @@ import { decode, digest, envelope, inventoryDigest, key, validatePlan } from "./
 const need = (ok, reason) => { if (!ok) throw new Error(`Cutover: ${reason}`); };
 const controlKey = JSON.stringify(["PLAYER_IDENTITY", "CONTROL"]);
 export const isControl = row => key(row) === controlKey;
+// A verified identity migration now also leaves an explicitly disabled history
+// activation fence. Preserve it through import; imported history needs a separate
+// reviewed activation and rebuild before profiles can be exposed.
+export const isDisabledHistory = row => row.pk?.S === "PLAYER_HISTORY" && row.sk?.S === "CONTROL" &&
+  row.entityType?.S === "playerHistoryReadiness" && decode(row).version === 1 && decode(row).enabled === false;
 export function cutoverManifest(plan, baseline, provenance) {
   validatePlan(plan);
-  need(baseline.filter(isControl).length === 1 && baseline.every(i => isControl(i) ||
+  need(baseline.filter(isControl).length === 1 && baseline.every(i => isControl(i) || isDisabledHistory(i) ||
     (i.pk?.S?.startsWith("PLAYER_MIGRATION#") && i.entityType?.S === "playerIdentityMigration")), "destination must contain only identity system records");
   const control = decode(baseline.find(isControl));
   need(control.mode === "fenced" && control.coverage === "verified" && control.writerVersion === 1, "destination identity coverage must already be verified");
