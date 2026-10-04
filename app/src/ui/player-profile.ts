@@ -60,10 +60,10 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
   function gameLink(value: PlayerAppearance) { const link = node('a', formatDate(value.kickoffAt)) as HTMLAnchorElement; link.href = `/games/${encodeURIComponent(value.gameId)}`; return link; }
   function appendMatch(parent: HTMLElement, value: PlayerAppearance, prominent = false) {
     const item = node(parent.tagName === 'OL' ? 'li' : 'div'); item.dataset.ui = 'player-match';
-    const header = node('div'); header.append(gameLink(value), node('span', `${value.outcome === 'win' ? 'Win' : value.outcome === 'draw' ? 'Draw' : 'Loss'} · ${value.teamId[0].toUpperCase()}${value.teamId.slice(1)} team`));
+    const header = node('header'); header.append(gameLink(value), node('span', `${value.outcome === 'win' ? 'Win' : value.outcome === 'draw' ? 'Draw' : 'Loss'} · ${value.teamId[0].toUpperCase()}${value.teamId.slice(1)} team`));
     const contributions = node('p', `${value.goals} goals · ${value.assists} assists · ${value.ownGoals} own goals`);
-    const team = prominent ? node('div') : node('p', `Team: ${value.scored} scored · ${value.conceded} conceded`);
-    if (prominent) { team.className = 'player-team-totals'; for (const [label, total] of [['Scored', value.scored], ['Conceded', value.conceded]] as const) { const part = node('div'); part.append(node('strong', String(total)), node('span', label)); team.append(part); } }
+    const team = prominent ? node('dl') : node('p', `Team: ${value.scored} scored · ${value.conceded} conceded`);
+    if (prominent) { team.dataset.ui = 'panel'; for (const [label, total] of [['Scored', value.scored], ['Conceded', value.conceded]] as const) { const part = node('div'); part.append(node('dt', label), node('dd', String(total))); team.append(part); } }
     item.append(header, contributions, team); parent.append(item);
   }
   function renderLog() {
@@ -81,7 +81,7 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
     const heading = root.querySelector('#player-period-title'); if (heading) heading.textContent = title;
     season.replaceChildren();
     performance.seasons.forEach(value => { const option = node('option', value.name) as HTMLOptionElement; option.value = value.seasonId; season.append(option); });
-    const seasonField = season.closest<HTMLElement>('.player-season-field'); if (seasonField) seasonField.hidden = period !== 'season';
+    const seasonField = season.closest<HTMLElement>('[data-ui="field"]'); if (seasonField) seasonField.hidden = period !== 'season';
     season.value = selectedSeason ?? ''; season.disabled = !performance.seasons.length || busy;
     avatar.replaceChildren(node('span', playerInitial(performance.player.displayName)));
     const values: Array<[string, string | number]> = [];

@@ -67,11 +67,13 @@ test('long names and enlarged text retain keyboard period controls without horiz
   await expect(page.locator('#player-name')).toContainText('Alexandra');
   await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const seasonField = page.locator('[data-ui=field]').filter({ has: page.locator('#player-season') });
+  await expect(seasonField).toBeVisible();
   await page.locator('input[name=player-period][value=season]').focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('input[name=player-period][value=career]')).toBeChecked();
   await expect(page.locator('#player-stats')).toContainText('24');
-  await expect(page.locator('.player-season-field')).not.toBeVisible();
+  await expect(seasonField).not.toBeVisible();
 });
 
 test('existing private portrait is visible on both profile and scoped owner settings', async ({ page }) => {

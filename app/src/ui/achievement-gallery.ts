@@ -98,12 +98,12 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
       && (!context || earned.value === 'all' || (earned.value === 'earned' ? Boolean(state(d.id)?.highest) : state(d.id)?.assessability === 'complete' && !state(d.id)?.highest)));
     grid.replaceChildren();
     shown.forEach(def => {
-      const progress = state(def.id), tile = node('article'); tile.className = 'achievement-tile'; tile.dataset.badge = def.id;
-      const button = node('button') as HTMLButtonElement; button.type = 'button'; button.id = `achievement-open-${def.id}`; button.className = 'achievement-art-button'; button.setAttribute('aria-label', `How to unlock ${def.name}`);
+      const progress = state(def.id), tile = node('article'); tile.dataset.badge = def.id;
+      const button = node('button') as HTMLButtonElement; button.type = 'button'; button.id = `achievement-open-${def.id}`; button.setAttribute('aria-label', `How to unlock ${def.name}`);
       button.innerHTML = renderBadge(def.id, progress?.highest?.ordinal ?? 0); button.addEventListener('click', () => openDetail(def.id, button));
-      const copy = node('div'); copy.className = 'achievement-tile-copy'; const rank = node('span', def.rarity); rank.className = `achievement-rarity ${def.rarity.toLowerCase()}`;
+      const copy = node('div'); const rank = node('span', def.rarity);
       copy.append(rank, node('h2', def.name), node('p', def.rule));
-      if (context) { const note = node('p', progress?.highest ? `Earned · ${progress.highest.ordinal} ${progress.highest.ordinal === 1 ? 'star' : 'stars'}` : progress?.assessability === 'complete' ? 'To unlock' : 'Unlock not confirmed'); note.className = 'achievement-tile-progress'; copy.append(note, node('p', achievementProgressLabel(progress))); }
+      if (context) { const note = node('p', progress?.highest ? `Earned · ${progress.highest.ordinal} ${progress.highest.ordinal === 1 ? 'star' : 'stars'}` : progress?.assessability === 'complete' ? 'To unlock' : 'Unlock not confirmed'); const footer = node('footer'); footer.append(note, node('p', achievementProgressLabel(progress))); copy.append(footer); }
       tile.append(button, copy); grid.append(tile);
     });
     const uncertain = context && (!personalAvailable() || achievements!.freshness.status !== 'ready' || achievements!.freshness.coverage !== 'complete' || achievements!.progress!.some(p => p.assessability === 'partial'));
@@ -137,7 +137,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
     const thresholds = def.rarity === 'Common' ? COMMON_MILESTONES : def.rarity === 'Rare' ? RARE_MILESTONES : null;
     progression.append(node('h3', 'Milestones to collect'));
     if (thresholds) {
-      const list = node('ol'); list.className = 'milestones'; thresholds.forEach((threshold, index) => list.append(node('li', `★ ${index + 1} · ${threshold} qualifying ${threshold === 1 ? 'occurrence' : 'occurrences'}`))); progression.append(list, node('p', `Then one more star every ${def.rarity === 'Common' ? 100 : 10} qualifying occurrences.`));
+      const list = node('ol'); thresholds.forEach((threshold, index) => list.append(node('li', `★ ${index + 1} · ${threshold} qualifying ${threshold === 1 ? 'occurrence' : 'occurrences'}`))); progression.append(list, node('p', `Then one more star every ${def.rarity === 'Common' ? 100 : 10} qualifying occurrences.`));
     } else progression.append(node('p', 'Every qualifying occurrence earns another milestone and star.'));
     progression.append(node('p', `First unlock: ${milestoneThreshold(def.rarity, 1)} qualifying occurrence. The first milestone earns the badge and first star. Individual stars are shown through five, then a compact star count.`));
     get('achievement-detail-personal').hidden = !context;

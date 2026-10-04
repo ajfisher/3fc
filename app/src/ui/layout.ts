@@ -1449,39 +1449,39 @@ export function renderPlayerProfilePage(apiBaseUrl: string): string {
   <a id="player-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to view profile</a>
   <div id="player-access"></div>
   <section id="player-content" hidden>
-    <header class="player-heading">
-      <div id="player-avatar" class="player-avatar" aria-hidden="true"></div>
-      <div class="player-heading-copy"><p id="player-league" class="player-eyebrow"></p><h1 id="player-name"></h1></div>
-      <div class="player-heading-actions"><a id="player-edit" data-ui="button-secondary" hidden>Edit profile</a>
+    <header>
+      <div id="player-avatar" aria-hidden="true"></div>
+      <hgroup><p id="player-league"></p><h1 id="player-name"></h1></hgroup>
+      <div data-ui="button-row"><a id="player-edit" data-ui="button-secondary" hidden>Edit profile</a>
       <button id="player-card" type="button" data-ui="button" data-variant="primary" hidden>Player card</button></div>
     </header>
-    <div class="player-period-controls">
-      <fieldset id="player-period" class="player-period-picker"><legend class="sr-only">Statistics period</legend>
+    <div data-ui="period-controls">
+      <fieldset id="player-period"><legend class="sr-only">Statistics period</legend>
         <label><input type="radio" name="player-period" value="last" /><span>Last game</span></label>
         <label><input type="radio" name="player-period" value="season" checked /><span>Season</span></label>
         <label><input type="radio" name="player-period" value="career" /><span>Career</span></label>
       </fieldset>
-      <div class="player-season-field" data-ui="field"><label for="player-season">Season</label><select id="player-season" data-ui="input"></select></div>
+      <div data-ui="field"><label for="player-season">Season</label><select id="player-season" data-ui="input"></select></div>
     </div>
-    <section class="player-record" aria-labelledby="player-period-title">
-      <h2 id="player-period-title">Season statistics</h2><dl id="player-stats" class="player-stat-grid"></dl>
+    <section data-ui="panel" aria-labelledby="player-period-title">
+      <h2 id="player-period-title">Season statistics</h2><dl id="player-stats"></dl>
     </section>
-    <section class="player-latest-section" aria-labelledby="player-latest-title"><h2 id="player-latest-title">Last completed game</h2><div id="player-latest"></div></section>
-    <section class="player-history-section" aria-labelledby="player-history-title"><h2 id="player-history-title">Match history</h2>
-      <p id="player-history-status" role="status" aria-live="polite"></p><ol id="player-history-list" class="player-history-list"></ol>
+    <section aria-labelledby="player-latest-title"><h2 id="player-latest-title">Last completed game</h2><div id="player-latest"></div></section>
+    <section aria-labelledby="player-history-title"><h2 id="player-history-title">Match history</h2>
+      <p id="player-history-status" role="status" aria-live="polite"></p><ol id="player-history-list"></ol>
       <button id="player-history-more" type="button" data-ui="button-secondary" hidden>Load more</button>
     </section>
     <a id="player-achievements" data-ui="button-secondary" hidden>Explore achievements</a>
   </section>
-  <dialog id="club-card-dialog" class="player-dialog club-card-dialog" aria-labelledby="club-card-title">
-    <div class="player-dialog-heading"><h2 id="club-card-title">Player card</h2><button id="club-card-close" type="button" data-ui="button-secondary">Close</button></div>
-    <div id="club-card-art" class="club-card-art"></div>
+  <dialog id="club-card-dialog" aria-labelledby="club-card-title">
+    <header><h2 id="club-card-title">Player card</h2><button id="club-card-close" type="button" data-ui="button-secondary">Close</button></header>
+    <div id="club-card-art"></div>
     <p id="club-card-status" role="status" aria-live="polite"></p>
     <div data-ui="button-row"><button id="club-card-flip" type="button" data-ui="button-secondary" aria-pressed="false">See honours</button>
       <button id="club-card-share" type="button" data-ui="button" data-variant="primary" disabled>Share card</button>
       <button id="club-card-download" type="button" data-ui="button-secondary" disabled>Download PNG</button>
       <button id="club-card-retry" type="button" data-ui="button-secondary" hidden>Try again</button></div>
-    <ul id="club-card-honours-links" class="club-card-honours-links"></ul><a id="club-card-gallery" href="/achievements">Explore achievements</a>
+    <ul id="club-card-honours-links"></ul><a id="club-card-gallery" href="/achievements">Explore achievements</a>
   </dialog>`);
 }
 
@@ -1492,7 +1492,7 @@ export function renderPlayerSettingsPage(apiBaseUrl: string): string {
   <a id="owner-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to edit your profile</a>
   <div data-ui="button-row"><button id="owner-retry" type="button" data-ui="button-secondary" hidden>Try again</button>
   <button id="owner-refresh" type="button" data-ui="button-secondary" hidden>Refresh profile</button></div>
-  <section id="owner-form" class="owner-sections" hidden>
+  <section id="owner-form" hidden>
     <form id="owner-name-form" data-ui="panel"><h2>Your details</h2>
       <div data-ui="field"><label for="owner-name">Display name</label><input id="owner-name" data-ui="input" maxlength="80" required autocomplete="nickname" /></div>
       <div data-ui="field"><label for="owner-email">Account email</label><input id="owner-email" data-ui="input" type="email" readonly autocomplete="off" aria-describedby="owner-email-note" />
@@ -1500,7 +1500,7 @@ export function renderPlayerSettingsPage(apiBaseUrl: string): string {
       <button id="owner-save-name" type="submit" data-ui="button" data-variant="primary">Save name</button>
     </form>
     <section data-ui="panel" aria-labelledby="owner-photo-title"><h2 id="owner-photo-title">Player portrait</h2>
-      <img id="owner-photo-preview" class="owner-photo-preview" alt="Current player portrait" width="160" height="160" hidden />
+      <img id="owner-photo-preview" alt="Current player portrait" width="160" height="160" hidden />
       <p id="owner-photo-notice">Your portrait appears to authorised league viewers and in any player card images you share.</p>
       <div data-ui="field"><label for="owner-photo-file">Choose a photo</label><input id="owner-photo-file" type="file" accept="image/jpeg,image/png,image/webp" aria-describedby="owner-photo-limits" />
       <p id="owner-photo-limits" data-ui="status-note">JPEG, PNG or WebP. Up to 8 MB and 16 megapixels. You can adjust the crop before saving.</p></div>
@@ -1508,14 +1508,14 @@ export function renderPlayerSettingsPage(apiBaseUrl: string): string {
       <button id="owner-photo-remove" type="button" data-ui="button-secondary" hidden>Remove portrait</button></div>
     </section>
   </section>
-  <dialog id="portrait-crop-dialog" class="player-dialog" aria-labelledby="portrait-crop-title">
+  <dialog id="portrait-crop-dialog" aria-labelledby="portrait-crop-title">
     <h2 id="portrait-crop-title">Frame your portrait</h2><p>Adjust the position and zoom. The circle shows how your portrait will appear.</p>
     <canvas id="portrait-crop-canvas" width="512" height="512" aria-label="Portrait crop preview"></canvas>
-    <div class="portrait-crop-controls">
+    <fieldset><legend class="sr-only">Crop adjustments</legend>
       <label for="portrait-crop-zoom">Zoom</label><input id="portrait-crop-zoom" type="range" min="1" max="4" step="0.01" value="1" />
       <label for="portrait-crop-x">Horizontal position</label><input id="portrait-crop-x" type="range" min="-1" max="1" step="0.01" value="0" />
       <label for="portrait-crop-y">Vertical position</label><input id="portrait-crop-y" type="range" min="-1" max="1" step="0.01" value="0" />
-    </div><p id="portrait-crop-status" role="status" aria-live="polite"></p>
+    </fieldset><p id="portrait-crop-status" role="status" aria-live="polite"></p>
     <div data-ui="button-row"><button id="portrait-crop-confirm" type="button" data-ui="button" data-variant="primary">Use this crop</button>
     <button id="portrait-crop-cancel" type="button" data-ui="button-secondary">Cancel</button></div>
   </dialog>`);
@@ -1533,28 +1533,28 @@ export function renderAchievementGalleryPage(apiBaseUrl: string): string {
       <a id="achievements-signin" data-ui="button" data-variant="primary" href="/sign-in" hidden>Sign in to explore achievements</a>
       <div id="achievements-access"></div>
       <section id="achievements-content" hidden>
-        <header class="achievement-heading"><div><p id="achievements-context" class="player-eyebrow"></p><h1 id="achievements-player">Achievement collection</h1>
+        <header><div><p id="achievements-context"></p><h1 id="achievements-player">Achievement collection</h1>
           <p>Every match has a story. Make your mark.</p></div><a id="achievements-back" href="/setup">Back to home</a></header>
-        <div id="achievements-personal-controls" class="player-period-controls">
-          <fieldset id="achievements-scope" class="player-period-picker"><legend class="sr-only">Achievement scope</legend>
+        <div id="achievements-personal-controls" data-ui="period-controls">
+          <fieldset id="achievements-scope"><legend class="sr-only">Achievement scope</legend>
             <label><input type="radio" name="achievement-scope" value="season" checked /><span>Season</span></label>
             <label><input type="radio" name="achievement-scope" value="career" /><span>Career</span></label></fieldset>
-          <div id="achievements-season-field" class="player-season-field" data-ui="field"><label for="achievements-season">Season</label><select id="achievements-season" data-ui="input"></select></div>
+          <div id="achievements-season-field" data-ui="field"><label for="achievements-season">Season</label><select id="achievements-season" data-ui="input"></select></div>
         </div>
-        <div class="achievement-filters">
+        <search>
           <div data-ui="field"><label for="achievement-search">Find an achievement</label><input id="achievement-search" type="search" data-ui="input" placeholder="Search achievements" /></div>
           <div data-ui="field"><label for="achievement-rarity">Rarity</label><select id="achievement-rarity" data-ui="input"><option value="All">All rarities</option><option>Common</option><option>Rare</option><option>Legendary</option><option>Epic</option></select></div>
           <div id="achievement-earned-field" data-ui="field"><label for="achievement-earned">Collection</label><select id="achievement-earned" data-ui="input"><option value="all">All</option><option value="earned">Earned</option><option value="to-unlock">To unlock</option></select></div>
           <button id="achievement-reset" type="button" data-ui="button-secondary">Reset filters</button>
-        </div>
-        <p id="achievement-count" role="status" aria-live="polite"></p><div id="achievement-grid" class="achievement-grid"></div>
+        </search>
+        <p id="achievement-count" role="status" aria-live="polite"></p><div id="achievement-grid"></div>
         <p id="achievement-empty" hidden>No achievements match these filters. Try another search.</p>
       </section>
-      <dialog id="achievement-detail" class="player-dialog achievement-detail" aria-labelledby="achievement-detail-title">
-        <div class="player-dialog-heading"><h2 id="achievement-detail-title"></h2><button id="achievement-detail-close" type="button" data-ui="button-secondary">Close</button></div>
-        <div class="achievement-detail-layout"><div id="achievement-detail-art" class="achievement-detail-art"></div><div>
-          <p id="achievement-detail-rarity" class="achievement-rarity"></p><p id="achievement-detail-rule"></p>
-          <ul id="achievement-detail-conditions" class="achievement-conditions"></ul><div id="achievement-detail-progression"></div>
+      <dialog id="achievement-detail" aria-labelledby="achievement-detail-title">
+        <header><h2 id="achievement-detail-title"></h2><button id="achievement-detail-close" type="button" data-ui="button-secondary">Close</button></header>
+        <div><div id="achievement-detail-art"></div><div>
+          <p id="achievement-detail-rarity"></p><p id="achievement-detail-rule"></p>
+          <ul id="achievement-detail-conditions"></ul><div id="achievement-detail-progression"></div>
           <section id="achievement-detail-personal"><h3>Your collection</h3><p id="achievement-detail-progress"></p><p id="achievement-detail-first"></p><p id="achievement-detail-highest"></p>
             <ol id="achievement-detail-unlocks"></ol><button id="achievement-detail-more" type="button" data-ui="button-secondary" hidden>Load earlier unlocks</button></section>
           <p id="achievement-detail-status" role="status" aria-live="polite"></p>

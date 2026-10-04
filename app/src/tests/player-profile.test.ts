@@ -8,7 +8,7 @@ import { appearance, performance } from './player-profile-fixtures.js';
 
 const html = `<body><div id="account-actions" hidden><button id="sign-out" disabled>Sign out</button><p id="sign-out-status"></p></div><main id="player-profile">
 <p id="player-status"></p><a id="player-signin" hidden>Sign in</a><button id="player-retry">Retry</button><div id="player-access"></div><section id="player-content" hidden>
-<h1 id="player-name"></h1><p id="player-league"></p><div id="player-avatar"></div><div class="player-season-field"><select id="player-season"></select></div>
+<h1 id="player-name"></h1><p id="player-league"></p><div id="player-avatar"></div><div data-ui="field"><select id="player-season"></select></div>
 <fieldset id="player-period"><input type="radio" name="period" value="season" checked><input type="radio" name="period" value="career"><input type="radio" name="period" value="last"></fieldset>
 <h2 id="player-period-title"></h2><dl id="player-stats"></dl><div id="player-latest"></div><ol id="player-history-list"></ol><p id="player-history-status"></p><button id="player-history-more">Load more</button><a id="player-edit">Edit</a></section></main></body>`;
 function fixture(overrides: Partial<PlayerClient> = {}, search = '') {
@@ -29,11 +29,11 @@ test('profile opens on supplied season, shows authoritative grid and team totals
   try {
     await f.mounted.ready; assert.deepEqual(queries, ['summer']); assert.equal(f.root.querySelector('#player-name')?.textContent, '<Xavier>'); assert.equal(f.root.querySelector('xavier'), null);
     assert.match(f.root.querySelector('#player-stats')!.textContent!, /Played1Goals2Assists1Wins1Draws0Own goals0Goals \/ game2/);
-    assert.match(f.root.querySelector('.player-team-totals')!.textContent!, /4Scored1Conceded/);
+    assert.match(f.root.querySelector('#player-latest dl')!.textContent!, /Scored4Conceded1/);
     assert.equal(f.root.textContent?.includes('private@example.com'), false); assert.equal(f.root.querySelector<HTMLAnchorElement>('#player-edit')!.hidden, false);
     period(f, 'last'); await settle(() => f.root.querySelector('#player-stats')?.textContent?.includes('ResultWin') === true);
-    assert.equal(f.root.querySelector<HTMLElement>('.player-season-field')!.hidden, true); assert.equal(f.root.querySelector<HTMLSelectElement>('#player-season')!.value, 'summer');
-    period(f, 'season'); await settle(() => f.root.querySelector<HTMLElement>('.player-season-field')!.hidden === false); assert.equal(f.root.querySelector<HTMLSelectElement>('#player-season')!.value, 'summer');
+    assert.equal(f.root.querySelector<HTMLElement>('#player-season')!.closest<HTMLElement>('[data-ui="field"]')!.hidden, true); assert.equal(f.root.querySelector<HTMLSelectElement>('#player-season')!.value, 'summer');
+    period(f, 'season'); await settle(() => f.root.querySelector<HTMLElement>('#player-season')!.closest<HTMLElement>('[data-ui="field"]')!.hidden === false); assert.equal(f.root.querySelector<HTMLSelectElement>('#player-season')!.value, 'summer');
     period(f, 'last'); await settle(() => f.root.querySelectorAll('#player-stats dt').length === 4);
     assert.equal(f.root.querySelectorAll('#player-stats dt').length, 4); assert.equal(f.root.querySelector<HTMLAnchorElement>('#player-history-list a')?.getAttribute('href'), '/games/game%2Fone');
   } finally { f.close(); }
