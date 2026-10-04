@@ -1030,6 +1030,7 @@ function createHarness(config: HarnessConfig = {}) {
       async getPlayerHistory() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
       async getPlayerAchievements() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
       async getPlayerUnlocks() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
+      async listMyPlayerProfiles() { return { profiles: [], cursor: null, complete: true }; },
       async listPlayerAccess() { throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable."); },
       ...config.profileReads,
       async getOwnerPlayerProfile() { throw new PlayerIdentityError("owner_profile_unavailable", 503, "Player details are unavailable."); },
@@ -1059,7 +1060,8 @@ function createHarness(config: HarnessConfig = {}) {
         const uniqueIds = new Set(accessibleLeagueIds);
         return [...uniqueIds]
           .map((leagueId) => leagues.get(leagueId))
-          .filter((league): league is MockLeagueRecord => Boolean(league));
+          .filter((league): league is MockLeagueRecord => Boolean(league))
+          .map(league => ({ ...league, hasManagementAccess: Object.values(config.leagueAccess ?? {}).some(entry => entry.userId === userId && entry.leagueId === league.leagueId && ["admin", "scorekeeper"].includes(entry.role)) }));
       },
       async createLeague(input) {
         createdLeagues.push(input);
@@ -8497,6 +8499,11 @@ test("profile Lambda routes share session binding, safe responses and independen
     assert.doesNotMatch(result.body, /private@example|verified-subject/);
     assert.equal((await request("/v1/player-history", query + "&userId=spoofed")).statusCode, 400);
     assert.equal(calls.length, 1);
+    const mine = await request("/v1/my-player-profiles", "");
+    assert.equal(mine.statusCode, 200);
+    assert.equal(mine.headers?.["cache-control"], "no-store");
+    assert.deepEqual(JSON.parse(mine.body), { profiles: [], cursor: null, complete: true });
+    assert.equal((await request("/v1/my-player-profiles", "", false)).statusCode, 401);
     const catalogue = await request("/v1/achievement-catalogue", "");
     assert.equal(catalogue.statusCode, 200); assert.equal(JSON.parse(catalogue.body).achievements.length, 23);
     process.env.PLAYER_ACHIEVEMENTS_ENABLED = "false";
@@ -8591,4 +8598,19 @@ test("portrait Lambda routes return authenticated binary PNG and protect owner-o
     if (before.profile === undefined) delete process.env.PLAYER_PROFILES_ENABLED; else process.env.PLAYER_PROFILES_ENABLED = before.profile;
     if (before.owner === undefined) delete process.env.PLAYER_OWNER_EDITING_ENABLED; else process.env.PLAYER_OWNER_EDITING_ENABLED = before.owner;
   }
+});
+
+
+for (const roles of [['viewer', 'viewer'], ['scorekeeper', 'viewer'], ['viewer', 'admin']] as const)
+test(`league navigation management signal combines subject/email roles ${roles.join('/')}`, async () => {
+  const stamp = '2026-02-23T00:00:00.000Z';
+  const harness = createHarness({ sessions: { owner: { sessionId: 'owner', subject: 'subject', email: 'legacy@example.test', createdAt: stamp, expiresAt: '2026-02-24T00:00:00.000Z' } },
+    leagues: { league: { leagueId: 'league', name: 'League', slug: null, createdByUserId: 'organiser', createdAt: stamp, updatedAt: stamp } },
+    leagueAccess: Object.fromEntries(['subject', 'legacy@example.test'].map((userId, index) => [`league:${userId}`, { leagueId: 'league', userId, role: roles[index], grantedByUserId: 'organiser', createdAt: stamp, updatedAt: stamp }])) });
+  const response = await harness.handler(createEvent({ method: 'GET', path: '/v1/leagues', cookies: ['threefc_session=owner'] }));
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.hasManagementAccess, roles.some(role => role === 'admin' || role === 'scorekeeper'));
+  assert.equal(body.leagues.length, 1);
+  assert.equal(body.leagues[0].hasManagementAccess, undefined);
 });

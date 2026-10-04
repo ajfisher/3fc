@@ -362,3 +362,108 @@ test('portrait pointer scope corruption fails closed and discovery does not add 
   const page = await access.discover(caller); assert.deepEqual(page.players.map(player => player.playerId), ['owner']);
   assert(client.transactions.at(-1)!.every(action => action.ConditionCheck?.Key?.sk.S !== 'PRESENTATION'));
 });
+
+// Context-free navigation uses the same fixtures/access authority, but its
+// bounded claim/league discovery can issue direct consistent point reads.
+async function myProfilesFixture() {
+  const f = fixture(), send = f.client.send.bind(f.client);
+  f.client.send = async command => {
+    if (command instanceof GetItemCommand) {
+      assert.equal(command.input.ConsistentRead, true);
+      return { Item: structuredClone(f.client.items.get(itemKey(command.input.Key!))) };
+    }
+    return send(command);
+  };
+  const { MyPlayerProfiles } = await import('../data/my-player-profiles.js');
+  const service = new MyPlayerProfiles(f.client, 'table');
+  const all = async (caller = f.caller) => {
+    const result: Array<{ playerId: string; displayName: string; leagueId: string; leagueName: string }> = [];
+    let cursor: string | undefined;
+    for (let step = 0; step < 40; step++) {
+      const page = await service.list({ ...caller, cursor }); result.push(...page.profiles);
+      assert.equal(page.complete, page.cursor === null);
+      if (!page.cursor) return result;
+      cursor = page.cursor;
+    }
+    assert.fail('profile discovery must terminate');
+  };
+  return { ...f, service, all };
+}
+
+test('own profile discovery follows both account namespaces and lists only current canonical league links', async () => {
+  const f = await myProfilesFixture();
+  addAliases(f.client, 'owner', ['alias']);
+  f.client.seed(`USER#${email}`, playerClaimSk('alias'), 'playerClaim', { playerId: 'alias', userId: email });
+  addPlayer(f.client, 'unclaimed', null);
+  f.client.seed(`USER#${account}`, playerClaimSk('unclaimed'), 'playerClaim', { playerId: 'unclaimed', userId: account });
+  addPlayer(f.client, 'email-player', email);
+  const result = await f.all();
+  assert.deepEqual(result.map(row => row.playerId).sort(), ['email-player', 'owner']);
+  assert(result.every(row => row.leagueId === 'league' && row.leagueName === 'Test league'));
+  assert(!JSON.stringify(result).includes('@'));
+  assert(f.client.queries.every(query => query.Limit! <= 5));
+});
+
+test('own profile discovery continues bounded league pages and skips inactive/deleted membership', async () => {
+  const f = await myProfilesFixture();
+  for (let index = 0; index < 7; index++) {
+    const leagueId = `league-${index}`;
+    f.client.seed(`LEAGUE#${leagueId}`, 'METADATA', 'league', { leagueId, name: leagueId });
+    f.client.seed('PLAYER#owner', identityLeagueSk(leagueId), 'playerLeagueMembership', { playerId: 'owner', leagueId });
+    f.client.seed(`LEAGUE#${leagueId}`, identityDirectorySk('owner'), 'leaguePlayer', { playerId: 'owner', active: index !== 5, nickname: 'Owner' });
+    if (index === 6) f.client.seed('PLAYER_IDENTITY_TOMBSTONE', identityTombstoneSk('league', [leagueId]), 'playerIdentityTombstone', { leagueId });
+  }
+  const result = await f.all();
+  assert.deepEqual(result.map(row => row.leagueId).sort(), ['league', 'league-0', 'league-1', 'league-2', 'league-3', 'league-4']);
+  assert(f.client.queries.filter(query => query.ExpressionAttributeValues?.[':prefix'].S === 'LEAGUE#').length >= 2);
+});
+
+test('own profile cursors reject another account, changed claims and malformed continuations', async () => {
+  const f = await myProfilesFixture(), first = await f.service.list(f.caller);
+  assert(first.cursor);
+  await assert.rejects(f.service.list({ userId: 'another', cursor: first.cursor }), /Start a new player search/);
+  const state = JSON.parse(Buffer.from(first.cursor, 'base64url').toString('utf8'));
+  state.pending = { playerId: 'target', claimKey: playerClaimSk('target'), leagueAfter: 'not-a-membership' };
+  await assert.rejects(f.service.list({ ...f.caller, cursor: Buffer.from(JSON.stringify(state)).toString('base64url') }), /Start a new player search/);
+  f.client.seed(`USER#${account}`, 'PLAYER_CLAIMS_REVISION', 'playerClaimsRevision', { revision: 'changed' });
+  await assert.rejects(f.service.list({ ...f.caller, cursor: first.cursor }), /Start a new player search/);
+});
+
+test('own profile discovery never publishes a profile whose ownership changes during access verification', async () => {
+  const f = await myProfilesFixture();
+  f.client.beforeCommit = () => { claimRoot(f.client, 'owner', 'different-account'); };
+  await assert.rejects(f.service.list(f.caller), /Player access changed/);
+});
+
+test('own profile discovery supports oversized claim identifiers and an empty account', async () => {
+  const f = await myProfilesFixture(), id = 'x'.repeat(1100);
+  addPlayer(f.client, id, email);
+  assert((await f.all()).some(row => row.playerId === id));
+  assert.deepEqual(await f.all({ ...f.caller, userId: 'nobody', userIds: ['nobody'] }), []);
+});
+
+
+test('own profile pagination follows DynamoDB UTF-8 ordering for opaque Unicode player IDs', async () => {
+  const f = await myProfilesFixture();
+  addPlayer(f.client, '\ue000', account);
+  addPlayer(f.client, '\u{1f600}', account);
+  const ids = (await f.all()).map(row => row.playerId);
+  assert.deepEqual(ids, ['owner', '\ue000', '\u{1f600}']);
+});
+
+test('own profile discovery preserves an empty claim page continuation before advancing namespaces', async () => {
+  const f = await myProfilesFixture();
+  let empty = true;
+  f.client.queryOverride = result => {
+    if (empty) {
+      empty = false;
+      return { Items: [], LastEvaluatedKey: historyKey(`USER#${account}`, 'PLAYER#0') };
+    }
+    return result;
+  };
+  const first = await f.service.list(f.caller);
+  assert.deepEqual(first.profiles, []); assert(first.cursor);
+  const second = await f.service.list({ ...f.caller, cursor: first.cursor });
+  assert.deepEqual(second.profiles.map(row => row.playerId), ['owner']);
+  assert.deepEqual(f.client.queries[1].ExclusiveStartKey, historyKey(`USER#${account}`, 'PLAYER#0'));
+});

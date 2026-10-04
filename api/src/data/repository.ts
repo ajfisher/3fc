@@ -1,3 +1,4 @@
+import { MyPlayerProfiles } from './my-player-profiles.js';
 import {
   DeleteItemCommand,
   GetItemCommand,
@@ -1090,6 +1091,10 @@ export class ThreeFcRepository {
   getPlayerHistory(input: Parameters<PlayerProfileReadService["history"]>[0]) { return this.profileReadService().history(input); }
   getPlayerAchievements(input: Parameters<PlayerProfileReadService["achievements"]>[0]) { return this.profileReadService().achievements(input); }
   getPlayerUnlocks(input: Parameters<PlayerProfileReadService["unlocks"]>[0]) { return this.profileReadService().unlocks(input); }
+  listMyPlayerProfiles(input: Parameters<MyPlayerProfiles["list"]>[0]) {
+    if (process.env.PLAYER_PROFILES_ENABLED !== "true") throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable.");
+    return new MyPlayerProfiles(this.client, this.tableName).list(input);
+  }
   listPlayerAccess(input: Parameters<PlayerProfileAccess["discover"]>[0]) {
     if (process.env.PLAYER_PROFILES_ENABLED !== "true") throw new PlayerIdentityError("player_profiles_disabled", 503, "Player profiles are temporarily unavailable.");
     return new PlayerProfileAccess(this.client, this.tableName).discover(input);
@@ -1200,10 +1205,11 @@ export class ThreeFcRepository {
     return withTimestamps(item.data as Omit<LeagueRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
   }
 
-  async listLeaguesForUser(userId: string): Promise<LeagueRecord[]> {
+  async listLeaguesForUser(userId: string): Promise<Array<LeagueRecord & { hasManagementAccess: boolean }>> {
     requireNonEmpty("userId", userId);
 
     const leagueIds = new Set<string>();
+    const managementLeagues = new Set<string>();
     const seenCursors = new Set<string>();
     let cursor: ScanCommandOutput["LastEvaluatedKey"];
     do {
@@ -1235,7 +1241,10 @@ export class ThreeFcRepository {
           typeof (data as { userId?: unknown }).userId === "string" &&
           (data as { userId: string }).userId === userId
         ) {
-          leagueIds.add((data as { leagueId: string }).leagueId);
+          const leagueId = (data as { leagueId: string }).leagueId;
+          leagueIds.add(leagueId);
+          const role = (data as { role?: unknown }).role;
+          if (role === "admin" || role === "scorekeeper") managementLeagues.add(leagueId);
         }
       }
       const next = scanResult.LastEvaluatedKey;
@@ -1254,7 +1263,8 @@ export class ThreeFcRepository {
     const leagues = await Promise.all([...leagueIds].map((leagueId) => this.getLeague(leagueId)));
     return leagues
       .filter((league): league is LeagueRecord => league !== null)
-      .sort((left, right) => left.name.localeCompare(right.name));
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map(league => ({ ...league, hasManagementAccess: managementLeagues.has(league.leagueId) }));
   }
 
   async createSeason(input: CreateSeasonInput): Promise<SeasonRecord> {

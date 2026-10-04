@@ -1,6 +1,6 @@
 # Player profiles, Club Cards and achievements
 
-Approved implementation brief · 3 October 2026. Supersedes the design study's
+Approved implementation brief · 3 October 2026; UI refinements · 4 October 2026. Supersedes the design study's
 19-badge launch proposal and unresolved decisions. Delivery is tracked in
 [player-profile-delivery.md](player-profile-delivery.md) and the canonical backlog.
 
@@ -30,8 +30,14 @@ season. With no appearances, select the league's most recent season.
 | Season | Played, goals, assists, wins, draws, own goals, goals/game |
 | Career | Same as Season, across the player's recorded history in this league |
 
-Keep the latest completed game and team scored/conceded summary visible. Provide
-a newest-first match log, 20 entries per page, explicit Load more and match links.
+Place the name before the league underneath it, with the identity block centred
+against the portrait. Centre each statistic and its label. Open the card through
+a link-style action inside the statistics panel.
+
+Season and Career show a newest-first match log, 20 entries per page, explicit
+Load more and match links. Last game instead shows a compact Last match summary:
+linked date, result and plain team scored/conceded totals, without repeating the
+player contributions or match history.
 Make profiles reachable from relevant league, season, roster and result names.
 The grid, log and card use the same authoritative contribution facts. Include
 loading, empty, updating and unavailable states. Incomplete totals must not appear
@@ -50,7 +56,11 @@ name and gold linework badges. Use the approved three-sided hexagonal pitch for
 Played. Open a dialog for the selected period, flip between performance and
 honours, and restore focus on close. Export either side as a 1200 × 1560 PNG;
 offer native file sharing where supported and download otherwise. Export failure
-allows retry without losing period or side.
+allows retry without losing period or side. Use Achievements / Statistics for
+the flip action and accessible icons for share/download. Refresh expiring share
+authorisation silently; retain explicit retry for actual failures. The reverse
+is titled Top achievements, with an additional-achievement count and one All
+achievements action into the scoped gallery instead of repeating the badge list.
 
 The reverse holds up to five badge classes in the five-dot die arrangement.
 Select by rarity (Epic, Legendary, Rare, Common), milestone ordinal descending,
@@ -77,6 +87,8 @@ validation and re-encoding strip metadata; store only processed images in privat
 object storage. Reads enforce the same league visibility rules as profiles. Delete
 or replace cleans old objects; removal immediately restores initials. Explain before
 saving that authorised league viewers and shared card images show the portrait.
+Photo selection waits for any in-flight account check after the native picker
+closes, then opens the crop. Preview locally; upload only on Save portrait.
 
 ## Achievement gallery
 
@@ -86,12 +98,38 @@ Reuse the approved vectors and gallery layout in the app. The shared versioned
 use the same rules and milestone scales. No independently hardcoded unlock copy.
 
 Show all enabled classes, including unearned ones. Support search, rarity and
-All / Earned / To unlock in a player context. Show player and season/career scope,
+All / Earned / To unlock in a player context, defaulting to Earned. Order filters
+Collection, Rarity, Find an achievement. Show player and season/career scope,
 confirmed progress, highest milestone and dates; unknown history is not locked or
 zero. Details explain qualifying actions, first unlock, milestone progression,
 team eligibility and timing/counting conditions. Profile/card links open the
 corresponding detail. Preserve filters and scroll, keyboard dismissal and focus
-return. Remove study controls, arbitrary star sliders and artwork downloads.
+return. Display concise Progress: X / Y on cards; retain unknown/partial history
+qualifiers. Detail lists use stars without repeated ordered counters and load
+unlock history automatically as Achieved dates. Place progress to the next
+milestone after that history. Remove redundant first/highest-unlock summaries,
+study controls, arbitrary star sliders and artwork downloads.
+
+## Personal navigation
+
+The shared header links to My profile at `/player`. Resolve that entry from the
+signed-in account's verified claims; show a choice when multiple league profiles
+exist and an explicit unlinked state when none do. The dashboard sends linked
+players without management roles to their profile. Organisers/scorers retain the
+dashboard. Unknown roles, failed discovery or user interaction keep the dashboard
+usable; explicit league/game/profile links retain their requested destination.
+
+`GET /v1/my-player-profiles` uses existing account claim, canonical identity and
+reverse league-membership records. One request visits one claim and at most five
+league links, rechecking current ownership and league visibility. Cursors bind
+to verified session identities and claim/identity revisions; clients follow empty
+continuation pages and do not assume a sole profile until discovery is complete.
+No new index, table scan, migration or write authority is introduced. The existing
+`GET /v1/leagues` response supplies `hasManagementAccess`, combining admin/scorer
+ACL roles across verified subject/email identities solely as a navigation hint.
+Every protected action still checks its own authority. Both local HTTP and Lambda
+use the shared profile handler; disabled profiles or unavailable discovery fall
+back safely. See the documented routes in `docs/openapi/v1-core-write.yaml`.
 
 ## Achievement rules
 

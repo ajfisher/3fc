@@ -223,6 +223,49 @@ paths:
           "application/json":
             "schema":
               "$ref": "#/components/schemas/RenameOwnerPlayer"
+  /v1/my-player-profiles:
+    get:
+      operationId: listMyPlayerProfiles
+      summary: Discover the signed-in account's player profiles and leagues
+      description: Uses verified session identities and existing canonical claim and league membership indexes. Visits one claim and at most five league memberships per request, without scans. Follow cursors even after empty pages. Returns only currently owned, active league profiles; does not grant management authority. Uses the player profiles feature flag, Cache-Control no-store and Referrer-Policy no-referrer.
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 8192 }
+      responses:
+        "200":
+          description: Safe owned profile links and explicit continuation.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [profiles, cursor, complete]
+                properties:
+                  profiles:
+                    type: array
+                    maxItems: 5
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [playerId, displayName, leagueId, leagueName]
+                      properties:
+                        playerId: { type: string, minLength: 1 }
+                        displayName: { type: string, minLength: 1 }
+                        leagueId: { type: string, minLength: 1 }
+                        leagueName: { type: string, minLength: 1 }
+                  cursor: { type: [string, "null"] }
+                  complete: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/PlayerDirectoryUnavailable"
   "/v1/player-access":
     "get":
       "operationId": "listPlayerAccess"
@@ -1032,6 +1075,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
   /v1/leagues:
+    get:
+      operationId: listAccountLeagues
+      summary: List ACL leagues and whether the current account has management duties
+      description: Combines subject and legacy email ACLs. hasManagementAccess is true for admin or scorekeeper roles, false for viewer-only or no ACLs. It is a navigation hint; every management action still checks its own current authority.
+      responses:
+        "200":
+          description: Existing league list plus an authoritative management navigation signal.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [leagues, hasManagementAccess]
+                properties:
+                  leagues:
+                    type: array
+                    items: { $ref: "#/components/schemas/League" }
+                  hasManagementAccess: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     post:
       summary: Create league
       operationId: createLeague

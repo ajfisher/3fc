@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
-import { bindPlayerAccount, createPlayerClient, parsePlayerHistory, parsePlayerPerformance, playerHref, PlayerClientError } from '../ui/player-client.js';
+import { bindPlayerAccount, createPlayerClient, parseMyPlayerProfiles, parsePlayerHistory, parsePlayerPerformance, playerHref, PlayerClientError } from '../ui/player-client.js';
 import { appearance, performance, totals } from './player-profile-fixtures.js';
 
 test('browser profile parsing keeps unavailable distinct from zero and removes extra private fields', () => {
@@ -60,4 +60,21 @@ test('account controls become available for a newly verified session after signo
     const next = bindPlayerAccount(dom.window.document, client, () => {});
     try { next.setAuthenticated(true); assert.equal(button.hidden, false); assert.equal(button.disabled, false); } finally { next.destroy(); }
   } finally { first.destroy(); dom.window.close(); }
+});
+
+
+test('owned profile discovery validates completion, bounds pages and strips private fields', async () => {
+  const profile = { playerId: 'opaque/player', displayName: 'Player', leagueId: 'league', leagueName: 'League' };
+  assert.deepEqual(parseMyPlayerProfiles({ profiles: [{ ...profile, email: 'private@example.com' }], cursor: null, complete: true }), { profiles: [profile], cursor: null, complete: true });
+  for (const value of [{ profiles: [], cursor: 'next', complete: true }, { profiles: [], cursor: null, complete: false },
+    { profiles: [profile, profile], cursor: null, complete: true }, { profiles: Array(6).fill(profile), cursor: null, complete: true }])
+    assert.throws(() => parseMyPlayerProfiles(value), PlayerClientError);
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const client = createPlayerClient({ baseUrl: 'https://api.example.test', fetch: async (url, init) => {
+    requests.push({ url: String(url), init }); return new Response(JSON.stringify({ profiles: [profile], cursor: null, complete: true }));
+  } });
+  await client.myProfiles({ cursor: 'opaque/+' });
+  assert.equal(new URL(requests[0].url).pathname, '/v1/my-player-profiles');
+  assert.equal(new URL(requests[0].url).searchParams.get('cursor'), 'opaque/+');
+  assert.equal(requests[0].init?.credentials, 'include'); assert.equal(requests[0].init?.cache, 'no-store');
 });

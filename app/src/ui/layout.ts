@@ -76,7 +76,7 @@ function renderAccountActions(): string {
 
 function renderManagementNavigation(home = false): string {
   return `<div data-ui="site-header">
-    <nav data-ui="site-nav" aria-label="Primary"><a href="/setup"${home ? ' aria-current="page"' : ""}>Home</a><a href="/achievements">Achievements</a></nav>
+    <nav data-ui="site-nav" aria-label="Primary"><a href="/setup"${home ? ' aria-current="page"' : ""}>Home</a><a href="/player">My profile</a></nav>
     ${renderAccountActions()}
   </div>`;
 }

@@ -135,3 +135,20 @@ test('photo selection survives focus verification, then crops, previews and uplo
   expect(saves).toBe(1);
   await expect(page.locator('#owner-photo-preview')).toHaveAttribute('alt', 'Current player portrait');
 });
+
+test('My profile opens the single owned profile and multiple leagues show keyboard-accessible choices', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 }); await mockApi(page);
+  let multiple = false;
+  await page.route('**/v1/my-player-profiles?*', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+    profiles: [{ playerId: 'player-one', displayName: 'Alex Rivera', leagueId: 'league-one', leagueName: 'Three-sided football' },
+      ...(multiple ? [{ playerId: 'player-two', displayName: 'Alex Rivera', leagueId: 'league-two', leagueName: 'Second league' }] : [])], cursor: null, complete: true,
+  }) }));
+  await page.goto('/player'); await expect(page.locator('#player-name')).toHaveText('Alex Rivera');
+  await expect(page.locator('[data-ui=site-nav]').getByRole('link', { name: 'My profile' })).toHaveAttribute('href', '/player');
+  multiple = true; await page.goto('/player');
+  await expect(page.locator('#player-access a')).toHaveCount(2);
+  await expect(page.locator('#player-content')).not.toBeVisible();
+  const second = page.locator('#player-access a').nth(1); await second.focus(); await expect(second).toBeFocused();
+  await expect(second).toContainText('Second league');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

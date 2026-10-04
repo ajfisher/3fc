@@ -11,8 +11,8 @@ const html = `<body><div id="account-actions" hidden><button id="sign-out" disab
 <h1 id="player-name"></h1><p id="player-league"></p><div id="player-avatar"></div><div data-ui="field"><select id="player-season"></select></div>
 <fieldset id="player-period"><input type="radio" name="period" value="season" checked><input type="radio" name="period" value="career"><input type="radio" name="period" value="last"></fieldset>
 <h2 id="player-period-title"></h2><dl id="player-stats"></dl><section><div id="player-latest"></div></section><section><ol id="player-history-list"></ol><p id="player-history-status"></p><button id="player-history-more">Load more</button></section><a id="player-edit">Edit</a></section></main></body>`;
-function fixture(overrides: Partial<PlayerClient> = {}, search = '') {
-  const dom = new JSDOM(html, { url: `https://3fc.football/player?leagueId=league&playerId=player%2Froot${search}` });
+function fixture(overrides: Partial<PlayerClient> = {}, search = '', own = false) {
+  const dom = new JSDOM(html, { url: own ? 'https://3fc.football/player' : `https://3fc.football/player?leagueId=league&playerId=player%2Froot${search}` });
   const client: PlayerClient = { ...createPlayerClient({ baseUrl: dom.window.location.origin, fetch: async () => { throw new Error('Unexpected network'); } }),
     session: async () => ({ authenticated: true, session: { sessionId: 'session', email: 'private@example.com', subject: 'subject' } }),
     performance: async context => ({ ...performance, ...(context.seasonId ? { selectedSeasonId: context.seasonId } : {}) }),
@@ -102,4 +102,59 @@ test('unavailable match page does not become a confirmed empty history and sign-
   try { await f.mounted.ready; assert.match(f.root.querySelector('#player-history-status')!.textContent!, /unavailable/); assert.doesNotMatch(f.root.querySelector('#player-history-status')!.textContent!, /No completed/); } finally { f.close(); }
   const g = fixture({ session: async () => ({ authenticated: false, session: null }) });
   try { await g.mounted.ready; const link = g.root.querySelector<HTMLAnchorElement>('#player-signin')!; assert.equal(link.hidden, false); assert.equal(new URL(link.href).searchParams.get('returnTo'), '/player?leagueId=league&playerId=player%2Froot'); } finally { g.close(); }
+});
+
+
+const ownedProfile = { playerId: 'player/root', displayName: 'Xavier', leagueId: 'league', leagueName: '3FC' };
+test('My profile follows empty discovery pages before opening the only verified profile', async () => {
+  const pages: Array<string | undefined> = [], requested: string[] = [];
+  const f = fixture({ myProfiles: async (page = {}) => {
+    pages.push(page.cursor);
+    return page.cursor ? { profiles: [ownedProfile], cursor: null, complete: true } : { profiles: [], cursor: 'next', complete: false };
+  }, performance: async context => { requested.push(context.playerId); return performance; } }, '', true);
+  try {
+    await f.mounted.ready;
+    assert.deepEqual(pages, [undefined, 'next']); assert.deepEqual(requested, ['player/root']);
+    assert.equal(f.root.querySelector('#player-name')!.textContent, '<Xavier>');
+    assert.equal(new URL(f.dom.window.location.href).searchParams.get('playerId'), 'player/root');
+  } finally { f.close(); }
+});
+
+for (const count of [0, 2]) test(`My profile offers ${count ? 'a chooser' : 'an unlinked state'} without guessing a player`, async () => {
+  let performanceReads = 0;
+  const profiles = count ? [ownedProfile, { ...ownedProfile, leagueId: 'league/two', leagueName: 'Second league' }] : [];
+  const f = fixture({ myProfiles: async () => ({ profiles, cursor: null, complete: true }), performance: async () => { performanceReads++; return performance; } }, '', true);
+  try {
+    await f.mounted.ready; assert.equal(performanceReads, 0); assert.equal(f.root.querySelector<HTMLElement>('#player-content')!.hidden, true);
+    assert.equal(f.root.querySelectorAll('#player-access a').length, count);
+    assert.match(f.root.querySelector('#player-status')!.textContent!, count ? /Choose your player/ : /No linked player/);
+    if (count) assert.equal(new URL(f.root.querySelectorAll<HTMLAnchorElement>('#player-access a')[1].href).searchParams.get('leagueId'), 'league/two');
+  } finally { f.close(); }
+});
+
+test('incomplete discovery never auto-opens even when the first page has one profile', async () => {
+  let pages = 0, performanceReads = 0;
+  const f = fixture({ myProfiles: async () => ({ profiles: ++pages === 1 ? [ownedProfile] : [], cursor: `next-${pages}`, complete: false }),
+    performance: async () => { performanceReads++; return performance; } }, '', true);
+  try {
+    await f.mounted.ready; assert.equal(pages, 20); assert.equal(performanceReads, 0);
+    assert.match(f.root.querySelector('#player-access button')!.textContent!, /Continue checking/);
+    f.client.myProfiles = async () => ({ profiles: [], cursor: null, complete: true });
+    f.root.querySelector<HTMLButtonElement>('#player-access button')!.click();
+    await settle(() => performanceReads === 1);
+  } finally { f.close(); }
+});
+
+test('My profile account changes and failed discovery do not display or open known partial choices', async () => {
+  for (const changedAccount of [false, true]) {
+    let sessions = 0, reads = 0;
+    const f = fixture({ session: async () => ({ authenticated: true, session: { sessionId: changedAccount && ++sessions > 1 ? 'changed' : 'original', email: 'private@example.com' } }),
+      myProfiles: async page => { if (page?.cursor) throw new Error('unavailable'); return { profiles: [ownedProfile], cursor: 'next', complete: false }; },
+      performance: async () => { reads++; return performance; } }, '', true);
+    try {
+      await f.mounted.ready; assert.equal(reads, 0); assert.equal(f.root.querySelectorAll('#player-access a').length, 0);
+      assert.equal(f.root.querySelector<HTMLElement>('#player-content')!.hidden, true);
+      assert.match(f.root.querySelector('#player-status')!.textContent!, changedAccount ? /sign-in changed/ : /could not be loaded/);
+    } finally { f.close(); }
+  }
 });

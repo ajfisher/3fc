@@ -451,15 +451,17 @@ type LeagueListRecord = Awaited<ReturnType<ThreeFcRepository["listLeaguesForUser
 async function listLeaguesForSession(
   session: Pick<AuthSessionRecord, "email" | "subject">,
   repositoryClient: Pick<ThreeFcRepository, "listLeaguesForUser"> = repository,
-): Promise<LeagueListRecord[]> {
+): Promise<{ leagues: Array<Omit<LeagueListRecord, "hasManagementAccess">>; hasManagementAccess: boolean }> {
+  let hasManagementAccess = false;
   const leaguesById = new Map<string, LeagueListRecord>();
   for (const userId of sessionUserIds(session)) {
     const leagues = await repositoryClient.listLeaguesForUser(userId);
     for (const league of leagues) {
+      hasManagementAccess ||= league.hasManagementAccess;
       leaguesById.set(league.leagueId, league);
     }
   }
-  return [...leaguesById.values()];
+  return { leagues: [...leaguesById.values()].map(({ hasManagementAccess: _management, ...league }) => league), hasManagementAccess };
 }
 
 function parseTeamId(value: string): TeamId | null {
@@ -3522,11 +3524,9 @@ async function start(): Promise<void> {
         method === "GET" &&
         route === "/v1/leagues"
       ) {
-        const leagues = await listLeaguesForSession(authGate.session);
+        const payload = await listLeaguesForSession(authGate.session);
         status = 200;
-        sendJsonWithCors(request, response, status, {
-          leagues,
-        });
+        sendJsonWithCors(request, response, status, payload);
         return;
       }
 

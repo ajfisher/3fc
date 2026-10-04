@@ -1,3 +1,4 @@
+import type { MyPlayerProfilesPage } from './data/my-player-profiles.js';
 import { z } from 'zod';
 import { ACHIEVEMENT_DEFINITIONS, ACHIEVEMENT_RULE_VERSION, ACHIEVEMENT_CONDITIONS, COMMON_MILESTONES, RARE_MILESTONES,
   type AchievementScopeContext, type PlayerPerformance, type PlayerHistoryPage, type PlayerAchievements, type PlayerUnlockPage } from '@3fc/contracts';
@@ -9,6 +10,7 @@ import { appearanceSchema, totalsSchema, freshnessSchema, unlockSchema, progress
   type ProfileReadInput, type ProfileFeatureFlags } from './data/player-profile-read.js';
 
 export interface PlayerProfileRepository {
+  listMyPlayerProfiles(input: { userId: string; userIds?: string[]; cursor?: string }): Promise<MyPlayerProfilesPage>;
   getPlayerPerformance(input: ProfileReadInput & { seasonId?: string }): Promise<PlayerPerformance>;
   getPlayerHistory(input: ProfileReadInput & { seasonId?: string; cursor?: string }): Promise<PlayerHistoryPage>;
   getPlayerAchievements(input: ProfileReadInput & { scope: AchievementScopeContext }): Promise<PlayerAchievements>;
@@ -37,7 +39,8 @@ export const playerAchievementsSchema = z.discriminatedUnion('scope', [
 export const playerUnlockPageSchema = z.object({ unlocks: z.array(unlockSchema).max(20).nullable(), cursor: z.string().nullable(), freshness: freshnessSchema }).strict();
 export const playerAccessPageSchema = z.object({ leagueId, hasLeagueAcl: z.boolean(), players: z.array(z.object({ playerId, displayName: label }).strict()).max(20),
   cursor: z.string().nullable(), complete: z.boolean() }).strict();
-const paths = ['/v1/player-profile', '/v1/player-history', '/v1/player-achievements', '/v1/player-unlocks', '/v1/player-access', '/v1/achievement-catalogue'];
+export const myPlayerProfilesSchema = z.object({ profiles: z.array(z.object({ playerId, displayName: label, leagueId, leagueName: label }).strict()).max(5), cursor: z.string().nullable(), complete: z.boolean() }).strict();
+const paths = ['/v1/my-player-profiles', '/v1/player-profile', '/v1/player-history', '/v1/player-achievements', '/v1/player-unlocks', '/v1/player-access', '/v1/achievement-catalogue'];
 export const isPlayerProfileRoute = (method: string, route: string): boolean => method === 'GET' && paths.includes(route);
 function query(raw: string, allowed: string[]): Record<string, string> {
   if (raw.length > 24_000) throw new URIError();
@@ -60,18 +63,19 @@ export async function handlePlayerProfileRoute(input: { method: string; route: s
   if (!input.session) return response(401, 'unauthorized', 'Sign in to continue.');
   if (!isPlayerProfileRoute(input.method, input.route)) return response(404, 'not_found', 'Not found.');
   const flags = input.flags ?? profileFeatureFlags();
-  const catalogue = input.route === '/v1/achievement-catalogue';
+  const catalogue = input.route === '/v1/achievement-catalogue', mine = input.route === '/v1/my-player-profiles';
   const needsAchievements = catalogue || ['/v1/player-achievements', '/v1/player-unlocks'].includes(input.route);
   if ((!catalogue && !flags.profiles) || (needsAchievements && !flags.achievements)) return response(404, 'not_found', 'Not found.');
   const invalid = () => response(400, 'bad_request', 'Check the player link and try again.');
   let fields: Record<string, string>;
   try {
-    const allowed = catalogue ? [] : input.route === '/v1/player-access' ? ['leagueId', 'cursor', 'limit']
+    const allowed = catalogue ? [] : mine ? ['cursor'] : input.route === '/v1/player-access' ? ['leagueId', 'cursor', 'limit']
       : ['leagueId', 'playerId', 'viewerPlayerId', ...(['/v1/player-profile', '/v1/player-history', '/v1/player-achievements', '/v1/player-unlocks'].includes(input.route) ? ['seasonId'] : []),
         ...(['/v1/player-history', '/v1/player-unlocks'].includes(input.route) ? ['cursor'] : []),
         ...(['/v1/player-achievements', '/v1/player-unlocks'].includes(input.route) ? ['scope'] : [])];
     fields = query(input.rawQueryString ?? '', allowed);
-    if (!catalogue && (!leagueId.safeParse(fields.leagueId).success
+    if (mine && fields.cursor !== undefined && (!fields.cursor || fields.cursor.length > 8192)) return invalid();
+    if (!catalogue && !mine && (!leagueId.safeParse(fields.leagueId).success
       || (input.route !== '/v1/player-access' && !playerId.safeParse(fields.playerId).success)
       || (fields.viewerPlayerId !== undefined && !playerId.safeParse(fields.viewerPlayerId).success)
       || (fields.seasonId !== undefined && !seasonId.safeParse(fields.seasonId).success)
@@ -88,6 +92,11 @@ export async function handlePlayerProfileRoute(input: { method: string; route: s
   const base: ProfileReadInput = { leagueId: fields.leagueId, playerId: fields.playerId, userId, userIds,
     ...(fields.viewerPlayerId ? { viewerPlayerId: fields.viewerPlayerId } : {}) };
   try {
+    if (mine) {
+      const payload = myPlayerProfilesSchema.parse(await input.repository.listMyPlayerProfiles({ userId, userIds, cursor: fields.cursor }));
+      if (payload.complete !== (payload.cursor === null)) throw new Error('Invalid profile discovery');
+      return { statusCode: 200, payload };
+    }
     if (input.route === '/v1/player-access') {
       const payload = playerAccessPageSchema.parse(await input.repository.listPlayerAccess({ leagueId: fields.leagueId, userId, userIds,
         cursor: fields.cursor, limit: fields.limit === undefined ? undefined : Number(fields.limit) }));

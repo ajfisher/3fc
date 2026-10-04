@@ -5,6 +5,11 @@ export interface PlayerContext { leagueId: string; playerId: string; viewerPlaye
 export type OwnerDetails = Omit<OwnerPlayerProfile, 'email'>;
 export interface PlayerSession { authenticated: boolean; session: { sessionId: string; subject?: string; email: string } | null }
 export interface PlayerAccessPage { leagueId: string; hasLeagueAcl: boolean; players: Array<{ playerId: string; displayName: string }>; cursor: string | null; complete: boolean }
+export interface MyPlayerProfilesPage {
+  profiles: Array<{ playerId: string; displayName: string; leagueId: string; leagueName: string }>;
+  cursor: string | null;
+  complete: boolean;
+}
 export interface PlayerMutation { expectedRevision: string; idempotencyKey: string }
 export class PlayerClientError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); this.name = 'PlayerClientError'; }
@@ -115,6 +120,16 @@ function access(value: unknown): PlayerAccessPage {
   if (complete !== (cursor === null)) return bad();
   return { leagueId: text(v.leagueId), hasLeagueAcl: bool(v.hasLeagueAcl), players: list(v.players, 20, entry => { const p = record(entry); return { playerId: text(p.playerId), displayName: text(p.displayName) }; }), cursor, complete };
 }
+export function parseMyPlayerProfiles(value: unknown): MyPlayerProfilesPage {
+  const v = record(value), cursor = nullableText(v.cursor), complete = bool(v.complete);
+  if (complete !== (cursor === null) || cursor !== null && cursor.length > 8192) return bad();
+  const profiles = list(v.profiles, 5, entry => {
+    const p = record(entry);
+    return { playerId: text(p.playerId), displayName: text(p.displayName), leagueId: text(p.leagueId), leagueName: text(p.leagueName) };
+  });
+  if (new Set(profiles.map(p => JSON.stringify([p.leagueId, p.playerId]))).size !== profiles.length) return bad();
+  return { profiles, cursor, complete };
+}
 export function playerHref(context: PlayerContext, seasonId?: string): string {
   return `/player?${params({ ...context, seasonId })}`;
 }
@@ -160,6 +175,9 @@ export function createPlayerClient(options: { baseUrl: string; fetch?: typeof fe
     },
     async access(leagueId: string, page: { cursor?: string } = {}, signal?: AbortSignal) {
       const result = access(await json(`/v1/player-access?${params({ leagueId, ...page, limit: 20 })}`, signal)); if (result.leagueId !== leagueId) return bad(); return result;
+    },
+    async myProfiles(page: { cursor?: string } = {}, signal?: AbortSignal): Promise<MyPlayerProfilesPage> {
+      return parseMyPlayerProfiles(await json(`/v1/my-player-profiles?${params(page)}`, signal));
     },
     async catalogue(signal?: AbortSignal): Promise<AchievementCatalogue> { return parseAchievementCatalogue(await json('/v1/achievement-catalogue', signal)); },
     // Callers resolve aliases through performance() before requesting personal honours.

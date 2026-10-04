@@ -2618,7 +2618,8 @@
         "githubIssue": 139,
         "notes": [
           "Explicitly deferred by AJ; keep existing frontend join/claim behaviour unchanged in UX stack.",
-          "Approved player-profile build reactivates the complete linked-history foundation. M3-10 depends on that work; participant-home responsibilities remain in #139 and are not silently closed by projection delivery."
+          "Approved player-profile build reactivates the complete linked-history foundation. M3-10 depends on that work; participant-home responsibilities remain in #139 and are not silently closed by projection delivery.",
+          "2026-10-04 UI follow-up adds verified My profile discovery and participant-only dashboard landing, preserving organiser/scorer workflows. This delivers personal profile navigation; scheduled/live next-game home selection remains in #139, so the issue is not closed by this follow-up."
         ]
       }
     },

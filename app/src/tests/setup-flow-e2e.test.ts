@@ -8,6 +8,7 @@ import { JSDOM } from "jsdom";
 import {
   createDefaultThirdTimerSegments,
   DEFAULT_THIRD_LENGTH_MINUTES,
+  normalizeAppReturnTarget,
   type GameResult,
   type TeamId,
   type ThirdLengthMinutes,
@@ -16392,4 +16393,107 @@ test("auth browser preserves only validated player and gallery return scope", as
     try { assert.deepEqual(page.navigations.at(-1), { url: expected, mode: "replace" }); }
     finally { page.dom.window.close(); }
   }
+});
+
+async function bootParticipantDashboard(input: { management?: boolean; outcome?: 'empty' | 'failed' | 'incomplete' | 'account-changed' | 'multiple' } = {}) {
+  const apiState = createMockApiState();
+  apiState.session = { sessionId: 'player-session', email: 'player@example.test', createdAt: '2026-03-28T11:00:00.000Z', expiresAt: '2026-03-29T11:00:00.000Z' };
+  apiState.cookieJar = 'threefc_session=player-session';
+  const base = createMockFetch(apiState), calls: string[] = [];
+  let pageNumber = 0, sessionReads = 0;
+  const page = await bootPage({ html: renderSetupHomePage('http://localhost:3001'), url: 'http://localhost:3000/setup', scriptFile: 'setup-flow.js', apiState,
+    fetch: async (inputUrl, init) => {
+      const url = new URL(String(inputUrl)); calls.push(url.pathname);
+      if (url.pathname === '/v1/leagues') return createJsonResponse(200, { leagues: [], ...(input.management === undefined ? {} : { hasManagementAccess: input.management }) });
+      if (url.pathname === '/v1/auth/session' && ++sessionReads > 1 && input.outcome === 'account-changed')
+        return createJsonResponse(200, { authenticated: true, session: { ...apiState.session, sessionId: 'other-account' } });
+      if (url.pathname === '/v1/my-player-profiles') {
+        if (input.outcome === 'failed') return createJsonResponse(503, { error: 'unavailable' });
+        pageNumber++;
+        const profile = { playerId: 'opaque/player', displayName: 'Player', leagueId: 'league/one', leagueName: 'League one' };
+        if (input.outcome === 'incomplete') return createJsonResponse(200, { profiles: [profile], cursor: `next-${pageNumber}`, complete: false });
+        if (pageNumber === 1) return createJsonResponse(200, { profiles: [], cursor: 'next', complete: false });
+        return createJsonResponse(200, { profiles: input.outcome === 'empty' ? [] : input.outcome === 'multiple' ? [profile, { ...profile, leagueId: 'league/two' }] : [profile], cursor: null, complete: true });
+      }
+      return base(inputUrl, init);
+    } });
+  await flushAsync();
+  return { ...page, calls };
+}
+
+for (const role of ['admin', 'scorekeeper', 'viewer', 'participant', 'unknown'] as const)
+test(`dashboard profile landing preserves ${role} navigation`, async () => {
+  const management = role === 'unknown' ? undefined : role === 'admin' || role === 'scorekeeper';
+  const page = await bootParticipantDashboard({ management });
+  try {
+    if (management === false) {
+      assert.equal(page.calls.filter(path => path === '/v1/my-player-profiles').length, 2);
+      assert.equal(page.navigations.length, 1); assert.equal(page.navigations[0].mode, 'replace');
+      const url = new URL(page.navigations[0].url, 'http://localhost:3000');
+      assert.equal(url.pathname, '/player'); assert.equal(url.searchParams.get('playerId'), 'opaque/player');
+      assert.equal(url.searchParams.get('leagueId'), 'league/one');
+    } else {
+      assert.equal(page.calls.includes('/v1/my-player-profiles'), false); assert.equal(page.navigations.length, 0);
+    }
+    assert.equal(page.document.querySelector('[data-ui="site-nav"] a[href="/player"]')?.textContent, 'My profile');
+    assert.equal(page.document.querySelector('[data-ui="site-nav"] a[href="/achievements"]'), null);
+  } finally { page.dom.window.close(); }
+});
+
+for (const outcome of ['empty', 'failed', 'incomplete', 'account-changed'] as const)
+test(`dashboard keeps a usable fallback when profile discovery is ${outcome}`, async () => {
+  const page = await bootParticipantDashboard({ management: false, outcome });
+  try {
+    assert.equal(page.navigations.length, 0);
+    assert(page.document.querySelector('[data-action="toggle-create-league"]'));
+    if (outcome === 'incomplete') assert.equal(page.calls.filter(path => path === '/v1/my-player-profiles').length, 20);
+  } finally { page.dom.window.close(); }
+});
+
+test('dashboard sends several verified profile choices to My profile without choosing a league', async () => {
+  const page = await bootParticipantDashboard({ management: false, outcome: 'multiple' });
+  try { assert.deepEqual(page.navigations, [{ url: '/player', mode: 'replace' }]); }
+  finally { page.dom.window.close(); }
+});
+
+test('dashboard profile landing does not interrupt typing started before a slow league response', async () => {
+  const apiState = createMockApiState();
+  apiState.session = { sessionId: 'player-session', email: 'player@example.test', createdAt: '2026-03-28T11:00:00.000Z', expiresAt: '2026-03-29T11:00:00.000Z' };
+  apiState.cookieJar = 'threefc_session=player-session';
+  const base = createMockFetch(apiState);
+  let release!: (response: Response) => void, profileReads = 0;
+  const page = await bootPage({ html: renderSetupHomePage('http://localhost:3001'), url: 'http://localhost:3000/setup', scriptFile: 'setup-flow.js', apiState,
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/v1/leagues') return new Promise<Response>(resolve => { release = resolve; });
+      if (path === '/v1/my-player-profiles') {
+        profileReads++;
+        return createJsonResponse(200, { profiles: [{ playerId: 'player', displayName: 'Player', leagueId: 'league', leagueName: 'League' }], cursor: null, complete: true });
+      }
+      return base(input, init);
+    } });
+  try {
+    const toggle = page.document.querySelector('[data-action="toggle-create-league"]') as HTMLButtonElement;
+    toggle.dispatchEvent(new page.window.MouseEvent('pointerdown', { bubbles: true }));
+    dispatchClick(toggle);
+    const name = page.document.getElementById('league-name') as HTMLInputElement;
+    name.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'N', bubbles: true }));
+    name.value = 'New league draft'; name.dispatchEvent(new page.window.Event('input', { bubbles: true }));
+    release(createJsonResponse(200, { leagues: [], hasManagementAccess: false })); await flushAsync();
+    assert.equal(profileReads, 0); assert.equal(page.navigations.length, 0);
+    assert.equal(name.value, 'New league draft');
+    assert.equal((page.document.getElementById('dashboard-create-league-region') as HTMLElement).hidden, false);
+  } finally { page.dom.window.close(); }
+});
+
+
+for (const target of ['/player', '/player/', '/player?leagueId=league&playerId=player', '/player?playerId=player', '/player?seasonId=winter', '/player#secret', '/player-settings', '/player-settings?playerId=player&leagueId=league'])
+test(`My profile authentication return has shared/browser parity for ${target}`, async () => {
+  const apiState = createMockApiState();
+  apiState.session = { sessionId: 'player-session', email: 'player@example.test', createdAt: '2026-03-28T11:00:00.000Z', expiresAt: '2026-03-29T11:00:00.000Z' };
+  apiState.cookieJar = 'threefc_session=player-session';
+  const page = await bootPage({ html: renderSignInPage('http://localhost:3001', '/setup'),
+    url: `http://localhost:3000/sign-in?${new URLSearchParams({ returnTo: target })}`, scriptFile: 'auth-flow.js', apiState });
+  try { assert.deepEqual(page.navigations.at(-1), { url: normalizeAppReturnTarget(target) ?? '/setup', mode: 'replace' }); }
+  finally { page.dom.window.close(); }
 });

@@ -1,5 +1,5 @@
 import type { PlayerAppearance, PlayerPerformance, ProjectionFreshness } from '@3fc/contracts';
-import { bindPlayerAccount, PlayerClientError, type PlayerClient, type PlayerContext } from './player-client.js';
+import { bindPlayerAccount, PlayerClientError, playerHref, type MyPlayerProfilesPage, type PlayerClient, type PlayerContext } from './player-client.js';
 import { playerInitial } from './player-presentation.js';
 import { mountClubCard } from './club-card.js';
 
@@ -16,6 +16,7 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
   const signIn = root.querySelector<HTMLAnchorElement>('#player-signin');
   if (signIn) signIn.href = `/sign-in?${new URLSearchParams({ returnTo: window.location.pathname + window.location.search })}`;
   const query = new URLSearchParams(window.location.search);
+  const ownProfileEntry = query.size === 0;
   const context: PlayerContext = { leagueId: query.get('leagueId') ?? '', playerId: query.get('playerId') ?? '', ...(query.get('viewerPlayerId') ? { viewerPlayerId: query.get('viewerPlayerId')! } : {}) };
   let selectedSeason = query.get('seasonId') ?? undefined, period: Period = 'season', performance: PlayerPerformance | null = null;
   let generation = 0, controller = new AbortController(), disposed = false, suspended = false, locked = false, busy = false;
@@ -142,6 +143,42 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
       button.addEventListener('click', () => { button.disabled = true; void discover(id, true).catch(error => fail(error, id)); }); access.append(button);
     } else say('No verified player membership or league access was found for this account.', true);
   }
+  async function discoverMine(id: number, found = new Map<string, MyPlayerProfilesPage['profiles'][number]>(), next?: string, seen = new Set<string>()) {
+    say('Finding your player profile…');
+    // A normal account finishes within a few bounded claim pages. Larger
+    // collections continue explicitly instead of starting an unbounded crawl.
+    for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+      const page = await client.myProfiles(next ? { cursor: next } : {}, controller.signal);
+      if (!active(id) || !await verify(id)) return false;
+      for (const profile of page.profiles) found.set(JSON.stringify([profile.leagueId, profile.playerId]), profile);
+      if (page.complete) {
+        if (found.size === 1) {
+          const profile = [...found.values()][0]; context.leagueId = profile.leagueId; context.playerId = profile.playerId;
+          window.history.replaceState(null, '', playerHref(context)); access.replaceChildren(); return true;
+        }
+        access.replaceChildren();
+        say(found.size ? 'Choose your player profile.' : 'No linked player profile was found. Link your player through your league invitation to get started.');
+        if (found.size) {
+          const list = node('ul');
+          for (const profile of found.values()) {
+            const item = node('li'), link = node('a', `${profile.displayName} · ${profile.leagueName}`) as HTMLAnchorElement;
+            link.href = playerHref({ leagueId: profile.leagueId, playerId: profile.playerId }); item.append(link); list.append(item);
+          }
+          access.append(list);
+        }
+        return false;
+      }
+      if (!page.cursor || seen.has(page.cursor)) throw new PlayerClientError(503, 'invalid_response', 'Your player profiles could not be loaded. Try again.');
+      seen.add(page.cursor); next = page.cursor;
+    }
+    say('More linked profiles are available. Continue to finish checking your profiles.'); access.replaceChildren();
+    const button = node('button', 'Continue checking profiles') as HTMLButtonElement; button.type = 'button'; button.dataset.ui = 'button-secondary';
+    button.addEventListener('click', () => {
+      button.disabled = true;
+      void discoverMine(id, found, next, seen).then(ready => { if (ready && active(id)) void load(false); }).catch(error => fail(error, id));
+    });
+    access.append(button); return false;
+  }
   function fail(error: unknown, id: number) {
     if (!active(id)) return;
     if (error instanceof PlayerClientError && error.status === 401) { retire('Sign in to view player profiles.'); return; }
@@ -153,8 +190,9 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
     if (disposed || suspended || locked) return;
     clear(); controller = new AbortController(); const id = generation; busy = true; retry.hidden = true; if (signIn) signIn.hidden = true; say('Loading player profile…');
     try {
-      if (!context.leagueId.trim() || !context.playerId.trim()) throw new PlayerClientError(400, 'invalid_link', 'Open a player from their league or match.');
       if (!await verify(id)) return;
+      if (!context.leagueId && !context.playerId && ownProfileEntry && !await discoverMine(id)) return;
+      if (!context.leagueId.trim() || !context.playerId.trim()) throw new PlayerClientError(400, 'invalid_link', 'Open a player from their league or match.');
       let result: PlayerPerformance;
       try { result = await client.performance({ ...context, ...(selectedSeason ? { seasonId: selectedSeason } : {}) }, controller.signal); }
       catch (error) { if (allowDiscovery && error instanceof PlayerClientError && error.status === 403) { await discover(id); return; } throw error; }

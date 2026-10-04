@@ -1794,7 +1794,7 @@
     updateDerivedId();
   }
 
-  async function initDashboardPage() {
+  async function initDashboardPage(authenticatedSession) {
     const leagueNameInput = document.getElementById("league-name");
     const leagueFriendlyUrlInput = document.getElementById("league-friendly-url");
     const leagueIdDisplay = document.getElementById("league-id-display");
@@ -1834,6 +1834,42 @@
       setFieldMessage("league-friendly-url");
     });
 
+    const controller = new AbortController(), stop = () => controller.abort();
+    // Capture interaction before the league request: a slow response must not
+    // redirect someone who has already started using the dashboard.
+    const events = ['pagehide', 'threefc:player-proof-cleared', 'threefc:player-proof-invalidated'];
+    events.forEach(event => window.addEventListener(event, stop, { once: true }));
+    root.addEventListener('pointerdown', stop, { once: true }); root.addEventListener('keydown', stop, { once: true });
+    async function openParticipantProfile(payload) {
+      if (controller.signal.aborted || payload?.hasManagementAccess !== false || !authenticatedSession) return;
+      const timeout = window.setTimeout(stop, 15000);
+      try {
+        const profiles = new Map(), seen = new Set(); let cursor;
+        for (let pageNumber = 0; pageNumber < 20 && !controller.signal.aborted && hasAuthenticatedAccount && !signOutPending && !signOutUnconfirmed; pageNumber++) {
+          const page = await requestJsonOrThrow(`/v1/my-player-profiles${cursor ? `?${new URLSearchParams({ cursor })}` : ''}`, { method: 'GET', cache: 'no-store', signal: controller.signal });
+          if (!Array.isArray(page.profiles) || page.profiles.length > 5 || typeof page.complete !== 'boolean'
+            || (page.cursor !== null && (typeof page.cursor !== 'string' || !page.cursor || page.cursor.length > 8192)) || page.complete !== (page.cursor === null)) return;
+          for (const profile of page.profiles) {
+            if (!profile || ![profile.playerId, profile.leagueId, profile.displayName, profile.leagueName].every(usableEntityId)) return;
+            profiles.set(JSON.stringify([profile.leagueId, profile.playerId]), profile);
+          }
+          if (page.complete) {
+            if (!profiles.size) return;
+            const current = await requestJsonOrThrow('/v1/auth/session', { method: 'GET', cache: 'no-store', signal: controller.signal });
+            if (controller.signal.aborted || !hasAuthenticatedAccount || signOutPending || signOutUnconfirmed || current.authenticated !== true
+              || current.session?.sessionId !== authenticatedSession.sessionId
+              || (current.session?.subject ?? current.session?.email) !== (authenticatedSession.subject ?? authenticatedSession.email)) return;
+            const profile = [...profiles.values()][0];
+            navigateTo(profiles.size === 1 ? `/player?${new URLSearchParams({ leagueId: profile.leagueId, playerId: profile.playerId })}` : '/player', 'replace');
+            return;
+          }
+          if (seen.has(page.cursor)) return;
+          seen.add(page.cursor); cursor = page.cursor;
+        }
+      } catch { /* Keep the working dashboard when profile discovery is unavailable. */ }
+      finally { window.clearTimeout(timeout); }
+    }
+
     async function renderLeagues() {
       const payload = await requestJsonOrThrow("/v1/leagues", { method: "GET" });
       const leagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
@@ -1850,7 +1886,7 @@
           setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true, { focus: false });
         }
         setStatus("");
-        return;
+        return payload;
       }
 
       const rows = leagues
@@ -1869,6 +1905,7 @@
         leaguesEmpty.hidden = true;
       }
       setStatus("");
+      return payload;
     }
 
     let creationPending = false;
@@ -1914,7 +1951,13 @@
       }
     });
 
-    await renderLeagues();
+    try {
+      const payload = await renderLeagues();
+      await openParticipantProfile(payload);
+    } finally {
+      events.forEach(event => window.removeEventListener(event, stop));
+      root.removeEventListener('pointerdown', stop); root.removeEventListener('keydown', stop);
+    }
   }
 
   function trackInteractionFocus(scope) {

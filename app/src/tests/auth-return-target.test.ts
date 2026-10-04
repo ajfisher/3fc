@@ -7,6 +7,7 @@ test("normalizes known application return targets", () => {
   const targets = [
     "/",
     "/setup",
+    "/player",
     "/achievements",
     "/achievements?achievementId=goal",
     "/achievements?leagueId=l&playerId=p",
@@ -56,7 +57,7 @@ test("rejects non-application and ambiguous return targets", () => {
     "/achievements?leagueId=l&playerId=p&scope=career&seasonId=winter",
     "/achievements?leagueId=l&playerId=p&scope=last-game", "/achievements?leagueId=l&playerId=",
     "/achievements?leagueId=l&playerId=p&email=private", "/achievements#secret",
-    "/player", "/player?playerId=p", "/player?leagueId=l&playerId=p&playerId=q",
+    "/player?seasonId=winter", "/player#secret", "/player?viewerPlayerId=v", "/player?playerId=p", "/player?leagueId=l&playerId=p&playerId=q",
     "/player?leagueId=l&playerId=p&email=private", "/player?leagueId=l&playerId=p#private",
     "/player-settings", "/player-settings?playerId=p&owner=true", "/player-settings?playerId=",
     "/player-settings?playerId=p", "/player-settings?playerId=p&leagueId=", "/player-settings?playerId=p&leagueId=+",
@@ -84,6 +85,7 @@ test("rejects non-application and ambiguous return targets", () => {
 test("canonicalizes trailing slashes on known application return targets", () => {
   const targets = new Map([
     ["/setup/", "/setup"],
+    ["/player/", "/player"],
     ["/achievements/?achievementId=goal", "/achievements?achievementId=goal"],
     ["/player/?leagueId=l&playerId=p", "/player?leagueId=l&playerId=p"],
     ["/player-settings/?playerId=p&leagueId=l", "/player-settings?playerId=p&leagueId=l"],

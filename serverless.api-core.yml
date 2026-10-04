@@ -354,6 +354,12 @@ functions:
           path: /v1/owner-player-profile
       - httpApi:
           method: GET
+          path: /v1/my-player-profiles
+      - httpApi:
+          method: OPTIONS
+          path: /v1/my-player-profiles
+      - httpApi:
+          method: GET
           path: /v1/player-access
       - httpApi:
           method: OPTIONS

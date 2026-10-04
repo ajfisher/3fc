@@ -15,6 +15,7 @@ const performance = { player: { playerId: 'canonical', displayName: 'Player', ha
 function fixture() {
   const calls: Array<{ method: string; input: any }> = [];
   const repository: PlayerProfileRepository = {
+    async listMyPlayerProfiles(input) { calls.push({ method: "mine", input }); return { profiles: [{ playerId: "owned", displayName: "Owned", leagueId: "league", leagueName: "League" }], cursor: null, complete: true }; },
     async getPlayerPerformance(input) { calls.push({ method: 'performance', input }); return { ...performance, selectedSeasonId: input.seasonId ?? null }; },
     async getPlayerHistory(input) { calls.push({ method: 'history', input }); return { matches: null, cursor: null, freshness }; },
     async getPlayerAchievements(input) { calls.push({ method: 'achievements', input }); return { leagueId: input.leagueId, playerId: 'canonical', ...input.scope,
@@ -116,11 +117,12 @@ test('local adapter matches shared payloads and applies no-store/referrer header
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    for (const signedIn of [false, true]) {
-      const response = await fetch(`${base}/v1/player-profile?${query}`, { headers: signedIn ? { cookie: 'session=valid' } : {} });
+    for (const route of ['/v1/player-profile', '/v1/my-player-profiles']) for (const signedIn of [false, true]) {
+      const selectedQuery = route === '/v1/player-profile' ? query : '';
+      const response = await fetch(`${base}${route}?${selectedQuery}`, { headers: signedIn ? { cookie: 'session=valid' } : {} });
       assert.equal(response.status, signedIn ? 200 : 401); assert.equal(response.headers.get('cache-control'), 'no-store');
       assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
-      const body = await response.json(); assert.deepEqual(body, (await request(undefined, undefined, signedIn ? {} : { session: null })).payload);
+      const body = await response.json(); assert.deepEqual(body, (await request(route, selectedQuery, signedIn ? {} : { session: null })).payload);
       assert.equal(JSON.stringify(body).includes(session.email), false);
     }
   } finally {
@@ -128,4 +130,18 @@ test('local adapter matches shared payloads and applies no-store/referrer header
     if (before.profile === undefined) delete process.env.PLAYER_PROFILES_ENABLED; else process.env.PLAYER_PROFILES_ENABLED = before.profile;
     if (before.achievements === undefined) delete process.env.PLAYER_ACHIEVEMENTS_ENABLED; else process.env.PLAYER_ACHIEVEMENTS_ENABLED = before.achievements;
   }
+});
+
+
+test('own profile discovery accepts only pagination and uses session identities', async () => {
+  const { calls, request, repository } = fixture();
+  const result = await request('/v1/my-player-profiles', 'cursor=next');
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(calls[0], { method: 'mine', input: { userId: 'account', userIds: ['account', 'private@example.test'], cursor: 'next' } });
+  for (const query of ['playerId=other', 'userId=other', 'leagueId=league', 'cursor=', 'cursor=a&cursor=b'])
+    assert.equal((await request('/v1/my-player-profiles', query)).statusCode, 400);
+  assert.equal((await request('/v1/my-player-profiles', '', { session: null })).statusCode, 401);
+  assert.equal((await request('/v1/my-player-profiles', '', { flags: { ...flags, profiles: false } })).statusCode, 404);
+  repository.listMyPlayerProfiles = async () => ({ profiles: [], cursor: 'next', complete: true });
+  assert.equal((await request('/v1/my-player-profiles', '')).statusCode, 503);
 });

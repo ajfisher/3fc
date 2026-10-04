@@ -204,6 +204,7 @@ interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "
       createdByUserId: string;
       createdAt: string;
       updatedAt: string;
+      hasManagementAccess: boolean;
     }>
   >;
   createLeague(input: {
@@ -659,15 +660,17 @@ type LeagueListRecord = Awaited<ReturnType<RepositoryContract["listLeaguesForUse
 async function listLeaguesForSession(
   repository: Pick<RepositoryContract, "listLeaguesForUser">,
   session: AuthSessionRecord,
-): Promise<LeagueListRecord[]> {
+): Promise<{ leagues: Array<Omit<LeagueListRecord, "hasManagementAccess">>; hasManagementAccess: boolean }> {
+  let hasManagementAccess = false;
   const leaguesById = new Map<string, LeagueListRecord>();
   for (const userId of sessionUserIds(session)) {
     const leagues = await repository.listLeaguesForUser(userId);
     for (const league of leagues) {
+      hasManagementAccess ||= league.hasManagementAccess;
       leaguesById.set(league.leagueId, league);
     }
   }
-  return [...leaguesById.values()];
+  return { leagues: [...leaguesById.values()].map(({ hasManagementAccess: _management, ...league }) => league), hasManagementAccess };
 }
 
 interface CoreHandlerDependencies {
@@ -3106,13 +3109,11 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         }
 
         if (method === "GET" && route === "/v1/leagues") {
-          const leagues = await listLeaguesForSession(dependencies.repository, session);
+          const payload = await listLeaguesForSession(dependencies.repository, session);
           status = 200;
           return createJsonResponse(
             status,
-            {
-              leagues,
-            },
+            payload,
             buildCorsHeaders(origin, dependencies.corsAllowedOrigins),
           );
         }

@@ -405,7 +405,7 @@ test("static CloudFront distribution applies app security headers", () => {
 test("profile read routes and exposure switches have local and deployed paths", () => {
   const compose = readFileSync(resolve(process.cwd(), "../compose.yaml"), "utf8");
   const openapi = readFileSync(resolve(process.cwd(), "../docs/openapi/v1-core-write.yaml"), "utf8");
-  for (const route of ["player-access", "player-profile", "player-history", "player-achievements", "player-unlocks", "achievement-catalogue"]) {
+  for (const route of ["my-player-profiles", "player-access", "player-profile", "player-history", "player-achievements", "player-unlocks", "achievement-catalogue"]) {
     for (const method of ["GET", "OPTIONS"]) assert.ok(serverlessCoreConfig.includes(`method: ${method}\n          path: /v1/${route}\n`));
     assert.ok(openapi.includes(`/v1/${route}`));
   }
