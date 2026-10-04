@@ -1534,7 +1534,7 @@ export function renderAchievementGalleryPage(apiBaseUrl: string): string {
       <div id="achievements-access"></div>
       <section id="achievements-content" hidden>
         <header><div><p id="achievements-context"></p><h1 id="achievements-player">Achievement collection</h1>
-          <p>Every match has a story. Make your mark.</p></div><a id="achievements-back" href="/setup">Back to home</a></header>
+          <p>Every match has a story. Make your mark.</p></div></header>
         <div id="achievements-personal-controls" data-ui="period-controls">
           <fieldset id="achievements-scope"><legend class="sr-only">Achievement scope</legend>
             <label><input type="radio" name="achievement-scope" value="season" checked /><span>Season</span></label>
@@ -1542,9 +1542,9 @@ export function renderAchievementGalleryPage(apiBaseUrl: string): string {
           <div id="achievements-season-field" data-ui="field"><label for="achievements-season">Season</label><select id="achievements-season" data-ui="input"></select></div>
         </div>
         <search>
-          <div data-ui="field"><label for="achievement-search">Find an achievement</label><input id="achievement-search" type="search" data-ui="input" placeholder="Search achievements" /></div>
-          <div data-ui="field"><label for="achievement-rarity">Rarity</label><select id="achievement-rarity" data-ui="input"><option value="All">All rarities</option><option>Common</option><option>Rare</option><option>Legendary</option><option>Epic</option></select></div>
           <div id="achievement-earned-field" data-ui="field"><label for="achievement-earned">Collection</label><select id="achievement-earned" data-ui="input"><option value="all">All</option><option value="earned">Earned</option><option value="to-unlock">To unlock</option></select></div>
+          <div data-ui="field"><label for="achievement-rarity">Rarity</label><select id="achievement-rarity" data-ui="input"><option value="All">All rarities</option><option>Common</option><option>Rare</option><option>Legendary</option><option>Epic</option></select></div>
+          <div data-ui="field"><label for="achievement-search">Find an achievement</label><input id="achievement-search" type="search" data-ui="input" placeholder="Search achievements" /></div>
           <button id="achievement-reset" type="button" data-ui="button-secondary">Reset filters</button>
         </search>
         <p id="achievement-count" role="status" aria-live="polite"></p><div id="achievement-grid"></div>
@@ -1555,8 +1555,9 @@ export function renderAchievementGalleryPage(apiBaseUrl: string): string {
         <div><div id="achievement-detail-art"></div><div>
           <p id="achievement-detail-rarity"></p><p id="achievement-detail-rule"></p>
           <ul id="achievement-detail-conditions"></ul><div id="achievement-detail-progression"></div>
-          <section id="achievement-detail-personal"><h3>Your collection</h3><p id="achievement-detail-progress"></p><p id="achievement-detail-first"></p><p id="achievement-detail-highest"></p>
-            <ol id="achievement-detail-unlocks"></ol><button id="achievement-detail-more" type="button" data-ui="button-secondary" hidden>Load earlier unlocks</button></section>
+          <section id="achievement-detail-personal"><h3>Your collection</h3>
+            <ol id="achievement-detail-unlocks"></ol><button id="achievement-detail-more" type="button" data-ui="button-secondary" hidden>Try again</button>
+            <p id="achievement-detail-progress"></p></section>
           <p id="achievement-detail-status" role="status" aria-live="polite"></p>
         </div></div>
       </dialog>

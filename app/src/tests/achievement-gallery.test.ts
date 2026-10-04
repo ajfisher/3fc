@@ -6,7 +6,7 @@ import { achievementNotes, achievementProgressLabel, mountAchievementGallery, pa
 import { createPlayerClient, parseAchievementCatalogue, PlayerClientError, type PlayerClient } from '../ui/player-client.js';
 import { catalogueResponse, personal, unlock } from './achievement-gallery-fixtures.js';
 import { performance } from './player-profile-fixtures.js';
-const html = `<body><main id="achievement-gallery"><p id="achievements-status"></p><button id="achievements-retry" hidden>Retry</button><a id="achievements-signin" hidden>Sign in</a><div id="achievements-access"></div><section id="achievements-content" hidden><h1 id="achievements-player"></h1><p id="achievements-context"></p><a id="achievements-back">Back</a><div id="achievements-personal-controls"><fieldset id="achievements-scope"><input type="radio" name="scope" value="season" checked><input type="radio" name="scope" value="career"></fieldset><div id="achievements-season-field"><select id="achievements-season"></select></div></div><input id="achievement-search"><select id="achievement-rarity"><option>All</option><option>Common</option><option>Rare</option><option>Legendary</option><option>Epic</option></select><div id="achievement-earned-field"><select id="achievement-earned"><option value="all">All</option><option value="earned">Earned</option><option value="to-unlock">To unlock</option></select></div><button id="achievement-reset">Reset</button><p id="achievement-count"></p><div id="achievement-grid"></div><p id="achievement-empty" hidden>No matches</p></section><dialog id="achievement-detail"><button id="achievement-detail-close">Close</button><div id="achievement-detail-art"></div><h2 id="achievement-detail-title"></h2><p id="achievement-detail-rarity"></p><p id="achievement-detail-rule"></p><ul id="achievement-detail-conditions"></ul><div id="achievement-detail-progression"></div><section id="achievement-detail-personal"><p id="achievement-detail-progress"></p><p id="achievement-detail-first"></p><p id="achievement-detail-highest"></p><ol id="achievement-detail-unlocks"></ol><button id="achievement-detail-more">More</button><p id="achievement-detail-status"></p></section></dialog></main></body>`;
+const html = `<body><main id="achievement-gallery"><p id="achievements-status"></p><button id="achievements-retry" hidden>Retry</button><a id="achievements-signin" hidden>Sign in</a><div id="achievements-access"></div><section id="achievements-content" hidden><h1 id="achievements-player"></h1><p id="achievements-context"></p><div id="achievements-personal-controls"><fieldset id="achievements-scope"><input type="radio" name="scope" value="season" checked><input type="radio" name="scope" value="career"></fieldset><div id="achievements-season-field"><select id="achievements-season"></select></div></div><input id="achievement-search"><select id="achievement-rarity"><option>All</option><option>Common</option><option>Rare</option><option>Legendary</option><option>Epic</option></select><div id="achievement-earned-field"><select id="achievement-earned"><option value="all">All</option><option value="earned">Earned</option><option value="to-unlock">To unlock</option></select></div><button id="achievement-reset">Reset</button><p id="achievement-count"></p><div id="achievement-grid"></div><p id="achievement-empty" hidden>No matches</p></section><dialog id="achievement-detail"><button id="achievement-detail-close">Close</button><div id="achievement-detail-art"></div><h2 id="achievement-detail-title"></h2><p id="achievement-detail-rarity"></p><p id="achievement-detail-rule"></p><ul id="achievement-detail-conditions"></ul><div id="achievement-detail-progression"></div><section id="achievement-detail-personal"><p id="achievement-detail-progress"></p><ol id="achievement-detail-unlocks"></ol><button id="achievement-detail-more">More</button><p id="achievement-detail-status"></p></section></dialog></main></body>`;
 function fixture(overrides: Partial<PlayerClient> = {}, query = '?leagueId=league&playerId=player%2Froot') {
   const dom = new JSDOM(html, { url: `https://3fc.football/achievements${query}` }), doc = dom.window.document;
   const dialog = doc.getElementById('achievement-detail') as HTMLDialogElement;
@@ -31,7 +31,7 @@ test('all 23 rule notes explain counting and timing while preserving exact thres
   assert.match(achievementNotes('on-fire').join(' '), /Missed fixtures do not break/);
   assert.match(achievementNotes('hat-trick').join(' '), /at most one.*per match/);
   assert.equal(achievementProgressLabel(null), 'Progress unavailable');
-  assert.match(achievementProgressLabel({ ...personal().progress![0], assessability: 'partial', count: 0 }), /At least 0 confirmed.*History incomplete/);
+  assert.match(achievementProgressLabel({ ...personal().progress![0], assessability: 'partial', count: 0 }), /Progress: at least 0 \/.*History incomplete/);
 });
 
 test('contextless collection renders all artwork without personal claims; search rarity and reset combine', async () => {
@@ -50,9 +50,12 @@ test('personal gallery honors supplied season, earned filters and dialog focus w
   const scopes: string[] = [], f = fixture({ achievements: async (_context, scope) => { scopes.push(scope.scope === 'season' ? scope.seasonId : 'career'); return personal(scope, { goal: 5 }); } }, '?leagueId=league&playerId=player%2Froot&seasonId=summer');
   try {
     await f.mounted.ready; assert.deepEqual(scopes, ['summer']); assert.match(f.get('achievements-context').textContent!, /Summer/);
-    change(f, 'achievement-earned', 'earned'); assert.equal(f.root.querySelectorAll('[data-badge]').length, 1);
+    assert.equal(f.get<HTMLSelectElement>('achievement-earned').value, 'earned'); assert.equal(f.root.querySelectorAll('[data-badge]').length, 1);
     const button = f.get<HTMLButtonElement>('achievement-open-goal'); button.focus(); button.click();
-    assert.match(f.get('achievement-detail-first').textContent!, /First unlock/); assert.match(f.get('achievement-detail-highest').textContent!, /★ 2/);
+    await settle(() => f.get('achievement-detail-unlocks').children.length === 1);
+    assert.match(f.get('achievement-detail-unlocks').textContent!, /★ 1 · Achieved/);
+    assert.match(f.get('achievement-detail-progress').textContent!, /Progress to next milestone: 5 \/ 10/);
+    assert.doesNotMatch(f.get('achievement-detail').textContent!, /First unlock|Highest confirmed|All recorded/);
     f.get<HTMLDialogElement>('achievement-detail').dispatchEvent(new f.dom.window.Event('cancel')); f.get<HTMLDialogElement>('achievement-detail').close();
     assert.equal(f.dom.window.document.activeElement, button); assert.equal(f.get<HTMLSelectElement>('achievement-earned').value, 'earned'); assert.equal(f.get<HTMLDialogElement>('achievement-detail').open, false);
     const career = f.root.querySelector<HTMLInputElement>('input[value=career]')!; career.checked = true; career.dispatchEvent(new f.dom.window.Event('change', { bubbles: true }));
@@ -63,31 +66,32 @@ test('personal gallery honors supplied season, earned filters and dialog focus w
 test('unknown personal progress remains unavailable and partial progress is a confirmed lower bound', async () => {
   const f = fixture({ achievements: async (_context, scope) => ({ ...personal(scope), progress: null, honours: null, firstUnlocks: null, latestUnlocks: null }) });
   try {
-    await f.mounted.ready; assert.match(f.get('achievement-grid').textContent!, /Progress unavailable/); assert.doesNotMatch(f.get('achievement-grid').textContent!, /0 confirmed/);
-    change(f, 'achievement-earned', 'to-unlock'); assert.equal(f.root.querySelectorAll('[data-badge]').length, 0); assert.match(f.get('achievement-count').textContent!, /Unconfirmed achievements remain in All/); change(f, 'achievement-earned', 'all'); f.get<HTMLButtonElement>('achievement-open-goal').click(); assert.match(f.get('achievement-detail-first').textContent!, /unavailable/);
+    await f.mounted.ready; change(f, 'achievement-earned', 'all'); assert.match(f.get('achievement-grid').textContent!, /Progress unavailable/); assert.doesNotMatch(f.get('achievement-grid').textContent!, /0 confirmed/);
+    change(f, 'achievement-earned', 'to-unlock'); assert.equal(f.root.querySelectorAll('[data-badge]').length, 0); assert.match(f.get('achievement-count').textContent!, /Unconfirmed achievements remain in All/); change(f, 'achievement-earned', 'all'); f.get<HTMLButtonElement>('achievement-open-goal').click(); assert.match(f.get('achievement-detail-progress').textContent!, /unavailable/);
   } finally { f.close(); }
   const g = fixture({ achievements: async (_context, scope) => { const result = personal(scope); result.progress![0].assessability = 'partial'; return result; } });
-  try { await g.mounted.ready; assert.match(g.get('achievement-grid').textContent!, /At least 1 confirmed/); assert.match(g.get('achievements-status').textContent!, /cannot be fully assessed/); } finally { g.close(); }
+  try { await g.mounted.ready; assert.match(g.get('achievement-grid').textContent!, /Progress: at least 1 \//); assert.match(g.get('achievements-status').textContent!, /cannot be fully assessed/); } finally { g.close(); }
   const h = fixture({ achievements: async (_context, scope) => { const result = personal(scope, {}); result.progress![0].assessability = 'partial'; return result; } });
   try { await h.mounted.ready; change(h, 'achievement-earned', 'to-unlock'); assert.equal(h.root.querySelectorAll('[data-badge]').length, 22); assert.equal(h.root.querySelector('[data-badge=goal]'), null); } finally { h.close(); }
 
 });
 
-test('detail loads bounded global pages explicitly even when first page has no matching badge', async () => {
+test('detail automatically loads bounded pages even when the first has no matching badge', async () => {
   const cursors: Array<string | undefined> = [], f = fixture({ unlocks: async (_context, scope, page = {}) => { cursors.push(page.cursor); return { unlocks: [unlock(page.cursor ? 'goal' : 'wins', 1, scope)], cursor: page.cursor ? null : 'next', freshness: performance.freshness }; } });
   try {
-    await f.mounted.ready; f.get<HTMLButtonElement>('achievement-open-goal').click(); assert.equal(cursors.length, 0);
-    f.get<HTMLButtonElement>('achievement-detail-more').click(); await settle(() => cursors.length === 1 && !f.get<HTMLButtonElement>('achievement-detail-more').disabled);
-    assert.equal(f.get('achievement-detail-unlocks').children.length, 0); assert.match(f.get('achievement-detail-status').textContent!, /More history is available/); assert.equal(f.get('achievement-detail-more').hidden, false);
-    f.get<HTMLButtonElement>('achievement-detail-more').click(); await settle(() => f.get('achievement-detail-unlocks').children.length === 1);
+    await f.mounted.ready; f.get<HTMLButtonElement>('achievement-open-goal').click();
+    await settle(() => f.get('achievement-detail-unlocks').children.length === 1);
     assert.deepEqual(cursors, [undefined, 'next']); assert.equal(f.get('achievement-detail-more').hidden, true);
+    assert.equal(f.get('achievement-detail-status').textContent, '');
+    f.get<HTMLButtonElement>('achievement-detail-close').click(); f.get<HTMLButtonElement>('achievement-open-goal').click();
+    await settle(() => f.get('achievement-detail-unlocks').children.length === 1); assert.equal(cursors.length, 2, 'completed history is reused');
   } finally { f.close(); }
 });
 
 test('correction during unlock paging clears obsolete data and retains filters for retry', async () => {
   const f = fixture({ unlocks: async () => ({ unlocks: [unlock('goal')], cursor: null, freshness: { ...performance.freshness, revision: 'different' } }) });
   try {
-    await f.mounted.ready; change(f, 'achievement-search', 'goal', 'input'); f.get<HTMLButtonElement>('achievement-open-goal').click(); f.get<HTMLButtonElement>('achievement-detail-more').click();
+    await f.mounted.ready; change(f, 'achievement-search', 'goal', 'input'); f.get<HTMLButtonElement>('achievement-open-goal').click();
     await settle(() => f.get('achievements-status').textContent!.includes('consistent view'));
     assert.equal(f.get<HTMLDialogElement>('achievement-detail').open, false); assert.equal(f.get('achievement-grid').children.length, 0); assert.equal(f.get<HTMLInputElement>('achievement-search').value, 'goal'); assert.equal(f.get('achievements-retry').hidden, false);
   } finally { f.close(); }
@@ -109,15 +113,15 @@ test('partial projection coverage downgrades zero class progress and never claim
   const f = fixture({ achievements: async (_context, scope) => ({ ...personal(scope, {}), freshness: { ...performance.freshness, status: 'updating', coverage: 'partial' } }),
     unlocks: async () => ({ unlocks: [], cursor: null, freshness: { ...performance.freshness, coverage: 'partial' } }) });
   try {
-    await f.mounted.ready; assert.match(f.get('achievements-status').textContent!, /updating|unavailable/);
-    assert.match(f.get('achievement-grid').textContent!, /At least 0 confirmed/);
+    await f.mounted.ready; change(f, 'achievement-earned', 'all'); assert.match(f.get('achievements-status').textContent!, /updating|unavailable/);
+    assert.match(f.get('achievement-grid').textContent!, /Progress: at least 0 \//);
     change(f, 'achievement-earned', 'to-unlock'); assert.equal(f.root.querySelectorAll('[data-badge]').length, 0);
-    change(f, 'achievement-earned', 'all'); f.get<HTMLButtonElement>('achievement-open-goal').click(); f.get<HTMLButtonElement>('achievement-detail-more').click();
+    change(f, 'achievement-earned', 'all'); f.get<HTMLButtonElement>('achievement-open-goal').click();
     await settle(() => f.get('achievement-detail-status').textContent!.includes('history is incomplete'));
     assert.doesNotMatch(f.get('achievement-detail-status').textContent!, /No recorded|All recorded/);
   } finally { f.close(); }
   const g = fixture({ achievements: async (_context, scope) => ({ ...personal(scope), freshness: { ...performance.freshness, coverage: 'unknown' } }) });
-  try { await g.mounted.ready; assert.match(g.get('achievement-grid').textContent!, /Progress unavailable/); assert.doesNotMatch(g.get('achievement-grid').textContent!, /0 confirmed/); g.get<HTMLButtonElement>('achievement-open-goal').click(); assert.equal(g.get('achievement-detail-first').textContent, 'First unlock date unavailable.'); } finally { g.close(); }
+  try { await g.mounted.ready; change(g, 'achievement-earned', 'all'); assert.match(g.get('achievement-grid').textContent!, /Progress unavailable/); assert.doesNotMatch(g.get('achievement-grid').textContent!, /0 confirmed/); g.get<HTMLButtonElement>('achievement-open-goal').click(); assert.equal(g.get('achievement-detail-progress').textContent, 'Progress unavailable'); } finally { g.close(); }
 });
 
 test('gallery cannot render another player achievements from a same-league response', async () => {
@@ -128,5 +132,27 @@ test('gallery cannot render another player achievements from a same-league respo
     assert.equal(f.get('achievements-content').hidden, true); assert.equal(f.get('achievement-grid').children.length, 0);
     assert.equal(f.get('achievements-player').textContent, ''); assert.equal(f.get('achievements-retry').hidden, false);
     assert.doesNotMatch(f.root.textContent!, /different-player/);
+  } finally { f.close(); }
+});
+
+
+test('automatic history stops paging after close and failed pages retry without losing filters', async () => {
+  let finish!: (value: any) => void; let calls = 0;
+  const f = fixture({ unlocks: async (_context, scope, page = {}) => {
+    calls++;
+    if (!page.cursor) return new Promise(resolve => { finish = resolve; });
+    if (calls === 2) throw new Error('offline');
+    return { unlocks: [unlock('goal')], cursor: null, freshness: performance.freshness };
+  } });
+  try {
+    await f.mounted.ready; change(f, 'achievement-search', 'goal', 'input');
+    f.get<HTMLButtonElement>('achievement-open-goal').click(); await settle(() => calls === 1);
+    f.get<HTMLButtonElement>('achievement-detail-close').click();
+    finish({ unlocks: [], cursor: 'next', freshness: performance.freshness }); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    f.get<HTMLButtonElement>('achievement-open-goal').click(); await settle(() => !f.get('achievement-detail-more').hidden);
+    assert.equal(f.get<HTMLInputElement>('achievement-search').value, 'goal');
+    f.get<HTMLButtonElement>('achievement-detail-more').click(); await settle(() => f.get('achievement-detail-unlocks').children.length === 1);
+    assert.equal(calls, 3); assert.equal(f.get('achievement-detail-more').hidden, true);
   } finally { f.close(); }
 });

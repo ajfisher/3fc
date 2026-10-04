@@ -3491,7 +3491,7 @@ code {
     [data-ui="field"] {
       flex: 1;
       min-width: min(10rem, 100%);
-      &:first-child {
+      &:has(input[type="search"]) {
         flex: 2;
       }
     }
@@ -3654,6 +3654,11 @@ code {
     color: var(--ink-soft);
     font-size: 0.9rem;
     line-height: 1.6;
+  }
+
+  ol {
+    list-style: none;
+    padding: 0;
   }
 
   #achievement-detail-progression ol {

@@ -1,5 +1,5 @@
-import { ACHIEVEMENT_CONDITIONS, ACHIEVEMENT_DEFINITIONS, COMMON_MILESTONES, RARE_MILESTONES, milestoneThreshold, type AchievementId, type AchievementProgress, type AchievementScopeContext, type AchievementUnlock, type PlayerAchievements, type PlayerPerformance } from '@3fc/contracts';
-import { bindPlayerAccount, PlayerClientError, playerHref, type PlayerClient, type PlayerContext } from './player-client.js';
+import { ACHIEVEMENT_CONDITIONS, ACHIEVEMENT_DEFINITIONS, COMMON_MILESTONES, RARE_MILESTONES, type AchievementId, type AchievementProgress, type AchievementScopeContext, type AchievementUnlock, type PlayerAchievements, type PlayerPerformance } from '@3fc/contracts';
+import { bindPlayerAccount, PlayerClientError, type PlayerClient, type PlayerContext } from './player-client.js';
 import { renderBadge } from './achievement-art.js';
 
 const definitions = new Map<AchievementId, typeof ACHIEVEMENT_DEFINITIONS[number]>(ACHIEVEMENT_DEFINITIONS.map(d => [d.id, d]));
@@ -22,10 +22,10 @@ export function achievementNotes(id: AchievementId): string[] {
   if (streak) notes.push(`Build ${streak} consecutive qualifying personal appearances. Missed fixtures do not break a run. Reset after earning it or breaking the condition; career runs cross seasons, while season runs start afresh.`);
   return notes;
 }
-export function achievementProgressLabel(progress: AchievementProgress | null | undefined): string {
+export function achievementProgressLabel(progress: AchievementProgress | null | undefined, detail = false): string {
   if (!progress) return 'Progress unavailable';
-  const count = progress.assessability === 'partial' ? `At least ${progress.count} confirmed` : `${progress.count} confirmed`;
-  return `${count} · Next milestone ${progress.nextThreshold}${progress.assessability === 'partial' ? ' · History incomplete' : ''}`;
+  const count = progress.assessability === 'partial' ? `at least ${progress.count}` : String(progress.count);
+  return `${detail ? 'Progress to next milestone' : 'Progress'}: ${count} / ${progress.nextThreshold}${progress.assessability === 'partial' ? ' · History incomplete' : ''}`;
 }
 export function parseGalleryLocation(url: URL): { context: PlayerContext | null; seasonId?: string; career: boolean; achievementId?: AchievementId } {
   const allowed = ['leagueId', 'playerId', 'seasonId', 'viewerPlayerId', 'scope', 'achievementId'];
@@ -45,6 +45,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
   let parsed: ReturnType<typeof parseGalleryLocation> | null = null, parseError: unknown;
   try { parsed = parseGalleryLocation(new URL(window.location.href)); } catch (error) { parseError = error; }
   const context = parsed?.context ?? null;
+  earned.value = context ? 'earned' : 'all';
   let selectedSeason = parsed?.seasonId, career = parsed?.career ?? false, selected: AchievementId | null = null;
   let performance: PlayerPerformance | null = null, achievements: PlayerAchievements | null = null, loaded = false;
   let generation = 0, abort = new AbortController(), disposed = false, suspended = false, locked = false, sessionKey: string | null = null;
@@ -74,7 +75,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
   function clear() {
     abort.abort(); generation++; loaded = false; performance = null; achievements = null; awards = []; awardsCursor = null; awardsStarted = false; awardsComplete = false; awardsBusy = false;
     closeDetail(false); grid.replaceChildren(); content.hidden = true; access.replaceChildren(); get('achievements-player').textContent = ''; get('achievements-context').textContent = '';
-    for (const id of ['achievement-detail-progress', 'achievement-detail-first', 'achievement-detail-highest', 'achievement-detail-status']) get(id).textContent = '';
+    for (const id of ['achievement-detail-progress', 'achievement-detail-status']) get(id).textContent = '';
   }
   function retire(message = 'Your sign-in changed. Sign in again to continue.') { clear(); locked = true; retry.hidden = true; signin.hidden = false; say(message, true); }
   async function verify(id: number) {
@@ -103,7 +104,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
       button.innerHTML = renderBadge(def.id, progress?.highest?.ordinal ?? 0); button.addEventListener('click', () => openDetail(def.id, button));
       const copy = node('div'); const rank = node('span', def.rarity);
       copy.append(rank, node('h2', def.name), node('p', def.rule));
-      if (context) { const note = node('p', progress?.highest ? `Earned · ${progress.highest.ordinal} ${progress.highest.ordinal === 1 ? 'star' : 'stars'}` : progress?.assessability === 'complete' ? 'To unlock' : 'Unlock not confirmed'); const footer = node('footer'); footer.append(note, node('p', achievementProgressLabel(progress))); copy.append(footer); }
+      if (context) { const footer = node('footer'); footer.append(node('p', achievementProgressLabel(progress))); copy.append(footer); }
       tile.append(button, copy); grid.append(tile);
     });
     const uncertain = context && (!personalAvailable() || achievements!.freshness.status !== 'ready' || achievements!.freshness.coverage !== 'complete' || achievements!.progress!.some(p => p.assessability === 'partial'));
@@ -113,7 +114,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
     get('achievements-player').textContent = performance?.player.displayName ?? 'Achievement collection';
     get('achievements-context').textContent = performance ? `${performance.league.name} · ${career ? 'League career' : performance.seasons.find(s => s.seasonId === selectedSeason)?.name ?? 'Season'}` : 'Explore all 23 achievements and how to unlock them.';
     get('achievements-personal-controls').hidden = !context; get('achievement-earned-field').hidden = !context; get('achievements-season-field').hidden = !context || career;
-    const back = get<HTMLAnchorElement>('achievements-back'); back.hidden = !context; if (context) back.href = playerHref(context, selectedSeason);
+
     season.replaceChildren(); performance?.seasons.forEach(s => { const option = node('option', s.name) as HTMLOptionElement; option.value = s.seasonId; season.append(option); }); season.value = selectedSeason ?? ''; season.disabled = !performance?.seasons.length;
     scopeControl.querySelectorAll<HTMLInputElement>('input').forEach(input => { input.checked = input.value === (career ? 'career' : 'season'); });
   }
@@ -122,10 +123,10 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
     if (!selected) return;
     const list = get('achievement-detail-unlocks'); list.replaceChildren();
     const matches = awards.filter(a => a.achievementId === selected);
-    matches.forEach(a => { const row = node('li'), link = node('a', date(a.earnedAt)) as HTMLAnchorElement; link.href = `/games/${encodeURIComponent(a.gameId)}`; row.append(node('span', `★ ${a.ordinal} · ${a.threshold} qualifying ${a.threshold === 1 ? 'occurrence' : 'occurrences'} · `), link); list.append(row); });
-    detailMore.hidden = !context || !scope() || !personalAvailable() || awardsStarted && !awardsCursor;
-    detailMore.disabled = awardsBusy; detailMore.textContent = awardsStarted ? 'Load earlier unlocks' : 'Load unlock history';
-    detailStatus.textContent = !personalAvailable() ? 'Unlock history is unavailable.' : !awardsStarted ? 'Load history to see every milestone unlock.' : awardsCursor ? `Checked ${awards.length} unlocks across all achievements. More history is available.` : !awardsComplete ? 'Confirmed unlocks are shown; history is incomplete.' : matches.length ? 'All recorded milestone unlocks are shown.' : 'No recorded milestone unlocks for this achievement.';
+    matches.forEach(a => { const row = node('li'), link = node('a', date(a.earnedAt)) as HTMLAnchorElement; link.href = `/games/${encodeURIComponent(a.gameId)}`; row.append(node('span', `★ ${a.ordinal} · Achieved `), link); list.append(row); });
+    detailMore.hidden = true;
+    detailMore.disabled = awardsBusy;
+    detailStatus.textContent = !personalAvailable() ? 'Unlock history is unavailable.' : !awardsStarted || awardsCursor ? 'Loading unlock history…' : !awardsComplete ? 'Confirmed unlocks are shown; history is incomplete.' : matches.length ? '' : 'No recorded milestone unlocks for this achievement.';
   }
   function renderDetail() {
     if (!selected) return;
@@ -139,14 +140,11 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
     if (thresholds) {
       const list = node('ol'); thresholds.forEach((threshold, index) => list.append(node('li', `★ ${index + 1} · ${threshold} qualifying ${threshold === 1 ? 'occurrence' : 'occurrences'}`))); progression.append(list, node('p', `Then one more star every ${def.rarity === 'Common' ? 100 : 10} qualifying occurrences.`));
     } else progression.append(node('p', 'Every qualifying occurrence earns another milestone and star.'));
-    progression.append(node('p', `First unlock: ${milestoneThreshold(def.rarity, 1)} qualifying occurrence. The first milestone earns the badge and first star. Individual stars are shown through five, then a compact star count.`));
     get('achievement-detail-personal').hidden = !context;
     if (context) {
       const streak = ACHIEVEMENT_CONDITIONS.streakAppearances[selected as keyof typeof ACHIEVEMENT_CONDITIONS.streakAppearances];
-      get('achievement-detail-progress').textContent = achievementProgressLabel(progress) + (streak && progress?.currentRun !== null && progress?.currentRun !== undefined ? ` · Current run ${progress.currentRun}/${streak} appearances` : '');
-      const first = personalAvailable() ? achievements?.firstUnlocks?.find(a => a.achievementId === selected) : undefined;
-      get('achievement-detail-first').textContent = first ? `First unlock · ${date(first.earnedAt)}` : achievements?.firstUnlocks === null || !personalAvailable() || progress?.assessability === 'partial' ? 'First unlock date unavailable.' : 'No first unlock recorded.';
-      get('achievement-detail-highest').textContent = progress?.highest ? `Highest confirmed milestone · ★ ${progress.highest.ordinal} · ${date(progress.highest.earnedAt)}` : progress?.assessability === 'complete' ? 'No milestone earned yet.' : 'Highest milestone is not confirmed.';
+      get('achievement-detail-progress').textContent = achievementProgressLabel(progress, true) + (streak && progress?.currentRun !== null && progress?.currentRun !== undefined ? ` · Current run ${progress.currentRun}/${streak} appearances` : '');
+
     }
     renderAwards();
   }
@@ -154,6 +152,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
     if (!loaded || locked || disposed) return;
     selected = id; trigger = from ?? root.querySelector<HTMLElement>(`#achievement-open-${id}`) ?? search; restoreFocus = true; renderDetail(); syncUrl();
     if (!dialog.open) dialog.showModal(); get<HTMLButtonElement>('achievement-detail-close').focus({ preventScroll: true });
+    void loadAwards();
   }
   function failed(error: unknown, id: number) {
     if (!active(id)) return;
@@ -165,19 +164,25 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
     const currentScope = scope(); if (!context || !currentScope || awardsBusy || !personalAvailable() || awardsStarted && !awardsCursor) return;
     const id = generation; awardsBusy = true; renderAwards();
     try {
-      if (!await verify(id)) return;
-      const page = await client.unlocks(context, currentScope, awardsCursor ? { cursor: awardsCursor } : {}, abort.signal);
-      if (!active(id)) return;
-      if (page.freshness.revision !== achievements?.freshness.revision || page.unlocks?.some(a => awards.some(existing => existing.id === a.id))) throw new PlayerClientError(409, 'history_changed', 'Achievement history changed. Refresh to load a consistent view.');
-      if (!await verify(id)) return;
-      awardsComplete = page.freshness.status === 'ready' && page.freshness.coverage === 'complete';
-      if (page.unlocks === null) { awardsComplete = false; detailStatus.textContent = 'Unlock history is updating. Try again shortly.'; return; }
-      awards.push(...page.unlocks); awardsCursor = page.cursor; awardsStarted = true; renderAwards();
+      // Fetch one bounded page at a time while a detail is open. Pages are shared
+      // across badge details within this player/scope; closing stops further reads.
+      do {
+        if (!await verify(id)) return;
+        const page = await client.unlocks(context, currentScope, awardsCursor ? { cursor: awardsCursor } : {}, abort.signal);
+        if (!active(id)) return;
+        if (page.freshness.revision !== achievements?.freshness.revision || page.unlocks?.some(a => awards.some(existing => existing.id === a.id))) throw new PlayerClientError(409, 'history_changed', 'Achievement history changed. Refresh to load a consistent view.');
+        if (page.cursor && page.cursor === awardsCursor) throw new Error('Unlock history did not advance');
+        if (!await verify(id)) return;
+        awardsComplete = page.freshness.status === 'ready' && page.freshness.coverage === 'complete';
+        if (page.unlocks === null) throw new Error('Unlock history unavailable');
+        awards.push(...page.unlocks); awardsCursor = page.cursor; awardsStarted = true; renderAwards();
+      } while (active(id) && selected && awardsCursor);
     } catch (error) {
       if (error instanceof PlayerClientError && [401, 403, 409].includes(error.status)) failed(error, id);
-      else if (active(id)) detailStatus.textContent = 'Unlock history could not be loaded. Retry to continue.';
+      else if (active(id)) { detailStatus.textContent = 'Unlock history could not be loaded. Try again.'; detailMore.hidden = false; }
     } finally { if (active(id)) { awardsBusy = false; detailMore.disabled = false; } }
   }
+
   async function discover(id: number, next = false) {
     if (!context) return;
     const page = await client.access(context.leagueId, next && accessCursor ? { cursor: accessCursor } : {}, abort.signal);
@@ -211,7 +216,7 @@ export function mountAchievementGallery(root: HTMLElement, client: PlayerClient)
   }
   signin.href = `/sign-in?${new URLSearchParams({ returnTo: window.location.pathname + window.location.search })}`;
   listen(search, 'input', () => { if (loaded) renderGrid(); }); listen(rarity, 'change', () => { if (loaded) renderGrid(); }); listen(earned, 'change', () => { if (loaded) renderGrid(); });
-  listen(get('achievement-reset'), 'click', () => { search.value = ''; rarity.value = 'All'; earned.value = 'all'; if (loaded) renderGrid(); search.focus(); });
+  listen(get('achievement-reset'), 'click', () => { search.value = ''; rarity.value = 'All'; earned.value = context ? 'earned' : 'all'; if (loaded) renderGrid(); search.focus(); });
   listen(season, 'change', () => { selectedSeason = season.value || undefined; void load(); });
   listen(scopeControl, 'change', event => { const value = (event.target as HTMLInputElement).value; if (value !== 'season' && value !== 'career') return; career = value === 'career'; void load(); });
   listen(retry, 'click', () => { void load(); }); listen(detailMore, 'click', () => { void loadAwards(); });

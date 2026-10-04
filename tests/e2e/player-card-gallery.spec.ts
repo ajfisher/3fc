@@ -36,7 +36,9 @@ for (const width of [320, 390, 430, 1280]) for (const colorScheme of ['light', '
   test(`gallery collection and detail ${width}px ${colorScheme}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 }); await page.emulateMedia({ colorScheme }); await mock(page);
     await page.goto('/achievements?leagueId=league-one&playerId=player-one&seasonId=winter');
-    await expect(page.locator('#achievement-grid > *')).toHaveCount(23);
+    await expect(page.locator('#achievement-earned')).toHaveValue('earned');
+    await expect(page.locator('#achievement-grid > *')).toHaveCount(6);
+    await page.locator('#achievement-earned').selectOption('all');
     await expect(page.locator('body')).not.toContainText('private@example.invalid');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.locator('#achievement-search').fill('clutch'); await expect(page.locator('#achievement-grid > *')).toHaveCount(1);
@@ -44,7 +46,7 @@ for (const width of [320, 390, 430, 1280]) for (const colorScheme of ['light', '
     await expect(page.locator('#achievement-detail-rule')).toContainText('final minute');
     await page.keyboard.press('Escape'); await expect(page.locator('#achievement-detail')).not.toBeVisible();
     await expect(page.locator('#achievement-open-clutch')).toBeFocused(); await expect(page.locator('#achievement-search')).toHaveValue('clutch');
-    await page.locator('#achievement-reset').click(); await expect(page.locator('#achievement-grid > *')).toHaveCount(23);
+    await page.locator('#achievement-reset').click(); await expect(page.locator('#achievement-grid > *')).toHaveCount(6);
     await page.locator('#achievement-earned').selectOption('earned'); await expect(page.locator('#achievement-grid > *')).toHaveCount(6);
     if (width === 390) await page.screenshot({ path: `/tmp/3fc-gallery-${colorScheme}.png`, fullPage: true });
   });
@@ -105,4 +107,21 @@ test('card title and close stay aligned at enlarged text on a narrow screen', as
   await expect(header).toHaveCSS('align-items', 'center');
   expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await page.locator('#club-card-close').click(); await expect(page.locator('#player-card')).toBeFocused();
+});
+
+
+test('achievement detail opens with automatic history and concise progress', async ({ page }) => {
+  await mock(page); await page.goto('/achievements?leagueId=league-one&playerId=player-one&seasonId=winter');
+  await expect(page.locator('#achievement-grid')).toContainText('Progress: 5 / 10');
+  await expect(page.locator('#achievement-grid')).not.toContainText('Earned ·');
+  await page.locator('#achievement-open-goal').click();
+  await expect(page.locator('#achievement-detail-unlocks')).toContainText('★ 2 · Achieved');
+  await expect(page.locator('#achievement-detail-unlocks')).toHaveCSS('list-style-type', 'none');
+  await expect(page.locator('#achievement-detail-progression ol')).toHaveCSS('list-style-type', 'none');
+  await expect(page.locator('#achievement-detail-progress')).toHaveText('Progress to next milestone: 5 / 10');
+  await expect(page.locator('#achievement-detail')).not.toContainText('First unlock');
+  await expect(page.locator('#achievement-detail')).not.toContainText('Highest confirmed');
+  await expect(page.locator('#achievement-detail-more')).not.toBeVisible();
+  await expect(page.locator('#achievement-detail-status')).toBeEmpty();
+  expect(await page.locator('#achievements-content > search label').allTextContents()).toEqual(['Collection', 'Rarity', 'Find an achievement']);
 });
