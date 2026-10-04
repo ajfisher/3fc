@@ -1451,9 +1451,8 @@ export function renderPlayerProfilePage(apiBaseUrl: string): string {
   <section id="player-content" hidden>
     <header>
       <div id="player-avatar" aria-hidden="true"></div>
-      <hgroup><p id="player-league"></p><h1 id="player-name"></h1></hgroup>
-      <div data-ui="button-row"><a id="player-edit" data-ui="button-secondary" hidden>Edit profile</a>
-      <button id="player-card" type="button" data-ui="button" data-variant="primary" hidden>Player card</button></div>
+      <hgroup><h1 id="player-name"></h1><p id="player-league"></p></hgroup>
+      <a id="player-edit" data-ui="button-secondary" hidden>Edit profile</a>
     </header>
     <div data-ui="period-controls">
       <fieldset id="player-period"><legend class="sr-only">Statistics period</legend>
@@ -1464,9 +1463,10 @@ export function renderPlayerProfilePage(apiBaseUrl: string): string {
       <div data-ui="field"><label for="player-season">Season</label><select id="player-season" data-ui="input"></select></div>
     </div>
     <section data-ui="panel" aria-labelledby="player-period-title">
-      <h2 id="player-period-title">Season statistics</h2><dl id="player-stats"></dl>
+      <header><h2 id="player-period-title">Season statistics</h2>
+        <button id="player-card" type="button" hidden>Player card</button></header><dl id="player-stats"></dl>
     </section>
-    <section aria-labelledby="player-latest-title"><h2 id="player-latest-title">Last completed game</h2><div id="player-latest"></div></section>
+    <section aria-labelledby="player-latest-title"><h2 id="player-latest-title">Last match summary</h2><div id="player-latest"></div></section>
     <section aria-labelledby="player-history-title"><h2 id="player-history-title">Match history</h2>
       <p id="player-history-status" role="status" aria-live="polite"></p><ol id="player-history-list"></ol>
       <button id="player-history-more" type="button" data-ui="button-secondary" hidden>Load more</button>

@@ -61,10 +61,9 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
   function appendMatch(parent: HTMLElement, value: PlayerAppearance, prominent = false) {
     const item = node(parent.tagName === 'OL' ? 'li' : 'div'); item.dataset.ui = 'player-match';
     const header = node('header'); header.append(gameLink(value), node('span', `${value.outcome === 'win' ? 'Win' : value.outcome === 'draw' ? 'Draw' : 'Loss'} · ${value.teamId[0].toUpperCase()}${value.teamId.slice(1)} team`));
-    const contributions = node('p', `${value.goals} goals · ${value.assists} assists · ${value.ownGoals} own goals`);
-    const team = prominent ? node('dl') : node('p', `Team: ${value.scored} scored · ${value.conceded} conceded`);
-    if (prominent) { team.dataset.ui = 'panel'; for (const [label, total] of [['Scored', value.scored], ['Conceded', value.conceded]] as const) { const part = node('div'); part.append(node('dt', label), node('dd', String(total))); team.append(part); } }
-    item.append(header, contributions, team); parent.append(item);
+    item.append(header);
+    if (!prominent) item.append(node('p', `${value.goals} goals · ${value.assists} assists · ${value.ownGoals} own goals`));
+    item.append(node('p', `Team: ${value.scored} scored, ${value.conceded} conceded`)); parent.append(item);
   }
   function renderLog() {
     log.replaceChildren(); matches.forEach(value => appendMatch(log, value));
@@ -94,6 +93,8 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
     stats.replaceChildren();
     values.forEach(([label, value]) => { const cell = node('div'); cell.dataset.ui = 'player-stat'; cell.append(node('dt', label), node('dd', String(value))); stats.append(cell); });
     if (!values.length) stats.append(node('p', performance.freshness.status === 'ready' && performance.freshness.coverage === 'complete' ? 'No completed appearances yet.' : 'Statistics are not available yet.'));
+    latest.closest('section')!.hidden = period !== 'last';
+    log.closest('section')!.hidden = period === 'last';
     latest.replaceChildren(); if (performance.latest) appendMatch(latest, performance.latest, true); else latest.append(node('p', performance.freshness.status === 'ready' && performance.freshness.coverage === 'complete' ? 'Your story starts with the next match.' : 'Latest match is not available yet.'));
     edit.hidden = !performance.capabilities.editProfile;
     edit.href = `/player-settings?${new URLSearchParams({ playerId: performance.player.playerId, leagueId: context.leagueId, ...(selectedSeason ? { seasonId: selectedSeason } : {}), ...(context.viewerPlayerId ? { viewerPlayerId: context.viewerPlayerId } : {}) })}`;
@@ -117,7 +118,7 @@ export function mountPlayerProfile(root: HTMLElement, client: PlayerClient) {
   }
   async function loadHistory(id: number, append = false) {
     if (!performance || !active(id)) return;
-    if (period === 'last') { historyFreshness = performance.freshness; matches = performance.latest ? [performance.latest] : []; cursor = null; renderLog(); return; }
+    if (period === 'last') { matches = []; cursor = null; renderLog(); return; }
     if (period === 'season' && !selectedSeason) { historyFreshness = performance.freshness; matches = []; cursor = null; renderLog(); return; }
     const page = await client.history(context, { ...(period === 'season' ? { seasonId: selectedSeason } : {}), ...(append && cursor ? { cursor } : {}) }, controller.signal);
     if (!active(id)) return;

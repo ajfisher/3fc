@@ -3198,7 +3198,7 @@ code {
       p {
         color: var(--ink-soft);
         font-size: 0.875rem;
-        margin-block: 0 0.4rem;
+        margin-block: 0.4rem 0;
       }
 
       h1 {
@@ -3210,15 +3210,8 @@ code {
       }
     }
 
-    [data-ui="button-row"] {
-      gap: 0.5rem;
-    }
-
     @media (max-width: 25rem) {
       gap: 1rem;
-      [data-ui="button-row"] {
-        width: 100%;
-      }
     }
   }
 
@@ -3253,9 +3246,29 @@ code {
       margin-block: 0;
       padding: 1.5rem;
 
-      h2 {
-        margin: 0 0 1rem;
-        font-size: 1.4rem;
+      > header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+        margin-bottom: 1rem;
+
+        h2 {
+          margin: 0;
+          font-size: 1.4rem;
+        }
+
+        button {
+          background: none;
+          border: 0;
+          padding: 0.5rem 0;
+          color: var(--accent);
+          font: inherit;
+          text-decoration: underline;
+          cursor: pointer;
+          min-height: 2.75rem;
+        }
       }
 
       @media (max-width: 25rem) {
@@ -3274,6 +3287,7 @@ code {
       display: flex;
       flex-direction: column;
       min-width: 0;
+      text-align: center;
     }
 
     dt {
@@ -3294,23 +3308,6 @@ code {
 
     @media (max-width: 25rem) {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-
-  #player-latest dl {
-    display: flex;
-    gap: 2rem;
-    padding: 1rem 1.5rem;
-
-    dt {
-      font-size: 1rem;
-      color: inherit;
-    }
-    dd {
-      font-size: 1.7rem;
-      font-weight: 700;
-      line-height: inherit;
-      letter-spacing: normal;
     }
   }
 

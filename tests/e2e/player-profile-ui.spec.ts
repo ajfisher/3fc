@@ -30,15 +30,23 @@ for (const width of [320, 390, 430, 1280]) {
       await expect(page.locator('#player-name')).toHaveText('Alex Rivera');
       await expect(page.locator('#player-stats')).toContainText('21');
       await expect(page.locator('#player-history-list > li')).toHaveCount(20);
+      await expect(page.locator('#player-latest')).not.toBeVisible();
       await expect(page.locator('body')).not.toContainText('private@example.invalid');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.locator('#player-history-more').click();
       await expect(page.locator('#player-history-list > li')).toHaveCount(21);
       await page.locator('#player-period label').filter({ hasText: 'Career' }).click();
       await expect(page.locator('#player-stats')).toContainText('24');
+      await expect(page.locator('#player-latest')).not.toBeVisible();
+      await expect(page.locator('#player-history-list')).toBeVisible();
       await page.locator('#player-period label').filter({ hasText: 'Last game' }).click();
       await expect(page.locator('#player-stats')).toContainText('2');
-      await expect(page.locator('#player-latest')).toContainText('3');
+      await expect(page.locator('#player-latest')).toBeVisible();
+      await expect(page.locator('#player-latest')).toContainText('Team: 3 scored, 2 conceded');
+      await expect(page.locator('#player-latest')).not.toContainText('assists');
+      await expect(page.locator('#player-history-list')).not.toBeVisible();
+      await expect(page.locator('#player-stats > div').first()).toHaveCSS('text-align', 'center');
+      await expect(page.locator('[data-ui=panel] #player-card')).toBeVisible();
       if (width === 390) await page.screenshot({ path: `/tmp/3fc-profile-${colorScheme}.png`, fullPage: true });
     });
   }
