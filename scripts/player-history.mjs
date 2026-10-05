@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { verifyHistoryDeploymentFreeze, stuckProductionRun } from './player-history-deployment-freeze.mjs';
 import { verifyMigrationProvenance } from './player-identity-migrate.mjs';
 import { verifyHistoryManifest, verifyHistorySnapshot, readHistorySnapshot } from './deploy/verify-player-history.mjs';
 
@@ -14,7 +15,7 @@ export function historyArguments(args) {
     throw new Error('Choose status, activate, backfill, step, recover, dry-run, profile-status or profile-step.');
   for (let index = 1; index < args.length; index += 2) {
     const key = args[index];
-    if (!['--manifest', '--deployment-manifest', '--worker-manifest', '--profile', '--local-table', '--league', '--player', '--key', '--kind', '--cursor', '--comparison', '--pages', '--apply'].includes(key)
+    if (!['--manifest', '--deployment-manifest', '--worker-manifest', '--profile', '--local-table', '--league', '--player', '--key', '--kind', '--cursor', '--comparison', '--pages', '--apply', '--exclude-stuck-run'].includes(key)
       || Object.hasOwn(options, key) || !args[index + 1]) throw new Error('Unknown, duplicate or incomplete history option.');
     options[key] = args[index + 1];
   }
@@ -24,6 +25,9 @@ export function historyArguments(args) {
     throw new Error('Choose local-table or explicit cloud profile, API deployment manifest and worker manifest.');
   if (!local && !/^[a-zA-Z0-9_.-]+$/.test(options['--profile'])) throw new Error('Invalid AWS profile.');
   if (local && !/^[A-Za-z0-9_.-]{3,255}$/.test(options['--local-table'])) throw new Error('Invalid local table.');
+  if (options['--exclude-stuck-run'] !== undefined && (local || ['status', 'profile-status'].includes(command)
+    || options['--exclude-stuck-run'] !== String(stuckProductionRun.id)))
+    throw new Error('--exclude-stuck-run accepts only the reviewed run ID for cloud mutations.');
   const profileWork = command === 'profile-status' || command === 'profile-step';
   if (profileWork ? !options['--player']?.trim() : command !== 'activate' && !options['--league']?.trim())
     throw new Error(profileWork ? '--player is required.' : '--league is required.');
@@ -85,17 +89,18 @@ async function main(args) {
         throw new Error('History worker manifest differs from the reviewed deployment scope.');
       verifyHistorySnapshot(workers, workers.snapshot);
       const verifyCore = () => verifyHistoryProvenance({ manifest, deployment, caller, table: table ?? {}, live: readLive(), now: Date.now() });
-      verifyFinal = () => { verifyCore(); verifyHistoryManifest(workers, readHistorySnapshot(workers), deployment.env, manifest.writerSha); };
+      const mutating = !['status', 'profile-status'].includes(command);
+      const verifyFreeze = () => {
+        if (!mutating) return;
+        verifyHistoryDeploymentFreeze({ env: deployment.env, writerSha: manifest.writerSha, excludedRun: options['--exclude-stuck-run'],
+          readGithub: path => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })),
+          readGit: parameters => execFileSync('git', parameters, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }) });
+      };
+      verifyFinal = () => { verifyFreeze(); verifyCore(); verifyHistoryManifest(workers, readHistorySnapshot(workers), deployment.env, manifest.writerSha); };
       verifyFinal();
       let lastVerified = Date.now();
-      verify = () => { if (Date.now() - lastVerified >= 30_000) { verifyCore(); lastVerified = Date.now(); } };
-      if (!['status', 'profile-status'].includes(command)) {
-        const gh = (...parameters) => JSON.parse(execFileSync('gh', parameters, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }));
-        const workflow = `repos/ajfisher/3fc/actions/workflows/deploy-${deployment.env}.yml`;
-        if (gh('api', workflow).state !== 'disabled_manually') throw new Error('Freeze the target deployment workflow during reviewed activation/backfill.');
-        for (const state of ['queued', 'in_progress', 'waiting', 'pending', 'requested'])
-          if (gh('api', `${workflow}/runs?status=${state}&per_page=1`).total_count !== 0) throw new Error('Drain pending deployments before history operations.');
-      }
+      verify = () => { if (Date.now() - lastVerified >= 30_000) { verifyFreeze(); verifyCore(); lastVerified = Date.now(); } };
+
     }
     const runner = new HistoryCoordinator(client, manifest.tableName), league = options['--league'];
     if (command === 'profile-status') {
