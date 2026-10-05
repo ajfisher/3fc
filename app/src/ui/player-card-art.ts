@@ -6,7 +6,7 @@ export type ClubCardSide = 'front' | 'honours';
 export interface ClubCardModel {
   name: string; league: string; period: ClubCardPeriod; periodLabel: string;
   portraitDataUrl: string | null; initials: string;
-  stats: Array<{ label: string; value: string }>; rate: string | null;
+  stats: Array<{ label: string; value: string }>;
   honours: CardHonour[]; additionalHonours: number; honoursNote: string;
   honoursState: 'ready' | 'unavailable'; exportable: boolean; unavailableReason: string;
 }
@@ -33,13 +33,11 @@ export function buildClubCardModel(input: { performance: PlayerPerformance; peri
   const periodLabel = period === 'career' ? 'LEAGUE CAREER' : period === 'last' ? latest ? new Date(latest.kickoffAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : 'LAST GAME'
     : p.seasons.find(value => value.seasonId === p.selectedSeasonId)?.name ?? 'SEASON';
   const stats: ClubCardModel['stats'] = [];
-  let rate: string | null = null;
-  if (period === 'last' && latest) stats.push({ label: 'GOALS', value: String(latest.goals) }, { label: 'ASSISTS', value: String(latest.assists) }, { label: 'RESULT', value: latest.outcome.toUpperCase() }, { label: 'OWN GOALS', value: String(latest.ownGoals) });
+  if (period === 'last' && latest) stats.push({ label: 'GOALS', value: String(latest.goals) }, { label: 'ASSISTS', value: String(latest.assists) }, { label: 'RESULT', value: latest.outcome.toUpperCase() });
   if (period !== 'last') {
     const totals = period === 'career' ? p.career : p.season;
     if (totals) {
-      for (const [label, key] of [['PLAYED', 'played'], ['GOALS', 'goals'], ['ASSISTS', 'assists'], ['WINS', 'wins'], ['DRAWS', 'draws'], ['OWN GOALS', 'ownGoals']] as const) stats.push({ label, value: String(totals[key]) });
-      rate = `${totals.goalsPerGame.toLocaleString('en-AU', { maximumFractionDigits: 2 })} GOALS / GAME`;
+      for (const [label, key] of [['PLAYED', 'played'], ['WINS', 'wins'], ['DRAWS', 'draws'], ['GOALS', 'goals'], ['ASSISTS', 'assists']] as const) stats.push({ label, value: String(totals[key]) });
     }
   }
   const portrait = input.portraitDataUrl && validCardPortrait(input.portraitDataUrl) ? input.portraitDataUrl : null;
@@ -58,7 +56,7 @@ export function buildClubCardModel(input: { performance: PlayerPerformance; peri
   const uncertain = a?.progress?.some(progress => progress.assessability === 'partial') ?? false;
   return {
     name: p.player.displayName, league: p.league.name, period, periodLabel,
-    portraitDataUrl: portrait, initials: playerInitial(p.player.displayName), stats, rate,
+    portraitDataUrl: portrait, initials: playerInitial(p.player.displayName), stats,
     honours, additionalHonours: Math.max(0, new Set(relevant.map(value => value.achievementId)).size - honours.length),
     honoursState: awards === null ? 'unavailable' : 'ready',
     honoursNote: awards === null ? 'Honours are temporarily unavailable.' : uncertain ? 'Confirmed honours · some history cannot be assessed' : period === 'last' ? 'MILESTONES EARNED THIS GAME' : 'HIGHEST MILESTONE IN EACH CLASS',
@@ -86,10 +84,9 @@ export function renderClubCardSvg(model: ClubCardModel, side: ClubCardSide): str
     else art += '<path d="M200 76V226M135 189L265 113M135 113L265 189" stroke="#b9d9bd" opacity=".25"/>' + centre(187, model.initials, 104, ivory, 850);
     const names = lines(model.name, 23); names.forEach((line, index) => { art += centre(names.length === 1 ? 276 : 258 + index * 25, line, names.length === 1 && line.length < 16 ? 31 : 22, ivory, 800); });
     art += centre(307, lines(model.league.toUpperCase(), 40, 1)[0], 9, gold, 700) + '<path d="M48 320H352" stroke="#b9d9bd" opacity=".45"/>' + centre(342, lines(model.periodLabel, 38, 1)[0], 11, mint, 650);
-    const positions = model.period === 'last' ? [[112, 382], [288, 382], [112, 437], [288, 437]] : [[94, 382], [200, 382], [306, 382], [94, 434], [200, 434], [306, 434]];
-    model.stats.forEach((stat, index) => { const [x, y] = positions[index]; art += text(x, y, stat.value, stat.value.length > 5 ? 20 : index < (model.period === 'last' ? 2 : 3) ? 30 : 24, ivory, 800, 'middle', stat.value.length > 6 ? (model.period === 'last' ? 125 : 85) : undefined) + text(x, y + 18, stat.label, 9, mint, 650); });
+    const positions = [[94, 382], [200, 382], [306, 382], [147, 434], [253, 434]];
+    model.stats.forEach((stat, index) => { const [x, y] = positions[index]; art += text(x, y, stat.value, stat.value.length > 5 ? 20 : 30, ivory, 800, 'middle', stat.value.length > 6 ? 85 : undefined) + text(x, y + 18, stat.label, 9, mint, 650); });
     if (!model.stats.length) art += centre(401, 'YOUR STORY STARTS HERE', 17, ivory, 750);
-    if (model.rate) art += centre(474, model.rate, 10, mint);
   } else {
     const names = lines(model.name, 26); names.forEach((line, index) => { art += centre(names.length === 1 ? 86 : 77 + index * 21, line, 21, ivory, 800); });
     art += centre(116, lines(model.periodLabel, 40, 1)[0], 10, mint);
