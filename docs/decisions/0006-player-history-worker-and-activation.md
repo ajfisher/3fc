@@ -48,8 +48,12 @@ an invalid award. Prior generations and publication transitions retain the audit
 from a source token. Activation requires a validated writer/rule manifest and
 verified identity coverage. Cloud operations require the exact clean reviewed
 checkout, account, table, region, deployed API and worker fingerprints, drained
-old writers, and a frozen deployment workflow with no queued deployment. Full
-fingerprints are checked at start/end; API provenance is rechecked between
+old writers, and a frozen deployment workflow with no queued deployment by default.
+The incident-specific [stuck-run procedure](../player-history-operations.md#temporary-production-stuck-run-recovery)
+permits only run 37241624452, after a newer accepted production main makes its
+pinned pre-credential guard reject deployment. This explicit operator exception
+changes deployment-exclusion evidence, not AWS authority or data ownership. Full
+fingerprints are checked at start/end; API provenance and deployment exclusion are rechecked between
 bounded steps at least every 30 seconds. The CLI shares the worker coordinator;
 it introduces no public activation or repair endpoint. Local operations use the
 same service against explicit local DynamoDB.
