@@ -13,9 +13,13 @@ function achievements(honours: AchievementUnlock[] = []): PlayerAchievements { r
 test('front uses the authoritative selected totals and last-game contribution, and excludes account data', () => {
   const source = { ...performance, email: 'private@example.test', preferences: { email: true } };
   const season = buildClubCardModel({ performance: source, period: 'season', portraitDataUrl: null, achievements: null });
-  assert.deepEqual(season.stats.map(s => s.value), ['1', '2', '1', '1', '0', '0']); assert.equal(season.rate, '2 GOALS / GAME');
+  assert.deepEqual(season.stats, [{ label: 'PLAYED', value: '1' }, { label: 'WINS', value: '1' }, { label: 'DRAWS', value: '0' }, { label: 'GOALS', value: '2' }, { label: 'ASSISTS', value: '1' }]);
   const last = buildClubCardModel({ performance: source, period: 'last', portraitDataUrl: null, achievements: null });
-  assert.deepEqual(last.stats.map(s => s.value), ['2', '1', 'WIN', '0']); assert.equal(last.stats.length, 4);
+  assert.deepEqual(last.stats.map(s => s.value), ['2', '1', 'WIN']); assert.equal(last.stats.length, 3);
+  for (const period of ['season', 'career', 'last'] as const) {
+    const card = renderClubCardSvg(buildClubCardModel({ performance: source, period, portraitDataUrl: null, achievements: null }), 'front');
+    assert(!card.includes('OWN GOALS')); assert(!card.includes('GOALS / GAME'));
+  }
   const svg = renderClubCardSvg(season, 'front'); assert(!svg.includes('private@example')); assert(!JSON.stringify(season).includes('preferences')); assert(svg.includes('width="1200" height="1560"'));
 });
 test('five honour classes rank by rarity and highest milestone; repeated tiers do not inflate extras', () => {
