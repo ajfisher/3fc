@@ -1,3 +1,4 @@
+import { HomeLeagueCoverageRunner } from "../data/home-league-coverage.js";
 import { homeAccountPk, homeLeagueSk, homeLeagueLookupPut } from "../data/home-league-lookup.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -7202,4 +7203,96 @@ test("home lookup repair cannot recreate a revoked creator ACL or commit after l
   client.runBeforeNextPut(() => client.deleteItem("LEAGUE#race-lookup", "METADATA"));
   await assert.rejects(repository.grantLeagueAccess({ leagueId: input.leagueId, userId: "delegate", role: "admin", grantedByUserId: "owner" }), /no longer available/);
   assert.equal(client.readItem(homeAccountPk("delegate"), homeLeagueSk(input.leagueId)), undefined);
+});
+
+
+function homeCoverageHarness(client: InMemoryDynamoClient) {
+  const manifest = { migrationId: "home-lookup-test", accountId: "123456789012", region: "ap-southeast-2", tableName: "threefc_test",
+    tableArn: "arn:aws:dynamodb:ap-southeast-2:123456789012:table/threefc_test", writerSha: "a".repeat(40), writerVersion: 1 as const,
+    reviewedPlan: "https://github.com/ajfisher/3fc/pull/233", drainedAt: "2026-10-08T00:00:00Z" };
+  return new HomeLeagueCoverageRunner(client, manifest, () => "2026-10-08T00:01:00Z");
+}
+
+test("home lookup coverage repairs bounded pages, verifies separately and safely replays a lost page response", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "coverage", name: "Coverage", createdByUserId: "owner" });
+  for (let i = 0; i < 30; i++) {
+    await repository.grantLeagueAccess({ leagueId: "coverage", userId: `member-${i}`, role: "viewer", grantedByUserId: "owner" });
+    client.deleteItem(homeAccountPk(`member-${i}`), homeLeagueSk("coverage"));
+  }
+  let lost = true, maxActions = 0, scans = 0;
+  const base = homeCoverageHarness(client);
+  const runner = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    if (command instanceof ScanCommand) { assert.equal(command.input.Limit, 25); assert.equal(command.input.ConsistentRead, true); scans++; }
+    if (command instanceof TransactWriteItemsCommand) maxActions = Math.max(maxActions, command.input.TransactItems!.length);
+    const result = await client.send(command);
+    if (command instanceof TransactWriteItemsCommand && command.input.TransactItems!.length > 1 && lost) { lost = false; throw new Error("lost response"); }
+    return result;
+  } }, base.manifest);
+  await runner.begin();
+  await assert.rejects(runner.step(), /lost response/);
+  assert.equal((await runner.status())!.pages, 1, "page writes and checkpoint committed despite lost response");
+  let seenVerification = false;
+  for (let n = 0; n < 30; n++) {
+    const state = await runner.status();
+    if (state!.phase === "verification") seenVerification = true;
+    if (state!.phase === "ready") break;
+    await runner.step();
+  }
+  const ready = (await runner.status())!;
+  assert.equal(ready.phase, "ready"); assert.ok(seenVerification); assert.ok(scans > 2); assert.ok(maxActions <= 76);
+  assert.equal(ready.repaired, 31); assert.equal(ready.verified, 31);
+  for (let i = 0; i < 30; i++) assert.ok(client.readItem(homeAccountPk(`member-${i}`), homeLeagueSk("coverage")));
+  await assert.rejects(runner.begin(), /Disable/);
+  assert.equal((await runner.disable())!.phase, "disabled");
+  assert.notEqual((await runner.begin()).epoch, ready.epoch);
+});
+
+test("home lookup coverage cannot checkpoint a raced ACL page or repair discovery for a deleted league", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "coverage-race", name: "Race", createdByUserId: "owner" });
+  client.deleteItem(homeAccountPk("owner"), homeLeagueSk("coverage-race"));
+  const runner = homeCoverageHarness(client); const before = await runner.begin();
+  const acl = client.readItem("LEAGUE#coverage-race", "ACL#USER#owner")!;
+  client.runBeforeNextPut(() => client.seedItem({ ...acl, data: { S: JSON.stringify({ ...JSON.parse(acl.data!.S!), role: "viewer" }) } }));
+  await assert.rejects(runner.step());
+  assert.deepEqual(await runner.status(), before, "changed ACL prevents page repair and checkpoint advancement");
+  assert.equal(client.readItem(homeAccountPk("owner"), homeLeagueSk("coverage-race")), undefined);
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#coverage-race", "METADATA"));
+  await assert.rejects(runner.step());
+  assert.deepEqual(await runner.status(), before);
+  assert.equal(client.readItem(homeAccountPk("owner"), homeLeagueSk("coverage-race")), undefined);
+  assert.equal((await runner.step()).phase, "verification");
+  assert.equal((await runner.step()).phase, "ready");
+  assert.equal((await runner.status())!.verified, 0, "orphan ACL cannot discover a deleted league");
+});
+
+test("home lookup verification refuses missing pointer and malformed reserved ACL without advancing readiness", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "coverage-invalid", name: "Invalid", createdByUserId: "owner" });
+  const runner = homeCoverageHarness(client); await runner.begin();
+  assert.equal((await runner.step()).phase, "verification");
+  const before = await runner.status();
+  client.deleteItem(homeAccountPk("owner"), homeLeagueSk("coverage-invalid"));
+  await assert.rejects(runner.step(), /reconciliation/); assert.deepEqual(await runner.status(), before);
+  await runner.disable(); await runner.begin();
+  const malformed = client.readItem("LEAGUE#coverage-invalid", "ACL#USER#owner")!;
+  client.seedItem({ ...malformed, data: { S: JSON.stringify({ leagueId: "coverage-invalid", userId: "other", role: "admin" }) } });
+  const corruptBefore = await runner.status();
+  await assert.rejects(runner.step(), /reconciliation/); assert.deepEqual(await runner.status(), corruptBefore);
+});
+
+test("home lookup reconciliation rejects a different manifest and repeating scan checkpoint", async () => {
+  const client = new InMemoryDynamoClient(), runner = homeCoverageHarness(client); await runner.begin();
+  const changed = new HomeLeagueCoverageRunner(client, { ...runner.manifest, writerSha: "b".repeat(40) });
+  await assert.rejects(changed.step(), /reconciliation/);
+  let cursor: Item | undefined;
+  const repeating = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    if (command instanceof ScanCommand) {
+      cursor ??= { pk: { S: "fake" }, sk: { S: "key" } }; return { Items: [], LastEvaluatedKey: cursor };
+    }
+    return client.send(command);
+  } }, runner.manifest);
+  await repeating.step(); const before = await repeating.status();
+  await assert.rejects(repeating.step(), /reconciliation/); assert.deepEqual(await repeating.status(), before);
 });

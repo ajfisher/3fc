@@ -170,3 +170,60 @@ leaves harmless candidate records; coverage is still unavailable. Before any fut
 reader cutover, phase 2b must verify deployed writer continuity and existing ACL
 coverage. After cutover, reverting these writers requires disabling indexed reads
 and invalidating coverage first. Pointer records alone never grant access.
+
+## Home coverage preparation (phase 2b)
+
+The operator-only `scripts/home-league-coverage.mjs` uses a clean checkout at the
+reviewed deployed writer SHA, explicit AWS profile, deployment manifest, account,
+region and table provenance. It reuses existing fingerprint/drain validation:
+record drainedAt after the deployment plus Lambda's maximum invocation window
+(905 seconds), rather than assuming the current timeout bounds old invocations.
+Freeze and drain the target deployment workflow during reconciliation; all active
+application writers must be compatible. This procedure does not pause identity
+writes or invalidate player-history projections. Production operations require
+AJ's release/cutover decision. No production migration is executed by this PR.
+
+Create a manifest with migrationId, accountId, region, tableArn, tableName,
+writerSha (40-character reviewed commit), writerVersion:1, reviewedPlan (PR URL),
+and drainedAt (ISO timestamp). Pass the deployment manifest produced by the
+existing deployment workflow. From the repository root, under the normal resource
+guard, use:
+
+```sh
+node scripts/home-league-coverage.mjs status --manifest <coverage.json> --deployment-manifest <api-core-deploy-manifest.json> --profile <profile>
+node scripts/home-league-coverage.mjs begin --manifest <coverage.json> --deployment-manifest <api-core-deploy-manifest.json> --profile <profile> --apply reviewed-home-lookups
+node scripts/home-league-coverage.mjs step --manifest <coverage.json> --deployment-manifest <api-core-deploy-manifest.json> --profile <profile> --apply reviewed-home-lookups
+```
+
+Each page scans at most 25 physical records with strong consistency. Step defaults
+to one page; --pages accepts 1–100 to amortise the fresh build, rechecking provenance
+and the frozen/drained deployment workflow before every page. Batches stop on ready
+or on the first error; checkpoints remain page-sized. Valid live
+ACLs get candidate pointers with source/league fences, then a separate bounded
+verification pass checks pointers against live ACLs. Missing league metadata
+excludes orphan ACLs under an absence fence. Malformed reserved ACLs, missing
+verification pointers, stale manifests and transaction races prevent readiness
+and preserve the checkpoint. A lost response may have committed; consult status
+before repeating. Counts report work, not a table-wide snapshot equality proof.
+Compatible atomic writers preserve coverage during concurrent changes. The control
+and a full page commit together in at most 76 actions before identical checks
+are deduplicated. Empty pages with a continuation never count as completion.
+
+`HOME_LOOKUP / CONTROL` (`homeLeagueCoverage`) owns phase, manifest, epoch,
+physical cursor and aggregate counters. It has no TTL and grants no authority.
+Phases are backfill, verification, ready and disabled. Ready coverage alone does
+not enable indexed reads. `disable` uses the same explicit arguments/apply token,
+invalidates coverage and clears its cursor; a new begin uses a new epoch. Never
+change the manifest of an active run. Reconcile changed source records or disable
+and restart rather than bypassing a failed page. Before a writer rollback, disable
+indexed reads and coverage using the still-pinned deployed writer, then release
+the rollback. Retain pointers for recovery. Reader cutover remains phase 3.
+
+Administrative writers are part of continuity: forbid direct ACL imports/repairs
+throughout reconciliation and active indexed reads unless they also maintain
+pointers or first disable coverage/readers. The existing season import executor
+requires a destination containing only identity-system/disabled-history records
+and checks its exact checkpoint inventory before writes; it rejects HOME_LOOKUP
+control and candidate records. Imports into a fresh destination therefore precede
+home backfill and coverage verification. Existing administrative import guards
+are retained and tested; no import may run concurrently with reconciliation.

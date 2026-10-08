@@ -93,6 +93,14 @@ bounded backfill and verification phase must establish coverage and deployed wri
 continuity. Readers must check current metadata, deletion state and ACL; pointer
 payloads never copy roles. See [delivery plan](design/screen-read-model-delivery.md).
 
+`HOME_LOOKUP / CONTROL` (`homeLeagueCoverage`) records the operator manifest,
+epoch, bounded physical checkpoint and backfill/verification/ready/disabled phase.
+It is independent of reader enablement and confers no authority. Readiness requires
+verified deployed writer continuity plus a complete separate ACL verification pass;
+counts alone are not coverage proof. Each 25-record page commits with its source
+conditions and control update. Reversal disables coverage before incompatible
+writer rollback; pointers remain candidates for recovery.
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable
