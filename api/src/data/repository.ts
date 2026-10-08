@@ -1130,6 +1130,7 @@ export class ThreeFcRepository {
     private readonly tableName: string,
     private readonly clock: Clock = new DefaultClock(),
     private readonly playerClaimMode: PlayerClaimMode = parsePlayerClaimMode(process.env.PLAYER_CLAIM_MODE),
+    private readonly homeWriterSha = process.env.API_WRITER_SHA,
   ) { this.identities = new PlayerIdentityPlanner(client, tableName); }
 
   private async planPlayerMembership(game: Pick<GameRecord, "gameId" | "leagueId" | "seasonId" | "gameStartTs">,
@@ -1211,7 +1212,7 @@ export class ThreeFcRepository {
   }
 
   listHomeLeagues(input: { userIds: readonly string[]; cursor?: string }) {
-    return new HomeLeagueRead(this.client, this.tableName).list(input);
+    return new HomeLeagueRead(this.client, this.tableName, this.homeWriterSha).list(input);
   }
 
   async listLeaguesForUser(userId: string): Promise<Array<LeagueRecord & { hasManagementAccess: boolean }>> {

@@ -7,7 +7,7 @@ function evidence(enabled = true) {
   const live = { functionName: '3fc-qa-api-core', codeSha256: `${'A'.repeat(43)}=`, revisionId: 'revision',
     lastUpdateStatus: 'Successful', playerClaimMode: 'proof', consolidationEnabled: 'true', returningJoinEnabled: 'true',
     profilesEnabled: state, achievementsEnabled: state, ownerEditingEnabled: state, historyProcessingEnabled: state,
-    portraitBucket: QA_PROFILE_SCOPE.portraitBucket, runtime: 'nodejs22.x', architectures: ['arm64'], timeout: 28 };
+    portraitBucket: QA_PROFILE_SCOPE.portraitBucket, apiWriterSha: head, runtime: 'nodejs22.x', architectures: ['arm64'], timeout: 28 };
   return { head, run: { repository: { full_name: 'ajfisher/3fc' }, name: 'Deploy QA', head_sha: head, status: 'completed', conclusion: 'success' },
     checks: ['merge-gate', 'review-gate'].map((name, index) => ({ name, id: index + 1, head_sha: head, status: 'completed', conclusion: 'success' })),
     caller: { Account: QA_PROFILE_SCOPE.accountId },
@@ -54,7 +54,7 @@ test('QA provenance rejects missing fields and live fingerprint changes even for
   for (const field of Object.keys(evidence().live)) {
     const value = evidence(); delete value.live[field]; assert.throws(() => assertQaProfileEvidence(value), field);
   }
-  for (const patch of [{ revisionId: '' }, { functionName: '3fc-prod-api-core' }, { playerClaimMode: 'disabled' }, { runtime: 'nodejs20.x' }, { timeout: 10 }, { architectures: ['x86_64'] }]) {
+  for (const patch of [{ revisionId: '' }, { apiWriterSha: 'b'.repeat(40) }, { functionName: '3fc-prod-api-core' }, { playerClaimMode: 'disabled' }, { runtime: 'nodejs20.x' }, { timeout: 10 }, { architectures: ['x86_64'] }]) {
     const value = evidence(); Object.assign(value.live, patch); Object.assign(value.core.functionFingerprint, patch);
     assert.throws(() => assertQaProfileEvidence(value));
   }

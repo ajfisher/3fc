@@ -47,7 +47,7 @@ export async function setHomeLeagueReader(client: IdentityClient, manifest: Iden
 }
 
 export class HomeLeagueRead {
-  constructor(private readonly client: IdentityClient, private readonly table: string) {}
+  constructor(private readonly client: IdentityClient, private readonly table: string, private readonly writerSha = process.env.API_WRITER_SHA) {}
   async list(input: { userIds: readonly string[]; cursor?: string }): Promise<HomeLeaguePage | null> {
     const accounts = [...new Set(input.userIds)];
     if (!accounts.length || accounts.length > 2 || accounts.some(id => !id.trim() || Buffer.byteLength(id) > 2048)) unavailable();
@@ -57,7 +57,7 @@ export class HomeLeagueRead {
     if (!readerResult.success) unavailable();
     const reader = readerResult.data;
     if (!reader.enabled) return null;
-    if (!reader.coverageEpoch) unavailable();
+    if (!reader.coverageEpoch || !this.writerSha || !/^[a-f0-9]{40}$/.test(this.writerSha)) unavailable();
     const binding = createHash("sha256").update(JSON.stringify([accounts, reader.coverageEpoch])).digest("hex");
     let state: z.infer<typeof cursorSchema> = { version: 1, binding, management: false, accounts: accounts.map(() => ({ after: null, done: false })) };
     if (input.cursor !== undefined) {
@@ -98,7 +98,7 @@ export class HomeLeagueRead {
     if (snapshot.Responses?.length !== keys.length) unavailable();
     const items = snapshot.Responses.map(row => row.Item);
     const coverage = items[0] ? body(items[0], "homeLeagueCoverage") : null;
-    if (!validHomeLeagueCoverage(coverage, this.table) || coverage.phase !== "ready" || coverage.epoch !== reader.coverageEpoch ||
+    if (!validHomeLeagueCoverage(coverage, this.table) || coverage.phase !== "ready" || coverage.epoch !== reader.coverageEpoch || coverage.manifest.writerSha !== this.writerSha ||
       !items[1] || JSON.stringify(body(items[1], "homeLeagueReader")) !== JSON.stringify(reader)) unavailable();
     const leagues: HomeLeaguePage["leagues"] = [];
     let offset = 2;

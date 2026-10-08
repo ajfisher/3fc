@@ -1077,23 +1077,54 @@ paths:
   /v1/leagues:
     get:
       operationId: listAccountLeagues
-      summary: List ACL leagues and whether the current account has management duties
-      description: Combines subject and legacy email ACLs. hasManagementAccess is true for admin or scorekeeper roles, false for viewer-only or no ACLs. It is a navigation hint; every management action still checks its own current authority.
+      summary: List accessible account leagues, optionally as a bounded home page
+      description: |
+        Combines verified subject and legacy email ACLs. Omit query parameters for the retained
+        complete response. Send page=1 for home pagination, and cursor from the preceding response
+        for continuation. Before reader activation or after disable, page=1 also returns the retained
+        complete response. Never infer completion from an empty paged leagues array. Management
+        access is a navigation hint, not an authority grant: true when observed, null while unresolved,
+        and false only after complete discovery. Enabled readers fail closed when coverage or the
+        deployed writer identity is invalid; they do not fall back to a scan.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Select the paged contract; required when cursor is supplied.
+          schema: { type: string, enum: ["1"] }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque continuation for the current verified account and coverage epoch; requires page=1.
+          schema: { type: string, minLength: 1, maxLength: 8192 }
       responses:
         "200":
-          description: Existing league list plus an authoritative management navigation signal.
+          description: Complete retained response, or bounded home page. Paged responses use Cache-Control no-store.
           content:
             application/json:
               schema:
-                type: object
-                required: [leagues, hasManagementAccess]
-                properties:
-                  leagues:
-                    type: array
-                    items: { $ref: "#/components/schemas/League" }
-                  hasManagementAccess: { type: boolean }
+                oneOf:
+                  - type: object
+                    required: [leagues, hasManagementAccess]
+                    additionalProperties: false
+                    properties:
+                      leagues:
+                        type: array
+                        items: { $ref: "#/components/schemas/League" }
+                      hasManagementAccess: { type: boolean }
+                  - $ref: "#/components/schemas/HomeLeaguePage"
+        "400":
+          description: Invalid page/cursor query; refresh discovery (home_cursor_invalid).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: Enabled home lookup unavailable or mismatched writer/coverage; retry the read (home_lookup_unavailable).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
     post:
       summary: Create league
       operationId: createLeague
@@ -4003,6 +4034,30 @@ components:
         expectedEventId:
           type: string
           minLength: 1
+    HomeLeaguePage:
+      type: object
+      additionalProperties: false
+      required: [leagues, hasManagementAccess, cursor, complete]
+      properties:
+        leagues:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [leagueId, name, slug]
+            properties:
+              leagueId: { type: string, minLength: 1 }
+              name: { type: string, minLength: 1 }
+              slug: { type: [string, "null"] }
+        hasManagementAccess:
+          type: [boolean, "null"]
+          description: True when observed; false only when complete; null while unresolved. Not authorization.
+        cursor:
+          type: [string, "null"]
+          maxLength: 8192
+          description: Null exactly when complete. An empty leagues array may still have a continuation.
+        complete: { type: boolean }
     League:
       type: object
       required:

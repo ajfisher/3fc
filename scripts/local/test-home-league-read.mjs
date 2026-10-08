@@ -35,7 +35,7 @@ const database = createServer(async (request, response) => {
 database.listen(0, '127.0.0.1'); await once(database, 'listening');
 const worker = spawn(process.execPath, ['api/dist/server.js'], { env: { ...process.env,
   PORT: '0', THREEFC_LISTEN_HOST: '127.0.0.1', DYNAMODB_ENDPOINT: `http://127.0.0.1:${database.address().port}`,
-  DYNAMODB_TABLE: 'synthetic-performance', AWS_ACCESS_KEY_ID: 'local', AWS_SECRET_ACCESS_KEY: 'local',
+  DYNAMODB_TABLE: 'synthetic-performance', API_WRITER_SHA: 'a'.repeat(40), AWS_ACCESS_KEY_ID: 'local', AWS_SECRET_ACCESS_KEY: 'local',
   AWS_SESSION_TOKEN: '', AWS_REGION: 'ap-southeast-2', SESSION_COOKIE_NAME: 'session',
 }, stdio: ['ignore', 'pipe', 'pipe'] });
 const exited = once(worker, 'exit');

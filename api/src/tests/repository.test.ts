@@ -456,7 +456,7 @@ function createRepositoryHarness(): { repository: ThreeFcRepository; client: InM
   const client = new InMemoryDynamoClient();
   return {
     client,
-    repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock()),
+    repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock(), undefined, "a".repeat(40)),
   };
 }
 
@@ -7320,7 +7320,7 @@ test("home paged read bounds work across unrelated table growth and uses both ve
   assert.equal(await repository.listHomeLeagues({ userIds: ["subject", "email@example.test"] }), null, "ready does not enable reader");
   await setHomeLeagueReader(client, coverage.manifest, true);
   let calls = 0, scans = 0;
-  const reader = new HomeLeagueRead({ async send(command: unknown) { calls++; if (command instanceof ScanCommand) scans++; return client.send(command); } }, "threefc_test");
+  const reader = new HomeLeagueRead({ async send(command: unknown) { calls++; if (command instanceof ScanCommand) scans++; return client.send(command); } }, "threefc_test", "a".repeat(40));
   const before = await reader.list({ userIds: ["subject", "email@example.test"] });
   assert.equal(before!.complete, true); assert.equal(before!.leagues.length, 12); assert.equal(before!.hasManagementAccess, true);
   assert.equal(calls, 4); assert.equal(scans, 0);
@@ -7412,4 +7412,18 @@ test("home reader activation requires the exact reconciled manifest and retains 
   assert.equal(JSON.parse(client.readItem("HOME_LOOKUP", "READER")!.data!.S!).enabled, true);
   await setHomeLeagueReader(client, { ...coverage.manifest, writerSha: "b".repeat(40) }, false);
   assert.equal(JSON.parse(client.readItem("HOME_LOOKUP", "READER")!.data!.S!).enabled, false, "disable remains possible after deployment change");
+});
+
+
+test("home active reader fails closed after writer replacement and missing deployment identity", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "writer-fence", name: "Writer Fence", createdByUserId: "owner" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  assert.equal((await repository.listHomeLeagues({ userIds: ["owner"] }))!.leagues.length, 1);
+  for (const writer of ["b".repeat(40), "", "malformed"]) {
+    const replacement = new HomeLeagueRead(client, "threefc_test", writer);
+    await assert.rejects(replacement.list({ userIds: ["owner"] }), (error: unknown) => error instanceof PlayerIdentityError && error.status === 503);
+  }
+  await setHomeLeagueReader(client, { ...coverage.manifest, writerSha: "b".repeat(40) }, false);
+  assert.equal(await new HomeLeagueRead(client, "threefc_test", "b".repeat(40)).list({ userIds: ["owner"] }), null);
 });

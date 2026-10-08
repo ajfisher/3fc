@@ -291,3 +291,13 @@ writer SHA, drain timestamp and reviewed plan. A later deployment must reconcile
 new coverage epoch under its own manifest before enabling; rollback disable remains
 available without that coverage match. The final activation transaction also fences
 the exact control snapshot to reject a concurrent coverage change.
+
+Enabled reads additionally compare the transactional coverage writer SHA with
+API_WRITER_SHA derived from git HEAD by the shared QA/production deployment script.
+Serverless requires this identity, and deployment fingerprint checks verify it.
+A later writer deployment therefore returns 503 under old activation until the
+operator disables or reconciles and enables coverage for the new writer. Missing
+or malformed runtime identity fails closed too. No extra request SDK calls or IAM
+permissions are needed. Direct deployments must use the reviewed deployment path;
+incompatible rollbacks still disable the reader first. The OpenAPI operation
+describes both retained complete and paged home responses.
