@@ -8,7 +8,7 @@ import { verifyMigrationProvenance } from './player-identity-migrate.mjs';
 
 export function homeCoverageArguments(args) {
   const command = args[0], options = {};
-  if (!['status', 'begin', 'step', 'disable'].includes(command)) throw new Error('Choose status, begin, step or disable.');
+  if (!['status', 'begin', 'step', 'disable', 'enable-reader', 'disable-reader'].includes(command)) throw new Error('Choose status, begin, step, disable, enable-reader or disable-reader.');
   for (let i = 1; i < args.length; i += 2) {
     const key = args[i];
     if (!['--manifest', '--deployment-manifest', '--profile', '--apply', '--pages'].includes(key) || Object.hasOwn(options, key) || !args[i + 1])
@@ -54,6 +54,7 @@ async function main(args) {
   // Run this CLI under the repository resource guard; it must encompass this build.
   execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', '--build', 'api/tsconfig.json', '--force'], { stdio: 'pipe', timeout: 120_000 });
   const { HomeLeagueCoverageRunner } = await import('../api/dist/data/home-league-coverage.js');
+  const { setHomeLeagueReader } = await import('../api/dist/data/home-league-read.js');
   process.env.AWS_PROFILE = options['--profile'];
   const client = new DynamoDBClient({ region: manifest.region });
   const aws = (...parameters) => JSON.parse(execFileSync('aws', [...parameters, '--profile', options['--profile'], '--region', manifest.region, '--output', 'json'],
@@ -70,10 +71,14 @@ async function main(args) {
         verifyHomeCoverageWorkflow(gh, deployment.env);
       }
     };
-    const runner = new HomeLeagueCoverageRunner(client, manifest);
+    const coverage = new HomeLeagueCoverageRunner(client, manifest);
+    const runner = { status: () => coverage.status(), begin: () => coverage.begin(), step: () => coverage.step(), disable: () => coverage.disable(),
+      'enable-reader': async () => { await setHomeLeagueReader(client, manifest, true); return coverage.status(); },
+      'disable-reader': async () => { await setHomeLeagueReader(client, manifest, false); return coverage.status(); } };
     const value = await executeHomeCoverage(runner, verify, command, pages);
     process.stdout.write(`${JSON.stringify({ phase: value?.phase ?? 'not-started', pages: value?.pages ?? 0,
-      repaired: value?.repaired ?? 0, verified: value?.verified ?? 0, morePages: Boolean(value?.cursor) })}\n`);
+      repaired: value?.repaired ?? 0, verified: value?.verified ?? 0, morePages: Boolean(value?.cursor),
+      ...(command.endsWith('-reader') ? { readerEnabled: command === 'enable-reader' } : {}) })}\n`);
   } finally { client.destroy(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

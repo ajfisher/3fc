@@ -27,6 +27,14 @@ function manifestValid(v: IdentityMigrationManifest): boolean {
     /^[a-f0-9]{40}$/.test(v.writerSha) && v.writerVersion === 1 && Number.isFinite(Date.parse(v.drainedAt)) &&
     /^https:\/\/github\.com\/ajfisher\/3fc\/(?:pull|issues)\/\d+(?:#[-\w]+)?$/.test(v.reviewedPlan));
 }
+export function validHomeLeagueCoverage(value: unknown, tableName: string): value is HomeLeagueCoverage {
+  const v = value as HomeLeagueCoverage | null;
+  return Boolean(v && v.version === 1 && manifestValid(v.manifest) && v.manifest.tableName === tableName && text(v.epoch) &&
+    ["backfill", "verification", "ready", "disabled"].includes(v.phase) &&
+    (v.cursor === null || validKey(v.cursor) && ["backfill", "verification"].includes(v.phase)) &&
+    [v.pages, v.repaired, v.verified].every(n => Number.isSafeInteger(n) && n >= 0));
+}
+
 function decode(item: Item): Record<string, unknown> {
   try { const value: unknown = JSON.parse(item.data?.S ?? "null");
     if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
@@ -53,10 +61,8 @@ export class HomeLeagueCoverageRunner {
     const item = await this.get(pk, sk);
     if (!item) return null;
     const v = decode(item) as unknown as HomeLeagueCoverage;
-    if (item.entityType?.S !== entityType || v.version !== 1 || !manifestValid(v.manifest) || !text(v.epoch) || v.manifest.tableArn !== this.manifest.tableArn ||
-      !["backfill", "verification", "ready", "disabled"].includes(v.phase) ||
-      (v.cursor !== null && (!validKey(v.cursor) || !["backfill", "verification"].includes(v.phase))) ||
-      ![v.pages, v.repaired, v.verified].every(n => Number.isSafeInteger(n) && n >= 0)) fail();
+    if (item.entityType?.S !== entityType || !validHomeLeagueCoverage(v, this.manifest.tableName) ||
+      v.manifest.tableArn !== this.manifest.tableArn) fail();
     return { pk, sk, item, value: v };
   }
   async status(): Promise<HomeLeagueCoverage | null> { return (await this.snapshot())?.value ?? null; }

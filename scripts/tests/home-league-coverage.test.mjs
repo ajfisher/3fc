@@ -6,7 +6,7 @@ test('home coverage CLI pins explicit manifests/profile and mutates only with re
   const common = ['--manifest', 'coverage.json', '--deployment-manifest', 'deployment.json', '--profile', '3fc-agent'];
   assert.equal(homeCoverageArguments(['status', ...common]).command, 'status');
   assert.equal(homeCoverageArguments(['step', ...common, '--apply', 'reviewed-home-lookups', '--pages', '100']).pages, 100);
-  for (const command of ['begin', 'step', 'disable']) {
+  for (const command of ['begin', 'step', 'disable', 'enable-reader', 'disable-reader']) {
     assert.throws(() => homeCoverageArguments([command, ...common]));
     assert.equal(homeCoverageArguments([command, ...common, '--apply', 'reviewed-home-lookups']).command, command);
   }

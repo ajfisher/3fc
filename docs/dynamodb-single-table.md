@@ -101,6 +101,14 @@ counts alone are not coverage proof. Each 25-record page commits with its source
 conditions and control update. Reversal disables coverage before incompatible
 writer rollback; pointers remain candidates for recovery.
 
+`HOME_LOOKUP / READER` (`homeLeagueReader`) independently enables paged home reads
+and binds them to a verified coverage epoch. Candidate queries are bounded; a
+transactional read rechecks both verified account ACLs, league metadata/deletion and
+coverage/activation. Disabled/absent activation uses the retained old reader.
+Incomplete enabled coverage is unavailable, not an empty list. Disabling the reader
+retains compatible writers/coverage; an incompatible rollback also disables coverage.
+The page response excludes private creator identifiers.
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable

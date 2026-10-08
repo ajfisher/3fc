@@ -1,3 +1,5 @@
+import { handleHomeLeaguePage } from "./home-league-routes.js";
+import type { HomeLeaguePage } from "./data/home-league-read.js";
 import { instrumentDynamoDb, withRequestPerformance } from "./request-performance.js";
 import { handlePlayerPortraitRoute, isPlayerPortraitRoute, parsePortraitBody, PORTRAIT_HEADERS, type PlayerPortraitRepository } from "./player-portrait-routes.js";
 import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, parseOwnerProfileBody, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
@@ -197,6 +199,7 @@ interface RepositoryGameRecord {
 
 interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository, OwnerPlayerProfileRepository, PlayerPortraitRepository,
   Pick<ThreeFcRepository, "getPlayerView"> {
+  listHomeLeagues?(input: { userIds: readonly string[]; cursor?: string }): Promise<HomeLeaguePage | null>;
   listLeaguesForUser(userId: string): Promise<
     Array<{
       leagueId: string;
@@ -3111,6 +3114,9 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         }
 
         if (method === "GET" && route === "/v1/leagues") {
+          const page = await handleHomeLeaguePage({ rawQueryString: event.rawQueryString ?? "", session, repository: dependencies.repository });
+          if (page) { status = page.statusCode; return createJsonResponse(status, page.payload,
+            { ...buildCorsHeaders(origin, dependencies.corsAllowedOrigins), "Cache-Control": "no-store" }); }
           const payload = await listLeaguesForSession(dependencies.repository, session);
           status = 200;
           return createJsonResponse(

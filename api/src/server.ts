@@ -1,3 +1,4 @@
+import { handleHomeLeaguePage } from "./home-league-routes.js";
 import { instrumentDynamoDb, withRequestPerformance } from "./request-performance.js";
 import { handlePlayerPortraitRoute, isPlayerPortraitRoute, PORTRAIT_JSON_BODY_LIMIT, PORTRAIT_DELETE_BODY_LIMIT, PORTRAIT_HEADERS, type PlayerPortraitRepository } from "./player-portrait-routes.js";
 import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, OWNER_PROFILE_BODY_LIMIT, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
@@ -3527,6 +3528,8 @@ async function start(): Promise<void> {
         method === "GET" &&
         route === "/v1/leagues"
       ) {
+        const page = await handleHomeLeaguePage({ rawQueryString: requestUrl.search.slice(1), session: authGate.session, repository });
+        if (page) { status = page.statusCode; response.setHeader("Cache-Control", "no-store"); sendJsonWithCors(request, response, status, page.payload); return; }
         const payload = await listLeaguesForSession(authGate.session);
         status = 200;
         sendJsonWithCors(request, response, status, payload);

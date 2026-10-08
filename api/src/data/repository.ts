@@ -1,3 +1,4 @@
+import { HomeLeagueRead } from "./home-league-read.js";
 import { homeLeagueLookupPut } from "./home-league-lookup.js";
 import { MyPlayerProfiles } from './my-player-profiles.js';
 import {
@@ -1207,6 +1208,10 @@ export class ThreeFcRepository {
     }
 
     return withTimestamps(item.data as Omit<LeagueRecord, "createdAt" | "updatedAt">, item.createdAt, item.updatedAt);
+  }
+
+  listHomeLeagues(input: { userIds: readonly string[]; cursor?: string }) {
+    return new HomeLeagueRead(this.client, this.tableName).list(input);
   }
 
   async listLeaguesForUser(userId: string): Promise<Array<LeagueRecord & { hasManagementAccess: boolean }>> {

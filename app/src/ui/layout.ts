@@ -195,7 +195,7 @@ export function renderSetupHomePage(apiBaseUrl: string): string {
       headers: ["League"],
       tableLabel: "Leagues",
       emptyInitiallyHidden: true,
-    }),
+    }) + renderButton("Load more leagues", "secondary", { type: "button", "data-action": "load-more-leagues", hidden: "" }),
     "",
     "panel-dashboard-leagues",
   );

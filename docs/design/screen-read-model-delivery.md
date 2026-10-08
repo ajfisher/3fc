@@ -227,3 +227,61 @@ and checks its exact checkpoint inventory before writes; it rejects HOME_LOOKUP
 control and candidate records. Imports into a fresh destination therefore precede
 home backfill and coverage verification. Existing administrative import guards
 are retained and tested; no import may run concurrently with reconciliation.
+
+## Home read cutover (phase 3)
+
+The dashboard requests `GET /v1/leagues?page=1` and follows an opaque cursor through
+an explicit Load more leagues action. Existing unpaged calls retain their contract.
+Absent/disabled reader activation selects the retained legacy reader. Enabled reads
+require ready coverage; missing or incomplete coverage returns a retryable 503,
+never a fabricated empty list. No browser fallback hides coverage corruption.
+
+`HOME_LOOKUP / READER` (`homeLeagueReader`) contains version:1, enabled and
+coverageEpoch. Use enable-reader/disable-reader with the same manifest/deployment/
+profile/apply arguments as the coverage CLI. Enabling checks ready coverage and
+conditionally binds its epoch. Disable-reader retains compatible writers and ready
+coverage; disable coverage before any incompatible writer rollback. A coverage
+restart invalidates the old reader epoch and all old cursors. Activation requires
+the current reviewed deployment fingerprint, completed old-writer drain and an
+exclusive frozen/drained deployment window. Fingerprint, workflow freeze and all
+pending-deployment drain checks remain before every page. No production activation
+is performed by this PR. Administrators must not bypass the freeze during a batch.
+
+Each page queries at most ten pointers per verified account identifier (at most
+two) and reads all candidates in one TransactGetItems snapshot, including current
+ACLs for both identifiers, league metadata/deletion and coverage/reader records.
+At most 20 candidate leagues/82 transaction gets/64 KiB output; no table Scan occurs.
+The complete two-identifier request uses four SDK commands plus session lookup.
+Revoked ACLs, missing leagues and deletion receipts exclude stale candidates.
+Pointer payloads and cursors confer no authority; every page rechecks current ACLs.
+Cursor binding includes exact verified identifiers and coverage epoch, and physical
+query progress must advance. League IDs are deduplicated by the browser across pages.
+
+Response fields are leagues[{leagueId,name,slug}], complete, cursor and
+hasManagementAccess. Private creator identifiers are omitted. Management is true
+when observed, false only after discovery completes, and null while unresolved;
+it is a navigation hint, not an authorisation grant. Partial pages cannot trigger
+participant profile auto-redirect. Complete non-manager results retain existing
+bounded owned-profile discovery and final session revalidation. Interaction stops
+auto-redirect; account/proof invalidation or page exit cancels listing and clears
+accumulated rows. Each league request has a separate 15-second deadline; a timed-out
+continuation retains accepted rows/cursor and releases the button for explicit retry.
+Retry clears the prior error. A legacy rollback response replaces accumulated paged rows.
+
+Local proof: focused scale tests add 1,000 unrelated game records without increasing
+SDK calls, exercise both verified identifiers, page continuation, ACL revocation,
+deletion and epoch/account cursor changes. The actual local HTTP script
+`scripts/local/test-home-league-read.mjs` verifies the same contract and revoked ACL
+through the SDK protocol fixture. The full setup-flow DOM suite validates legacy
+account/session behavior and new continuation rendering. Deployed QA measurements
+must distinguish synthetic warm API timing from authenticated browser useful-content
+timing; no production speed claim is made until AJ releases and impact is measured.
+
+QA table metadata reports roughly 42,700 items on 8 October. Two 25-record passes
+therefore need roughly 3,400 pages, before growth; six GitHub workflow/drain reads
+per page can encounter account rate limits. Batching amortises builds but retains
+all safety checks. Operators must inspect durable status and resume through the
+same guarded command after any rate-limit error; never bypass the checks or infer
+coverage from a partially completed run. Plan this maintenance window separately
+from request latency measurement. No production or QA coverage is fabricated for
+benchmarking.

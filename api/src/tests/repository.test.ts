@@ -1,3 +1,5 @@
+import { HomeLeagueRead, setHomeLeagueReader } from "../data/home-league-read.js";
+import { handleHomeLeaguePage } from "../home-league-routes.js";
 import { HomeLeagueCoverageRunner } from "../data/home-league-coverage.js";
 import { homeAccountPk, homeLeagueSk, homeLeagueLookupPut } from "../data/home-league-lookup.js";
 import assert from "node:assert/strict";
@@ -7295,4 +7297,97 @@ test("home lookup reconciliation rejects a different manifest and repeating scan
   } }, runner.manifest);
   await repeating.step(); const before = await repeating.status();
   await assert.rejects(repeating.step(), /reconciliation/); assert.deepEqual(await repeating.status(), before);
+});
+
+
+async function readyHomeCoverage(client: InMemoryDynamoClient) {
+  const runner = homeCoverageHarness(client); await runner.begin();
+  for (let n = 0; n < 100; n++) {
+    if ((await runner.status())!.phase === "ready") return runner;
+    await runner.step();
+  }
+  throw new Error("fixture coverage did not complete");
+}
+
+test("home paged read bounds work across unrelated table growth and uses both verified identifiers", async () => {
+  const { client, repository } = createRepositoryHarness();
+  for (let i = 0; i < 12; i++) {
+    await repository.createLeague({ leagueId: `home-${i}`, name: `League ${i}`, createdByUserId: "other" });
+    await repository.grantLeagueAccess({ leagueId: `home-${i}`, userId: i % 2 ? "subject" : "email@example.test", role: "viewer", grantedByUserId: "other" });
+  }
+  await repository.grantLeagueAccess({ leagueId: "home-0", userId: "subject", role: "admin", grantedByUserId: "other" });
+  const coverage = await readyHomeCoverage(client);
+  assert.equal(await repository.listHomeLeagues({ userIds: ["subject", "email@example.test"] }), null, "ready does not enable reader");
+  await setHomeLeagueReader(client, coverage.manifest, true);
+  let calls = 0, scans = 0;
+  const reader = new HomeLeagueRead({ async send(command: unknown) { calls++; if (command instanceof ScanCommand) scans++; return client.send(command); } }, "threefc_test");
+  const before = await reader.list({ userIds: ["subject", "email@example.test"] });
+  assert.equal(before!.complete, true); assert.equal(before!.leagues.length, 12); assert.equal(before!.hasManagementAccess, true);
+  assert.equal(calls, 4); assert.equal(scans, 0);
+  for (let i = 0; i < 1000; i++) client.seedItem(identityItem(`GAME#unrelated-${i}`, "METADATA", "game", { gameId: `unrelated-${i}` }, "2026-10-08T00:00:00Z"));
+  calls = 0; assert.deepEqual(await reader.list({ userIds: ["subject", "email@example.test"] }), before);
+  assert.equal(calls, 4); assert.equal(scans, 0);
+  assert.ok(before!.leagues.every(row => !Object.hasOwn(row, "createdByUserId")), "screen response excludes private creator identifiers");
+});
+
+test("home pagination never claims no management before completion and rejects account or epoch cursor reuse", async () => {
+  const { client, repository } = createRepositoryHarness();
+  for (let i = 0; i < 15; i++) await repository.createLeague({ leagueId: `page-${i}`, name: `Page ${i}`, createdByUserId: "other" });
+  const sorted = Array.from({ length: 15 }, (_, i) => `page-${i}`).sort((a, b) => homeLeagueSk(a).localeCompare(homeLeagueSk(b)));
+  for (const id of sorted) await repository.grantLeagueAccess({ leagueId: id, userId: "viewer", role: id === sorted.at(-1) ? "admin" : "viewer", grantedByUserId: "other" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  const page = await repository.listHomeLeagues({ userIds: ["viewer"] });
+  assert.equal(page!.leagues.length, 10); assert.equal(page!.complete, false); assert.equal(page!.hasManagementAccess, null);
+  const last = await repository.listHomeLeagues({ userIds: ["viewer"], cursor: page!.cursor! });
+  assert.equal(last!.leagues.length, 5); assert.equal(last!.complete, true); assert.equal(last!.hasManagementAccess, true);
+  await assert.rejects(repository.listHomeLeagues({ userIds: ["other"], cursor: page!.cursor! }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "home_cursor_invalid");
+  await coverage.disable(); await coverage.begin();
+  for (let n = 0; n < 100 && (await coverage.status())!.phase !== "ready"; n++) await coverage.step();
+  await setHomeLeagueReader(client, coverage.manifest, true);
+  await assert.rejects(repository.listHomeLeagues({ userIds: ["viewer"], cursor: page!.cursor! }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "home_cursor_invalid");
+});
+
+test("home read ignores stale candidates under atomic ACL/deletion snapshots and rolls back explicitly", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "home-stale", name: "Stale", createdByUserId: "owner" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  client.deleteItem("LEAGUE#home-stale", "ACL#USER#owner");
+  const revoked = await repository.listHomeLeagues({ userIds: ["owner"] });
+  assert.deepEqual(revoked, { leagues: [], complete: true, cursor: null, hasManagementAccess: false });
+  await repository.grantLeagueAccess({ leagueId: "home-stale", userId: "owner", role: "admin", grantedByUserId: "owner" });
+  client.seedItem(identityItem("LEAGUE#home-stale", "DELETION", "leagueDeletion", {}, "2026-10-08T00:00:00Z"));
+  assert.equal((await repository.listHomeLeagues({ userIds: ["owner"] }))!.leagues.length, 0);
+  await coverage.disable();
+  await assert.rejects(repository.listHomeLeagues({ userIds: ["owner"] }), (error: unknown) => error instanceof PlayerIdentityError && error.status === 503);
+  await setHomeLeagueReader(client, coverage.manifest, false);
+  assert.equal(await repository.listHomeLeagues({ userIds: ["owner"] }), null, "disabled reader selects retained legacy access path");
+  await assert.rejects(setHomeLeagueReader(client, coverage.manifest, true), /temporarily unavailable/);
+});
+
+test("home paged shared route validates query and response and binds identities only to session", async () => {
+  const session = { sessionId: "session", email: "verified@example.test", subject: "subject", createdAt: "2026-10-08T00:00:00Z", expiresAt: "2026-10-09T00:00:00Z" };
+  const input = { session, repository: { async listHomeLeagues(value: { userIds: readonly string[] }) {
+    assert.deepEqual(value.userIds, ["subject", "verified@example.test"]);
+    return { leagues: [], hasManagementAccess: false, cursor: null, complete: true };
+  } } };
+  assert.equal((await handleHomeLeaguePage({ ...input, rawQueryString: "page=1" }))!.statusCode, 200);
+  assert.equal(await handleHomeLeaguePage({ ...input, rawQueryString: "" }), null);
+  for (const query of ["page=1&page=1", "page=1&userId=attacker", "page=1&cursor=", "page=1&cursor=%XX", "page=2"])
+    assert.equal((await handleHomeLeaguePage({ ...input, rawQueryString: query }))!.statusCode, 400);
+  assert.equal((await handleHomeLeaguePage({ ...input, session: null, rawQueryString: "page=1" }))!.statusCode, 401);
+  assert.equal((await handleHomeLeaguePage({ ...input, rawQueryString: "page=1", repository: { listHomeLeagues: async () => ({ leagues: [], complete: false, cursor: "next", hasManagementAccess: false }) } }))!.statusCode, 503);
+});
+
+
+test("home paged Lambda route serves the same bounded contract with no-store", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "lambda-home", name: "Lambda Home", createdByUserId: "owner" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  const unused = async (): Promise<never> => { throw new Error("unused dependency"); };
+  const handler = createLambdaCoreHandler({ repository, magicLinkRateLimiter: { consumeMagicLinkStart: unused },
+    magicLinkService: { getSession: async () => ({ sessionId: "session", email: "owner", createdAt: "2026-10-08T00:00:00Z", expiresAt: "2026-10-09T00:00:00Z" }), start: unused, complete: unused, revokeSession: unused },
+    sessionCookieName: "session", sessionCookieSecure: true, corsAllowedOrigins: [], appBaseUrl: "https://3fc.football" });
+  const result = await handler({ rawPath: "/v1/leagues", rawQueryString: "page=1", cookies: ["session=session"], requestContext: { http: { method: "GET" } } });
+  assert.equal(result.statusCode, 200); assert.equal(result.headers!["Cache-Control"], "no-store");
+  assert.deepEqual(JSON.parse(result.body!), { leagues: [{ leagueId: "lambda-home", name: "Lambda Home", slug: null }], hasManagementAccess: true, complete: true, cursor: null });
 });
