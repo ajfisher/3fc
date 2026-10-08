@@ -33,7 +33,10 @@ export async function setHomeLeagueReader(client: IdentityClient, manifest: Iden
   const runner = new HomeLeagueCoverageRunner(client, manifest);
   const coverage = enabled ? await runner.status() : null;
   const source = enabled ? await read(client, manifest.tableName, "HOME_LOOKUP", "CONTROL") : null;
-  if (enabled && (!coverage || coverage.phase !== "ready" || !source || body(source, "homeLeagueCoverage").epoch !== coverage.epoch || body(source, "homeLeagueCoverage").phase !== "ready")) unavailable();
+  const current = source ? body(source, "homeLeagueCoverage") : null;
+  if (enabled && (!coverage || coverage.phase !== "ready" || JSON.stringify(coverage.manifest) !== JSON.stringify(manifest) ||
+    !validHomeLeagueCoverage(current, manifest.tableName) || current.epoch !== coverage.epoch || current.phase !== "ready" ||
+    JSON.stringify(current.manifest) !== JSON.stringify(manifest))) unavailable();
   const old = await read(client, manifest.tableName, "HOME_LOOKUP", "READER");
   if (old && !readerSchema.safeParse(body(old, "homeLeagueReader")).success) unavailable();
   const value = { version: 1, enabled, coverageEpoch: enabled ? coverage!.epoch : null };

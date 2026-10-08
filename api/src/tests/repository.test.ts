@@ -7391,3 +7391,25 @@ test("home paged Lambda route serves the same bounded contract with no-store", a
   assert.equal(result.statusCode, 200); assert.equal(result.headers!["Cache-Control"], "no-store");
   assert.deepEqual(JSON.parse(result.body!), { leagues: [{ leagueId: "lambda-home", name: "Lambda Home", slug: null }], hasManagementAccess: true, complete: true, cursor: null });
 });
+
+
+test("home reader activation requires the exact reconciled manifest and retains rollback", async () => {
+  const client = new InMemoryDynamoClient();
+  const coverage = await readyHomeCoverage(client);
+  for (const changed of [
+    { ...coverage.manifest, writerSha: "b".repeat(40) },
+    { ...coverage.manifest, drainedAt: "2026-10-08T01:00:00.000Z" },
+    { ...coverage.manifest, migrationId: "different-home-epoch" },
+    { ...coverage.manifest, reviewedPlan: "https://github.com/ajfisher/3fc/pull/999" },
+  ]) {
+    let writes = 0;
+    const tracked = { async send(command: unknown) { if (command instanceof TransactWriteItemsCommand) writes++; return client.send(command); } };
+    await assert.rejects(setHomeLeagueReader(tracked, changed, true), /temporarily unavailable/);
+    assert.equal(writes, 0, "manifest mismatch must not mutate activation");
+    assert.equal(client.readItem("HOME_LOOKUP", "READER"), undefined);
+  }
+  await setHomeLeagueReader(client, coverage.manifest, true);
+  assert.equal(JSON.parse(client.readItem("HOME_LOOKUP", "READER")!.data!.S!).enabled, true);
+  await setHomeLeagueReader(client, { ...coverage.manifest, writerSha: "b".repeat(40) }, false);
+  assert.equal(JSON.parse(client.readItem("HOME_LOOKUP", "READER")!.data!.S!).enabled, false, "disable remains possible after deployment change");
+});

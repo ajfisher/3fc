@@ -285,3 +285,9 @@ same guarded command after any rate-limit error; never bypass the checks or infe
 coverage from a partially completed run. Plan this maintenance window separately
 from request latency measurement. No production or QA coverage is fabricated for
 benchmarking.
+
+Reader activation requires exact equality with the complete coverage manifest, including
+writer SHA, drain timestamp and reviewed plan. A later deployment must reconcile a
+new coverage epoch under its own manifest before enabling; rollback disable remains
+available without that coverage match. The final activation transaction also fences
+the exact control snapshot to reject a concurrent coverage change.
