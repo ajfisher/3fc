@@ -1,3 +1,4 @@
+import { homeLeagueLookupDelete } from "./home-league-lookup.js";
 import { GetItemCommand, QueryCommand, ScanCommand, TransactWriteItemsCommand,
   type AttributeValue, type GetItemCommandOutput, type QueryCommandOutput, type ScanCommandOutput, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { randomUUID } from "node:crypto";
@@ -143,7 +144,13 @@ export class LeagueDeletionCleanup {
       try {
         await this.client.send(new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
           fence, identityCondition(this.tableName, { pk: receipt.pk, sk: "METADATA", item: null, value: null }),
-          ...deletes, identityPut(this.tableName, receipt, "leagueDeletion", { ...receipt.value, phase: nextPhase, cursor }, this.now()),
+          ...deletes, ...(phase === "access" ? items.map(item => {
+            let acl: { userId: string; leagueId: string };
+            try { acl = JSON.parse(item.data!.S!); } catch { throw invalid(); }
+            if (!acl || typeof acl.userId !== "string" || !acl.userId || acl.leagueId !== leagueId ||
+                item.sk?.S !== `ACL#USER#${acl.userId}`) throw invalid();
+            return homeLeagueLookupDelete(this.tableName, acl.userId, leagueId);
+          }) : []), identityPut(this.tableName, receipt, "leagueDeletion", { ...receipt.value, phase: nextPhase, cursor }, this.now()),
         ]) }));
       } catch (error) {
         // Another resume or changed snapshot cannot silently count as cleanup.

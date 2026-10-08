@@ -1,3 +1,4 @@
+import { homeLeagueLookupPut } from "./home-league-lookup.js";
 import { MyPlayerProfiles } from './my-player-profiles.js';
 import {
   DeleteItemCommand,
@@ -1175,12 +1176,15 @@ export class ThreeFcRepository {
       // A lost-response retry may read the original result, never recreate a
       // revoked ACL or overwrite an existing league owned by someone else.
       await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: [fence,
-        this.buildConditionalCheckFromStoredEntity(existing), this.buildConditionalCheckFromStoredEntity(acl)] }));
+        this.buildConditionalCheckFromStoredEntity(existing), this.buildConditionalCheckFromStoredEntity(acl),
+        homeLeagueLookupPut(this.tableName, withTimestamps(access!, acl!.createdAt, acl!.updatedAt))] }));
       return withTimestamps(data, existing.createdAt, existing.updatedAt);
     }
     try {
       await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
         this.identities.planStructureChange(control, now), await this.identities.liveScope("league", [input.leagueId]),
+        homeLeagueLookupPut(this.tableName, { leagueId: input.leagueId, userId: input.createdByUserId, role: "admin",
+          grantedByUserId: input.createdByUserId, createdAt: now, updatedAt: now }),
         { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), metadataSk(), ENTITY_TYPE.league, payload, now),
           ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)" } },
         { Put: { TableName: this.tableName, Item: buildItem(leaguePk(input.leagueId), aclSk(input.createdByUserId), ENTITY_TYPE.acl,
@@ -4325,7 +4329,16 @@ export class ThreeFcRepository {
 
       const role = existing ? higherLeagueRole(existing.role, input.role) : input.role;
       if (existing && role === existing.role) {
-        return existing;
+        try {
+          await sendHistoryTransaction(this.client, new TransactWriteItemsCommand({ TransactItems: [
+            this.buildConditionalCheckFromStoredEntity(league)!, this.buildConditionalCheckFromStoredEntity(existingItem!)!,
+            homeLeagueLookupPut(this.tableName, existing),
+          ] }));
+          return existing;
+        } catch (error) {
+          if (isConditionalWriteFailure(error)) continue;
+          throw error;
+        }
       }
 
       const now = this.clock.now();
@@ -4363,7 +4376,7 @@ export class ThreeFcRepository {
               : {
                   ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)",
                 }),
-          } }] }),
+          } }, homeLeagueLookupPut(this.tableName, withTimestamps(payload, existing?.createdAt ?? now, now))] }),
         );
         return withTimestamps(payload, existing?.createdAt ?? now, now);
       } catch (error) {
@@ -4651,10 +4664,16 @@ export class ThreeFcRepository {
       const needsAccessWrite = !existingAccess || nextRole !== existingAccess.role;
 
       if (!needsInviteAcceptance && !needsAccessWrite && existingAccess) {
-        return {
-          invite,
-          access: existingAccess,
-        };
+        try {
+          await sendHistoryTransaction(this.client, new TransactWriteItemsCommand({ TransactItems: [
+            this.buildConditionalCheckFromStoredEntity(leagueItem)!, this.buildConditionalCheckFromStoredEntity(inviteItem)!,
+            this.buildConditionalCheckFromStoredEntity(accessItem!)!, homeLeagueLookupPut(this.tableName, existingAccess),
+          ] }));
+          return { invite, access: existingAccess };
+        } catch (error) {
+          if (isConditionalWriteFailure(error)) continue;
+          throw error;
+        }
       }
 
       const now = this.clock.now();
@@ -4766,6 +4785,11 @@ export class ThreeFcRepository {
           },
         });
       }
+
+      // Even when the role is unchanged, fence the ACL used by this repair.
+      if (!needsAccessWrite) transactionItems.push(this.buildConditionalCheckFromStoredEntity(accessItem!)!);
+      transactionItems.push(homeLeagueLookupPut(this.tableName, withTimestamps(accessPayload,
+        existingAccess?.createdAt ?? now, needsAccessWrite ? now : existingAccess!.updatedAt)));
 
       try {
         await sendHistoryTransaction(this.client,

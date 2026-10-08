@@ -78,6 +78,21 @@ scope references; workers re-read these records and apply the same source fences
 The dispatcher and worker have separate roles. Queue delivery does not remove
 work obligations; operator recovery uses bounded keyed queries, never table scans.
 
+## Home league lookup preparation
+
+`HOME_ACCOUNT#<SHA-256 of exact account identifier> / LEAGUE#<SHA-256 of league identifier>`
+(`homeLeagueLookup`) contains `{leagueId, version:1}` and repository timestamps.
+ACL writers and their exact/no-op retries maintain this candidate in the same
+transaction as authoritative league/ACL checks. League deletion removes pointers
+with each ACL cleanup page and checkpoint. Account hashes are internal pseudonymous
+keys; they are not anonymization and must not be exposed or logged.
+
+Current home reads remain on their previous access path. Pointer presence does not
+certify completeness or grant access. Before indexed reads can be enabled, a separate
+bounded backfill and verification phase must establish coverage and deployed writer
+continuity. Readers must check current metadata, deletion state and ACL; pointer
+payloads never copy roles. See [delivery plan](design/screen-read-model-delivery.md).
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable

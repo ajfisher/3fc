@@ -1,3 +1,4 @@
+import { homeAccountPk, homeLeagueSk, homeLeagueLookupPut } from "../data/home-league-lookup.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomBytes } from "node:crypto";
@@ -685,7 +686,7 @@ test("identity structure creation commits league metadata and creator access ato
   } }, "threefc_test");
   await assert.rejects(repository.createLeague({ leagueId: "atomic", name: "Atomic", createdByUserId: "owner" }), /Simulated/);
   const writes = captured!.input.TransactItems!.filter(action => action.Put).map(action => action.Put!.Item!.sk.S);
-  assert.deepEqual(writes.sort(), ["ACL#USER#owner", "CONTROL", "METADATA"]);
+  assert.deepEqual(writes.sort(), ["ACL#USER#owner", "CONTROL", homeLeagueSk("atomic"), "METADATA"].sort());
   assert.equal(client.readItem("LEAGUE#atomic", "METADATA"), undefined);
   assert.equal(client.readItem("LEAGUE#atomic", "ACL#USER#owner"), undefined);
 });
@@ -2248,6 +2249,7 @@ test("league deletion resumes partial multi-page cleanup only for its initiator 
   for (let index = 0; index < 110; index += 1) {
     client.seedItem(identityItem("LEAGUE#cleanup", `ACL#USER#member-${index}`, "acl", { leagueId: "cleanup", userId: `member-${index}`, role: "admin", grantedByUserId: "owner" }, now));
     client.seedItem(identityItem(`LEAGUE_INVITE#cleanup-${index}`, "METADATA", "leagueInvite", { leagueId: "cleanup", inviteCode: `cleanup-${index}`, email: "private@example.com" }, now));
+    client.seedItem(homeLeagueLookupPut("threefc_test", { leagueId: "cleanup", userId: `member-${index}`, role: "admin", grantedByUserId: "owner", createdAt: now, updatedAt: now }).Put!.Item!);
   }
   const other = identityItem("LEAGUE_INVITE#other", "METADATA", "leagueInvite", { leagueId: "other", inviteCode: "other", email: "other@example.com" }, now);
   client.seedItem(other);
@@ -2270,6 +2272,7 @@ test("league deletion resumes partial multi-page cleanup only for its initiator 
   for (let index = 0; index < 110; index += 1) {
     assert.equal(client.readItem("LEAGUE#cleanup", `ACL#USER#member-${index}`), undefined);
     assert.equal(client.readItem(`LEAGUE_INVITE#cleanup-${index}`, "METADATA"), undefined);
+    assert.equal(client.readItem(homeAccountPk(`member-${index}`), homeLeagueSk("cleanup")), undefined);
   }
   assert.deepEqual(client.readItem("LEAGUE_INVITE#other", "METADATA"), other);
   assert.equal(await repository.deleteLeague("cleanup", ["owner"]), true, "lost final response remains recoverable after all ACLs disappear");
@@ -7153,4 +7156,50 @@ test("league discovery identifies management from existing ACL roles without tre
   assert.equal((await repository.listLeaguesForUser("scorer"))[0].hasManagementAccess, true);
   assert.equal((await repository.listLeaguesForUser("reader"))[0].hasManagementAccess, false);
   assert.deepEqual(await repository.listLeaguesForUser("participant"), []);
+});
+
+
+test("home lookup maintenance repairs exact league, unchanged grant and accepted invite retries without changing authority", async () => {
+  const { client, repository } = createRepositoryHarness();
+  const input = { leagueId: "lookup", name: "Lookup", createdByUserId: "owner@example.com" };
+  const league = await repository.createLeague(input);
+  const lookup = (user: string) => client.readItem(homeAccountPk(user), homeLeagueSk(input.leagueId));
+  assert.deepEqual(JSON.parse(lookup(input.createdByUserId)!.data!.S!), { leagueId: "lookup", version: 1 });
+  assert.ok(!JSON.stringify(lookup(input.createdByUserId)).includes(input.createdByUserId), "account identifier is not copied into pointer");
+  client.deleteItem(homeAccountPk(input.createdByUserId), homeLeagueSk(input.leagueId));
+  assert.deepEqual(await repository.createLeague(input), league);
+  assert.ok(lookup(input.createdByUserId));
+  const grant = { leagueId: "lookup", userId: "delegate", role: "admin" as const, grantedByUserId: input.createdByUserId };
+  const original = await repository.grantLeagueAccess(grant);
+  client.deleteItem(homeAccountPk(grant.userId), homeLeagueSk(input.leagueId));
+  assert.deepEqual(await repository.grantLeagueAccess({ ...grant, role: "scorekeeper" }), original);
+  assert.ok(lookup(grant.userId));
+  const invite = await repository.createLeagueOrganiserInvite({ leagueId: "lookup", createdByUserId: input.createdByUserId, kind: "email", email: "guest@example.com" });
+  const acceptance = { inviteCode: invite.inviteCode, userId: "guest", email: "guest@example.com" };
+  await repository.grantLeagueAccess({ leagueId: "lookup", userId: "guest", role: "admin", grantedByUserId: input.createdByUserId });
+  client.deleteItem(homeAccountPk("guest"), homeLeagueSk(input.leagueId));
+  const accepted = await repository.acceptLeagueOrganiserInvite(acceptance);
+  assert.ok(accepted);
+  assert.ok(lookup("guest"), "first acceptance repairs pointer even when ACL is unchanged");
+  assert.equal(accepted.access.role, "admin");
+  client.deleteItem(homeAccountPk("guest"), homeLeagueSk(input.leagueId));
+  assert.deepEqual(await repository.acceptLeagueOrganiserInvite(acceptance), accepted);
+  assert.ok(lookup("guest"));
+  await repository.deleteLeague("lookup", [input.createdByUserId]);
+  for (const user of [input.createdByUserId, "delegate", "guest"]) assert.equal(lookup(user), undefined);
+});
+
+test("home lookup repair cannot recreate a revoked creator ACL or commit after league deletion races", async () => {
+  const { client, repository } = createRepositoryHarness();
+  const input = { leagueId: "race-lookup", name: "Lookup", createdByUserId: "owner" };
+  await repository.createLeague(input);
+  client.deleteItem(homeAccountPk("owner"), homeLeagueSk(input.leagueId));
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#race-lookup", "ACL#USER#owner"));
+  await assert.rejects(repository.createLeague(input));
+  assert.equal(client.readItem(homeAccountPk("owner"), homeLeagueSk(input.leagueId)), undefined);
+  await repository.grantLeagueAccess({ leagueId: input.leagueId, userId: "delegate", role: "admin", grantedByUserId: "owner" });
+  client.deleteItem(homeAccountPk("delegate"), homeLeagueSk(input.leagueId));
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#race-lookup", "METADATA"));
+  await assert.rejects(repository.grantLeagueAccess({ leagueId: input.leagueId, userId: "delegate", role: "admin", grantedByUserId: "owner" }), /no longer available/);
+  assert.equal(client.readItem(homeAccountPk("delegate"), homeLeagueSk(input.leagueId)), undefined);
 });

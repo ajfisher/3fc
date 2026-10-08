@@ -69,9 +69,11 @@ states. Do not remove account revalidation until equivalent race safety is demon
 
 1. **Baseline and contracts:** this plan plus request-owned duration, SDK elapsed,
    call, retry and failure counters. No read-model changes. Compare overhead in QA.
-2. **Home lookup preparation:** atomically maintain account-to-league pointers with
-   ACL writers, including exact retries; add resumable bounded backfill, reconciliation,
-   explicit coverage and cutover controls. Continue old reads.
+2. **Home lookup preparation:** split into two independently deployable PRs to keep
+   review and rollback small: first atomically maintain candidate-only account-to-league
+   pointers with ACL writers (including exact retries) and deletion cleanup; then add
+   resumable bounded backfill, reconciliation, explicit coverage and cutover controls.
+   Continue old reads throughout both preparation PRs.
 3. **Home cutover:** query pointers and batch metadata; verify authority, deletion,
    both account identifiers, pagination and participant discovery. Roll back the reader
    without removing records or reverting compatible writers.
@@ -151,3 +153,20 @@ Existing public results/standings/leaderboards backlog scope remains separate.
 
 Compression and Lambda sizing are later independent experiments so their benefit can
 be measured without confounding the read-model releases.
+
+## Home writer preparation (phase 2a)
+
+The dedicated `HOME_ACCOUNT#<SHA-256 of exact account identifier>` partition and
+`LEAGUE#<SHA-256 of league identifier>` sort key keep keys bounded and avoid copying
+account identifiers into the pointer. The payload contains only leagueId and version 1;
+roles and league metadata remain authoritative in their existing records. Create,
+grant and invitation transactions maintain pointers atomically, including fenced
+no-op repairs. League deletion removes each pointer with its ACL and page checkpoint
+(25 ACLs plus 25 pointers stay below the 100-action transaction limit).
+
+This preparation does not enable a new reader, certify coverage, backfill existing
+ACLs or change permissions. Existing scan readers ignore the new entity type. A revert
+leaves harmless candidate records; coverage is still unavailable. Before any future
+reader cutover, phase 2b must verify deployed writer continuity and existing ACL
+coverage. After cutover, reverting these writers requires disabling indexed reads
+and invalidating coverage first. Pointer records alone never grant access.
