@@ -1,3 +1,4 @@
+import { instrumentDynamoDb, withRequestPerformance } from "./request-performance.js";
 import { handlePlayerPortraitRoute, isPlayerPortraitRoute, parsePortraitBody, PORTRAIT_HEADERS, type PlayerPortraitRepository } from "./player-portrait-routes.js";
 import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, parseOwnerProfileBody, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
 import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
@@ -2585,6 +2586,7 @@ function createDefaultDependencies(): CoreHandlerDependencies {
       : {}),
   });
 
+  instrumentDynamoDb(ddbClient);
   const repository = new ThreeFcRepository(ddbClient, tableName);
   const magicLinkRateLimiter = new AuthRateLimiter(
     ddbClient,
@@ -2647,7 +2649,7 @@ function createDefaultDependencies(): CoreHandlerDependencies {
 
 export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
   parsePlayerClaimMode(process.env.PLAYER_CLAIM_MODE);
-  return async (event: ApiGatewayHttpEvent): Promise<ApiGatewayHttpResponse> => {
+  return async (event: ApiGatewayHttpEvent): Promise<ApiGatewayHttpResponse> => withRequestPerformance(async () => {
     const details = getRequestDetails(event);
     const route = details.route;
     const method = details.method;
@@ -5818,7 +5820,7 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
         status,
       });
     }
-  };
+  });
 }
 
 const defaultDependencies = createDefaultDependencies();

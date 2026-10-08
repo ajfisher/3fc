@@ -1,3 +1,4 @@
+import { instrumentDynamoDb, withRequestPerformance } from "./request-performance.js";
 import { handlePlayerPortraitRoute, isPlayerPortraitRoute, PORTRAIT_JSON_BODY_LIMIT, PORTRAIT_DELETE_BODY_LIMIT, PORTRAIT_HEADERS, type PlayerPortraitRepository } from "./player-portrait-routes.js";
 import { handleOwnerPlayerProfileRoute, isOwnerPlayerProfileRoute, OWNER_PROFILE_BODY_LIMIT, type OwnerPlayerProfileRepository } from "./owner-player-profile-routes.js";
 import { handlePlayerProfileRoute, isPlayerProfileRoute, type PlayerProfileRepository } from "./player-profile-routes.js";
@@ -136,6 +137,8 @@ const ddbClient = new DynamoDBClient({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "local",
   },
 });
+
+instrumentDynamoDb(ddbClient);
 
 const magicLinkEmailSender: MagicLinkEmailSender = {
   async sendMagicLink(input) {
@@ -3324,7 +3327,7 @@ function getRequestId(request: IncomingMessage): string {
 async function start(): Promise<void> {
   await ensureTable();
 
-  const server = createServer(async (request, response) => {
+  const server = createServer(async (request, response) => withRequestPerformance(async () => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     const route = requestUrl.pathname;
     const method = request.method ?? "GET";
@@ -5653,7 +5656,7 @@ async function start(): Promise<void> {
         status,
       });
     }
-  });
+  }));
 
   server.listen({ port: PORT, host: process.env.THREEFC_LISTEN_HOST }, () => {
     console.log(
