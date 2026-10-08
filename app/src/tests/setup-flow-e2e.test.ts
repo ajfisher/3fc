@@ -16580,3 +16580,30 @@ test('home paged continuation timeout preserves rows and permits retry', async (
     assert.equal(more.hidden, true);
   } finally { page.dom.window.close(); }
 });
+
+
+test('home paged initial failure offers explicit retry without reloading', async () => {
+  const apiState = createMockApiState();
+  apiState.session = { sessionId: 'initial-retry', email: 'retry@example.test', createdAt: '2026-03-28T11:00:00.000Z', expiresAt: '2026-03-29T11:00:00.000Z' };
+  apiState.cookieJar = 'threefc_session=initial-retry';
+  const base = createMockFetch(apiState); let reads = 0;
+  const page = await bootPage({ html: renderSetupHomePage('http://localhost:3001'), url: 'http://localhost:3000/setup', scriptFile: 'setup-flow.js', apiState,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname !== '/v1/leagues' || (init?.method ?? 'GET') !== 'GET') return base(input, init);
+      reads++; assert.equal(url.searchParams.get('page'), '1'); assert.equal(url.searchParams.has('cursor'), false);
+      if (reads === 1) return createJsonResponse(503, { error: 'service_unavailable', message: 'League navigation temporarily unavailable' });
+      return createJsonResponse(200, { leagues: [{ leagueId: 'one', name: 'One', slug: null }], cursor: null, complete: true, hasManagementAccess: true });
+    } });
+  try {
+    const retry = page.document.querySelector('[data-action="load-more-leagues"]') as HTMLButtonElement;
+    assert.equal(retry.hidden, false); assert.equal(retry.disabled, false); assert.equal(retry.textContent, 'Retry leagues');
+    assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, 0);
+    assert.match(page.document.body.textContent ?? '', /temporarily unavailable/);
+    dispatchClick(retry); await flushAsync();
+    assert.equal(reads, 2); assert.equal(retry.hidden, true);
+    assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, 1);
+    assert.doesNotMatch(page.document.body.textContent ?? '', /temporarily unavailable/);
+    assert.equal(page.navigations.length, 0);
+  } finally { page.dom.window.close(); }
+});

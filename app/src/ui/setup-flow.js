@@ -1913,12 +1913,15 @@
         leaguesBody.innerHTML = leagues.map(league => `<tr><td data-label="League"><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td></tr>`).join("");
         if (leaguesTableWrap instanceof HTMLElement) leaguesTableWrap.hidden = leagues.length === 0;
         if (leaguesEmpty instanceof HTMLElement) leaguesEmpty.hidden = leagues.length > 0 || Boolean(next);
-        if (loadMoreLeagues instanceof HTMLButtonElement) loadMoreLeagues.hidden = !next;
+        if (loadMoreLeagues instanceof HTMLButtonElement) { loadMoreLeagues.hidden = !next; loadMoreLeagues.textContent = "Load more leagues"; }
         if (!leagues.length && !next && !createLeagueDisclosureTouched)
           setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true, { focus: false });
         setStatus(!leagues.length && next ? "Load more to continue the league list." : "");
         return payload;
       } catch (error) {
+        if (!listAbort.signal.aborted && !append && loadMoreLeagues instanceof HTMLButtonElement) {
+          loadMoreLeagues.hidden = false; loadMoreLeagues.textContent = "Retry leagues";
+        }
         if (timedOut && !listAbort.signal.aborted) throw new Error("The league request timed out. Try again.");
         throw error;
       } finally {
@@ -1929,9 +1932,9 @@
       }
     }
     if (loadMoreLeagues instanceof HTMLButtonElement) loadMoreLeagues.addEventListener('click', async () => {
-      if (!leagueCursor || leagueListPending || listAbort.signal.aborted) return;
+      if (leagueListPending || listAbort.signal.aborted) return;
       clearError();
-      try { await renderLeagues(true); }
+      try { await renderLeagues(Boolean(leagueCursor)); }
       catch (error) { if (!listAbort.signal.aborted) showError(error.message); }
     });
 
@@ -1981,6 +1984,8 @@
     try {
       const payload = await renderLeagues();
       await openParticipantProfile(payload);
+    } catch (error) {
+      if (!listAbort.signal.aborted) showError(error.message);
     } finally {
       events.forEach(event => window.removeEventListener(event, stop));
       root.removeEventListener('pointerdown', stop); root.removeEventListener('keydown', stop);

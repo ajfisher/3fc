@@ -266,7 +266,7 @@ bounded owned-profile discovery and final session revalidation. Interaction stop
 auto-redirect; account/proof invalidation or page exit cancels listing and clears
 accumulated rows. Each league request has a separate 15-second deadline; a timed-out
 continuation retains accepted rows/cursor and releases the button for explicit retry.
-Retry clears the prior error. A legacy rollback response replaces accumulated paged rows.
+Initial failure exposes Retry leagues without requiring page reload. Retry clears the prior error. A legacy rollback response replaces accumulated paged rows.
 
 Local proof: focused scale tests add 1,000 unrelated game records without increasing
 SDK calls, exercise both verified identifiers, page continuation, ACL revocation,
