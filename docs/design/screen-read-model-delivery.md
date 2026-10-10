@@ -197,7 +197,10 @@ node scripts/home-league-coverage.mjs step --manifest <coverage.json> --deployme
 
 Each page scans at most 1,000 physical records with strong consistency and returns
 only ACL candidates, including malformed reserved ACL keys. Projection limits
-returned fields; filtering does not reduce DynamoDB read capacity. Step defaults to
+returned fields; filtering does not reduce DynamoDB read capacity. If a scan
+returns more than 50 ACL candidates, reread the same physical start with a 50-record
+limit. A completed page therefore has at most two ACL chunks, so dense tables do
+not repeatedly exhaust an invocation before checkpointing. Step defaults to
 one page; --pages accepts 1–100. Every page, each transaction chunk and the final
 checkpoint recheck exact deployment provenance and the frozen/drained workflow.
 Invocations stop after ten minutes and can resume from durable status.
@@ -287,6 +290,13 @@ The QA table has approximately 42,700 physical records and 10 live ACLs. With
 1,000-record pages, the two passes need at least 86 pages; DynamoDB's 1 MiB page
 limit can increase that. This replaces roughly 3,400 25-record pages. All operator
 checks remain; rate-limit or provenance failures stop work at a durable checkpoint.
+
+Deployment prerequisite: apply the reviewed `home_lookup_deploy_read` Terraform
+policy in the target environment before the API deployment. It grants the existing
+GitHub deploy role only GetItem on that environment's table with LeadingKeys
+HOME_LOOKUP; missing keys, other partitions, Scan and writes remain denied. This
+supports the atomic control read without exposing application records. QA applies
+only this resource; production application remains AJ's release decision.
 
 Coverage keeps the original backfill manifest immutable. Enabled reads compare its
 writerVersion with the source-owned HOME_LOOKUP_WRITER_VERSION maintenance contract,

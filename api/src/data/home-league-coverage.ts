@@ -88,14 +88,17 @@ export class HomeLeagueCoverageRunner {
     if (!old || JSON.stringify(old.value.manifest) !== JSON.stringify(this.manifest)) fail();
     if (!["backfill", "verification"].includes(old.value.phase)) throw new Error("Coverage has no active reconciliation page.");
     const start = old.value.cursor;
-    const page = await this.client.send(new ScanCommand({ TableName: this.manifest.tableName, ConsistentRead: true,
-      Limit: 1000,
+    const scan = (limit: number) => new ScanCommand({ TableName: this.manifest.tableName, ConsistentRead: true,
+      Limit: limit,
       FilterExpression: "#type = :acl OR (begins_with(#pk, :league) AND begins_with(#sk, :aclPrefix))",
       ProjectionExpression: "#pk,#sk,#type,#data,createdAt,updatedAt",
       ExpressionAttributeNames: { "#pk": "pk", "#sk": "sk", "#type": "entityType", "#data": "data" },
       ExpressionAttributeValues: { ":acl": { S: "acl" }, ":league": { S: "LEAGUE#" }, ":aclPrefix": { S: "ACL#USER#" } },
-      ExclusiveStartKey: start ? { pk: { S: start.pk }, sk: { S: start.sk } } : undefined })) as ScanCommandOutput;
-    if ((page.Items?.length ?? 0) > 1000) fail();
+      ExclusiveStartKey: start ? { pk: { S: start.pk }, sk: { S: start.sk } } : undefined });
+    let page = await this.client.send(scan(1000)) as ScanCommandOutput;
+    // Sparse history stays efficient; dense ACL pages must finish within one guarded invocation.
+    if ((page.Items?.length ?? 0) > 50) page = await this.client.send(scan(50)) as ScanCommandOutput;
+    if ((page.Items?.length ?? 0) > 50) fail();
     const next = page.LastEvaluatedKey;
     const cursor = next && Object.keys(next).length ? { pk: next.pk?.S ?? "", sk: next.sk?.S ?? "" } : null;
     if (cursor && (!validKey(cursor) || (start && cursor.pk === start.pk && cursor.sk === start.sk))) fail();

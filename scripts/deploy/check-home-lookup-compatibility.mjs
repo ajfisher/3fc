@@ -46,4 +46,8 @@ async function main(env) {
   } finally { client.destroy(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  main(process.argv[2]).catch(() => { process.stderr.write('Home lookup preflight failed; inspect coverage and writer compatibility.\n'); process.exitCode = 1; });
+  main(process.argv[2]).catch(error => {
+    const name = /^[A-Za-z]+$/.test(error?.name ?? '') ? error.name : 'Error';
+    process.stderr.write(`Home lookup preflight failed (${name}); inspect deploy-role read permission, coverage and writer compatibility.\n`);
+    process.exitCode = 1;
+  });

@@ -7479,3 +7479,29 @@ test("home coverage lost final checkpoint response resumes from its committed ph
   assert.equal((await runner.status())!.phase, "verification"); assert.equal((await runner.status())!.pages, 1);
   assert.equal((await runner.step()).phase, "ready"); assert.equal((await runner.status())!.pages, 2);
 });
+
+
+test("home coverage bounds dense ACL page work and resumes beyond completed physical checkpoints", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "dense", name: "Dense", createdByUserId: "owner" });
+  for (let i = 0; i < 120; i++) {
+    await repository.grantLeagueAccess({ leagueId: "dense", userId: `member-${String(i).padStart(3, "0")}`, role: "viewer", grantedByUserId: "owner" });
+    client.deleteItem(homeAccountPk(`member-${String(i).padStart(3, "0")}`), homeLeagueSk("dense"));
+  }
+  const base = homeCoverageHarness(client); const limits: number[] = [];
+  const runner = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    if (command instanceof ScanCommand) limits.push(command.input.Limit!);
+    return client.send(command);
+  } }, base.manifest);
+  await runner.begin(); let prior = (await runner.status())!;
+  for (let n = 0; n < 20 && prior.phase !== "ready"; n++) {
+    let guards = 0;
+    const next = await runner.step(() => { if (++guards > 3) throw new Error("dense page exceeded bounded mutation work"); });
+    assert.ok(guards <= 3); assert.ok(next.repaired - prior.repaired <= 50); assert.ok(next.verified - prior.verified <= 50);
+    if (next.phase === prior.phase && next.cursor) assert.notDeepEqual(next.cursor, prior.cursor);
+    prior = next;
+  }
+  assert.equal(prior.phase, "ready"); assert.equal(prior.repaired, 121); assert.equal(prior.verified, 121);
+  assert.ok(limits.includes(50), "dense scan rereads the same physical start with a smaller limit");
+  assert.equal(limits[0], 1000); assert.equal(limits[1], 50);
+});
