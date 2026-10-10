@@ -7,7 +7,7 @@ function evidence(enabled = true) {
   const live = { functionName: '3fc-qa-api-core', codeSha256: `${'A'.repeat(43)}=`, revisionId: 'revision',
     lastUpdateStatus: 'Successful', playerClaimMode: 'proof', consolidationEnabled: 'true', returningJoinEnabled: 'true',
     profilesEnabled: state, achievementsEnabled: state, ownerEditingEnabled: state, historyProcessingEnabled: state,
-    portraitBucket: QA_PROFILE_SCOPE.portraitBucket, apiWriterSha: head, runtime: 'nodejs22.x', architectures: ['arm64'], timeout: 28 };
+    portraitBucket: QA_PROFILE_SCOPE.portraitBucket, apiWriterSha: head, homeLookupWriterVersion: '1', runtime: 'nodejs22.x', architectures: ['arm64'], timeout: 28 };
   return { head, run: { repository: { full_name: 'ajfisher/3fc' }, name: 'Deploy QA', head_sha: head, status: 'completed', conclusion: 'success' },
     checks: ['merge-gate', 'review-gate'].map((name, index) => ({ name, id: index + 1, head_sha: head, status: 'completed', conclusion: 'success' })),
     caller: { Account: QA_PROFILE_SCOPE.accountId },

@@ -32,6 +32,13 @@ export function verifyHomeCoverageWorkflow(gh, env) {
     if (gh('api', `${workflow}/runs?status=${state}&per_page=1`).total_count !== 0) throw new Error('Drain pending target deployments before reconciliation.');
   }
 }
+export function verifyHomeCoverageProvenance(input, writerVersion) {
+  verifyMigrationProvenance(input);
+  if (input.manifest.writerVersion !== writerVersion ||
+    input.deployment.functionFingerprint.homeLookupWriterVersion !== String(writerVersion) ||
+    input.live.homeLookupWriterVersion !== String(writerVersion))
+    throw new Error('Home lookup maintenance contract differs from the reviewed deployment.');
+}
 export async function executeHomeCoverage(runner, verify, command, pages) {
   let value;
   for (let page = 0; page < pages; page++) {
@@ -55,6 +62,7 @@ async function main(args) {
   execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', '--build', 'api/tsconfig.json', '--force'], { stdio: 'pipe', timeout: 120_000 });
   const { HomeLeagueCoverageRunner } = await import('../api/dist/data/home-league-coverage.js');
   const { setHomeLeagueReader } = await import('../api/dist/data/home-league-read.js');
+  const { HOME_LOOKUP_WRITER_VERSION } = await import('../api/dist/data/home-league-lookup.js');
   process.env.AWS_PROFILE = options['--profile'];
   const client = new DynamoDBClient({ region: manifest.region });
   const aws = (...parameters) => JSON.parse(execFileSync('aws', [...parameters, '--profile', options['--profile'], '--region', manifest.region, '--output', 'json'],
@@ -63,16 +71,18 @@ async function main(args) {
   try {
     const caller = aws('sts', 'get-caller-identity');
     const { Table: table } = await client.send(new DescribeTableCommand({ TableName: manifest.tableName }));
+    const startedAt = Date.now();
     const verify = () => {
+      if (Date.now() - startedAt > 600_000) throw new Error('Coverage invocation exceeded ten minutes; inspect status and resume.');
       const live = aws('lambda', 'get-function-configuration', '--function-name', deployment.functionFingerprint?.functionName ?? 'invalid', '--query',
-        '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,state:State,lastUpdateStatus:LastUpdateStatus,lastModified:LastModified,timeout:Timeout,tableName:Environment.Variables.DYNAMODB_TABLE,claimMode:Environment.Variables.PLAYER_CLAIM_MODE}');
-      verifyMigrationProvenance({ manifest, deployment, caller, table: table ?? {}, live, now: Date.now() });
+        '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,state:State,lastUpdateStatus:LastUpdateStatus,lastModified:LastModified,timeout:Timeout,tableName:Environment.Variables.DYNAMODB_TABLE,claimMode:Environment.Variables.PLAYER_CLAIM_MODE,homeLookupWriterVersion:Environment.Variables.HOME_LOOKUP_WRITER_VERSION}');
+      verifyHomeCoverageProvenance({ manifest, deployment, caller, table: table ?? {}, live, now: Date.now() }, HOME_LOOKUP_WRITER_VERSION);
       if (command !== 'status') {
         verifyHomeCoverageWorkflow(gh, deployment.env);
       }
     };
     const coverage = new HomeLeagueCoverageRunner(client, manifest);
-    const runner = { status: () => coverage.status(), begin: () => coverage.begin(), step: () => coverage.step(), disable: () => coverage.disable(),
+    const runner = { status: () => coverage.status(), begin: () => coverage.begin(), step: () => coverage.step(verify), disable: () => coverage.disable(),
       'enable-reader': async () => { await setHomeLeagueReader(client, manifest, true); return coverage.status(); },
       'disable-reader': async () => { await setHomeLeagueReader(client, manifest, false); return coverage.status(); } };
     const value = await executeHomeCoverage(runner, verify, command, pages);

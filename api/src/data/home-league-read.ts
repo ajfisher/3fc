@@ -2,9 +2,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { GetItemCommand, QueryCommand, TransactGetItemsCommand, TransactWriteItemsCommand,
   type AttributeValue, type GetItemCommandOutput, type QueryCommandOutput, type TransactGetItemsCommandOutput } from "@aws-sdk/client-dynamodb";
-import { homeAccountPk, homeLeagueSk } from "./home-league-lookup.js";
-import { HomeLeagueCoverageRunner, validHomeLeagueCoverage } from "./home-league-coverage.js";
-import type { IdentityMigrationManifest } from "./player-identity-migration.js";
+import { HOME_LOOKUP_WRITER_VERSION, homeAccountPk, homeLeagueSk } from "./home-league-lookup.js";
+import { HomeLeagueCoverageRunner, validHomeLeagueCoverage, type HomeLeagueManifest } from "./home-league-coverage.js";
 import { PlayerIdentityError, identityCondition, identityPut, type IdentityClient } from "./player-identity.js";
 
 type Item = Record<string, AttributeValue>;
@@ -17,7 +16,7 @@ const body = (item: Item, type: string): Record<string, unknown> => {
     return data;
   } catch { return unavailable(); }
 };
-const readerSchema = z.object({ version: z.literal(1), enabled: z.boolean(), coverageEpoch: z.string().min(1).nullable() }).strict();
+export const homeLeagueReaderSchema = z.object({ version: z.literal(1), enabled: z.boolean(), coverageEpoch: z.string().min(1).nullable() }).strict();
 const cursorSchema = z.object({ version: z.literal(1), binding: z.string(), management: z.boolean(),
   accounts: z.array(z.object({ after: z.string().regex(/^LEAGUE#[a-f0-9]{64}$/).nullable(), done: z.boolean() }).strict()).min(1).max(2) }).strict();
 export const homeLeaguePageSchema = z.object({ leagues: z.array(z.object({ leagueId: z.string().min(1), name: z.string().min(1), slug: z.string().nullable() }).strict()).max(20),
@@ -29,16 +28,16 @@ async function read(client: IdentityClient, table: string, pk: string, sk: strin
 }
 /** Separate reader activation: ready coverage alone never enables navigation.
  * Operator CLI verifies the current compatible deployment before calling this. */
-export async function setHomeLeagueReader(client: IdentityClient, manifest: IdentityMigrationManifest, enabled: boolean): Promise<void> {
+export async function setHomeLeagueReader(client: IdentityClient, manifest: HomeLeagueManifest, enabled: boolean): Promise<void> {
   const runner = new HomeLeagueCoverageRunner(client, manifest);
   const coverage = enabled ? await runner.status() : null;
   const source = enabled ? await read(client, manifest.tableName, "HOME_LOOKUP", "CONTROL") : null;
   const current = source ? body(source, "homeLeagueCoverage") : null;
-  if (enabled && (!coverage || coverage.phase !== "ready" || JSON.stringify(coverage.manifest) !== JSON.stringify(manifest) ||
+  if (enabled && (!coverage || coverage.phase !== "ready" || coverage.manifest.tableArn !== manifest.tableArn || coverage.manifest.writerVersion !== manifest.writerVersion ||
     !validHomeLeagueCoverage(current, manifest.tableName) || current.epoch !== coverage.epoch || current.phase !== "ready" ||
-    JSON.stringify(current.manifest) !== JSON.stringify(manifest))) unavailable();
+    current.manifest.tableArn !== manifest.tableArn || current.manifest.writerVersion !== manifest.writerVersion)) unavailable();
   const old = await read(client, manifest.tableName, "HOME_LOOKUP", "READER");
-  if (old && !readerSchema.safeParse(body(old, "homeLeagueReader")).success) unavailable();
+  if (old && !homeLeagueReaderSchema.safeParse(body(old, "homeLeagueReader")).success) unavailable();
   const value = { version: 1, enabled, coverageEpoch: enabled ? coverage!.epoch : null };
   await client.send(new TransactWriteItemsCommand({ TransactItems: [
     ...(enabled ? [identityCondition(manifest.tableName, { pk: "HOME_LOOKUP", sk: "CONTROL", item: source, value: null })] : []),
@@ -53,7 +52,7 @@ export class HomeLeagueRead {
     if (!accounts.length || accounts.length > 2 || accounts.some(id => !id.trim() || Buffer.byteLength(id) > 2048)) unavailable();
     const readerItem = await read(this.client, this.table, "HOME_LOOKUP", "READER");
     if (!readerItem) return null; // Explicit rollback/preparation uses the retained reader.
-    const readerResult = readerSchema.safeParse(body(readerItem, "homeLeagueReader"));
+    const readerResult = homeLeagueReaderSchema.safeParse(body(readerItem, "homeLeagueReader"));
     if (!readerResult.success) unavailable();
     const reader = readerResult.data;
     if (!reader.enabled) return null;
@@ -98,7 +97,7 @@ export class HomeLeagueRead {
     if (snapshot.Responses?.length !== keys.length) unavailable();
     const items = snapshot.Responses.map(row => row.Item);
     const coverage = items[0] ? body(items[0], "homeLeagueCoverage") : null;
-    if (!validHomeLeagueCoverage(coverage, this.table) || coverage.phase !== "ready" || coverage.epoch !== reader.coverageEpoch || coverage.manifest.writerSha !== this.writerSha ||
+    if (!validHomeLeagueCoverage(coverage, this.table) || coverage.phase !== "ready" || coverage.epoch !== reader.coverageEpoch || coverage.manifest.writerVersion !== HOME_LOOKUP_WRITER_VERSION ||
       !items[1] || JSON.stringify(body(items[1], "homeLeagueReader")) !== JSON.stringify(reader)) unavailable();
     const leagues: HomeLeaguePage["leagues"] = [];
     let offset = 2;

@@ -3,6 +3,8 @@ import type { TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { identityItem } from "./player-identity.js";
 import type { LeagueAclRecord } from "./types.js";
 
+export { HOME_LOOKUP_WRITER_VERSION } from "./home-league-writer-version.js";
+
 // Dedicated, bounded namespace. A pointer discovers a candidate league only;
 // readers must still check current league metadata, deletion state and ACL.
 export function homeAccountPk(userId: string): string {

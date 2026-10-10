@@ -195,19 +195,22 @@ node scripts/home-league-coverage.mjs begin --manifest <coverage.json> --deploym
 node scripts/home-league-coverage.mjs step --manifest <coverage.json> --deployment-manifest <api-core-deploy-manifest.json> --profile <profile> --apply reviewed-home-lookups
 ```
 
-Each page scans at most 25 physical records with strong consistency. Step defaults
-to one page; --pages accepts 1–100 to amortise the fresh build, rechecking provenance
-and the frozen/drained deployment workflow before every page. Batches stop on ready
-or on the first error; checkpoints remain page-sized. Valid live
-ACLs get candidate pointers with source/league fences, then a separate bounded
-verification pass checks pointers against live ACLs. Missing league metadata
-excludes orphan ACLs under an absence fence. Malformed reserved ACLs, missing
-verification pointers, stale manifests and transaction races prevent readiness
-and preserve the checkpoint. A lost response may have committed; consult status
-before repeating. Counts report work, not a table-wide snapshot equality proof.
-Compatible atomic writers preserve coverage during concurrent changes. The control
-and a full page commit together in at most 76 actions before identical checks
-are deduplicated. Empty pages with a continuation never count as completion.
+Each page scans at most 1,000 physical records with strong consistency and returns
+only ACL candidates, including malformed reserved ACL keys. Projection limits
+returned fields; filtering does not reduce DynamoDB read capacity. Step defaults to
+one page; --pages accepts 1–100. Every page, each transaction chunk and the final
+checkpoint recheck exact deployment provenance and the frozen/drained workflow.
+Invocations stop after ten minutes and can resume from durable status.
+
+Up to 25 ACLs per transaction get pointers under source, league and unchanged
+control fences, within the 100-action limit. Only after all chunks succeed does a
+separate conditional transaction advance the physical checkpoint. Partial page
+writes replay idempotently; counters advance once per completed page. A separate
+verification pass checks every live ACL pointer. Empty filtered pages with a
+continuation do not end a pass. Malformed reserved ACLs, missing verification
+pointers, changed manifests and transaction races block readiness. After a lost
+response, inspect status before retrying. Compatible atomic writers preserve
+coverage during concurrent changes; orphan ACLs cannot discover deleted leagues.
 
 `HOME_LOOKUP / CONTROL` (`homeLeagueCoverage`) owns phase, manifest, epoch,
 physical cursor and aggregate counters. It has no TTL and grants no authority.
@@ -280,27 +283,26 @@ account/session behavior and new continuation rendering. Deployed QA measurement
 must distinguish synthetic warm API timing from authenticated browser useful-content
 timing; no production speed claim is made until AJ releases and impact is measured.
 
-QA table metadata reports roughly 42,700 items on 8 October. Two 25-record passes
-therefore need roughly 3,400 pages, before growth; six GitHub workflow/drain reads
-per page can encounter account rate limits. Batching amortises builds but retains
-all safety checks. Operators must inspect durable status and resume through the
-same guarded command after any rate-limit error; never bypass the checks or infer
-coverage from a partially completed run. Plan this maintenance window separately
-from request latency measurement. No production or QA coverage is fabricated for
-benchmarking.
+The QA table has approximately 42,700 physical records and 10 live ACLs. With
+1,000-record pages, the two passes need at least 86 pages; DynamoDB's 1 MiB page
+limit can increase that. This replaces roughly 3,400 25-record pages. All operator
+checks remain; rate-limit or provenance failures stop work at a durable checkpoint.
 
-Reader activation requires exact equality with the complete coverage manifest, including
-writer SHA, drain timestamp and reviewed plan. A later deployment must reconcile a
-new coverage epoch under its own manifest before enabling; rollback disable remains
-available without that coverage match. The final activation transaction also fences
-the exact control snapshot to reject a concurrent coverage change.
+Coverage keeps the original backfill manifest immutable. Enabled reads compare its
+writerVersion with the source-owned HOME_LOOKUP_WRITER_VERSION maintenance contract,
+rather than requiring every later compatible commit to repeat the backfill. Bump
+that constant for incompatible lookup keys, ACL writers, deletion or administrative
+imports. The deployment script derives the marker from freshly built source,
+requires the selected environment's canonical table, and checks controls atomically
+before deployment. Ready coverage requires a matching live marker and table;
+incomplete or inconsistent controls block deployment. An incompatible release must
+first disable both reader and coverage using the current deployed writer, then
+drain and reconcile under the new deployment. Compatible releases retain coverage.
 
-Enabled reads additionally compare the transactional coverage writer SHA with
-API_WRITER_SHA derived from git HEAD by the shared QA/production deployment script.
-Serverless requires this identity, and deployment fingerprint checks verify it.
-A later writer deployment therefore returns 503 under old activation until the
-operator disables or reconciles and enables coverage for the new writer. Missing
-or malformed runtime identity fails closed too. No extra request SDK calls or IAM
-permissions are needed. Direct deployments must use the reviewed deployment path;
-incompatible rollbacks still disable the reader first. The OpenAPI operation
-describes both retained complete and paged home responses.
+Enabling the reader still requires a clean checkout, the exact current reviewed
+writer SHA, matching deployment artifact/live fingerprint and a completed old-writer
+drain in a frozen deployment window. Activation binds the ready epoch and matching
+maintenance contract under an exact control fence. Runtime API_WRITER_SHA remains
+required and deployment-verified; malformed or missing identity fails closed.
+The paged request retains four SDK calls plus session lookup and no request-path
+Scan. The OpenAPI operation describes both complete and paged home responses.

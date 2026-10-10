@@ -22,6 +22,7 @@ provider:
   environment:
     PORTRAIT_BUCKET: ${env:PORTRAIT_BUCKET}
     API_WRITER_SHA: ${env:API_WRITER_SHA}
+    HOME_LOOKUP_WRITER_VERSION: ${env:HOME_LOOKUP_WRITER_VERSION}
     DYNAMODB_TABLE: ${env:DYNAMODB_TABLE, '3fc-${sls:stage}-app'}
     APP_BASE_URL: ${self:custom.appBaseUrls.${sls:stage}, self:custom.appBaseUrls.default}
     PUBLIC_APP_BASE_URL: ${self:custom.publicAppBaseUrls.${sls:stage}, self:custom.publicAppBaseUrls.default}
