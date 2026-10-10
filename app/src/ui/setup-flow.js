@@ -1887,7 +1887,8 @@
       const cancelAttempt = () => attempt.abort();
       listAbort.signal.addEventListener("abort", cancelAttempt, { once: true });
       let timedOut = false;
-      const deadline = window.setTimeout(() => { timedOut = true; attempt.abort(); }, 15000);
+      // Preparation and rollback still use the legacy reader: allow the 28-second API limit plus transport.
+      const deadline = window.setTimeout(() => { timedOut = true; attempt.abort(); }, 35000);
       try {
         const params = new URLSearchParams({ page: "1" });
         if (append && leagueCursor) params.set("cursor", leagueCursor);

@@ -16563,7 +16563,7 @@ test('home paged continuation timeout preserves rows and permits retry', async (
   try {
     const original = page.window.setTimeout.bind(page.window);
     page.window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 15000) { expire = handler as () => void; return original(handler, 60000, ...args); }
+      if (timeout === 35000) { expire = handler as () => void; return original(handler, 60000, ...args); }
       return original(handler, timeout, ...args);
     }) as typeof page.window.setTimeout;
     const more = page.document.querySelector('[data-action="load-more-leagues"]') as HTMLButtonElement;
@@ -16605,5 +16605,50 @@ test('home paged initial failure offers explicit retry without reloading', async
     assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, 1);
     assert.doesNotMatch(page.document.body.textContent ?? '', /temporarily unavailable/);
     assert.equal(page.navigations.length, 0);
+  } finally { page.dom.window.close(); }
+});
+
+
+for (const outcome of ['slow-success', 'timeout', 'account-cleared'] as const)
+test(`home legacy response survives real QA latency and handles ${outcome}`, async () => {
+  const apiState = createMockApiState();
+  apiState.session = { sessionId: 'slow-home', email: 'slow@example.test', createdAt: '2026-03-28T11:00:00.000Z', expiresAt: '2026-03-29T11:00:00.000Z' };
+  apiState.cookieJar = 'threefc_session=slow-home';
+  const base = createMockFetch(apiState), timers = createManualTimers();
+  const response = () => createJsonResponse(200, { leagues: [{ leagueId: 'legacy', name: 'Legacy League', slug: null }], hasManagementAccess: true });
+  let release!: (value: Response) => void, signal: AbortSignal | undefined, reads = 0;
+  const page = await bootPage({ html: renderSetupHomePage('http://localhost:3001'), url: 'http://localhost:3000/setup', scriptFile: 'setup-flow.js', apiState, timers,
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname !== '/v1/leagues') return base(input, init);
+      reads++;
+      if (reads > 1) return response();
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>((resolve, reject) => {
+        release = resolve;
+        if (outcome !== 'account-cleared') signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    } });
+  try {
+    timers.advanceBy(19000); await flushAsync();
+    assert.equal(signal?.aborted, false, 'a healthy 19-second legacy response must survive the browser deadline');
+    if (outcome === 'timeout') {
+      timers.advanceBy(16000); await flushAsync();
+      assert.equal(signal?.aborted, true);
+      assert.match(page.document.body.textContent ?? '', /timed out/);
+      const retry = page.document.querySelector('[data-action="load-more-leagues"]') as HTMLButtonElement;
+      assert.equal(retry.textContent, 'Retry leagues'); assert.equal(retry.disabled, false);
+      dispatchClick(retry); await flushAsync();
+      assert.equal(reads, 2); assert.doesNotMatch(page.document.body.textContent ?? '', /timed out/);
+    } else {
+      if (outcome === 'account-cleared') {
+        page.window.dispatchEvent(new page.window.Event('threefc:player-proof-cleared'));
+        assert.equal(signal?.aborted, true);
+      }
+      release(response()); await flushAsync();
+      assert.equal(reads, 1);
+    }
+    assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, outcome === 'account-cleared' ? 0 : 1);
+    timers.advanceBy(35000); await flushAsync();
+    assert.doesNotMatch(page.document.body.textContent ?? '', /timed out/, 'completed or cancelled requests leave no late timeout');
   } finally { page.dom.window.close(); }
 });
