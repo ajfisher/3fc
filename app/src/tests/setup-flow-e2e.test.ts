@@ -16541,41 +16541,50 @@ test(`home paged dashboard renders promptly and handles continuation ${outcome}`
 });
 
 
-test('home paged continuation timeout preserves rows and permits retry', async () => {
+for (const rollback of [false, true])
+test(`home paged continuation timeout restarts discovery safely with rollback ${rollback}`, async () => {
   const apiState = createMockApiState();
   apiState.session = { sessionId: 'timeout-session', email: 'timeout@example.test', createdAt: '2026-03-28T11:00:00.000Z', expiresAt: '2026-03-29T11:00:00.000Z' };
   apiState.cookieJar = 'threefc_session=timeout-session';
-  const base = createMockFetch(apiState);
-  let reads = 0, expire!: () => void, stalledSignal: AbortSignal | undefined;
-  const page = await bootPage({ html: renderSetupHomePage('http://localhost:3001'), url: 'http://localhost:3000/setup', scriptFile: 'setup-flow.js', apiState,
+  const base = createMockFetch(apiState), timers = createManualTimers();
+  const one = { leagueId: 'one', name: 'One', slug: null }, two = { leagueId: 'two', name: 'Two', slug: null };
+  let reads = 0, release!: (value: Response) => void, stalledSignal: AbortSignal | undefined, retrySignal: AbortSignal | undefined;
+  const page = await bootPage({ html: renderSetupHomePage('http://localhost:3001'), url: 'http://localhost:3000/setup', scriptFile: 'setup-flow.js', apiState, timers,
     fetch: async (input, init) => {
       const url = new URL(String(input));
-      if (url.pathname !== '/v1/leagues' || (init?.method ?? 'GET') !== 'GET') return base(input, init);
+      if (url.pathname !== '/v1/leagues') return base(input, init);
       reads++;
-      if (reads === 1) return createJsonResponse(200, { leagues: [{ leagueId: 'one', name: 'One', slug: null }], cursor: 'next', complete: false, hasManagementAccess: null });
-      assert.equal(url.searchParams.get('cursor'), 'next');
+      if (reads === 1) return createJsonResponse(200, { leagues: [one], cursor: 'next', complete: false, hasManagementAccess: null });
       if (reads === 2) {
-        stalledSignal = init?.signal ?? undefined;
+        assert.equal(url.searchParams.get('cursor'), 'next'); stalledSignal = init?.signal ?? undefined;
         return new Promise<Response>((_resolve, reject) => stalledSignal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
       }
-      return createJsonResponse(200, { leagues: [{ leagueId: 'two', name: 'Two', slug: null }], cursor: null, complete: true, hasManagementAccess: true });
+      if (reads === 3) {
+        assert.equal(url.searchParams.has('cursor'), false, 'timeout retry restarts discovery without a stale continuation');
+        retrySignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve, reject) => {
+          release = resolve;
+          retrySignal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }
+      assert.equal(url.searchParams.get('cursor'), 'next');
+      return createJsonResponse(200, { leagues: [two], cursor: null, complete: true, hasManagementAccess: true });
     } });
   try {
-    const original = page.window.setTimeout.bind(page.window);
-    page.window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 35000) { expire = handler as () => void; return original(handler, 60000, ...args); }
-      return original(handler, timeout, ...args);
-    }) as typeof page.window.setTimeout;
     const more = page.document.querySelector('[data-action="load-more-leagues"]') as HTMLButtonElement;
     dispatchClick(more); await flushAsync();
-    assert.equal(more.disabled, true); expire(); await flushAsync();
-    assert.equal(stalledSignal?.aborted, true);
-    assert.equal(more.disabled, false); assert.equal(more.hidden, false);
-    assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, 1);
+    timers.advanceBy(15000); await flushAsync();
+    assert.equal(stalledSignal?.aborted, true); assert.equal(more.disabled, false); assert.equal(more.hidden, false);
+    assert.equal(more.textContent, 'Retry leagues');
+    assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, 1, 'accepted rows survive timeout');
     assert.match(page.document.body.textContent ?? '', /timed out/);
     dispatchClick(more); await flushAsync();
-    assert.equal(reads, 3);
-    assert.doesNotMatch(page.document.body.textContent ?? '', /timed out/);
+    timers.advanceBy(19000); await flushAsync(); assert.equal(retrySignal?.aborted, false);
+    release(createJsonResponse(200, rollback ? { leagues: [one, two], hasManagementAccess: true }
+      : { leagues: [one], cursor: 'next', complete: false, hasManagementAccess: null }));
+    await flushAsync(); assert.doesNotMatch(page.document.body.textContent ?? '', /timed out/);
+    if (!rollback) { assert.equal(more.textContent, 'Load more leagues'); dispatchClick(more); await flushAsync(); }
+    assert.equal(reads, rollback ? 3 : 4);
     assert.equal(page.document.querySelectorAll('#dashboard-leagues-body tr').length, 2);
     assert.equal(more.hidden, true);
   } finally { page.dom.window.close(); }

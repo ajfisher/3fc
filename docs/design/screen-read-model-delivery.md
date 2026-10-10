@@ -264,9 +264,9 @@ it is a navigation hint, not an authorisation grant. Partial pages cannot trigge
 participant profile auto-redirect. Complete non-manager results retain existing
 bounded owned-profile discovery and final session revalidation. Interaction stops
 auto-redirect; account/proof invalidation or page exit cancels listing and clears
-accumulated rows. Each league request has a separate 15-second deadline; a timed-out
+accumulated rows. Initial league requests have a 35-second deadline to support healthy legacy responses during preparation/rollback; paged continuations retain a separate 15-second deadline; a timed-out
 continuation retains accepted rows/cursor and releases the button for explicit retry.
-Initial failure exposes Retry leagues without requiring page reload. Retry clears the prior error. A legacy rollback response replaces accumulated paged rows.
+Initial failure exposes Retry leagues without requiring page reload. Timed-out continuations preserve rows and offer Retry leagues to restart discovery without a cursor, allowing recovery after reader rollback. Retry clears the prior error. A legacy rollback response replaces accumulated paged rows.
 
 Local proof: focused scale tests add 1,000 unrelated game records without increasing
 SDK calls, exercise both verified identifiers, page continuation, ACL revocation,

@@ -1888,7 +1888,7 @@
       listAbort.signal.addEventListener("abort", cancelAttempt, { once: true });
       let timedOut = false;
       // Preparation and rollback still use the legacy reader: allow the 28-second API limit plus transport.
-      const deadline = window.setTimeout(() => { timedOut = true; attempt.abort(); }, 35000);
+      const deadline = window.setTimeout(() => { timedOut = true; attempt.abort(); }, append ? 15000 : 35000);
       try {
         const params = new URLSearchParams({ page: "1" });
         if (append && leagueCursor) params.set("cursor", leagueCursor);
@@ -1902,7 +1902,7 @@
           || (payload.cursor !== null && (typeof payload.cursor !== 'string' || !payload.cursor || payload.cursor.length > 8192))
           || payload.complete !== (payload.cursor === null)))) throw new Error("The league list could not be verified. Refresh and try again.");
         const next = paged ? payload.cursor : null;
-        if (next && leagueCursors.has(next)) throw new Error("The league list did not advance. Refresh and try again.");
+        if (append && next && leagueCursors.has(next)) throw new Error("The league list did not advance. Refresh and try again.");
         for (const league of payload.leagues) {
           if (!league || !usableEntityId(league.leagueId) || typeof league.name !== 'string' || !league.name) throw new Error("The league list could not be verified. Refresh and try again.");
         }
@@ -1920,7 +1920,10 @@
         setStatus(!leagues.length && next ? "Load more to continue the league list." : "");
         return payload;
       } catch (error) {
-        if (!listAbort.signal.aborted && !append && loadMoreLeagues instanceof HTMLButtonElement) {
+        // A timed-out continuation may have hit the legacy reader after rollback.
+        // Explicit retry restarts discovery with the initial-load allowance.
+        if (timedOut && append) leagueCursor = null;
+        if (!listAbort.signal.aborted && (!append || timedOut) && loadMoreLeagues instanceof HTMLButtonElement) {
           loadMoreLeagues.hidden = false; loadMoreLeagues.textContent = "Retry leagues";
         }
         if (timedOut && !listAbort.signal.aborted) throw new Error("The league request timed out. Try again.");
