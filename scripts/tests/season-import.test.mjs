@@ -438,3 +438,9 @@ test('import preserves disabled history activation and refuses an enabled histor
   assert.throws(() => cutoverManifest(f.plan, baseline, {}), /identity system/);
   assert.throws(() => assertDestinationEmptyOfBusiness(baseline), /Production contains/);
 });
+
+test('administrative import refuses a destination with home coverage state', () => {
+  const f = engineFixture();
+  const coverage = envelope('HOME_LOOKUP', 'CONTROL', 'homeLeagueCoverage', { version: 1, phase: 'ready' }, at);
+  assert.throws(() => cutoverManifest(f.plan, [...f.baseline, coverage], {}), /only identity system/);
+});

@@ -1870,43 +1870,77 @@
       finally { window.clearTimeout(timeout); }
     }
 
-    async function renderLeagues() {
-      const payload = await requestJsonOrThrow("/v1/leagues", { method: "GET" });
-      const leagues = Array.isArray(payload?.leagues) ? payload.leagues : [];
-
-      if (leagues.length === 0) {
-        leaguesBody.innerHTML = "";
-        if (leaguesTableWrap instanceof HTMLElement) {
-          leaguesTableWrap.hidden = true;
+    const loadMoreLeagues = root.querySelector('[data-action="load-more-leagues"]');
+    const loadedLeagues = new Map(), leagueCursors = new Set(), listAbort = new AbortController();
+    let leagueCursor = null, leagueListPending = false;
+    const stopLeagueList = () => {
+      listAbort.abort(); loadedLeagues.clear(); leaguesBody.innerHTML = "";
+      if (loadMoreLeagues instanceof HTMLButtonElement) { loadMoreLeagues.disabled = true; loadMoreLeagues.hidden = true; }
+      events.forEach(event => window.removeEventListener(event, stopLeagueList));
+    };
+    events.forEach(event => window.addEventListener(event, stopLeagueList, { once: true }));
+    async function renderLeagues(append = false) {
+      if (leagueListPending || listAbort.signal.aborted) return null;
+      leagueListPending = true;
+      if (loadMoreLeagues instanceof HTMLButtonElement) loadMoreLeagues.disabled = true;
+      const attempt = new AbortController();
+      const cancelAttempt = () => attempt.abort();
+      listAbort.signal.addEventListener("abort", cancelAttempt, { once: true });
+      let timedOut = false;
+      // Preparation and rollback still use the legacy reader: allow the 28-second API limit plus transport.
+      const deadline = window.setTimeout(() => { timedOut = true; attempt.abort(); }, append ? 15000 : 35000);
+      try {
+        const params = new URLSearchParams({ page: "1" });
+        if (append && leagueCursor) params.set("cursor", leagueCursor);
+        const payload = await requestJsonOrThrow(`/v1/leagues?${params}`, { method: "GET", cache: "no-store", signal: attempt.signal });
+        if (listAbort.signal.aborted) return null;
+        if (timedOut) throw new Error("The league request timed out. Try again.");
+        // Old readers return the existing complete response during preparation or rollback.
+        const paged = Object.hasOwn(payload ?? {}, 'complete');
+        if (!Array.isArray(payload?.leagues) || (paged && (payload.leagues.length > 20 || typeof payload.complete !== 'boolean'
+          || ![true, false, null].includes(payload.hasManagementAccess) || payload.hasManagementAccess === false && !payload.complete
+          || (payload.cursor !== null && (typeof payload.cursor !== 'string' || !payload.cursor || payload.cursor.length > 8192))
+          || payload.complete !== (payload.cursor === null)))) throw new Error("The league list could not be verified. Refresh and try again.");
+        const next = paged ? payload.cursor : null;
+        if (append && next && leagueCursors.has(next)) throw new Error("The league list did not advance. Refresh and try again.");
+        for (const league of payload.leagues) {
+          if (!league || !usableEntityId(league.leagueId) || typeof league.name !== 'string' || !league.name) throw new Error("The league list could not be verified. Refresh and try again.");
         }
-        if (leaguesEmpty instanceof HTMLElement) {
-          leaguesEmpty.hidden = false;
-        }
-        if (!createLeagueDisclosureTouched) {
+        if (!append || !paged) { loadedLeagues.clear(); leagueCursors.clear(); }
+        payload.leagues.forEach(league => loadedLeagues.set(league.leagueId, league));
+        if (next) leagueCursors.add(next);
+        leagueCursor = next;
+        const leagues = [...loadedLeagues.values()].sort((a, b) => a.name.localeCompare(b.name));
+        leaguesBody.innerHTML = leagues.map(league => `<tr><td data-label="League"><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td></tr>`).join("");
+        if (leaguesTableWrap instanceof HTMLElement) leaguesTableWrap.hidden = leagues.length === 0;
+        if (leaguesEmpty instanceof HTMLElement) leaguesEmpty.hidden = leagues.length > 0 || Boolean(next);
+        if (loadMoreLeagues instanceof HTMLButtonElement) { loadMoreLeagues.hidden = !next; loadMoreLeagues.textContent = "Load more leagues"; }
+        if (!leagues.length && !next && !createLeagueDisclosureTouched)
           setDisclosureState(toggleCreateLeagueButton, createLeagueRegion, true, { focus: false });
-        }
-        setStatus("");
+        setStatus(!leagues.length && next ? "Load more to continue the league list." : "");
         return payload;
+      } catch (error) {
+        // A timed-out continuation may have hit the legacy reader after rollback.
+        // Explicit retry restarts discovery with the initial-load allowance.
+        if (timedOut && append) leagueCursor = null;
+        if (!listAbort.signal.aborted && (!append || timedOut) && loadMoreLeagues instanceof HTMLButtonElement) {
+          loadMoreLeagues.hidden = false; loadMoreLeagues.textContent = "Retry leagues";
+        }
+        if (timedOut && !listAbort.signal.aborted) throw new Error("The league request timed out. Try again.");
+        throw error;
+      } finally {
+        window.clearTimeout(deadline);
+        listAbort.signal.removeEventListener("abort", cancelAttempt);
+        leagueListPending = false;
+        if (loadMoreLeagues instanceof HTMLButtonElement && !listAbort.signal.aborted) loadMoreLeagues.disabled = false;
       }
-
-      const rows = leagues
-        .map((league) => {
-          return `<tr>
-            <td data-label="League"><a href="/leagues/${encodeURIComponent(league.leagueId)}">${escapeHtml(league.name)}</a></td>
-          </tr>`;
-        })
-        .join("");
-
-      leaguesBody.innerHTML = rows;
-      if (leaguesTableWrap instanceof HTMLElement) {
-        leaguesTableWrap.hidden = false;
-      }
-      if (leaguesEmpty instanceof HTMLElement) {
-        leaguesEmpty.hidden = true;
-      }
-      setStatus("");
-      return payload;
     }
+    if (loadMoreLeagues instanceof HTMLButtonElement) loadMoreLeagues.addEventListener('click', async () => {
+      if (leagueListPending || listAbort.signal.aborted) return;
+      clearError();
+      try { await renderLeagues(Boolean(leagueCursor)); }
+      catch (error) { if (!listAbort.signal.aborted) showError(error.message); }
+    });
 
     let creationPending = false;
     let creationAttempt = null;
@@ -1954,6 +1988,8 @@
     try {
       const payload = await renderLeagues();
       await openParticipantProfile(payload);
+    } catch (error) {
+      if (!listAbort.signal.aborted) showError(error.message);
     } finally {
       events.forEach(event => window.removeEventListener(event, stop));
       root.removeEventListener('pointerdown', stop); root.removeEventListener('keydown', stop);

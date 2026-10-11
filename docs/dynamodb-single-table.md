@@ -78,6 +78,37 @@ scope references; workers re-read these records and apply the same source fences
 The dispatcher and worker have separate roles. Queue delivery does not remove
 work obligations; operator recovery uses bounded keyed queries, never table scans.
 
+## Home league lookup preparation
+
+`HOME_ACCOUNT#<SHA-256 of exact account identifier> / LEAGUE#<SHA-256 of league identifier>`
+(`homeLeagueLookup`) contains `{leagueId, version:1}` and repository timestamps.
+ACL writers and their exact/no-op retries maintain this candidate in the same
+transaction as authoritative league/ACL checks. League deletion removes pointers
+with each ACL cleanup page and checkpoint. Account hashes are internal pseudonymous
+keys; they are not anonymization and must not be exposed or logged.
+
+Current home reads remain on their previous access path. Pointer presence does not
+certify completeness or grant access. Before indexed reads can be enabled, a separate
+bounded backfill and verification phase must establish coverage and deployed writer
+continuity. Readers must check current metadata, deletion state and ACL; pointer
+payloads never copy roles. See [delivery plan](design/screen-read-model-delivery.md).
+
+`HOME_LOOKUP / CONTROL` (`homeLeagueCoverage`) records the operator manifest,
+epoch, bounded physical checkpoint and backfill/verification/ready/disabled phase.
+It is independent of reader enablement and confers no authority. Readiness requires
+verified deployed writer continuity plus a complete separate ACL verification pass;
+counts alone are not coverage proof. Each 25-record page commits with its source
+conditions and control update. Reversal disables coverage before incompatible
+writer rollback; pointers remain candidates for recovery.
+
+`HOME_LOOKUP / READER` (`homeLeagueReader`) independently enables paged home reads
+and binds them to a verified coverage epoch. Candidate queries are bounded; a
+transactional read rechecks both verified account ACLs, league metadata/deletion and
+coverage/activation. Disabled/absent activation uses the retained old reader.
+Incomplete enabled coverage is unavailable, not an empty list. Disabling the reader
+retains compatible writers/coverage; an incompatible rollback also disables coverage.
+The page response excludes private creator identifiers.
+
 ## Core Key Patterns
 
 Disabled-mode proof-bearing joins also write an immutable

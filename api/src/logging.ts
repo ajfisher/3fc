@@ -1,3 +1,5 @@
+import { requestPerformance } from "./request-performance.js";
+
 type LogLevel = "info" | "error";
 
 interface RequestLogFields {
@@ -42,9 +44,11 @@ function writeLog(level: LogLevel, payload: Record<string, unknown>): void {
 }
 
 export function logRequest(fields: RequestLogFields): void {
+  const performance = requestPerformance();
   writeLog("info", {
     message: "request_complete",
     ...fields,
+    ...(performance ? { performance } : {}),
   });
 }
 

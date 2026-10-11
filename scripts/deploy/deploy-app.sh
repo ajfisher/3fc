@@ -81,7 +81,12 @@ configure_player_claim_mode() {
   esac
 }
 if [[ "$SERVICE" == "api-core" ]]; then
+  DYNAMODB_TABLE="${DYNAMODB_TABLE:-3fc-${ENV}-app}"
+  [[ "$DYNAMODB_TABLE" == "3fc-${ENV}-app" ]] || { echo "API must target the selected environment's application table." >&2; exit 1; }
+  export DYNAMODB_TABLE AWS_REGION
   configure_player_claim_mode
+  # Always derive runtime writer identity from the checkout, never caller input.
+  export API_WRITER_SHA="$(git rev-parse HEAD)"
 fi
 
 # Both producer and cleanup consumer must point at the reviewed private bucket.
@@ -96,6 +101,11 @@ fi
 
 echo "[deploy] Building workspaces"
 make build >/dev/null
+if [[ "$SERVICE" == "api-core" ]]; then
+  # Derive the contract from freshly built writer code, overriding caller input.
+  export HOME_LOOKUP_WRITER_VERSION="$(node --input-type=module -e 'import { HOME_LOOKUP_WRITER_VERSION } from "./api/dist/data/home-league-writer-version.js"; process.stdout.write(String(HOME_LOOKUP_WRITER_VERSION))')"
+  node scripts/deploy/check-home-lookup-compatibility.mjs "$ENV"
+fi
 
 # Background history transport has dedicated roles and no HTTP API dependency.
 if [[ "$SERVICE" == "player-history" ]]; then
@@ -189,9 +199,9 @@ if [[ "$SERVICE" == "api-core" ]]; then
   # Record code provenance and these nonsecret switches only, never the full environment.
   FUNCTION_FINGERPRINT="$(aws lambda get-function-configuration \
     --function-name "3fc-${ENV}-api-core" --region "$AWS_REGION" \
-    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED,historyProcessingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED,portraitBucket:Environment.Variables.PORTRAIT_BUCKET,runtime:Runtime,architectures:Architectures,timeout:Timeout}' \
+    --query '{functionName:FunctionName,codeSha256:CodeSha256,revisionId:RevisionId,lastUpdateStatus:LastUpdateStatus,playerClaimMode:Environment.Variables.PLAYER_CLAIM_MODE,consolidationEnabled:Environment.Variables.PLAYER_CONSOLIDATION_ENABLED,returningJoinEnabled:Environment.Variables.PLAYER_RETURNING_JOIN_ENABLED,profilesEnabled:Environment.Variables.PLAYER_PROFILES_ENABLED,achievementsEnabled:Environment.Variables.PLAYER_ACHIEVEMENTS_ENABLED,ownerEditingEnabled:Environment.Variables.PLAYER_OWNER_EDITING_ENABLED,historyProcessingEnabled:Environment.Variables.HISTORY_PROCESSING_ENABLED,portraitBucket:Environment.Variables.PORTRAIT_BUCKET,apiWriterSha:Environment.Variables.API_WRITER_SHA,homeLookupWriterVersion:Environment.Variables.HOME_LOOKUP_WRITER_VERSION,runtime:Runtime,architectures:Architectures,timeout:Timeout}' \
     --output json)"
-  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" --arg profiles "$PLAYER_PROFILES_ENABLED" --arg achievements "$PLAYER_ACHIEVEMENTS_ENABLED" --arg ownerEditing "$PLAYER_OWNER_EDITING_ENABLED" --arg historyProcessing "$HISTORY_PROCESSING_ENABLED" --arg portraitBucket "$PORTRAIT_BUCKET" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning and .profilesEnabled == $profiles and .achievementsEnabled == $achievements and .ownerEditingEnabled == $ownerEditing and .historyProcessingEnabled == $historyProcessing and .portraitBucket == $portraitBucket and .runtime == "nodejs22.x" and .architectures == ["arm64"] and .timeout == 28' \
+  jq -e --arg expected "$PACKAGE_CODE_SHA256" --arg mode "$PLAYER_CLAIM_MODE" --arg consolidation "$PLAYER_CONSOLIDATION_ENABLED" --arg returning "$PLAYER_RETURNING_JOIN_ENABLED" --arg profiles "$PLAYER_PROFILES_ENABLED" --arg achievements "$PLAYER_ACHIEVEMENTS_ENABLED" --arg ownerEditing "$PLAYER_OWNER_EDITING_ENABLED" --arg historyProcessing "$HISTORY_PROCESSING_ENABLED" --arg portraitBucket "$PORTRAIT_BUCKET" --arg writer "$API_WRITER_SHA" --arg homeWriter "$HOME_LOOKUP_WRITER_VERSION" '.lastUpdateStatus == "Successful" and .codeSha256 == $expected and (.revisionId | length > 0) and .playerClaimMode == $mode and .consolidationEnabled == $consolidation and .returningJoinEnabled == $returning and .profilesEnabled == $profiles and .achievementsEnabled == $achievements and .ownerEditingEnabled == $ownerEditing and .historyProcessingEnabled == $historyProcessing and .portraitBucket == $portraitBucket and .apiWriterSha == $writer and .homeLookupWriterVersion == $homeWriter and .runtime == "nodejs22.x" and .architectures == ["arm64"] and .timeout == 28' \
     <<< "$FUNCTION_FINGERPRINT" >/dev/null
 fi
 TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

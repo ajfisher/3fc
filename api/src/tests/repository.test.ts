@@ -1,3 +1,7 @@
+import { HomeLeagueRead, setHomeLeagueReader } from "../data/home-league-read.js";
+import { handleHomeLeaguePage } from "../home-league-routes.js";
+import { HomeLeagueCoverageRunner } from "../data/home-league-coverage.js";
+import { homeAccountPk, homeLeagueSk, homeLeagueLookupPut } from "../data/home-league-lookup.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomBytes } from "node:crypto";
@@ -181,7 +185,9 @@ class InMemoryDynamoClient {
         .filter(item => !start || Buffer.compare(Buffer.from(order(item)), Buffer.from(order(start))) > 0);
       const page = command.input.Limit ? items.slice(0, command.input.Limit) : items;
       const last = page.at(-1);
-      return { Items: page, ...(last && page.length < items.length ? { LastEvaluatedKey: { pk: last.pk, sk: last.sk } } : {}) };
+      const filtered = command.input.FilterExpression?.includes(':aclPrefix')
+        ? page.filter(item => item.entityType?.S === 'acl' || item.pk?.S?.startsWith('LEAGUE#') && item.sk?.S?.startsWith('ACL#USER#')) : page;
+      return { Items: filtered, ...(last && page.length < items.length ? { LastEvaluatedKey: { pk: last.pk, sk: last.sk } } : {}) };
     }
 
     if (command instanceof TransactGetItemsCommand) {
@@ -452,7 +458,7 @@ function createRepositoryHarness(): { repository: ThreeFcRepository; client: InM
   const client = new InMemoryDynamoClient();
   return {
     client,
-    repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock()),
+    repository: new ThreeFcRepository(client, "threefc_test", new IncrementingClock(), undefined, "a".repeat(40)),
   };
 }
 
@@ -685,7 +691,7 @@ test("identity structure creation commits league metadata and creator access ato
   } }, "threefc_test");
   await assert.rejects(repository.createLeague({ leagueId: "atomic", name: "Atomic", createdByUserId: "owner" }), /Simulated/);
   const writes = captured!.input.TransactItems!.filter(action => action.Put).map(action => action.Put!.Item!.sk.S);
-  assert.deepEqual(writes.sort(), ["ACL#USER#owner", "CONTROL", "METADATA"]);
+  assert.deepEqual(writes.sort(), ["ACL#USER#owner", "CONTROL", homeLeagueSk("atomic"), "METADATA"].sort());
   assert.equal(client.readItem("LEAGUE#atomic", "METADATA"), undefined);
   assert.equal(client.readItem("LEAGUE#atomic", "ACL#USER#owner"), undefined);
 });
@@ -2248,6 +2254,7 @@ test("league deletion resumes partial multi-page cleanup only for its initiator 
   for (let index = 0; index < 110; index += 1) {
     client.seedItem(identityItem("LEAGUE#cleanup", `ACL#USER#member-${index}`, "acl", { leagueId: "cleanup", userId: `member-${index}`, role: "admin", grantedByUserId: "owner" }, now));
     client.seedItem(identityItem(`LEAGUE_INVITE#cleanup-${index}`, "METADATA", "leagueInvite", { leagueId: "cleanup", inviteCode: `cleanup-${index}`, email: "private@example.com" }, now));
+    client.seedItem(homeLeagueLookupPut("threefc_test", { leagueId: "cleanup", userId: `member-${index}`, role: "admin", grantedByUserId: "owner", createdAt: now, updatedAt: now }).Put!.Item!);
   }
   const other = identityItem("LEAGUE_INVITE#other", "METADATA", "leagueInvite", { leagueId: "other", inviteCode: "other", email: "other@example.com" }, now);
   client.seedItem(other);
@@ -2270,6 +2277,7 @@ test("league deletion resumes partial multi-page cleanup only for its initiator 
   for (let index = 0; index < 110; index += 1) {
     assert.equal(client.readItem("LEAGUE#cleanup", `ACL#USER#member-${index}`), undefined);
     assert.equal(client.readItem(`LEAGUE_INVITE#cleanup-${index}`, "METADATA"), undefined);
+    assert.equal(client.readItem(homeAccountPk(`member-${index}`), homeLeagueSk("cleanup")), undefined);
   }
   assert.deepEqual(client.readItem("LEAGUE_INVITE#other", "METADATA"), other);
   assert.equal(await repository.deleteLeague("cleanup", ["owner"]), true, "lost final response remains recoverable after all ACLs disappear");
@@ -7153,4 +7161,347 @@ test("league discovery identifies management from existing ACL roles without tre
   assert.equal((await repository.listLeaguesForUser("scorer"))[0].hasManagementAccess, true);
   assert.equal((await repository.listLeaguesForUser("reader"))[0].hasManagementAccess, false);
   assert.deepEqual(await repository.listLeaguesForUser("participant"), []);
+});
+
+
+test("home lookup maintenance repairs exact league, unchanged grant and accepted invite retries without changing authority", async () => {
+  const { client, repository } = createRepositoryHarness();
+  const input = { leagueId: "lookup", name: "Lookup", createdByUserId: "owner@example.com" };
+  const league = await repository.createLeague(input);
+  const lookup = (user: string) => client.readItem(homeAccountPk(user), homeLeagueSk(input.leagueId));
+  assert.deepEqual(JSON.parse(lookup(input.createdByUserId)!.data!.S!), { leagueId: "lookup", version: 1 });
+  assert.ok(!JSON.stringify(lookup(input.createdByUserId)).includes(input.createdByUserId), "account identifier is not copied into pointer");
+  client.deleteItem(homeAccountPk(input.createdByUserId), homeLeagueSk(input.leagueId));
+  assert.deepEqual(await repository.createLeague(input), league);
+  assert.ok(lookup(input.createdByUserId));
+  const grant = { leagueId: "lookup", userId: "delegate", role: "admin" as const, grantedByUserId: input.createdByUserId };
+  const original = await repository.grantLeagueAccess(grant);
+  client.deleteItem(homeAccountPk(grant.userId), homeLeagueSk(input.leagueId));
+  assert.deepEqual(await repository.grantLeagueAccess({ ...grant, role: "scorekeeper" }), original);
+  assert.ok(lookup(grant.userId));
+  const invite = await repository.createLeagueOrganiserInvite({ leagueId: "lookup", createdByUserId: input.createdByUserId, kind: "email", email: "guest@example.com" });
+  const acceptance = { inviteCode: invite.inviteCode, userId: "guest", email: "guest@example.com" };
+  await repository.grantLeagueAccess({ leagueId: "lookup", userId: "guest", role: "admin", grantedByUserId: input.createdByUserId });
+  client.deleteItem(homeAccountPk("guest"), homeLeagueSk(input.leagueId));
+  const accepted = await repository.acceptLeagueOrganiserInvite(acceptance);
+  assert.ok(accepted);
+  assert.ok(lookup("guest"), "first acceptance repairs pointer even when ACL is unchanged");
+  assert.equal(accepted.access.role, "admin");
+  client.deleteItem(homeAccountPk("guest"), homeLeagueSk(input.leagueId));
+  assert.deepEqual(await repository.acceptLeagueOrganiserInvite(acceptance), accepted);
+  assert.ok(lookup("guest"));
+  await repository.deleteLeague("lookup", [input.createdByUserId]);
+  for (const user of [input.createdByUserId, "delegate", "guest"]) assert.equal(lookup(user), undefined);
+});
+
+test("home lookup repair cannot recreate a revoked creator ACL or commit after league deletion races", async () => {
+  const { client, repository } = createRepositoryHarness();
+  const input = { leagueId: "race-lookup", name: "Lookup", createdByUserId: "owner" };
+  await repository.createLeague(input);
+  client.deleteItem(homeAccountPk("owner"), homeLeagueSk(input.leagueId));
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#race-lookup", "ACL#USER#owner"));
+  await assert.rejects(repository.createLeague(input));
+  assert.equal(client.readItem(homeAccountPk("owner"), homeLeagueSk(input.leagueId)), undefined);
+  await repository.grantLeagueAccess({ leagueId: input.leagueId, userId: "delegate", role: "admin", grantedByUserId: "owner" });
+  client.deleteItem(homeAccountPk("delegate"), homeLeagueSk(input.leagueId));
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#race-lookup", "METADATA"));
+  await assert.rejects(repository.grantLeagueAccess({ leagueId: input.leagueId, userId: "delegate", role: "admin", grantedByUserId: "owner" }), /no longer available/);
+  assert.equal(client.readItem(homeAccountPk("delegate"), homeLeagueSk(input.leagueId)), undefined);
+});
+
+
+function homeCoverageHarness(client: InMemoryDynamoClient) {
+  const manifest = { migrationId: "home-lookup-test", accountId: "123456789012", region: "ap-southeast-2", tableName: "threefc_test",
+    tableArn: "arn:aws:dynamodb:ap-southeast-2:123456789012:table/threefc_test", writerSha: "a".repeat(40), writerVersion: 1 as const,
+    reviewedPlan: "https://github.com/ajfisher/3fc/pull/233", drainedAt: "2026-10-08T00:00:00Z" };
+  return new HomeLeagueCoverageRunner(client, manifest, () => "2026-10-08T00:01:00Z");
+}
+
+test("home lookup coverage repairs bounded pages, verifies separately and safely replays a lost page response", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "coverage", name: "Coverage", createdByUserId: "owner" });
+  for (let i = 0; i < 30; i++) {
+    await repository.grantLeagueAccess({ leagueId: "coverage", userId: `member-${i}`, role: "viewer", grantedByUserId: "owner" });
+    client.deleteItem(homeAccountPk(`member-${i}`), homeLeagueSk("coverage"));
+  }
+  let lost = true, maxActions = 0, scans = 0;
+  const base = homeCoverageHarness(client);
+  const runner = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    if (command instanceof ScanCommand) { assert.equal(command.input.Limit, 1000); assert.equal(command.input.ConsistentRead, true); assert.match(command.input.FilterExpression!, /:aclPrefix/); scans++; }
+    if (command instanceof TransactWriteItemsCommand) maxActions = Math.max(maxActions, command.input.TransactItems!.length);
+    const result = await client.send(command);
+    if (command instanceof TransactWriteItemsCommand && command.input.TransactItems!.length > 1 && lost) { lost = false; throw new Error("lost response"); }
+    return result;
+  } }, base.manifest);
+  await runner.begin();
+  await assert.rejects(runner.step(), /lost response/);
+  assert.equal((await runner.status())!.pages, 0, "lost chunk response leaves the physical checkpoint unchanged");
+  let seenVerification = false;
+  for (let n = 0; n < 30; n++) {
+    const state = await runner.status();
+    if (state!.phase === "verification") seenVerification = true;
+    if (state!.phase === "ready") break;
+    await runner.step();
+  }
+  const ready = (await runner.status())!;
+  assert.equal(ready.phase, "ready"); assert.ok(seenVerification); assert.equal(scans, 3); assert.ok(maxActions <= 76);
+  assert.equal(ready.repaired, 31); assert.equal(ready.verified, 31);
+  for (let i = 0; i < 30; i++) assert.ok(client.readItem(homeAccountPk(`member-${i}`), homeLeagueSk("coverage")));
+  await assert.rejects(runner.begin(), /Disable/);
+  assert.equal((await runner.disable())!.phase, "disabled");
+  assert.notEqual((await runner.begin()).epoch, ready.epoch);
+});
+
+test("home lookup coverage cannot checkpoint a raced ACL page or repair discovery for a deleted league", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "coverage-race", name: "Race", createdByUserId: "owner" });
+  client.deleteItem(homeAccountPk("owner"), homeLeagueSk("coverage-race"));
+  const runner = homeCoverageHarness(client); const before = await runner.begin();
+  const acl = client.readItem("LEAGUE#coverage-race", "ACL#USER#owner")!;
+  client.runBeforeNextPut(() => client.seedItem({ ...acl, data: { S: JSON.stringify({ ...JSON.parse(acl.data!.S!), role: "viewer" }) } }));
+  await assert.rejects(runner.step());
+  assert.deepEqual(await runner.status(), before, "changed ACL prevents page repair and checkpoint advancement");
+  assert.equal(client.readItem(homeAccountPk("owner"), homeLeagueSk("coverage-race")), undefined);
+  client.runBeforeNextPut(() => client.deleteItem("LEAGUE#coverage-race", "METADATA"));
+  await assert.rejects(runner.step());
+  assert.deepEqual(await runner.status(), before);
+  assert.equal(client.readItem(homeAccountPk("owner"), homeLeagueSk("coverage-race")), undefined);
+  assert.equal((await runner.step()).phase, "verification");
+  assert.equal((await runner.step()).phase, "ready");
+  assert.equal((await runner.status())!.verified, 0, "orphan ACL cannot discover a deleted league");
+});
+
+test("home lookup verification refuses missing pointer and malformed reserved ACL without advancing readiness", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "coverage-invalid", name: "Invalid", createdByUserId: "owner" });
+  const runner = homeCoverageHarness(client); await runner.begin();
+  assert.equal((await runner.step()).phase, "verification");
+  const before = await runner.status();
+  client.deleteItem(homeAccountPk("owner"), homeLeagueSk("coverage-invalid"));
+  await assert.rejects(runner.step(), /reconciliation/); assert.deepEqual(await runner.status(), before);
+  await runner.disable(); await runner.begin();
+  const malformed = client.readItem("LEAGUE#coverage-invalid", "ACL#USER#owner")!;
+  client.seedItem({ ...malformed, data: { S: JSON.stringify({ leagueId: "coverage-invalid", userId: "other", role: "admin" }) } });
+  const corruptBefore = await runner.status();
+  await assert.rejects(runner.step(), /reconciliation/); assert.deepEqual(await runner.status(), corruptBefore);
+});
+
+test("home lookup reconciliation rejects a different manifest and repeating scan checkpoint", async () => {
+  const client = new InMemoryDynamoClient(), runner = homeCoverageHarness(client); await runner.begin();
+  const changed = new HomeLeagueCoverageRunner(client, { ...runner.manifest, writerSha: "b".repeat(40) });
+  await assert.rejects(changed.step(), /reconciliation/);
+  let cursor: Item | undefined;
+  const repeating = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    if (command instanceof ScanCommand) {
+      cursor ??= { pk: { S: "fake" }, sk: { S: "key" } }; return { Items: [], LastEvaluatedKey: cursor };
+    }
+    return client.send(command);
+  } }, runner.manifest);
+  await repeating.step(); const before = await repeating.status();
+  await assert.rejects(repeating.step(), /reconciliation/); assert.deepEqual(await repeating.status(), before);
+});
+
+
+async function readyHomeCoverage(client: InMemoryDynamoClient) {
+  const runner = homeCoverageHarness(client); await runner.begin();
+  for (let n = 0; n < 100; n++) {
+    if ((await runner.status())!.phase === "ready") return runner;
+    await runner.step();
+  }
+  throw new Error("fixture coverage did not complete");
+}
+
+test("home paged read bounds work across unrelated table growth and uses both verified identifiers", async () => {
+  const { client, repository } = createRepositoryHarness();
+  for (let i = 0; i < 12; i++) {
+    await repository.createLeague({ leagueId: `home-${i}`, name: `League ${i}`, createdByUserId: "other" });
+    await repository.grantLeagueAccess({ leagueId: `home-${i}`, userId: i % 2 ? "subject" : "email@example.test", role: "viewer", grantedByUserId: "other" });
+  }
+  await repository.grantLeagueAccess({ leagueId: "home-0", userId: "subject", role: "admin", grantedByUserId: "other" });
+  const coverage = await readyHomeCoverage(client);
+  assert.equal(await repository.listHomeLeagues({ userIds: ["subject", "email@example.test"] }), null, "ready does not enable reader");
+  await setHomeLeagueReader(client, coverage.manifest, true);
+  let calls = 0, scans = 0;
+  const reader = new HomeLeagueRead({ async send(command: unknown) { calls++; if (command instanceof ScanCommand) scans++; return client.send(command); } }, "threefc_test", "a".repeat(40));
+  const before = await reader.list({ userIds: ["subject", "email@example.test"] });
+  assert.equal(before!.complete, true); assert.equal(before!.leagues.length, 12); assert.equal(before!.hasManagementAccess, true);
+  assert.equal(calls, 4); assert.equal(scans, 0);
+  for (let i = 0; i < 1000; i++) client.seedItem(identityItem(`GAME#unrelated-${i}`, "METADATA", "game", { gameId: `unrelated-${i}` }, "2026-10-08T00:00:00Z"));
+  calls = 0; assert.deepEqual(await reader.list({ userIds: ["subject", "email@example.test"] }), before);
+  assert.equal(calls, 4); assert.equal(scans, 0);
+  assert.ok(before!.leagues.every(row => !Object.hasOwn(row, "createdByUserId")), "screen response excludes private creator identifiers");
+});
+
+test("home pagination never claims no management before completion and rejects account or epoch cursor reuse", async () => {
+  const { client, repository } = createRepositoryHarness();
+  for (let i = 0; i < 15; i++) await repository.createLeague({ leagueId: `page-${i}`, name: `Page ${i}`, createdByUserId: "other" });
+  const sorted = Array.from({ length: 15 }, (_, i) => `page-${i}`).sort((a, b) => homeLeagueSk(a).localeCompare(homeLeagueSk(b)));
+  for (const id of sorted) await repository.grantLeagueAccess({ leagueId: id, userId: "viewer", role: id === sorted.at(-1) ? "admin" : "viewer", grantedByUserId: "other" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  const page = await repository.listHomeLeagues({ userIds: ["viewer"] });
+  assert.equal(page!.leagues.length, 10); assert.equal(page!.complete, false); assert.equal(page!.hasManagementAccess, null);
+  const last = await repository.listHomeLeagues({ userIds: ["viewer"], cursor: page!.cursor! });
+  assert.equal(last!.leagues.length, 5); assert.equal(last!.complete, true); assert.equal(last!.hasManagementAccess, true);
+  await assert.rejects(repository.listHomeLeagues({ userIds: ["other"], cursor: page!.cursor! }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "home_cursor_invalid");
+  await coverage.disable(); await coverage.begin();
+  for (let n = 0; n < 100 && (await coverage.status())!.phase !== "ready"; n++) await coverage.step();
+  await setHomeLeagueReader(client, coverage.manifest, true);
+  await assert.rejects(repository.listHomeLeagues({ userIds: ["viewer"], cursor: page!.cursor! }), (error: unknown) => error instanceof PlayerIdentityError && error.code === "home_cursor_invalid");
+});
+
+test("home read ignores stale candidates under atomic ACL/deletion snapshots and rolls back explicitly", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "home-stale", name: "Stale", createdByUserId: "owner" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  client.deleteItem("LEAGUE#home-stale", "ACL#USER#owner");
+  const revoked = await repository.listHomeLeagues({ userIds: ["owner"] });
+  assert.deepEqual(revoked, { leagues: [], complete: true, cursor: null, hasManagementAccess: false });
+  await repository.grantLeagueAccess({ leagueId: "home-stale", userId: "owner", role: "admin", grantedByUserId: "owner" });
+  client.seedItem(identityItem("LEAGUE#home-stale", "DELETION", "leagueDeletion", {}, "2026-10-08T00:00:00Z"));
+  assert.equal((await repository.listHomeLeagues({ userIds: ["owner"] }))!.leagues.length, 0);
+  await coverage.disable();
+  await assert.rejects(repository.listHomeLeagues({ userIds: ["owner"] }), (error: unknown) => error instanceof PlayerIdentityError && error.status === 503);
+  await setHomeLeagueReader(client, coverage.manifest, false);
+  assert.equal(await repository.listHomeLeagues({ userIds: ["owner"] }), null, "disabled reader selects retained legacy access path");
+  await assert.rejects(setHomeLeagueReader(client, coverage.manifest, true), /temporarily unavailable/);
+});
+
+test("home paged shared route validates query and response and binds identities only to session", async () => {
+  const session = { sessionId: "session", email: "verified@example.test", subject: "subject", createdAt: "2026-10-08T00:00:00Z", expiresAt: "2026-10-09T00:00:00Z" };
+  const input = { session, repository: { async listHomeLeagues(value: { userIds: readonly string[] }) {
+    assert.deepEqual(value.userIds, ["subject", "verified@example.test"]);
+    return { leagues: [], hasManagementAccess: false, cursor: null, complete: true };
+  } } };
+  assert.equal((await handleHomeLeaguePage({ ...input, rawQueryString: "page=1" }))!.statusCode, 200);
+  assert.equal(await handleHomeLeaguePage({ ...input, rawQueryString: "" }), null);
+  for (const query of ["page=1&page=1", "page=1&userId=attacker", "page=1&cursor=", "page=1&cursor=%XX", "page=2"])
+    assert.equal((await handleHomeLeaguePage({ ...input, rawQueryString: query }))!.statusCode, 400);
+  assert.equal((await handleHomeLeaguePage({ ...input, session: null, rawQueryString: "page=1" }))!.statusCode, 401);
+  assert.equal((await handleHomeLeaguePage({ ...input, rawQueryString: "page=1", repository: { listHomeLeagues: async () => ({ leagues: [], complete: false, cursor: "next", hasManagementAccess: false }) } }))!.statusCode, 503);
+});
+
+
+test("home paged Lambda route serves the same bounded contract with no-store", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "lambda-home", name: "Lambda Home", createdByUserId: "owner" });
+  const coverage = await readyHomeCoverage(client); await setHomeLeagueReader(client, coverage.manifest, true);
+  const unused = async (): Promise<never> => { throw new Error("unused dependency"); };
+  const handler = createLambdaCoreHandler({ repository, magicLinkRateLimiter: { consumeMagicLinkStart: unused },
+    magicLinkService: { getSession: async () => ({ sessionId: "session", email: "owner", createdAt: "2026-10-08T00:00:00Z", expiresAt: "2026-10-09T00:00:00Z" }), start: unused, complete: unused, revokeSession: unused },
+    sessionCookieName: "session", sessionCookieSecure: true, corsAllowedOrigins: [], appBaseUrl: "https://3fc.football" });
+  const result = await handler({ rawPath: "/v1/leagues", rawQueryString: "page=1", cookies: ["session=session"], requestContext: { http: { method: "GET" } } });
+  assert.equal(result.statusCode, 200); assert.equal(result.headers!["Cache-Control"], "no-store");
+  assert.deepEqual(JSON.parse(result.body!), { leagues: [{ leagueId: "lambda-home", name: "Lambda Home", slug: null }], hasManagementAccess: true, complete: true, cursor: null });
+});
+
+
+test("home reader activation retains coverage across compatible commits and rejects different maintenance contracts", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "writer-fence", name: "Writer Fence", createdByUserId: "owner" });
+  const coverage = await readyHomeCoverage(client);
+  const original = await coverage.status();
+  const compatible = { ...coverage.manifest, writerSha: "b".repeat(40), drainedAt: "2026-10-10T00:00:00Z", reviewedPlan: "https://github.com/ajfisher/3fc/pull/999" };
+  await setHomeLeagueReader(client, compatible, true);
+  assert.deepEqual(await coverage.status(), original, "activation keeps original backfill provenance immutable");
+  assert.equal((await new HomeLeagueRead(client, "threefc_test", compatible.writerSha).list({ userIds: ["owner"] }))!.leagues.length, 1);
+  for (const writer of ["", "malformed"]) await assert.rejects(new HomeLeagueRead(client, "threefc_test", writer).list({ userIds: ["owner"] }), /temporarily unavailable/);
+  for (const writerVersion of [2, 0, undefined]) {
+    client.seedItem(identityItem("HOME_LOOKUP", "CONTROL", "homeLeagueCoverage", { ...original, manifest: { ...coverage.manifest, writerVersion } }, "2026-10-10T00:00:00Z"));
+    await assert.rejects(new HomeLeagueRead(client, "threefc_test", compatible.writerSha).list({ userIds: ["owner"] }), /temporarily unavailable/);
+  }
+  client.seedItem(identityItem("HOME_LOOKUP", "CONTROL", "homeLeagueCoverage", original, "2026-10-10T00:00:00Z"));
+  let writes = 0;
+  const tracked = { async send(command: unknown) { if (command instanceof TransactWriteItemsCommand) writes++; return client.send(command); } };
+  await assert.rejects(setHomeLeagueReader(tracked, { ...compatible, writerVersion: 2 }, true), /reconciliation/);
+  assert.equal(writes, 0);
+  await setHomeLeagueReader(client, compatible, false);
+  assert.equal(await new HomeLeagueRead(client, "threefc_test", compatible.writerSha).list({ userIds: ["owner"] }), null);
+  await setHomeLeagueReader(client, compatible, true);
+  assert.equal((await new HomeLeagueRead(client, "threefc_test", compatible.writerSha).list({ userIds: ["owner"] }))!.leagues.length, 1);
+});
+
+
+test("home coverage advances empty filtered physical pages without declaring readiness", async () => {
+  const client = new InMemoryDynamoClient();
+  for (let i = 0; i < 2500; i++) client.seedItem(identityItem(`GAME#noise-${String(i).padStart(4, "0")}`, "METADATA", "game", { gameId: `noise-${i}` }, "2026-10-10T00:00:00Z"));
+  const runner = homeCoverageHarness(client); await runner.begin();
+  const first = await runner.step();
+  assert.equal(first.phase, "backfill"); assert.ok(first.cursor); assert.equal(first.repaired, 0);
+  const second = await runner.step();
+  assert.equal(second.phase, "backfill"); assert.ok(second.cursor); assert.notDeepEqual(second.cursor, first.cursor);
+  const third = await runner.step();
+  assert.equal(third.phase, "verification"); assert.equal(third.cursor, null);
+  await runner.step(); await runner.step();
+  const ready = await runner.step();
+  assert.equal(ready.phase, "ready"); assert.equal(ready.pages, 6); assert.equal(ready.verified, 0);
+});
+
+test("home coverage rechecks operator evidence before each chunk and final checkpoint", async () => {
+  for (const failAt of [2, 3]) {
+    const { client, repository } = createRepositoryHarness();
+    await repository.createLeague({ leagueId: "chunks", name: "Chunks", createdByUserId: "owner" });
+    for (let i = 0; i < 30; i++) {
+      const user = `member-${String(i).padStart(2, "0")}`;
+      await repository.grantLeagueAccess({ leagueId: "chunks", userId: user, role: "viewer", grantedByUserId: "owner" });
+      client.deleteItem(homeAccountPk(user), homeLeagueSk("chunks"));
+    }
+    const runner = homeCoverageHarness(client); const before = await runner.begin();
+    let checks = 0;
+    await assert.rejects(runner.step(() => { if (++checks === failAt) throw new Error("deployment changed"); }), /deployment changed/);
+    assert.equal(checks, failAt); assert.deepEqual(await runner.status(), before, "partial writes never checkpoint an unverified page");
+    assert.ok(client.readItem(homeAccountPk("member-00"), homeLeagueSk("chunks")), "first chunk completed before the evidence changed");
+    assert.equal(Boolean(client.readItem(homeAccountPk("owner"), homeLeagueSk("chunks"))), true);
+    assert.equal((await runner.step()).repaired, 31, "replay counts a physical page once");
+    assert.equal((await runner.step()).verified, 31);
+  }
+});
+
+test("home coverage disable between completed chunks fences remaining writes and readiness", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "disabled-chunks", name: "Chunks", createdByUserId: "owner" });
+  for (let i = 0; i < 30; i++) await repository.grantLeagueAccess({ leagueId: "disabled-chunks", userId: `member-${i}`, role: "viewer", grantedByUserId: "owner" });
+  const runner = homeCoverageHarness(client); await runner.begin();
+  let checks = 0;
+  await assert.rejects(runner.step(async () => { if (++checks === 2) await runner.disable(); }));
+  assert.equal((await runner.status())!.phase, "disabled"); assert.equal((await runner.status())!.pages, 0);
+});
+
+test("home coverage lost final checkpoint response resumes from its committed physical page", async () => {
+  const client = new InMemoryDynamoClient(); const base = homeCoverageHarness(client);
+  let lose = false;
+  const runner = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    const result = await client.send(command);
+    if (lose && command instanceof TransactWriteItemsCommand) { lose = false; throw new Error("lost checkpoint response"); }
+    return result;
+  } }, base.manifest);
+  await runner.begin(); lose = true;
+  await assert.rejects(runner.step(), /lost checkpoint response/);
+  assert.equal((await runner.status())!.phase, "verification"); assert.equal((await runner.status())!.pages, 1);
+  assert.equal((await runner.step()).phase, "ready"); assert.equal((await runner.status())!.pages, 2);
+});
+
+
+test("home coverage bounds dense ACL page work and resumes beyond completed physical checkpoints", async () => {
+  const { client, repository } = createRepositoryHarness();
+  await repository.createLeague({ leagueId: "dense", name: "Dense", createdByUserId: "owner" });
+  for (let i = 0; i < 120; i++) {
+    await repository.grantLeagueAccess({ leagueId: "dense", userId: `member-${String(i).padStart(3, "0")}`, role: "viewer", grantedByUserId: "owner" });
+    client.deleteItem(homeAccountPk(`member-${String(i).padStart(3, "0")}`), homeLeagueSk("dense"));
+  }
+  const base = homeCoverageHarness(client); const limits: number[] = [];
+  const runner = new HomeLeagueCoverageRunner({ async send(command: unknown) {
+    if (command instanceof ScanCommand) limits.push(command.input.Limit!);
+    return client.send(command);
+  } }, base.manifest);
+  await runner.begin(); let prior = (await runner.status())!;
+  for (let n = 0; n < 20 && prior.phase !== "ready"; n++) {
+    let guards = 0;
+    const next = await runner.step(() => { if (++guards > 3) throw new Error("dense page exceeded bounded mutation work"); });
+    assert.ok(guards <= 3); assert.ok(next.repaired - prior.repaired <= 50); assert.ok(next.verified - prior.verified <= 50);
+    if (next.phase === prior.phase && next.cursor) assert.notDeepEqual(next.cursor, prior.cursor);
+    prior = next;
+  }
+  assert.equal(prior.phase, "ready"); assert.equal(prior.repaired, 121); assert.equal(prior.verified, 121);
+  assert.ok(limits.includes(50), "dense scan rereads the same physical start with a smaller limit");
+  assert.equal(limits[0], 1000); assert.equal(limits[1], 50);
 });
