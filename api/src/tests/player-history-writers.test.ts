@@ -218,6 +218,72 @@ test('both finished roster assignment entry points enqueue once; exact assignmen
   }
 });
 
+for (const operation of ['create', 'register', 'assign', 'transfer'] as const) {
+  function scheduledRosterAttempt() {
+    const fixture = harness('scheduled'), { repository, client } = fixture;
+    return { ...fixture, run: () => operation === 'create'
+      ? repository.createAndLinkGamePlayer({ gameId: 'game', playerId: 'new', nickname: 'New player' })
+      : operation === 'register'
+        ? repository.addExistingLeaguePlayer({ gameId: 'game', playerId: 'late', userIds: ['admin'] })
+        : repository.assignRosterPlayer({ gameId: 'game', playerId: operation === 'transfer' ? 'red' : 'late', teamId: 'blue' }),
+      matches: (command: unknown): command is TransactWriteItemsCommand => command instanceof TransactWriteItemsCommand &&
+        !!command.input.TransactItems?.some(action => ['gamePlayer', 'roster'].includes(action.Put?.Item?.entityType?.S ?? '')) };
+  }
+
+  test(`scheduled roster ${operation} survives rejected read-fence contention with one atomic commit`, async () => {
+    const { client, run, matches } = scheduledRosterAttempt(), send = client.send.bind(client);
+    const seen: TransactWriteItemsCommand[] = []; let original: unknown;
+    client.send = async command => {
+      if (matches(command)) {
+        seen.push(command);
+        if (seen.length === 1) {
+          original = structuredClone(command.input);
+          throw Object.assign(new Error('QA read-fence contention'), { name: 'TransactionCanceledException',
+            CancellationReasons: command.input.TransactItems!.map((_, i) => ({ Code: i === 0 ? 'TransactionConflict' : 'None' })) });
+        }
+      }
+      return send(command);
+    };
+    await run();
+    assert.equal(seen.length, 2); assert.equal(seen[0], seen[1]); assert.deepEqual(seen[1].input, original);
+    assert.equal(client.work().length, 0, 'scheduled writes must not need a history marker to retry');
+    assert(client.read('GAME#game', `PLAYER#${operation === 'create' ? 'new' : operation === 'transfer' ? 'red' : 'late'}`));
+    if (operation === 'assign' || operation === 'transfer') {
+      const playerId = operation === 'transfer' ? 'red' : 'late';
+      assert(client.read('GAME#game', `ROSTER#blue#${playerId}`));
+      assert.equal(client.read('GAME#game', `ROSTER#red#${playerId}`), undefined);
+    }
+  });
+
+  test(`scheduled roster ${operation} preserves stale-game and ambiguous-failure barriers after contention`, async () => {
+    for (const failure of ['game-changed', 'lost-response'] as const) {
+      const { client, run, matches } = scheduledRosterAttempt(), send = client.send.bind(client);
+      let attempts = 0;
+      const lost = Object.assign(new Error('lost response'), { name: 'TimeoutError' });
+      client.send = async command => {
+        if (matches(command)) {
+          attempts++;
+          if (attempts === 1) {
+            if (failure === 'game-changed') {
+              const game = client.read('GAME#game', 'METADATA')!, data = body(game);
+              data.status = 'finished'; game.data = { S: JSON.stringify(data) };
+            }
+            throw Object.assign(new Error('contended'), { name: 'TransactionConflictException' });
+          }
+          if (failure === 'lost-response') throw lost;
+        }
+        return send(command);
+      };
+      if (failure === 'lost-response') await assert.rejects(run(), value => value === lost);
+      else await assert.rejects(run(), /changed|Atomic transaction rejected/);
+      assert.equal(attempts, 2, 'changed snapshots and uncertain delivery cannot be retried');
+      if (operation === 'create') assert.equal(client.read('PLAYER#new', 'PROFILE'), undefined);
+      if (operation === 'assign') assert.equal(client.read('GAME#game', 'ROSTER#blue#late'), undefined);
+      if (operation === 'transfer') assert(client.read('GAME#game', 'ROSTER#red#red'));
+    }
+  });
+}
+
 test('completed kickoff correction advances source atomically, while unchanged kickoff does not', async () => {
   const { repository, client } = harness();
   await repository.updateGame({ gameId: 'game', gameStartTs: '2026-10-03T09:59:00.000Z' });

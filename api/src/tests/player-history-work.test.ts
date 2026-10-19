@@ -92,13 +92,41 @@ test('history transaction retries never mask conditions, other cancellations, ma
     Object.assign(new Error('validation'), { name: 'ValidationException' }),
     new Error('network connection reset')
   ];
-  for (const error of errors) {
+  for (const command of [historyCommand(), new TransactWriteItemsCommand({ TransactItems: [] })]) for (const error of errors) {
     let attempts = 0;
-    await assert.rejects(sendHistoryTransaction({ async send() { attempts++; throw error; } }, historyCommand(), {
+    await assert.rejects(sendHistoryTransaction({ async send() { attempts++; throw error; } }, command, {
+      retryTransactionConflicts: true,
       sleep: async () => { assert.fail('non-conflict must not be retried'); }
     }), value => value === error);
     assert.equal(attempts, 1, error.message);
   }
+});
+
+test('explicit roster opt-in retries the same guarded transaction without history work', async () => {
+  const command = new TransactWriteItemsCommand({ ClientRequestToken: 'same-roster-attempt', TransactItems: [
+    { Put: { TableName: 'table', Item: { pk: { S: 'GAME#game' }, sk: { S: 'PLAYER#new' } },
+      ConditionExpression: 'attribute_not_exists(pk)' } }
+  ] });
+  const input = structuredClone(command.input), delays: number[] = [], seen: unknown[] = [];
+  const result = { committed: true };
+  assert.equal(await sendHistoryTransaction({ async send(value) {
+    seen.push(value); if (seen.length <= 3) throw conflict(); return result;
+  } }, command, { retryTransactionConflicts: true, sleep: async ms => { delays.push(ms); }, random: () => .5 }), result);
+  assert.equal(seen.length, 4); assert.ok(seen.every(value => value === command));
+  assert.deepEqual(command.input, input); assert.deepEqual(delays, [25, 50, 100]);
+  let attempts = 0;
+  const error = conflict();
+  await assert.rejects(sendHistoryTransaction({ async send() { attempts++; throw error; } }, command,
+    { retryTransactionConflicts: true, sleep: async () => {} }), value => value === error);
+  assert.equal(attempts, 4);
+});
+
+test('roster opt-in cannot retry a nontransaction command', async () => {
+  const command = new GetItemCommand({ TableName: 'table', Key: { pk: { S: 'GAME#game' } } });
+  const error = conflict(); let attempts = 0;
+  await assert.rejects(sendHistoryTransaction({ async send() { attempts++; throw error; } }, command,
+    { retryTransactionConflicts: true, sleep: async () => { assert.fail('read must not retry'); } }), value => value === error);
+  assert.equal(attempts, 1);
 });
 
 test('non-history transactions and other SDK commands preserve existing single-send behavior', async () => {
