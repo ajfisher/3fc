@@ -5679,6 +5679,47 @@
       }
     }
 
+    function readPlayers(value) {
+      if (!value || !Array.isArray(value.players)) throw new Error("Invalid player details");
+      const ids = new Set();
+      for (const player of value.players) {
+        if (!player || typeof player.playerId !== "string" || !player.playerId.trim()
+          || typeof player.nickname !== "string" || !player.nickname.trim() || ids.has(player.playerId)) {
+          throw new Error("Invalid player details");
+        }
+        ids.add(player.playerId);
+      }
+      return value.players;
+    }
+
+    function applyPlayerDetails(players, role) {
+      rosterPlayers = players;
+      verifiedAdminPlayers.clear();
+      if (role === "admin") {
+        for (const player of rosterPlayers) verifiedAdminPlayers.set(player.playerId, player);
+      }
+      for (const [playerId, player] of pendingCreatedPlayers) {
+        if (rosterPlayers.some((entry) => entry.playerId === playerId)) {
+          // Private search cannot acknowledge a complete public roster snapshot:
+          // its previous refresh may have failed after this creation committed.
+          if (rosterUnassignedPlayers === null) pendingCreatedPlayers.delete(playerId);
+        }
+        else rosterPlayers.unshift(player);
+      }
+      for (const player of rosterPlayers) knownRosterPlayers.set(player.playerId, player);
+      playerDetailsState = "loaded";
+    }
+
+    function unavailablePlayerDetails() {
+      playerDetailsState = "unavailable";
+      playerDetailsRecovery = { key: "", searched: new Set() };
+      verifiedAdminPlayers.clear();
+      // Retain usable names after a refresh fails, but never retain authority.
+      const retained = new Map(rosterPlayers.map(player => [player.playerId, player]));
+      for (const player of pendingCreatedPlayers.values()) retained.set(player.playerId, player);
+      rosterPlayers = [...retained.values()];
+    }
+
     async function loadPlayerDetails({ resolveMissing = false } = {}) {
       if (!rosterControlsAvailable() || !isLeagueOperator()) return;
       const version = ++playersReadVersion;
@@ -5687,18 +5728,6 @@
       try {
         const payload = await requestJsonOrThrow(`/v1/games/${encodeURIComponent(gameId)}/players`, { method: "GET" });
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
-        const readPlayers = value => {
-          if (!value || !Array.isArray(value.players)) throw new Error("Invalid player details");
-          const ids = new Set();
-          for (const player of value.players) {
-            if (!player || typeof player.playerId !== "string" || !player.playerId.trim()
-              || typeof player.nickname !== "string" || !player.nickname.trim() || ids.has(player.playerId)) {
-              throw new Error("Invalid player details");
-            }
-            ids.add(player.playerId);
-          }
-          return value.players;
-        };
         const fresh = readPlayers(payload);
         const freshIds = new Set(fresh.map(player => player.playerId));
         const details = new Map(resolveMissing && role === "admin" ? verifiedAdminPlayers : []);
@@ -5729,30 +5758,10 @@
           }
           playerDetailsRecovery = { key, searched };
         }
-        rosterPlayers = [...details.values()];
-        verifiedAdminPlayers.clear();
-        if (role === "admin") {
-          for (const player of rosterPlayers) verifiedAdminPlayers.set(player.playerId, player);
-        }
-        for (const [playerId, player] of pendingCreatedPlayers) {
-          if (rosterPlayers.some((entry) => entry.playerId === playerId)) {
-            // Private search cannot acknowledge a complete public roster snapshot:
-            // its previous refresh may have failed after this creation committed.
-            if (rosterUnassignedPlayers === null) pendingCreatedPlayers.delete(playerId);
-          }
-          else rosterPlayers.unshift(player);
-        }
-        for (const player of rosterPlayers) knownRosterPlayers.set(player.playerId, player);
-        playerDetailsState = "loaded";
+        applyPlayerDetails([...details.values()], role);
       } catch {
         if (version !== playersReadVersion || role !== currentLeagueRole) return;
-        playerDetailsState = "unavailable";
-        playerDetailsRecovery = { key: "", searched: new Set() };
-        verifiedAdminPlayers.clear();
-        // Retain usable names after a refresh fails, but never retain authority.
-        const retained = new Map(rosterPlayers.map(player => [player.playerId, player]));
-        for (const player of pendingCreatedPlayers.values()) retained.set(player.playerId, player);
-        rosterPlayers = [...retained.values()];
+        unavailablePlayerDetails();
       }
       renderRosterSetup();
     }
@@ -6074,7 +6083,7 @@
         if (refreshAccountLocked || authorityAtDispatch !== authorityRevision) return;
         pendingCreatedPlayers.set(player.playerId, player); knownRosterPlayers.set(player.playerId, player);
         ++playersReadVersion;
-        await loadRosterSetup({ updateStatus: false }); await loadPlayerDetails();
+        requestRosterReconciliation({ details: true });
         pickerMessage(response.registration.alreadyInGame ? `${player.nickname} is already in this game.` : `${player.nickname} added.`);
       } catch (error) {
         if (committed) pickerMessage("Player added. The latest teams couldn’t be loaded. Reload to check them.", true);
@@ -6521,13 +6530,8 @@
           rosterPlayers = [player, ...rosterPlayers.filter((entry) => entry.playerId !== player.playerId)];
           renderRosterSetup();
           setFieldMessage("player-nickname");
-          try {
-            await loadRosterSetup({ updateStatus: false });
-            await loadPlayerDetails();
-            finishGameFeedback("Player added.", feedback);
-          } catch {
-            showError("Player added. The latest teams couldn’t be loaded. Reload to check them.", { includesOutcome: true });
-          }
+          requestRosterReconciliation({ details: true });
+          finishGameFeedback("Player added.", feedback);
         } catch (error) {
           if (committed) {
             showError("Player added. The latest players couldn’t be loaded. Reload to check them.", { includesOutcome: true });
@@ -6728,27 +6732,14 @@
         ];
         renderRosterSetup();
 
-        let refreshFailed = false;
-        try {
-          await loadRosterSetup({ updateStatus: false });
-        } catch (error) {
-          refreshFailed = true;
-          const message = error instanceof Error ? error.message : "Could not refresh the roster.";
-          showError(`Assignment was saved, but the latest roster could not be loaded. ${message}`, { includesOutcome: true });
-          setStatus("Roster assignment saved; roster refresh failed.", "error");
-        }
-
-        if (!refreshFailed) {
-          const player = playerById(playerId);
-          const team = teamById(teamId);
-          finishGameFeedback(
-            `${player?.nickname ?? "Player"} assigned to ${team?.name ?? teamId}.`,
-            feedback,
-          );
-        }
+        const player = playerById(playerId);
+        const team = teamById(teamId);
+        finishGameFeedback(`${player?.nickname ?? "Player"} assigned to ${team?.name ?? teamId}.`, feedback);
+        requestRosterReconciliation();
         rosterMutationPending = false;
         const ownsFocus = finishFocus();
         renderRosterSetup();
+        renderLiveScoring();
         if (ownsFocus) focusTransferTrigger(playerId);
       });
     }
@@ -6852,6 +6843,10 @@
     let refreshLastFullAt = Date.now();
     let refreshForceFull = false;
     let refreshStarted = false;
+    let rosterReconcileRequested = 0;
+    let rosterReconcileApplied = 0;
+    let detailsReconcileRequested = 0;
+    let detailsReconcileApplied = 0;
     let refreshSuspended = false;
     let refreshRemoved = false;
     const uncertainReadBarriers = new Set();
@@ -7026,14 +7021,29 @@
       refreshFlight = flight;
       const current = () => !flight.cancelled && flight.generation === refreshGeneration && flight.epoch === refreshEpoch && refreshVisible();
       const full = refreshForceFull || Date.now() - refreshLastFullAt >= 15000;
+      const rosterRevision = rosterReconcileRequested;
+      const detailsRevision = detailsReconcileRequested;
+      const reconcile = rosterRevision !== rosterReconcileApplied;
+      const detailsVersion = playersReadVersion;
+      const detailsRole = currentLeagueRole;
+      const readDetails = detailsRevision !== detailsReconcileApplied && isLeagueOperator() && (reconcile || full);
+      const rosterVersion = rosterReadVersion;
+      let deferred = false;
+      let failed = false;
+      let enriching = false;
       flight.full = full;
       refreshForceFull = false;
       const deadline = window.setTimeout(() => {
         if (!current()) return;
         flight.cancelled = true;
         flight.controller.abort();
-        refreshFailures += 1;
-        setRefreshNotice("Updates unavailable. Showing the last loaded game.");
+        if (enriching) {
+          if (detailsVersion === playersReadVersion) { unavailablePlayerDetails(); renderRosterSetup(); }
+          setRefreshNotice("Player details unavailable. Teams and scores can still update.");
+        } else {
+          refreshFailures += 1;
+          setRefreshNotice("Updates unavailable. Showing the last loaded game.");
+        }
         // Do not release the flight until fetch/body consumption really settles.
         // Even an abort-ignoring transport cannot cause overlapping requests.
       }, 12000);
@@ -7075,6 +7085,7 @@
         // Full authority revalidation is allowed during uncertainty. It cannot
         // acknowledge, retry or supersede any in-flight or unconfirmed write.
         if (localWriteOwnsState()) {
+          deferred = true;
           // Authority is also staged while a write owns match data. Never
           // apply a role fetched with a cookie switched after the first probe.
           if (!await sameSession()) return;
@@ -7084,31 +7095,37 @@
           return;
         }
         const gamePath = `/v1/games/${encodeURIComponent(gameId)}`;
-        const game = await read(gamePath);
-        const goals = await read(`${gamePath}/goals`);
+        // Confirmed writes request only roster resources. Periodic full refresh
+        // still owns its usual game/authority reads; all share this one flight.
+        const rosterOnly = reconcile && !full;
+        const game = rosterOnly ? null : await read(gamePath);
+        const goals = rosterOnly ? null : await read(`${gamePath}/goals`);
         const confirmedBeforeRosterRead = new Map(pendingAssignments);
-        const roster = full ? await read(`${gamePath}/roster`) : null;
-        const teams = normalizeScoreboardTeams(goals?.scoreboard?.teams);
-        const timeline = decodeGoalTimeline(goals?.timeline);
-        if (!refreshGameValid(game) ||
-          !teams.length || goals.scoreboard.teams.some((team) => team.gameId && team.gameId !== gameId) || timeline === null ||
+        const roster = full || reconcile ? await read(`${gamePath}/roster`) : null;
+        const teams = goals ? normalizeScoreboardTeams(goals.scoreboard?.teams) : [];
+        const timeline = goals ? decodeGoalTimeline(goals.timeline) : null;
+        if ((!rosterOnly && (!refreshGameValid(game) || !teams.length ||
+            goals.scoreboard.teams.some((team) => team.gameId && team.gameId !== gameId) || timeline === null)) ||
           (roster && !refreshRosterValid(roster))) throw new Error("Invalid game read");
         // Every batch, including the five-second lightweight reads, verifies
         // identity immediately before synchronous apply. Independent cookie
         // requests are not an atomic session snapshot; do not claim otherwise.
         if (!await sameSession() || !current() || localWriteOwnsState()) return;
         applyAuthority(league);
-        if (roster) {
+        if (roster && rosterVersion === rosterReadVersion) {
           const before = JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]);
           applyRosterPayload(roster, confirmedBeforeRosterRead);
           if (JSON.stringify([rosterTeams, rosterAssignments, rosterUnassignedPlayers]) !== before) draftRosterChanged = true;
+          rosterReconcileApplied = rosterRevision;
         }
-        if (editingGoalId && editingGoalSnapshot !== JSON.stringify(timeline.find((goal) => goal.eventId === editingGoalId))) editingGoalChanged = true;
-        goalTimeline = timeline;
-        goalTimelineLoaded = true;
-        scoreboardTeams = teams;
-        scoreboardState = "authoritative";
-        applyGameView(game);
+        if (!rosterOnly) {
+          if (editingGoalId && editingGoalSnapshot !== JSON.stringify(timeline.find((goal) => goal.eventId === editingGoalId))) editingGoalChanged = true;
+          goalTimeline = timeline;
+          goalTimelineLoaded = true;
+          scoreboardTeams = teams;
+          scoreboardState = "authoritative";
+          applyGameView(game);
+        }
         if (league && typeof league.name === "string") {
           currentLeagueName = league.name;
           if (gameLeagueLink) gameLeagueLink.textContent = league.name;
@@ -7116,9 +7133,34 @@
         renderBackgroundState();
         if (full) refreshLastFullAt = Date.now();
         refreshFailures = 0;
-        setRefreshNotice();
+        // Public snapshots have their own session fence and apply before this
+        // optional request, so even its timeout cannot freeze match updates.
+        if (readDetails && detailsVersion === playersReadVersion && detailsRole === currentLeagueRole && isLeagueOperator()) {
+          enriching = true;
+          try {
+            const players = readPlayers(await read(`${gamePath}/players`));
+            if (!await sameSession() || !current() || localWriteOwnsState()) return;
+            if (detailsVersion === playersReadVersion && detailsRole === currentLeagueRole) {
+              applyPlayerDetails(players, detailsRole);
+              detailsReconcileApplied = detailsRevision;
+              renderRosterSetup();
+            }
+          } catch (error) {
+            if (!current() || [401, 403].includes(error?.statusCode)) throw error;
+            if (detailsVersion === playersReadVersion) { unavailablePlayerDetails(); renderRosterSetup(); }
+          }
+        } else if (!isLeagueOperator()) detailsReconcileApplied = detailsRevision;
+        // Optional private details retry at the full-refresh cadence. Their
+        // failure cannot discard healthy public roster, score or clock reads.
+        setRefreshNotice(detailsReconcileRequested !== detailsReconcileApplied && playerDetailsState === "unavailable" && isLeagueOperator()
+          ? "Player details unavailable. Teams and scores can still update." : "");
       } catch (error) {
+        failed = true;
         if (current()) {
+          if (readDetails && detailsVersion === playersReadVersion) {
+            unavailablePlayerDetails();
+            renderRosterSetup();
+          }
           if (error?.statusCode === 401 || error?.statusCode === 403) lockRefreshAccount("Your access changed. Reload this game before continuing.");
           else {
             refreshFailures += 1;
@@ -7128,9 +7170,18 @@
       } finally {
         window.clearTimeout(deadline);
         refreshFlight = null;
-        if (refreshForceFull && refreshVisible() && !refreshAccountLocked) void refreshMatch();
+        const superseded = flight.generation !== refreshGeneration || flight.epoch !== refreshEpoch;
+        if ((refreshForceFull || ((!failed || superseded) && !deferred && rosterReconcileRequested !== rosterReconcileApplied)) &&
+            refreshVisible() && !refreshAccountLocked) void refreshMatch();
         else scheduleRefresh();
       }
+    }
+
+    function requestRosterReconciliation({ details = false } = {}) {
+      ++rosterReadVersion;
+      ++rosterReconcileRequested;
+      if (details) { ++playersReadVersion; ++detailsReconcileRequested; }
+      scheduleRefresh(0);
     }
 
     function requestFullRefresh() {
@@ -7218,7 +7269,7 @@
     }
     refreshStarted = true;
     refreshLastFullAt = Date.now();
-    if (refreshForceFull) void refreshMatch();
+    if (refreshForceFull || rosterReconcileRequested !== rosterReconcileApplied) void refreshMatch();
     else scheduleRefresh();
   }
 
