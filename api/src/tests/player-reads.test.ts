@@ -18,6 +18,9 @@ function fixture(overrides: Partial<PlayerReadRepository> = {}): PlayerReadRepos
       const resolved = await this.getPlayer(id, { consistentRead: true });
       return resolved ? { originalPlayerId: id, canonicalPlayerId: id, player: resolved } : null;
     },
+    async getPlayerViews(ids) {
+      return new Map(await Promise.all(ids.map(async id => [id, await this.getPlayerView(id)] as const)));
+    },
     async listGamePlayers(_id, options) { assert.deepEqual(options, { complete: true, consistentRead: true }); return [link]; },
     async listGameRoster(_id, options) { assert.deepEqual(options, { complete: true, consistentRead: true }); return []; },
     ...overrides,
@@ -88,25 +91,23 @@ test("join context rejects ambiguous or malformed queries and preserves exact op
   assert.doesNotMatch(JSON.stringify(failed), /private|SDK/);
 });
 
-test("complete roster identities exceed recent-search cap, deduplicate and bound profile concurrency", async () => {
+test("complete roster identities use the bulk reader beyond the recent-search cap", async () => {
   const records = Array.from({ length: 45 }, (_, index) => ({ ...player, playerId: `player-${index}`, nickname: "Same name", claimedByUserId: "private@example.com" }));
-  let active = 0; let peak = 0;
-  const reads: string[] = [];
+  const reads: string[][] = [];
   const repository = fixture({
     async listGamePlayers(gameId, options) { assert.deepEqual(options, { complete: true, consistentRead: true }); return [...records, records[0]].map((entry) => ({ ...link, gameId, playerId: entry.playerId })); },
     async listGameRoster(gameId, options) { assert.deepEqual(options, { complete: true, consistentRead: true }); return records.slice(0, 21).map((entry) => ({ ...link, gameId, playerId: entry.playerId, teamId: "red" as const })); },
-    async getPlayer(id, options) {
-      assert.equal(options?.consistentRead, true); reads.push(id); active += 1; peak = Math.max(peak, active);
-      await Promise.resolve(); active -= 1;
-      return records.find((entry) => entry.playerId === id) ?? null;
+    async getPlayerView() { assert.fail("rosters must not fan out individual player reads"); },
+    async getPlayerViews(ids) {
+      reads.push([...ids]);
+      return new Map(ids.map(id => [id, { originalPlayerId: id, canonicalPlayerId: id, player: records.find(entry => entry.playerId === id)! }]));
     },
   });
   const result = await readRosterPlayerData(repository, "game-one");
   assert.equal(result.roster.length, 21);
   assert.equal(result.unassignedPlayers.length, 24);
   assert.equal(new Set(result.unassignedPlayers.map((entry) => entry.playerId)).size, 24);
-  assert.equal(reads.length, 45); assert.equal(new Set(reads).size, 45);
-  assert.ok(peak > 1 && peak <= 8); assert.equal(active, 0);
+  assert.equal(reads.length, 1); assert.equal(reads[0].length, 45); assert.equal(new Set(reads[0]).size, 45);
   for (const entry of result.unassignedPlayers) assert.deepEqual(Object.keys(entry).sort(), ["createdAt", "nickname", "playerId", "updatedAt"]);
   assert.doesNotMatch(JSON.stringify(result.unassignedPlayers), /private|claimedBy|access/);
   const moved = await readRosterPlayerData({ ...repository, async listGameRoster(gameId) { return records.slice(0, 22).map((entry) => ({ ...link, gameId, playerId: entry.playerId, teamId: "red" as const })); } }, "game-one");
@@ -114,15 +115,17 @@ test("complete roster identities exceed recent-search cap, deduplicate and bound
   assert.equal(moved.unassignedPlayers.some((entry) => entry.playerId === "player-21"), false);
 });
 
-test("roster read fails instead of inventing empty data and drains bounded failed lookups", async () => {
+test("roster read rejects missing or failed bulk results without falling back to individual reads", async () => {
   await assert.rejects(readRosterPlayerData(fixture({ async getPlayer() { return null; } }), "game-one"), /could not be loaded/);
   await assert.rejects(readRosterPlayerData(fixture({ async listGamePlayers() { return [{ ...link, gameId: "other" }]; } }), "game-one"), /membership/);
-  let active = 0; let reads = 0;
+  await assert.rejects(readRosterPlayerData(fixture({ async getPlayerViews() { return new Map(); } }), "game-one"), /could not be loaded/);
+  let reads = 0;
   await assert.rejects(readRosterPlayerData(fixture({
     async listGamePlayers() { return Array.from({ length: 30 }, (_, index) => ({ ...link, playerId: `player-${index}` })); },
-    async getPlayer() { reads += 1; active += 1; await Promise.resolve(); active -= 1; throw new Error("unavailable"); },
+    async getPlayerView() { assert.fail("failed bulk reads cannot restore per-player fan-out"); },
+    async getPlayerViews() { reads++; throw new Error("unavailable"); },
   }), "game-one"), /could not be loaded/);
-  assert.equal(active, 0); assert.equal(reads, 8);
+  assert.equal(reads, 1);
 });
 
 test("local join context adapter requires a session and returns shared safe no-store responses", async () => {

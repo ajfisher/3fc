@@ -198,7 +198,7 @@ interface RepositoryGameRecord {
 }
 
 interface RepositoryContract extends Omit<PlayerProofRepository, "getPlayer" | "claimPlayer">, PlayerDirectoryRepository, PlayerConsolidationRepository, OwnedPlayerJoinRepository, PlayerProfileRepository, OwnerPlayerProfileRepository, PlayerPortraitRepository,
-  Pick<ThreeFcRepository, "getPlayerView"> {
+  Pick<ThreeFcRepository, "getPlayerView" | "getPlayerViews"> {
   listHomeLeagues?(input: { userIds: readonly string[]; cursor?: string }): Promise<HomeLeaguePage | null>;
   listLeaguesForUser(userId: string): Promise<
     Array<{
@@ -5333,14 +5333,12 @@ export function createLambdaCoreHandler(dependencies: CoreHandlerDependencies) {
 
           const search = getQueryParam(event, "search")?.trim().toLowerCase() ?? "";
           const playerLinks = await dependencies.repository.listGamePlayers(gameId);
-          const playerEntries = (
-            await Promise.all(
-              playerLinks.map(async (link) => {
-                const view = await dependencies.repository.getPlayerView(link.playerId);
-                return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
-              }),
-            )
-          )
+          const views = await dependencies.repository.getPlayerViews(playerLinks.map(link => link.playerId));
+          const playerEntries = playerLinks.map(link => {
+            if (!views.has(link.playerId)) throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
+            const view = views.get(link.playerId);
+            return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
+          })
             .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player, canonicalPlayerId: entry.canonicalPlayerId }] : []))
             .filter((entry) =>
               search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
