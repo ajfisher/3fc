@@ -1472,7 +1472,8 @@
   }
 
   async function requestJson(path, init = {}, onDispatch = null) {
-    const finishWrite = !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? beforeGameWrite?.(path, init.method) : null;
+    let finishWrite = !["GET", "HEAD"].includes((init.method ?? "GET").toUpperCase()) ? beforeGameWrite?.(path, init.method) : null;
+    if (finishWrite && typeof finishWrite.then === "function") finishWrite = await finishWrite;
     try {
       onDispatch?.();
       const response = await fetch(buildApiUrl(path), {
@@ -1526,6 +1527,7 @@
   }
 
   function isDefinitiveRequestRejection(error) {
+    if (error instanceof Error && error.requestNotDispatched === true) return true;
     return (
       error instanceof Error &&
       Number.isInteger(error.statusCode) &&
@@ -6847,6 +6849,9 @@
     let rosterReconcileApplied = 0;
     let detailsReconcileRequested = 0;
     let detailsReconcileApplied = 0;
+    let sessionResumeRevision = 0;
+    let sessionValidatedRevision = 0;
+    let writeSessionFlight = null;
     let refreshSuspended = false;
     let refreshRemoved = false;
     const uncertainReadBarriers = new Set();
@@ -6892,10 +6897,65 @@
       }
     }
 
+    function notDispatched(message) {
+      const error = new Error(message);
+      error.requestNotDispatched = true;
+      return error;
+    }
+
+    function checkWriteSession() {
+      if (writeSessionFlight) return writeSessionFlight.result;
+      const flight = { controller: new AbortController(), revision: sessionResumeRevision, timedOut: false };
+      flight.result = new Promise((resolve, reject) => { flight.resolve = resolve; flight.reject = reject; });
+      writeSessionFlight = flight;
+      const unavailable = () => {
+        setRefreshNotice("Sign-in check unavailable. Retry updates before making changes.");
+        flight.reject(notDispatched("Sign-in could not be checked. This change was not sent. Retry updates first."));
+      };
+      const deadline = window.setTimeout(() => {
+        flight.timedOut = true;
+        flight.controller.abort();
+        unavailable();
+        // The outcome is bounded, but retain ownership until transport settles.
+      }, 12000);
+      void (async () => {
+        try {
+          const session = (await requestJsonOrThrow("/v1/auth/session", {
+            method: "GET", cache: "no-store", signal: flight.controller.signal,
+          }))?.session;
+          if (flight.timedOut) return;
+          if (!usableEntityId(session?.sessionId) || !usableEntityId(session?.email) ||
+              session.sessionId !== authenticatedSession?.sessionId || session.email !== authenticatedSession?.email) {
+            lockRefreshAccount("Your sign-in changed. Reload this game before continuing.");
+            flight.reject(notDispatched("Your sign-in changed. This change was not sent. Reload this game."));
+          } else {
+            sessionValidatedRevision = Math.max(sessionValidatedRevision, flight.revision);
+            flight.resolve();
+          }
+        } catch (error) {
+          if (!flight.timedOut) {
+            if ([401, 403].includes(error?.statusCode)) lockRefreshAccount("Your access changed. Reload this game before continuing.");
+            unavailable();
+          }
+        } finally {
+          window.clearTimeout(deadline);
+          if (writeSessionFlight === flight) writeSessionFlight = null;
+        }
+      })();
+      return flight.result;
+    }
+
     beforeGameWrite = (path, method) => {
       if (existingPlayerAttempt?.uncertain && path !== existingPlayerAttempt.path && path !== "/v1/auth/logout") throw new Error("Retry the unconfirmed player addition before making another change.");
-      if (refreshAccountLocked && path !== "/v1/auth/logout") throw new Error("Your account changed. Reload before making changes.");
-      if (refreshWriteLocked && path !== "/v1/auth/logout") throw new Error("An earlier change is unconfirmed. Reload before making changes.");
+      if (refreshAccountLocked && path !== "/v1/auth/logout") throw notDispatched("Your account changed. Reload before making changes.");
+      if (refreshWriteLocked && path !== "/v1/auth/logout") throw notDispatched("An earlier change is unconfirmed. Reload before making changes.");
+      if (path !== "/v1/auth/logout") {
+        if (!refreshVisible()) throw notDispatched("This game is no longer active. This change was not sent. Return to the game and try again.");
+        if (signOutPending || signOutUnconfirmed || accountRevalidating) throw notDispatched("Check your sign-in state before making changes.");
+        // A focus/resume request can queue behind slow optional enrichment.
+        // Validate that boundary before this write may cancel the older flight.
+        if (sessionValidatedRevision < sessionResumeRevision) return checkWriteSession().then(() => beforeGameWrite(path, method));
+      }
       // Synchronous and before fetch, including writes made outside this root.
       refreshEpoch += 1;
       invalidateRefresh();
@@ -7055,12 +7115,14 @@
         return value;
       };
       const sameSession = async () => {
+        const revision = sessionResumeRevision;
         const session = (await read("/v1/auth/session"))?.session;
         if (!usableEntityId(session?.sessionId) || !usableEntityId(session?.email) ||
           session.sessionId !== authenticatedSession?.sessionId || session.email !== authenticatedSession?.email) {
           lockRefreshAccount("Your sign-in changed. Reload this game before continuing.");
           return false;
         }
+        sessionValidatedRevision = Math.max(sessionValidatedRevision, revision);
         return true;
       };
       const applyAuthority = (league) => {
@@ -7185,6 +7247,7 @@
     }
 
     function requestFullRefresh() {
+      ++sessionResumeRevision;
       // Coalesce duplicate focus/visibility/manual signals into one flight.
       if (refreshFlight?.full && !refreshFlight.cancelled) return;
       refreshForceFull = true;

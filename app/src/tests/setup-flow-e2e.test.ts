@@ -15239,6 +15239,77 @@ for (const publicFailure of ["unavailable", "malformed"] as const) {
   });
 }
 
+for (const outcome of ["changed", "same", "unavailable", "timeout", "hidden", "detached"] as const) {
+  test(`ux10 focus during held post-save enrichment fences mutation dispatch after ${outcome} session check`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled");
+    const base = createMockFetch(apiState); let createdId = "", observeSession = false, assignments = 0;
+    let releaseDetails: (() => void) | undefined, releaseSession: (() => void) | undefined;
+    let detailsSignal: AbortSignal | null | undefined;
+    const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "POST" && path.endsWith("/players")) createdId = JSON.parse(String(init.body)).playerId;
+      if (init.method === "PUT") assignments++;
+      if (observeSession && path === "/v1/auth/session") {
+        if (outcome === "timeout") return new Promise<Response>((_resolve, reject) => {
+          init.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+        const response = outcome === "unavailable" ? createJsonResponse(503, { error: "unavailable" }) : await base(input, init);
+        return new Promise<Response>(resolve => { releaseSession = () => resolve(response); });
+      }
+      const response = await base(input, init);
+      if (createdId && path === "/v1/games/ux10-match/players" && init.method === "GET" && !releaseDetails) {
+        detailsSignal = init.signal;
+        return new Promise<Response>(resolve => { releaseDetails = () => resolve(response); });
+      }
+      return response;
+    } });
+    try {
+      (page.document.getElementById("player-nickname") as HTMLInputElement).value = "Session gate";
+      dispatchSubmit(page.document.getElementById("player-create-form") as HTMLFormElement); await flushAsync();
+      page.timers.advanceBy(0); await flushAsync(); assert(releaseDetails);
+      if (outcome === "changed") {
+        apiState.session = { ...apiState.session!, sessionId: "other-admin", email: "other-admin@example.com" };
+        apiState.cookieJar = "threefc_session=other-admin";
+        grantMockLeagueAccess(apiState, "three-sided-football-club", "other-admin@example.com", "admin");
+      }
+      observeSession = true; page.window.dispatchEvent(new page.window.Event("focus"));
+      const choice = () => page.document.querySelector(`[data-action="assign-player"][data-player-id="${createdId}"][data-team-id="red"]`) as HTMLButtonElement;
+      assert.equal(choice().disabled, false); choice().focus(); choice().click(); await flushAsync();
+      assert.equal(assignments, 0, "a pending session proof cannot be invalidated by dispatching the write");
+      assert.equal(detailsSignal?.aborted, false, "the held enrichment remains owned until session validation finishes");
+      if (outcome === "hidden" || outcome === "detached") {
+        apiState.session = { ...apiState.session!, sessionId: "background-admin", email: "background@example.com" };
+        apiState.cookieJar = "threefc_session=background-admin";
+        grantMockLeagueAccess(apiState, "three-sided-football-club", "background@example.com", "admin");
+        if (outcome === "hidden") {
+          Object.defineProperty(page.document, "visibilityState", { value: "hidden", configurable: true });
+          page.document.dispatchEvent(new page.window.Event("visibilitychange"));
+        } else page.document.getElementById("setup-flow-root")!.remove();
+      }
+      if (outcome === "timeout") page.timers.advanceBy(12000);
+      else { assert(releaseSession); releaseSession(); releaseSession = undefined; }
+      await flushAsync();
+      if (outcome === "same") {
+        assert.equal(assignments, 1, "a matching session releases dispatch while enrichment is still held");
+        assert.equal(apiState.roster.get(`ux10-match:${createdId}`)?.teamId, "red");
+      } else {
+        assert.equal(assignments, 0);
+        assert.equal(apiState.roster.has(`ux10-match:${createdId}`), false);
+        assert.doesNotMatch(page.document.getElementById("setup-error")?.textContent ?? "", /could not be confirmed/);
+        if (outcome === "changed") {
+          assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /sign-in changed/);
+          assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+        } else if (outcome !== "hidden" && outcome !== "detached") {
+          assert.match(page.document.getElementById("setup-error")?.textContent ?? "", /not sent/);
+          observeSession = false;
+          choice().click(); await flushAsync();
+          assert.equal(assignments, 1, "an unsent rejection must not create an uncertain-write barrier");
+        }
+      }
+    } finally { observeSession = false; releaseSession?.(); releaseDetails?.(); await flushAsync(); closeUx10Page(page); }
+  });
+}
+
 test("ux10 a scheduled external join appears at the 15-second public roster refresh without changing local drafts", async () => {
   const apiState = createMockApiState();
   seedUx10Game(apiState, "scheduled");
