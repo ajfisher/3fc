@@ -502,6 +502,187 @@ test("canonical player view rejects incomplete alias groups", async () => {
   await assert.rejects(repository.getPlayerView("original"), PlayerIdentityError);
 });
 
+function bulkPlayerFixture(count = 30) {
+  const fixture = createRepositoryHarness(), at = "2026-10-19T00:00:00.000Z";
+  const ids = Array.from({ length: count }, (_, i) => `bulk-${String(i).padStart(2, "0")}`);
+  for (const playerId of ids) {
+    fixture.client.seedItem(identityItem(`PLAYER#${playerId}`, "PROFILE", "player", { playerId, nickname: playerId, claimedByUserId: null }, at));
+    fixture.client.seedItem(identityItem(`PLAYER#${playerId}`, "IDENTITY", "playerIdentity", { playerId, rootId: playerId, members: [playerId],
+      identityVersion: 1, writeVersion: "stable", displayName: playerId, formerNames: [] }, at));
+  }
+  return { ...fixture, ids, at };
+}
+
+test("bulk player views hydrate thirty alias-free identities in four consistent SDK commands", async () => {
+  const { client, repository, ids } = bulkPlayerFixture(), send = client.send.bind(client), commands: unknown[] = [];
+  client.send = async command => { commands.push(command); return send(command); };
+  const views = await repository.getPlayerViews([...ids, ids[0]]);
+  assert.equal(views.size, 30);
+  assert.equal(commands.length, 4, "route/authentication and owner ACL reads are outside this hydration budget");
+  assert.deepEqual(commands.map(command => (command as object).constructor.name),
+    ["BatchGetItemCommand", "TransactWriteItemsCommand", "BatchGetItemCommand", "TransactWriteItemsCommand"]);
+  assert.deepEqual(commands.filter(command => command instanceof BatchGetItemCommand)
+    .map(command => command.input.RequestItems!.threefc_test.Keys!.length), [40, 20]);
+  for (const command of commands) {
+    if (command instanceof BatchGetItemCommand) assert.equal(command.input.RequestItems!.threefc_test.ConsistentRead, true);
+    if (command instanceof TransactWriteItemsCommand) {
+      assert(command.input.TransactItems!.every(action => action.ConditionCheck && !action.Put));
+      assert(command.input.TransactItems!.length <= 40);
+    }
+  }
+  for (const id of ids) assert.equal(views.get(id)?.player.playerId, id);
+  assert.deepEqual(await repository.getPlayerViews([]), new Map());
+});
+
+for (const changed of ["identity", "profile", "timestamp", "deleted"] as const) {
+  test(`bulk player views reject concurrent ${changed} changes without returning a validated prefix`, async () => {
+    const { client, repository, ids } = bulkPlayerFixture(), send = client.send.bind(client);
+    let fences = 0;
+    client.send = async command => {
+      if (command instanceof TransactWriteItemsCommand && ++fences === 2) {
+        const pk = `PLAYER#${ids[25]}`, sk = changed === "identity" ? "IDENTITY" : "PROFILE";
+        const stored = structuredClone(client.readItem(pk, sk)!);
+        if (changed === "deleted") client.deleteItem(pk, sk);
+        else {
+          if (changed === "timestamp") stored.updatedAt = { S: "2026-10-19T00:00:01.000Z" };
+          else stored.data = { S: JSON.stringify({ ...JSON.parse(stored.data!.S!),
+            ...(changed === "identity" ? { writeVersion: "changed" } : { claimedByUserId: "another-owner" }) }) };
+          client.seedItem(stored);
+        }
+      }
+      return send(command);
+    };
+    let returned: unknown;
+    await assert.rejects(async () => { returned = await repository.getPlayerViews(ids); },
+      error => error instanceof PlayerIdentityError && error.code === "player_identity_changed");
+    assert.equal(returned, undefined); assert.equal(fences, 2);
+  });
+}
+
+for (const changeOwner of [false, true]) test(`bulk player views share alias closure reads while fencing canonical ownership ${changeOwner}`, async () => {
+  const { client, repository, ids, at } = bulkPlayerFixture(), send = client.send.bind(client);
+  const rootId = "canonical/Zoë", sibling = "unrequested-alias", aliases = [ids[0], ids[25]];
+  const sourceBefore = structuredClone(client.readItem(`PLAYER#${ids[0]}`, "PROFILE"));
+  client.seedItem(identityItem(`PLAYER#${rootId}`, "PROFILE", "player", { playerId: rootId, nickname: "Retained", claimedByUserId: "canonical-owner" }, at));
+  client.seedItem(identityItem(`PLAYER#${rootId}`, "IDENTITY", "playerIdentity", { playerId: rootId, rootId, members: [rootId, ...aliases, sibling],
+    identityVersion: 2, writeVersion: "root-version", displayName: "Chosen display", formerNames: [] }, at));
+  for (const playerId of [...aliases, sibling]) client.seedItem(identityItem(`PLAYER#${playerId}`, "IDENTITY", "playerIdentity", {
+    playerId, rootId, members: [], identityVersion: 2, writeVersion: "alias-version", displayName: "Previous", formerNames: [] }, at));
+  const batches: Array<Array<{ pk: string; sk: string }>> = []; let fences = 0;
+  client.send = async command => {
+    if (command instanceof BatchGetItemCommand) batches.push(command.input.RequestItems!.threefc_test.Keys!.map(key => ({ pk: key.pk.S!, sk: key.sk.S! })));
+    if (command instanceof TransactWriteItemsCommand) {
+      fences++;
+      if (changeOwner && fences === 2) client.seedItem(identityItem(`PLAYER#${rootId}`, "PROFILE", "player",
+        { playerId: rootId, nickname: "Retained", claimedByUserId: "changed-owner" }, at));
+    }
+    return send(command);
+  };
+  if (changeOwner) await assert.rejects(repository.getPlayerViews(ids), error => error instanceof PlayerIdentityError && error.code === "player_identity_changed");
+  else {
+    const views = await repository.getPlayerViews(ids);
+    for (const id of aliases) {
+      assert.equal(views.get(id)?.originalPlayerId, id); assert.equal(views.get(id)?.player.playerId, id);
+      assert.equal(views.get(id)?.canonicalPlayerId, rootId); assert.equal(views.get(id)?.player.nickname, "Chosen display");
+      assert.equal(views.get(id)?.player.claimedByUserId, "canonical-owner");
+    }
+    assert.equal(views.has(rootId), false);
+  }
+  const keys = batches.flat();
+  assert.equal(keys.filter(key => key.pk === `PLAYER#${rootId}` && key.sk === "PROFILE").length, 1, "canonical snapshots are cached only within this request");
+  assert.equal(keys.filter(key => key.pk === `PLAYER#${sibling}` && key.sk === "IDENTITY").length, 1);
+  assert.equal(keys.some(key => key.pk === `PLAYER#${sibling}` && key.sk === "PROFILE"), false);
+  assert.deepEqual(client.readItem(`PLAYER#${ids[0]}`, "PROFILE"), sourceBefore);
+});
+
+test("bulk player views bound unprocessed-key recovery and never fall back to GetItem", async () => {
+  for (const exhausted of [false, true]) {
+    const { client, repository, ids } = bulkPlayerFixture(), send = client.send.bind(client);
+    let batches = 0; const retrySizes: number[] = [];
+    client.send = async command => {
+      assert(!(command instanceof GetItemCommand), "all profile/identity reads must remain prefetched");
+      if (command instanceof BatchGetItemCommand) {
+        batches++; const keys = command.input.RequestItems!.threefc_test.Keys!; retrySizes.push(keys.length);
+        if (exhausted) return { Responses: { threefc_test: [] }, UnprocessedKeys: { threefc_test: { Keys: keys } } };
+        if (batches === 1) {
+          const result = await send(command) as { Responses: { threefc_test: Item[] } };
+          const deferred = keys[0];
+          result.Responses.threefc_test = result.Responses.threefc_test.filter(row => row.pk.S !== deferred.pk.S || row.sk.S !== deferred.sk.S);
+          return { ...result, UnprocessedKeys: { threefc_test: { Keys: [deferred] } } };
+        }
+      }
+      return send(command);
+    };
+    if (exhausted) {
+      await assert.rejects(repository.getPlayerViews(ids), error => error instanceof PlayerIdentityError && error.code === "player_identity_unavailable" && !/linked players/.test(error.message));
+      assert.equal(batches, 3);
+    } else {
+      assert.equal((await repository.getPlayerViews(ids)).size, 30);
+      assert.deepEqual(retrySizes, [40, 1, 20]);
+    }
+  }
+});
+
+for (const malformed of ["duplicate-row", "unexpected-key", "profile-json", "profile-id", "profile-type", "identity-members"] as const) {
+  test(`bulk player views reject malformed ${malformed} without a partial result`, async () => {
+    const { client, repository, ids } = bulkPlayerFixture(), send = client.send.bind(client);
+    let fences = 0, altered = false;
+    client.send = async command => {
+      if (command instanceof TransactWriteItemsCommand) fences++;
+      const result = await send(command);
+      if (command instanceof BatchGetItemCommand && !altered) {
+        altered = true; const rows = (result as { Responses: { threefc_test: Item[] } }).Responses.threefc_test;
+        const profile = rows.find(row => row.sk.S === "PROFILE")!;
+        if (malformed === "duplicate-row") rows.push(structuredClone(profile));
+        if (malformed === "unexpected-key") profile.pk = { S: "PLAYER#unrequested" };
+        if (malformed === "profile-json") profile.data = { S: "{" };
+        if (malformed === "profile-id") profile.data = { S: JSON.stringify({ playerId: "different", nickname: "Invalid", claimedByUserId: null }) };
+        if (malformed === "profile-type") profile.entityType = { S: "acl" };
+        if (malformed === "identity-members") {
+          const identity = rows.find(row => row.sk.S === "IDENTITY")!;
+          identity.data = { S: JSON.stringify({ ...JSON.parse(identity.data!.S!), members: [] }) };
+        }
+      }
+      return result;
+    };
+    await assert.rejects(repository.getPlayerViews(ids), error => error instanceof PlayerIdentityError && error.status === 503);
+    assert.equal(fences, 0);
+  });
+}
+
+test("bulk player views preserve complete player fences when the transaction byte budget requires multiple commits", async () => {
+  const { client, repository, ids } = bulkPlayerFixture(20), send = client.send.bind(client);
+  for (const id of ids) {
+    const row = structuredClone(client.readItem(`PLAYER#${id}`, "PROFILE")!);
+    row.data = { S: JSON.stringify({ ...JSON.parse(row.data!.S!), historicalMetadata: "x".repeat(210_000) }) }; client.seedItem(row);
+  }
+  const transactions: TransactWriteItemsCommand[] = [];
+  client.send = async command => { if (command instanceof TransactWriteItemsCommand) transactions.push(command); return send(command); };
+  assert.equal((await repository.getPlayerViews(ids)).size, 20); assert.equal(transactions.length, 2);
+  for (const command of transactions) {
+    const actions = command.input.TransactItems!;
+    assert(Buffer.byteLength(JSON.stringify(actions)) <= 3_500_000);
+    const keys = new Set(actions.map(action => `${action.ConditionCheck!.Key!.pk!.S}:${action.ConditionCheck!.Key!.sk!.S}`));
+    for (const action of actions) {
+      const pk = action.ConditionCheck!.Key!.pk!.S;
+      assert(keys.has(`${pk}:PROFILE`) && keys.has(`${pk}:IDENTITY`), "an individual player's fence cannot be split");
+    }
+  }
+});
+
+test("bulk player views share one deadline across chunks and stop before returning a validated prefix", async t => {
+  let now = 1000; t.mock.method(Date, "now", () => now);
+  const { client, repository, ids } = bulkPlayerFixture(), send = client.send.bind(client);
+  let batches = 0, fences = 0;
+  client.send = async command => {
+    if (command instanceof TransactWriteItemsCommand) { fences++; now += 5000; }
+    if (command instanceof BatchGetItemCommand && ++batches === 2) now += 1500;
+    return send(command);
+  };
+  await assert.rejects(repository.getPlayerViews(ids), error => error instanceof PlayerIdentityError && error.code === "player_identity_unavailable");
+  assert.equal(batches, 2); assert.equal(fences, 1);
+});
+
 test("identity planner preserves raw profiles and atomically fences membership/revision plans", async () => {
   const { client, repository } = createRepositoryHarness();
   const planner = new PlayerIdentityPlanner(client, "threefc_test");

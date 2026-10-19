@@ -26,8 +26,10 @@ import { PlayerProfileAccess } from "./player-profile-access.js";
 import { PlayerProfileReadService } from "./player-profile-read.js";
 import { OwnedPlayerJoinService } from "./owned-player-join.js";
 import { historyMutationItems, sendHistoryTransaction } from "./player-history-work.js";
+import { IdentityReadCache } from "./identity-read-cache.js";
 import { PlayerIdentityPlanner, PlayerIdentityError, boundedIdentityTransaction,
-  identityCondition, identityDirectorySk, type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
+  identityCondition, identityDirectorySk, validateIdentity, validPlayerIdentityId,
+  type IdentityControl, type IdentitySnapshot, type ResolvedPlayerIdentity } from "./player-identity.js";
 import { directoryGameSamples, type DirectoryGameSample } from "./player-directory-games.js";
 import {
   createPlayerConfirmation, hashPlayerProofSecret, parsePlayerClaimMode,
@@ -194,6 +196,12 @@ interface StoredEntity<T> {
   updatedAt: string;
   rawData: string;
   data: T;
+}
+
+interface PlayerView {
+  originalPlayerId: string;
+  canonicalPlayerId: string;
+  player: PlayerRecord;
 }
 
 class DefaultClock implements Clock {
@@ -3502,35 +3510,117 @@ export class ThreeFcRepository {
 
   /** Presentation-only identity resolution. Ownership proofs and event writes
    * must keep using raw records and the original registered player ID. */
-  async getPlayerView(playerId: string): Promise<{
-    originalPlayerId: string; canonicalPlayerId: string; player: PlayerRecord;
-  } | null> {
+  async getPlayerView(playerId: string): Promise<PlayerView | null> {
+    const plan = await this.planPlayerView(playerId, this.identities,
+      (pk, sk) => this.getEntity(pk, sk, { consistentRead: true }));
+    await this.fencePlayerViews(plan.checks);
+    return plan.view;
+  }
+
+  /** Request-local presentation reads. Each chunk preserves complete per-player
+   * fences; callers receive no results until every chunk has validated. */
+  async getPlayerViews(playerIds: readonly string[]): Promise<Map<string, PlayerView | null>> {
+    const unavailable = () => new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
+    if (!Array.isArray(playerIds) || playerIds.some(id => !validPlayerIdentityId(id))) throw unavailable();
+    const deadlineMs = Date.now() + 6000;
+    const budget = () => { if (Date.now() >= deadlineMs) throw unavailable(); };
+    const cache = new IdentityReadCache(this.client, this.tableName, { deadlineMs, deadlineError: unavailable() });
+    const planner = new PlayerIdentityPlanner(cache, this.tableName);
+    const item = async (playerId: string, sk: string) => {
+      const result = await cache.send(new GetItemCommand({ TableName: this.tableName,
+        Key: { pk: { S: playerPk(playerId) }, sk: { S: sk } }, ConsistentRead: true })) as GetItemCommandOutput;
+      return result.Item;
+    };
+    const identity = async (playerId: string) => {
+      const raw = await item(playerId, "IDENTITY");
+      if (!raw) return null;
+      if (raw.entityType?.S !== "playerIdentity") throw unavailable();
+      try { return validateIdentity(JSON.parse(raw.data?.S ?? ""), playerId); }
+      catch { throw unavailable(); }
+    };
+    const profile = async (pk: string, sk: string): Promise<StoredEntity<unknown> | null> => {
+      const result = await cache.send(new GetItemCommand({ TableName: this.tableName,
+        Key: { pk: { S: pk }, sk: { S: sk } }, ConsistentRead: true })) as GetItemCommandOutput;
+      if (!result.Item) return null;
+      try {
+        const stored = parseStoredEntity(result.Item);
+        if (stored.pk !== pk || stored.sk !== sk || stored.entityType !== ENTITY_TYPE.player) throw unavailable();
+        return stored;
+      } catch { throw unavailable(); }
+    };
+    const views = new Map<string, PlayerView | null>(), ids = [...new Set(playerIds)];
+    try {
+      for (let start = 0; start < ids.length; start += 20) {
+        budget();
+        const chunk = ids.slice(start, start + 20);
+        await cache.prefetch(chunk.flatMap(id => ["PROFILE", "IDENTITY"].map(sk => ({ pk: playerPk(id), sk }))));
+        const roots = new Set<string>();
+        for (const id of chunk) {
+          if (!await profile(playerPk(id), profileSk())) continue;
+          const value = await identity(id);
+          if (value) roots.add(value.rootId);
+        }
+        await cache.prefetch([...roots].flatMap(id => ["PROFILE", "IDENTITY"].map(sk => ({ pk: playerPk(id), sk }))));
+        const memberKeys: Array<{ pk: string; sk: string }> = [];
+        for (const id of roots) {
+          const root = await identity(id);
+          if (!root || root.rootId !== id) throw unavailable();
+          memberKeys.push(...root.members.map(member => ({ pk: playerPk(member), sk: "IDENTITY" })));
+        }
+        await cache.prefetch(memberKeys);
+        let checks: TransactWriteItem[] = [];
+        for (const id of chunk) {
+          const plan = await this.planPlayerView(id, planner, profile);
+          // Match boundedIdentityTransaction's conservative serialized ceiling.
+          // Flush only between complete player fences, never inside one.
+          if (checks.length && Buffer.byteLength(JSON.stringify([...checks, ...plan.checks])) > 3_500_000) {
+            budget(); await this.fencePlayerViews(checks); checks = [];
+          }
+          checks = boundedIdentityTransaction([...checks, ...plan.checks]);
+          views.set(id, plan.view);
+        }
+        budget(); await this.fencePlayerViews(checks); budget();
+      }
+      return views;
+    } catch (error) {
+      if (error instanceof PlayerIdentityError && error.code === "owned_players_unavailable") throw unavailable();
+      throw error;
+    }
+  }
+
+  private async planPlayerView(playerId: string, planner: PlayerIdentityPlanner,
+    read: (pk: string, sk: string) => Promise<StoredEntity<unknown> | null>): Promise<{ view: PlayerView | null; checks: TransactWriteItem[] }> {
     requireNonEmpty("playerId", playerId);
-    const original = await this.getEntity(playerPk(playerId), profileSk(), { consistentRead: true });
-    if (!original || original.entityType !== ENTITY_TYPE.player) return null;
+    const original = await read(playerPk(playerId), profileSk());
+    if (!original || original.entityType !== ENTITY_TYPE.player) return { view: null, checks: [] };
     const source = original.data as Omit<PlayerRecord, "createdAt" | "updatedAt">;
     if (!source || source.playerId !== playerId || typeof source.nickname !== "string") {
       throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
     }
-    const identity = await this.identities.resolve(playerId, source.nickname);
+    const identity = await planner.resolve(playerId, source.nickname);
     const canonicalId = identity.root.value.playerId;
-    const canonical = canonicalId === playerId ? original : await this.getEntity(playerPk(canonicalId), profileSk(), { consistentRead: true });
+    const canonical = canonicalId === playerId ? original : await read(playerPk(canonicalId), profileSk());
     const owner = canonical?.data as Omit<PlayerRecord, "createdAt" | "updatedAt"> | undefined;
     if (!canonical || canonical.entityType !== ENTITY_TYPE.player || !owner || owner.playerId !== canonicalId ||
         typeof owner.nickname !== "string" || (owner.claimedByUserId !== null && typeof owner.claimedByUserId !== "string")) {
       throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
     }
-    try {
-      await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction([
+    return { view: { originalPlayerId: playerId, canonicalPlayerId: canonicalId,
+      player: withTimestamps({ ...source, nickname: identity.root.value.displayName, claimedByUserId: owner.claimedByUserId }, original.createdAt, original.updatedAt) },
+      checks: boundedIdentityTransaction([
         identityCondition(this.tableName, identity.root), identityCondition(this.tableName, identity.original),
         this.buildConditionalCheckFromStoredEntity(original), this.buildConditionalCheckFromStoredEntity(canonical),
-      ]) }));
+      ]) };
+  }
+
+  private async fencePlayerViews(checks: TransactWriteItem[]): Promise<void> {
+    if (!checks.length) return;
+    try {
+      await sendHistoryTransaction(this.client, new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(checks) }));
     } catch (error) {
       if (isConditionalWriteFailure(error)) throw new PlayerIdentityError("player_identity_changed", 503, "Player details changed. Try again.");
       throw error;
     }
-    return { originalPlayerId: playerId, canonicalPlayerId: canonicalId,
-      player: withTimestamps({ ...source, nickname: identity.root.value.displayName, claimedByUserId: owner.claimedByUserId }, original.createdAt, original.updatedAt) };
   }
 
   private async leaguePlayerAuthority(leagueId: string, userIds: readonly string[], adminOnly = false): Promise<{

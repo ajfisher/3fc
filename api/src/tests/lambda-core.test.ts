@@ -357,6 +357,32 @@ function createJoinContextHarness(role?: "admin" | "scorekeeper" | "viewer") {
   });
 }
 
+test("core lambda private player reads batch every linked identity before preserving search, sort, cap and privacy", async () => {
+  const harness = createJoinContextHarness("scorekeeper");
+  const headers = { Cookie: "threefc_session=context-session" };
+  let index = 0;
+  for (const [id, player] of harness.players) {
+    harness.players.set(id, { ...player, nickname: `Player ${String(index++).padStart(2, "0")}` });
+  }
+  const event = createEvent({ method: "GET", path: "/v1/games/game-context/players", headers });
+  const response = await harness.handler(event);
+  assert.equal(response.statusCode, 200);
+  assert.equal(harness.bulkPlayerReads.length, 1);
+  assert.equal(harness.bulkPlayerReads[0].length, 46, "hydrate before applying the existing twenty-result cap");
+  const players = JSON.parse(response.body).players;
+  assert.equal(players.length, 20);
+  assert.deepEqual(players.map((player: { nickname: string }) => player.nickname), Array.from({ length: 20 }, (_, i) => `Player ${String(i).padStart(2, "0")}`));
+  event.rawQueryString = "search=%20PLAYER%2045%20";
+  const search = await harness.handler(event);
+  assert.equal(search.statusCode, 200);
+  assert.equal(JSON.parse(search.body).players.length, 1);
+  assert.equal(JSON.parse(search.body).players[0].playerId, "player/opaque\\identity");
+  assert.doesNotMatch(search.body, /private-owner|claimedByUserId|userId/);
+  const viewer = createJoinContextHarness("viewer");
+  assert.equal((await viewer.handler(event)).statusCode, 403);
+  assert.equal(viewer.bulkPlayerReads.length, 0, "private hydration must follow role authorization");
+});
+
 function joinContextEvent(code: string, playerId: string, headers?: Record<string, string>): ApiGatewayHttpEvent {
   const event = createEvent({ method: "GET", path: `/v1/join/${code}/player-context`, headers });
   event.rawQueryString = new URLSearchParams({ playerId }).toString();
@@ -545,6 +571,7 @@ function completedThirdTimerSegments(): ThirdTimerSegment[] {
 }
 
 function createHarness(config: HarnessConfig = {}) {
+  const bulkPlayerReads: string[][] = [];
   const revokedSessions: string[] = [];
   const createdLeagues: CreatedLeagueInput[] = [];
   const createdSeasons: CreatedSeasonInput[] = [];
@@ -1723,6 +1750,13 @@ function createHarness(config: HarnessConfig = {}) {
         const player = players.get(playerId);
         return player ? { originalPlayerId: playerId, canonicalPlayerId: playerId, player } : null;
       },
+      async getPlayerViews(playerIds: readonly string[]) {
+        bulkPlayerReads.push([...playerIds]);
+        return new Map(playerIds.map(playerId => {
+          const player = players.get(playerId);
+          return [playerId, player ? { originalPlayerId: playerId, canonicalPlayerId: playerId, player } : null];
+        }));
+      },
       async claimPlayer(input) {
         const player = players.get(input.playerId);
         if (!player) {
@@ -2232,6 +2266,7 @@ function createHarness(config: HarnessConfig = {}) {
 
   return {
     handler,
+    bulkPlayerReads,
     createdLeagues,
     createdSeasons,
     createdSessions,

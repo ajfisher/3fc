@@ -13,6 +13,7 @@ export interface PlayerReadRepository {
   getGamePlayer(gameId: string, playerId: string): Promise<GamePlayerRecord | null>;
   getPlayer(playerId: string, options?: { consistentRead?: boolean }): Promise<PlayerSource | null>;
   getPlayerView(playerId: string): Promise<{ originalPlayerId: string; canonicalPlayerId: string; player: PlayerSource } | null>;
+  getPlayerViews(playerIds: readonly string[]): Promise<Map<string, { originalPlayerId: string; canonicalPlayerId: string; player: PlayerSource } | null>>;
   listGamePlayers(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<GamePlayerRecord[]>;
   listGameRoster(gameId: string, options?: { complete?: boolean; consistentRead?: boolean }): Promise<RosterAssignmentRecord[]>;
 }
@@ -75,31 +76,19 @@ export async function readRosterPlayerData(repository: PlayerReadRepository, gam
   const linkedIds = new Set(links.map((entry) => entry.playerId));
   const ids = [...new Set([...assignedIds, ...linkedIds])];
   const playersById = new Map<string, PublicPlayer>();
-  let next = 0;
-  let failed = false;
-  // Bound DynamoDB profile fan-out independently of game size; no new IAM or
-  // BatchGet dependency is needed. Missing joined profiles cannot become empty.
-  await Promise.all(Array.from({ length: Math.min(8, ids.length) }, async () => {
-    for (;;) {
-      if (failed) return;
-      const index = next++;
-      if (index >= ids.length) return;
-      const id = ids[index];
-      try {
-        const player = (await repository.getPlayerView(id))?.player;
-        if (!player) {
-          if (linkedIds.has(id)) throw new Error("Joined player details could not be loaded.");
-          continue;
-        }
-        if (player.playerId !== id) throw new Error("Player identity could not be confirmed.");
-        playersById.set(id, publicPlayer(player));
-      } catch {
-        failed = true;
-        return;
+  try {
+    const views = await repository.getPlayerViews(ids);
+    for (const id of ids) {
+      if (!views.has(id)) throw new Error("Incomplete player read.");
+      const player = views.get(id)?.player;
+      if (!player) {
+        if (linkedIds.has(id)) throw new Error("Joined player details could not be loaded.");
+        continue;
       }
+      if (player.playerId !== id) throw new Error("Player identity could not be confirmed.");
+      playersById.set(id, publicPlayer(player));
     }
-  }));
-  if (failed) throw new Error("Roster player details could not be loaded.");
+  } catch { throw new Error("Roster player details could not be loaded."); }
   const unassignedPlayers = [...linkedIds].filter((id) => !assignedIds.has(id))
     .map((id) => playersById.get(id)!)
     .sort((left, right) => left.nickname.localeCompare(right.nickname) || left.playerId.localeCompare(right.playerId));

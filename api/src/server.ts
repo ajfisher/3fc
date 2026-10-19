@@ -5224,14 +5224,12 @@ async function start(): Promise<void> {
 
         const search = requestUrl.searchParams.get("search")?.trim().toLowerCase() ?? "";
         const playerLinks = await repository.listGamePlayers(gameId);
-        const playerEntries = (
-          await Promise.all(
-            playerLinks.map(async (link) => {
-              const view = await repository.getPlayerView(link.playerId);
-              return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
-            }),
-          )
-        )
+        const views = await repository.getPlayerViews(playerLinks.map(link => link.playerId));
+        const playerEntries = playerLinks.map(link => {
+          if (!views.has(link.playerId)) throw new PlayerIdentityError("player_identity_unavailable", 503, "Player details could not be loaded. Try again.");
+          const view = views.get(link.playerId);
+          return { link, player: view?.player ?? null, canonicalPlayerId: view?.canonicalPlayerId };
+        })
           .flatMap((entry) => (entry.player ? [{ link: entry.link, player: entry.player, canonicalPlayerId: entry.canonicalPlayerId }] : []))
           .filter((entry) =>
             search.length === 0 ? true : entry.player.nickname.toLowerCase().includes(search),
