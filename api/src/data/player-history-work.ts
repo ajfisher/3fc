@@ -28,6 +28,7 @@ export interface HistoryWork extends HistoryMutationInput { version: 1; revision
 
 interface HistoryTransactionClient { send(command: unknown): Promise<unknown> }
 interface HistoryTransactionRetryOptions {
+  retryTransactionConflicts?: boolean;
   sleep?: (milliseconds: number) => Promise<void>;
   random?: () => number;
 }
@@ -41,14 +42,15 @@ function isTransactionConflict(error: unknown): boolean {
     reason !== null && typeof reason === 'object' && (reason.Code === 'None' || reason.Code === 'TransactionConflict'));
 }
 
-/** Independent matches briefly contend on the shared league revision. Retry only
+/** Independent matches and roster reconciliation briefly contend on shared fences. Retry only
  * explicit transaction conflicts: ambiguous delivery and domain-condition failures
  * retain the caller's existing recovery path. Reuse the command, token and marker. */
 export async function sendHistoryTransaction(client: HistoryTransactionClient, command: unknown,
   options: HistoryTransactionRetryOptions = {}): Promise<unknown> {
-  const hasWork = command instanceof TransactWriteItemsCommand && command.input.TransactItems?.some(item =>
+  const isTransaction = command instanceof TransactWriteItemsCommand;
+  const hasWork = isTransaction && command.input.TransactItems?.some(item =>
     item.Put?.Item?.entityType?.S === 'playerHistoryWork');
-  if (!hasWork) return client.send(command);
+  if (!isTransaction || (!hasWork && !options.retryTransactionConflicts)) return client.send(command);
   const sleep = options.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
   const random = options.random ?? Math.random;
   for (let attempt = 0; ; attempt++) {

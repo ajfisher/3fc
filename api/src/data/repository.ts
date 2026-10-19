@@ -3683,7 +3683,8 @@ export class ThreeFcRepository {
       if (input.teamId && game.status === 'finished') actions.push(...historyMutationItems(this.tableName,
         { leagueId: game.leagueId, gameId: game.gameId, seasonId: game.seasonId, playerId: rootId, reason: 'roster-changed' }, now));
     }
-    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }));
+    await sendHistoryTransaction(this.client,new TransactWriteItemsCommand({ TransactItems: boundedIdentityTransaction(actions) }),
+      { retryTransactionConflicts: true });
     return { playerId: membership.playerId, alreadyInGame };
   }
 
@@ -4261,6 +4262,7 @@ export class ThreeFcRepository {
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction(transactionItems),
         }),
+        { retryTransactionConflicts: true },
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
@@ -4922,6 +4924,7 @@ export class ThreeFcRepository {
         new TransactWriteItemsCommand({
           TransactItems: boundedIdentityTransaction(transactionItems),
         }),
+        { retryTransactionConflicts: true },
       );
     } catch (error) {
       if (isConditionalWriteFailure(error)) {
