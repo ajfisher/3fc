@@ -15208,6 +15208,37 @@ for (const privateFailure of ["unavailable", "malformed", "timeout"] as const) {
   });
 }
 
+for (const publicFailure of ["unavailable", "malformed"] as const) {
+  test(`ux10 ${publicFailure} public reconciliation preserves independently verified private details`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled");
+    apiState.players.get("player-ari")!.claimedByUserId = "private-player@example.com";
+    const base = createMockFetch(apiState); let created = false, privateReads = 0;
+    const page = await bootUx10Page(apiState, { mode: "teams", fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (init.method === "POST" && path.endsWith("/players")) created = true;
+      if (created && path.endsWith("/players") && init.method === "GET") privateReads++;
+      if (created && path.endsWith("/roster")) return createJsonResponse(publicFailure === "unavailable" ? 503 : 200, { error: "unavailable" });
+      return base(input, init);
+    } });
+    try {
+      const ari = () => ux09PlayerRows(page, '[data-ui="roster-member"]', "player-ari")[0];
+      assert(ari().querySelector('[data-ui="player-access"][data-state="claimed"]'));
+      assert(ari().querySelector('[data-action="grant-player-access"]'));
+      (page.document.getElementById("player-nickname") as HTMLInputElement).value = "Public failure";
+      dispatchSubmit(page.document.getElementById("player-create-form") as HTMLFormElement); await flushAsync();
+      page.timers.advanceBy(0); await flushAsync();
+      assert.equal(privateReads, 0, "private endpoint was not attempted");
+      assert(ari().querySelector('[data-ui="player-access"][data-state="claimed"]'), "public failure cannot discard independently verified claim details");
+      assert(ari().querySelector('[data-action="grant-player-access"]'));
+      assert.match(page.document.getElementById("game-refresh-message")?.textContent ?? "", /Updates unavailable/);
+      const fresh = [...apiState.players.values()].find(player => player.nickname === "Public failure")!;
+      const card = ux09PlayerRows(page, '[data-ui="roster-player"]', fresh.playerId)[0];
+      assert.equal(card.querySelector('[data-ui="player-access"][data-state="claimed"]'), null);
+      assert.equal(card.querySelector('[data-action="grant-player-access"]'), null);
+    } finally { closeUx10Page(page); }
+  });
+}
+
 test("ux10 a scheduled external join appears at the 15-second public roster refresh without changing local drafts", async () => {
   const apiState = createMockApiState();
   seedUx10Game(apiState, "scheduled");

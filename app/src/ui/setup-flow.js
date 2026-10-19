@@ -7157,7 +7157,7 @@
       } catch (error) {
         failed = true;
         if (current()) {
-          if (readDetails && detailsVersion === playersReadVersion) {
+          if (enriching && detailsVersion === playersReadVersion) {
             unavailablePlayerDetails();
             renderRosterSetup();
           }
