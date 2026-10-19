@@ -15774,8 +15774,10 @@ test("ux10 hidden and page lifecycle stop scheduling and foreground refresh runs
     seedLiveGoalEvent(apiState, "ux10-match", "while-hidden");
     setUx10Visible(page, true); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
     assert.equal(page.document.querySelector('[data-ui="goal-event"]')?.getAttribute("data-event-id"), "while-hidden");
-    assert.equal(reads.slice(initial).filter(path => path === "/v1/auth/session").length, 2, "full refresh checks session before reading and again before applying");
+    assert.equal(reads.slice(initial).filter(path => path === "/v1/auth/session").length, 3, "focus replaces the earlier visibility probe before the full read and final session check");
+    assert.equal(reads.slice(initial).filter(path => path === "/v1/games/ux10-match").length, 1);
     assert.equal(reads.slice(initial).filter(path => path.endsWith("/goals")).length, 1);
+    assert.equal(reads.slice(initial).filter(path => path.endsWith("/roster")).length, 1);
     assert.equal(page.timers.pendingCount(), 1);
     page.window.dispatchEvent(new page.window.PageTransitionEvent("pagehide", { persisted: true })); const afterHide = reads.length;
     await advanceUx10(page, 60000); assert.equal(reads.length, afterHide); assert.equal(page.timers.pendingCount(), 0);
@@ -16113,13 +16115,58 @@ test("ux10 visibility and repeated focus signals coalesce while the foreground a
     page.window.dispatchEvent(new page.window.Event("focus")); page.window.dispatchEvent(new page.window.Event("focus")); await flushAsync();
     assert(release); assert.deepEqual(reads, ["/v1/auth/session"]);
     release(); await flushAsync();
-    assert.equal(reads.filter(path => path === "/v1/auth/session").length, 2, "coalesced foreground work is one full batch with a pre-apply session fence");
+    assert.equal(reads.filter(path => path === "/v1/auth/session").length, 3, "the superseded probe is replaced before one full batch and its pre-apply session fence");
     assert.equal(reads.filter(path => path === "/v1/games/ux10-match").length, 1);
     assert.equal(reads.filter(path => path.endsWith("/goals")).length, 1);
     assert.equal(reads.filter(path => path.endsWith("/roster")).length, 1);
     assert.equal(page.timers.pendingCount(), 1);
   } finally { closeUx10Page(page); }
 });
+
+for (const heldAt of ['public', 'private'] as const) {
+  test(`ux10 a second resume during the ${heldAt} final session probe cannot expose stale authority`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState, 'scheduled', heldAt === 'public' ? 'viewer' : 'admin');
+    const base = createMockFetch(apiState); let observe = false, sessions = 0;
+    let release: (() => void) | undefined;
+    const page = await bootUx10Page(apiState, { mode: 'teams', fetch: async (input, init = {}) => {
+      if (observe && new URL(String(input)).pathname === '/v1/auth/session') {
+        sessions++;
+        const response = await base(input, init);
+        if (sessions === (heldAt === 'public' ? 2 : 3)) return new Promise<Response>(resolve => { release = () => resolve(response); });
+        return response;
+      }
+      return base(input, init);
+    } });
+    let observer: MutationObserver | undefined;
+    try {
+      const create = page.document.querySelector('[data-action="toggle-player-create"]')!;
+      assert(create instanceof page.window.HTMLButtonElement);
+      const exposed: boolean[] = [];
+      if (heldAt === 'private') {
+        (page.document.getElementById('player-nickname') as HTMLInputElement).value = 'Resume race';
+        dispatchSubmit(page.document.getElementById('player-create-form') as HTMLFormElement); await flushAsync();
+      }
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-ari"]'), null);
+      observer = new page.window.MutationObserver(() => exposed.push(heldAt === 'public'
+        ? interactionVisible(create)
+        : Boolean(page.document.querySelector('[data-action="grant-player-access"][data-player-id="player-ari"]'))));
+      observer.observe(page.document.getElementById('setup-flow-root')!, { subtree: true, childList: true, attributes: true });
+      grantMockLeagueAccess(apiState, 'three-sided-football-club', apiState.session!.email, 'admin');
+      apiState.players.get('player-ari')!.claimedByUserId = 'private-player@example.com';
+      observe = true; page.window.dispatchEvent(new page.window.Event('focus')); await flushAsync(); assert(release);
+      apiState.session = { ...apiState.session!, sessionId: 'replacement-viewer', email: 'viewer@example.com' };
+      apiState.cookieJar = 'threefc_session=replacement-viewer';
+      grantMockLeagueAccess(apiState, 'three-sided-football-club', 'viewer@example.com', 'viewer');
+      page.window.dispatchEvent(new page.window.Event('focus')); await flushAsync();
+      release(); release = undefined; await flushAsync();
+      assert.equal(exposed.includes(true), false, 'the superseded session snapshot must not expose authority even transiently');
+      assert.match(page.document.getElementById('game-refresh-message')?.textContent ?? '', /sign-in changed/);
+      assert.equal(interactionVisible(create), false);
+      assert.equal(page.document.querySelector('[data-action="grant-player-access"]'), null);
+      assert.equal(sessions, heldAt === 'public' ? 3 : 4, 'one replacement full refresh verifies the latest resume without waiting for a timer');
+    } finally { observer?.disconnect(); release?.(); await flushAsync(); closeUx10Page(page); }
+  });
+}
 
 test("ux10 foreground signals during initial game loading cannot start a competing refresh", async () => {
   const apiState = createMockApiState(); seedUx10Game(apiState); const base = createMockFetch(apiState);

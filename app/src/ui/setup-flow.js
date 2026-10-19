@@ -7117,6 +7117,7 @@
       const sameSession = async () => {
         const revision = sessionResumeRevision;
         const session = (await read("/v1/auth/session"))?.session;
+        if (revision !== sessionResumeRevision) return false;
         if (!usableEntityId(session?.sessionId) || !usableEntityId(session?.email) ||
           session.sessionId !== authenticatedSession?.sessionId || session.email !== authenticatedSession?.email) {
           lockRefreshAccount("Your sign-in changed. Reload this game before continuing.");
@@ -7248,9 +7249,9 @@
 
     function requestFullRefresh() {
       ++sessionResumeRevision;
+      refreshForceFull = true;
       // Coalesce duplicate focus/visibility/manual signals into one flight.
       if (refreshFlight?.full && !refreshFlight.cancelled) return;
-      refreshForceFull = true;
       window.clearTimeout(refreshTimer);
       refreshTimer = 0;
       if (!refreshFlight) void refreshMatch();
