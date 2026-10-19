@@ -15079,6 +15079,56 @@ test("ux10 a confirmed new player can be assigned and transferred while reconcil
   }
 });
 
+for (const authority of ['same-role', 'revoked', 'changed-session'] as const) {
+  test(`ux10 existing-player confirmation survives in-flight authority refresh with ${authority}`, async () => {
+    const apiState = createMockApiState(); seedUx10Game(apiState, 'scheduled');
+    const base = createMockFetch(apiState); let release: (() => void) | undefined;
+    let registrations = 0, reads = 0;
+    const page = await bootUx10Page(apiState, { mode: 'teams', fetch: async (input, init = {}) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/v1/league-players') return createJsonResponse(200, { players: [
+        { playerId: 'existing-perf', nickname: 'Existing Perf', claimed: false, inGame: false, seasons: [], hasMoreSeasons: false }
+      ], cursor: null });
+      if (path === '/v1/game-player-registrations') {
+        registrations++;
+        seedUx09Registration(apiState, 'ux10-match', 'existing-perf', 'Existing Perf');
+        return new Promise<Response>(resolve => { release = () => resolve(createJsonResponse(200,
+          { registration: { playerId: 'existing-perf', alreadyInGame: false } })); });
+      }
+      if (release && path === '/v1/leagues/three-sided-football-club') reads++;
+      return base(input, init);
+    } });
+    try {
+      dispatchClick(page.document.querySelector('[data-action="toggle-player-create"]')!);
+      const search = page.document.getElementById('game-player-picker-search') as HTMLInputElement;
+      search.value = 'Existing Perf'; dispatchSubmit(page.document.getElementById('game-player-picker-form') as HTMLFormElement); await flushAsync();
+      dispatchClick(page.document.querySelector('[data-action="add-existing-player"]')!); await flushAsync(); assert(release);
+      if (authority === 'revoked') grantMockLeagueAccess(apiState, 'three-sided-football-club', apiState.session!.email, 'viewer');
+      if (authority === 'changed-session') {
+        apiState.session = { ...apiState.session!, sessionId: 'different', email: 'other@example.com' };
+        apiState.cookieJar = 'threefc_session=different';
+        grantMockLeagueAccess(apiState, 'three-sided-football-club', 'other@example.com', 'admin');
+      }
+      page.window.dispatchEvent(new page.window.Event('focus')); await flushAsync();
+      if (authority !== 'changed-session') assert.equal(reads, 1, 'authority-only refresh completes while registration response is held');
+      release(); release = undefined; await flushAsync();
+      assert.equal(registrations, 1);
+      const rows = ux09PlayerRows(page, '[data-ui="roster-player"]', 'existing-perf');
+      if (authority === 'same-role') {
+        assert.equal(rows.length, 1, 'same-role revalidation cannot discard a confirmed addition');
+        const assign = rows[0].querySelector('[data-action="assign-player"][data-team-id="blue"]') as HTMLButtonElement;
+        assert.equal(assign.disabled, false);
+        assert.match(page.document.getElementById('game-player-picker-status')?.textContent ?? '', /Existing Perf added/);
+        assign.click(); await flushAsync();
+        assert.equal(apiState.roster.get('ux10-match:existing-perf')?.teamId, 'blue');
+      } else {
+        assert.equal(rows.length, 0, 'revoked authority cannot apply the old private draft');
+        assert.equal(interactionVisible(page.document.querySelector('[data-action="toggle-player-create"]')!), false);
+      }
+    } finally { release?.(); await flushAsync(); closeUx10Page(page); }
+  });
+}
+
 test("ux10 confirmed existing-player addition releases controls while private enrichment is held", async () => {
   const apiState = createMockApiState(); seedUx10Game(apiState, "scheduled");
   const base = createMockFetch(apiState); let added = false, registrations = 0, privateReads = 0;

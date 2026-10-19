@@ -7128,8 +7128,8 @@
       const applyAuthority = (league) => {
         if (!league) return;
         const role = normalizeLeagueRole(league.access.role);
-        authorityRevision += 1;
         if (role !== currentLeagueRole) {
+          authorityRevision += 1;
           discardPrivateEnrichment();
           currentLeagueRole = role;
           renderRosterSetup();
