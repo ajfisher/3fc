@@ -247,27 +247,13 @@ node scripts/player-history.mjs step --manifest /path/to/local-history.json \
   --key 'HISTORY_WORK#<returned-revision>' --pages 10 --apply reviewed-history
 ```
 
-## Temporary production stuck-run recovery
+## Deployment freeze checks
 
-GitHub run [37241624452](https://github.com/ajfisher/3fc/actions/runs/37241624452)
-remained queued with zero jobs and returned HTTP 409 for cancellation. Support
-[ticket 4822740](https://help.github.com/ticket/personal/0/4822740) tracks the incident.
-The default operator still requires all pending deployments to drain.
-
-For this incident only, cloud mutation commands accept
-`--exclude-stuck-run 37241624452`. First have AJ merge and authorise deployment of
-the reviewed recovery commit with feature/processing flags off, obtain its final
-API/worker manifests, freeze the production workflow, and record the actual writer
-drain time. The clean operator checkout must match that deployed commit. The
-exception does not skip the 905-second writer drain or any AWS fingerprint check.
-
-The exception checks that production main is the accepted writer SHA and differs
-from the stuck run's immutable SHA. Pinned hashes verify that the old workflow and
-its head guard are exactly the reviewed versions: they reject a stale main before
-obtaining AWS credentials. The run must still be the original production dispatch,
-at attempt one, queued, with zero jobs. Any other pending run, changed evidence,
-missing historical Git objects or failed API lookup stops the command. No token,
-role, workflow or queue is changed by this option.
+All cloud mutation commands require a manually disabled target deployment workflow
+and zero queued, in-progress, waiting, pending or requested deployments. There is
+no stuck-run exclusion. The retired incident and its resolution are recorded in
+[ADR 0006](decisions/0006-player-history-worker-and-activation.md#retired-stuck-run-exception).
+The 905-second writer drain and all API/worker AWS fingerprint checks still apply.
 
 Freeze checks run at invocation start/end and at least every 30 seconds between
 bounded steps. Keep production main and deployment controls unchanged throughout
@@ -275,12 +261,6 @@ maintenance; these cross-service checks are observations, not an atomic GitHub/A
 lock. A drift failure stops further work and invalidates acceptance of the current
 invocation; already committed resumable checkpoints remain. Inspect live state and
 resume only after establishing the reviewed deployment/freeze again.
-
-Stop using the option once GitHub clears the run (a completed or missing run is
-not accepted by the exception); normal commands then work without it. Rollback is
-omitting the option, which restores the strict zero-pending-run rule. Remove this
-incident-specific code in a follow-up after GitHub resolves the run. AJ retains
-merge and release authority; this option neither deploys nor enables features.
 
 ## Owner name propagation
 
