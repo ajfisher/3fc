@@ -48,13 +48,11 @@ an invalid award. Prior generations and publication transitions retain the audit
 from a source token. Activation requires a validated writer/rule manifest and
 verified identity coverage. Cloud operations require the exact clean reviewed
 checkout, account, table, region, deployed API and worker fingerprints, drained
-old writers, and a frozen deployment workflow with no queued deployment by default.
-The incident-specific [stuck-run procedure](../player-history-operations.md#temporary-production-stuck-run-recovery)
-permits only run 37241624452, after a newer accepted production main makes its
-pinned pre-credential guard reject deployment. This explicit operator exception
-changes deployment-exclusion evidence, not AWS authority or data ownership. Full
-fingerprints are checked at start/end; API provenance and deployment exclusion are rechecked between
-bounded steps at least every 30 seconds. The CLI shares the worker coordinator;
+old writers, and a frozen deployment workflow with zero pending deployments in
+all checked states. The [deployment freeze procedure](../player-history-operations.md#deployment-freeze-checks)
+has no incident-specific bypass. Full fingerprints are checked at start/end; API
+provenance and deployment exclusion are rechecked between bounded steps at least
+every 30 seconds. The CLI shares the worker coordinator;
 it introduces no public activation or repair endpoint. Local operations use the
 same service against explicit local DynamoDB.
 
@@ -70,6 +68,20 @@ totals, progress, assessability, streaks and highest milestones without moving
 the active pointer. It explicitly reports `career-summary` scope; it does not
 claim an exhaustive comparison of every season or earlier milestone. Comparison
 ignores calculation/source bookkeeping while retaining semantic award changes.
+
+## Retired stuck-run exception
+
+PR #229 temporarily allowed the explicit `--exclude-stuck-run 37241624452`
+option for one queued, jobless production dispatch. It required the pinned old
+workflow's pre-credential head guard, a newer accepted production main and all
+normal writer-drain and AWS fingerprint checks; it did not grant AWS authority.
+GitHub Support [ticket 4822740](https://help.github.com/ticket/personal/0/4822740)
+cleared [run 37241624452](https://github.com/ajfisher/3fc/actions/runs/37241624452)
+(cancelled on November 20, 2026), and replacement
+[run 37248306294](https://github.com/ajfisher/3fc/actions/runs/37248306294) succeeded.
+The exception is retired: the CLI rejects the former option and freeze checks
+require zero pending deployments without exclusions. This paragraph preserves
+incident history, not a procedure to reuse or extend.
 
 ## Failure, rollout and rollback
 
